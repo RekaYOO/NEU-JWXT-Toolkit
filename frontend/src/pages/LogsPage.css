@@ -1,0 +1,56 @@
+.logs-page {
+  padding: 0;
+}
+
+.logs-page .stats-row {
+  margin-bottom: 16px;
+}
+
+.logs-page .stats-row .ant-card {
+  text-align: center;
+}
+
+.logs-page .ant-table-cell {
+  font-size: 13px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+.logs-page .ant-table-cell-ellipsis {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.logs-page .ant-tag {
+  font-size: 12px;
+}
+
+.logs-page .ant-alert {
+  margin-top: 16px;
+}
+
+.logs-page .ant-space-wrap {
+  row-gap: 8px;
+}
+
+/* 日志级别颜色 */
+.log-level-debug {
+  color: #8c8c8c;
+}
+
+.log-level-info {
+  color: #1890ff;
+}
+
+.log-level-warning {
+  color: #faad14;
+}
+
+.log-level-error {
+  color: #f5222d;
+}
+
+.log-level-critical {
+  color: #cf1322;
+  font-weight: bold;
+}
