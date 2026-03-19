@@ -1,0 +1,88 @@
+.scores-page {
+  padding-bottom: 24px;
+}
+
+.loading-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 400px;
+}
+
+.stats-row {
+  margin-bottom: 24px;
+}
+
+.stats-row .ant-card {
+  text-align: center;
+}
+
+.stats-row .ant-statistic-title {
+  font-size: 14px;
+  color: #666;
+}
+
+.stats-row .ant-statistic-content {
+  font-size: 24px;
+  font-weight: bold;
+}
+
+.gpa {
+  font-weight: bold;
+  color: #1890ff;
+}
+
+.scores-table-card {
+  margin-top: 16px;
+}
+
+.scores-table-card .ant-card-head {
+  font-weight: bold;
+}
+
+/* 列头样式 */
+.column-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.filter-active-icon {
+  color: #1890ff;
+  font-size: 12px;
+}
+
+/* 表格样式优化 */
+.scores-table-card .ant-table {
+  font-size: 13px;
+}
+
+.scores-table-card .ant-table-thead > tr > th {
+  background: #fafafa;
+  font-weight: 600;
+  padding: 12px 8px;
+}
+
+.scores-table-card .ant-table-tbody > tr > td {
+  padding: 10px 8px;
+}
+
+.scores-table-card .ant-table-tbody > tr:hover > td {
+  background: #e6f7ff;
+}
+
+/* 分页样式 */
+.scores-table-card .ant-pagination {
+  margin-top: 16px;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .stats-row .ant-col {
+    margin-bottom: 16px;
+  }
+  
+  .scores-table-card {
+    overflow-x: auto;
+  }
+}

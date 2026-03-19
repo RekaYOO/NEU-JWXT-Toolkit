@@ -1,0 +1,45 @@
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 20px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 420px;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.login-card .ant-card-head {
+  text-align: center;
+  font-size: 20px;
+  font-weight: bold;
+  border-bottom: none;
+  padding-top: 24px;
+}
+
+.login-tips {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+  font-size: 12px;
+  color: #666;
+}
+
+.login-tips p {
+  margin-bottom: 8px;
+  font-weight: bold;
+}
+
+.login-tips ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.login-tips li {
+  margin-bottom: 4px;
+}

@@ -1,0 +1,243 @@
+/* 实验选课页面样式 */
+.experiment-course-page {
+  padding: 16px;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.page-header h4 {
+  margin: 0;
+}
+
+/* 统计卡片 */
+.experiment-course-page .stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.experiment-course-page .stat-card {
+  text-align: center;
+}
+
+.experiment-course-page .stat-card .ant-card-body {
+  padding: 16px;
+}
+
+.experiment-course-page .stat-value {
+  font-size: 32px;
+  font-weight: bold;
+  color: #1890ff;
+}
+
+.experiment-course-page .stat-card.success .stat-value {
+  color: #52c41a;
+}
+
+.experiment-course-page .stat-card.warning .stat-value {
+  color: #faad14;
+}
+
+.experiment-course-page .stat-card.error .stat-value {
+  color: #f5222d;
+}
+
+.experiment-course-page .stat-label {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin-top: 4px;
+}
+
+/* 课程列表 */
+.courses-card {
+  margin-bottom: 16px;
+}
+
+.course-name {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.course-no {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin-top: 2px;
+}
+
+/* 展开的项目列表 */
+.projects-container {
+  padding: 16px;
+  background: #fafafa;
+  border-radius: 4px;
+}
+
+.projects-header {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 12px;
+  color: #262626;
+}
+
+.projects-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.project-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #fff;
+  border-radius: 4px;
+  border: 1px solid #f0f0f0;
+}
+
+.project-item.selected {
+  background: #f6ffed;
+  border-color: #b7eb8f;
+}
+
+.project-info {
+  flex: 1;
+}
+
+.project-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.project-code {
+  font-size: 12px;
+  color: #8c8c8c;
+}
+
+.project-status {
+  flex-shrink: 0;
+}
+
+/* 实验班弹窗 */
+.modal-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 40px;
+}
+
+.project-info-header {
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.project-info-header .ant-typography {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.rounds-list {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.round-card {
+  margin-bottom: 12px;
+}
+
+.round-card.conflict {
+  border-color: #ffd591;
+  background: #fff7e6;
+}
+
+.round-card.full {
+  border-color: #ffccc7;
+  background: #fff2f0;
+}
+
+.round-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.round-name {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.round-capacity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #595959;
+}
+
+.round-action {
+  margin-top: 12px;
+  text-align: right;
+  padding-top: 12px;
+  border-top: 1px dashed #f0f0f0;
+}
+
+/* 加载状态 */
+.loading-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 400px;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .experiment-course-page .stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .project-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .project-status {
+    width: 100%;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .round-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 576px) {
+  .experiment-course-page {
+    padding: 8px;
+  }
+
+  .experiment-course-page .stats-row {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .experiment-course-page .stat-card .ant-card-body {
+    padding: 12px;
+  }
+
+  .experiment-course-page .stat-value {
+    font-size: 24px;
+  }
+}

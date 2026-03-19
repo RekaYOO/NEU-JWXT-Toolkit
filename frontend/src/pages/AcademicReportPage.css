@@ -1,0 +1,516 @@
+/* 培养计划页面样式 - 与成绩页面保持一致 */
+.academic-report-page {
+  padding: 0 0 24px 0;
+  min-height: 100vh;
+  position: relative;
+}
+
+/* 悬挂式学分统计卡片 - 圆角流线型设计 */
+.credit-summary-float {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.credit-summary-float .float-hint {
+  display: inline-flex;
+  align-items: center;
+  color: #666;
+  font-size: 13px;
+  padding: 8px 20px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  border-radius: 20px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  border: 1px solid #e8e8e8;
+  white-space: nowrap;
+}
+
+.credit-summary-float .float-hint .anticon {
+  margin-right: 6px;
+  color: #1890ff;
+}
+
+.credit-summary-float .float-content {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  max-width: 90vw;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(10px);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  border: 1px solid #e8e8e8;
+}
+
+.credit-summary-float:hover .float-content,
+.credit-summary-float.expanded .float-content {
+  display: block;
+}
+
+.credit-summary-float:hover .float-hint,
+.credit-summary-float.expanded .float-hint {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 主内容区域 - 顶头放置（悬挂卡片不占位） */
+.main-content-wrapper {
+  height: calc(100vh - 60px);
+  margin-top: 0;
+  padding: 0 16px;
+}
+
+/* 左右列高度一致 */
+.main-content-wrapper .main-content {
+  margin: 0 !important;
+  height: 100%;
+}
+
+.main-content-wrapper .main-content > .ant-col {
+  height: 100%;
+  padding: 8px;
+}
+
+/* 学分总览卡片 - 移除旧样式 */
+.credit-summary-card {
+  display: none; /* 隐藏旧卡片，使用悬挂式 */
+}
+
+.credit-progress {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.progress-text {
+  text-align: center;
+}
+
+.progress-text .percent {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1890ff;
+}
+
+.progress-text .label {
+  font-size: 12px;
+  color: #8c8c8c;
+}
+
+.credit-progress-bar {
+  margin-top: 8px;
+}
+
+.progress-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 13px;
+  color: #595959;
+}
+
+/* 主内容区域 */
+.main-content {
+  margin-top: 0;
+  height: 100%;
+}
+
+/* 左右容器高度一致 - 顶头放置后调整 */
+.tree-container-wrapper,
+.table-container-wrapper {
+  height: calc(100vh - 80px);
+  overflow: hidden;
+  padding: 8px;
+}
+
+/* 类别树卡片 */
+.category-tree-card {
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.category-tree-card .ant-card-head {
+  flex-shrink: 0;
+}
+
+.category-tree-card .ant-card-body {
+  padding: 12px;
+  flex: 1;
+  overflow: auto;
+}
+
+/* 树形容器 */
+.tree-scroll-container {
+  min-height: 100%;
+}
+
+/* 美化的树形节点样式 - 参考GPA导入页面 */
+.academic-tree .ant-tree-treenode {
+  padding: 2px 0;
+}
+
+.academic-tree .ant-tree-node-content-wrapper {
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.academic-tree .ant-tree-node-content-wrapper:hover {
+  background: #e6f7ff;
+}
+
+.academic-tree .ant-tree-node-selected .ant-tree-node-content-wrapper {
+  background: #1890ff;
+}
+
+.academic-tree .ant-tree-node-selected .ant-tree-node-content-wrapper .node-name,
+.academic-tree .ant-tree-node-selected .ant-tree-node-content-wrapper .ant-badge-count {
+  color: #fff !important;
+}
+
+/* 树节点标题样式 */
+.tree-node-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 2px 0;
+}
+
+.tree-node-title .node-name {
+  font-size: 13px;
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #262626;
+}
+
+.tree-node-title .node-credits {
+  margin-left: 8px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 学分文字样式 */
+.tree-node-title .credit-text {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.tree-node-title .credit-text.earned {
+  color: #52c41a;
+}
+
+.tree-node-title .credit-text.required {
+  color: #262626;
+}
+
+.tree-node-title .credit-text.deficit {
+  color: #ff4d4f;
+  font-size: 11px;
+}
+
+.tree-node-title .credit-separator {
+  color: #8c8c8c;
+  font-size: 11px;
+}
+
+.tree-node-title .course-count {
+  font-size: 11px;
+  color: #8c8c8c;
+  background: #f0f0f0;
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin-left: 4px;
+}
+
+/* 课程列表卡片 */
+.courses-table-card {
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.courses-table-card .ant-card-head {
+  flex-shrink: 0;
+}
+
+.courses-table-card .ant-card-body {
+  padding: 16px;
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 表格容器 - 内部滚动 */
+.table-scroll-container {
+  flex: 1;
+  overflow: auto;
+}
+
+.courses-table-card .ant-table-wrapper {
+  height: 100%;
+}
+
+/* 树形节点样式 */
+.tree-node-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding-right: 8px;
+}
+
+.tree-node-title .node-name {
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-node-title .node-credits {
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+/* 缺学分列表 */
+.incomplete-list {
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.incomplete-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  cursor: pointer;
+  border-bottom: 1px dashed #f0f0f0;
+  transition: all 0.2s;
+}
+
+.incomplete-item:hover {
+  background: #fff7e6;
+  padding-left: 4px;
+  padding-right: 4px;
+  border-radius: 4px;
+}
+
+.incomplete-item .name {
+  font-size: 12px;
+  color: #262626;
+}
+
+.incomplete-item .credits {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.incomplete-list .more {
+  text-align: center;
+  color: #8c8c8c;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+/* 课程统计栏 */
+.course-stats-bar {
+  padding: 12px 16px;
+  background: #fafafa;
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+
+/* 数据表格 */
+.data-table .ant-table-thead > tr > th {
+  background: #fafafa;
+  font-weight: 600;
+  padding: 12px;
+  border-top: none;
+}
+
+.data-table .ant-table-tbody > tr > td {
+  padding: 10px 12px;
+}
+
+.data-table .ant-table-tbody > tr:hover > td {
+  background: #e6f7ff;
+}
+
+/* 课程名称列 */
+.course-name {
+  font-weight: 500;
+  font-size: 14px;
+  color: #262626;
+}
+
+.course-code {
+  font-size: 11px;
+  color: #8c8c8c;
+  margin-top: 2px;
+}
+
+/* 加载和空状态 */
+.empty-container {
+  padding: 60px;
+  text-align: center;
+  background: #fff;
+  border-radius: 8px;
+  margin: 16px;
+}
+
+/* 底部信息 */
+.footer-info {
+  padding: 16px 0;
+}
+
+/* 响应式设计 */
+@media (max-width: 992px) {
+  .main-content > .ant-col {
+    margin-bottom: 16px;
+  }
+  
+  .category-tree-card {
+    max-height: 400px;
+    overflow: auto;
+  }
+}
+
+@media (max-width: 768px) {
+  .academic-report-page {
+    padding: 8px;
+  }
+  
+  .credit-summary-card .ant-statistic-title {
+    font-size: 12px;
+  }
+  
+  .credit-summary-card .ant-statistic-content {
+    font-size: 16px;
+  }
+  
+  .progress-text .percent {
+    font-size: 20px;
+  }
+  
+  .course-stats-bar {
+    padding: 8px 12px;
+  }
+  
+  .course-stats-bar .ant-space {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  
+  .data-table .ant-table-thead > tr > th,
+  .data-table .ant-table-tbody > tr > td {
+    padding: 8px;
+  }
+}
+
+@media (max-width: 576px) {
+  .tree-node-title {
+    font-size: 13px;
+  }
+  
+  .tree-node-title .node-credits .ant-badge-count {
+    font-size: 10px;
+    height: 16px;
+    line-height: 16px;
+  }
+}
+
+/* 树形组件样式优化 */
+.category-tree-card .ant-tree {
+  font-size: 13px;
+}
+
+.category-tree-card .ant-tree-treenode {
+  padding: 2px 0;
+}
+
+.category-tree-card .ant-tree-node-content-wrapper {
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.category-tree-card .ant-tree-node-content-wrapper:hover {
+  background: #e6f7ff;
+}
+
+.category-tree-card .ant-tree-node-selected .ant-tree-node-content-wrapper {
+  background: #1890ff;
+  color: #fff;
+}
+
+.category-tree-card .ant-tree-node-selected .ant-tree-node-content-wrapper .node-name {
+  color: #fff !important;
+}
+
+.category-tree-card .ant-tree-node-selected .ant-tree-node-content-wrapper .ant-badge-count {
+  background: #fff !important;
+  color: #1890ff !important;
+}
+
+/* 分页样式 */
+.data-table .ant-pagination {
+  margin-top: 16px;
+}
+
+/* 标签样式 */
+.academic-report-page .ant-tag {
+  font-size: 12px;
+}
+
+/* 统计卡片内图标对齐 */
+.ant-statistic-content-prefix {
+  margin-right: 8px;
+}
+
+/* 按钮组间距 */
+.academic-report-page .ant-space {
+  flex-wrap: wrap;
+}
+
+/* Alert 样式优化 */
+.category-tree-card .ant-alert {
+  border-radius: 6px;
+}
+
+/* 滚动条样式 */
+.category-tree-card ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.category-tree-card ::-webkit-scrollbar-thumb {
+  background: #d9d9d9;
+  border-radius: 3px;
+}
+
+.category-tree-card ::-webkit-scrollbar-track {
+  background: #f0f0f0;
+  border-radius: 3px;
+}

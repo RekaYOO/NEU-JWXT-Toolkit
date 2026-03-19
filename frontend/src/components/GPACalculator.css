@@ -1,0 +1,420 @@
+/* GPA计算器样式 - 嵌入式版本 */
+
+.gpa-calculator-embedded {
+  padding: 16px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+/* 统计卡片 */
+.gpa-stats-row {
+  margin-bottom: 16px;
+}
+
+.gpa-stats-row .stat-card {
+  text-align: center;
+  transition: all 0.3s;
+  background: #fff;
+}
+
+.gpa-stats-row .stat-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.09);
+}
+
+.gpa-stats-row .stat-card.highlight {
+  background: linear-gradient(135deg, #e6f7ff 0%, #f0f5ff 100%);
+  border: 1px solid #91caff;
+}
+
+.gpa-stats-row .ant-statistic-title {
+  font-size: 12px;
+  color: #666;
+}
+
+.gpa-stats-row .ant-statistic-content {
+  font-size: 18px;
+}
+
+.gpa-stats-row .stat-card.highlight .ant-statistic-content {
+  font-size: 22px;
+}
+
+/* 工具栏 */
+.gpa-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: #fff;
+  border-radius: 8px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* 标签页 */
+.gpa-tabs {
+  margin-bottom: 12px;
+  background: #fff;
+  padding: 0 16px;
+  border-radius: 8px 8px 0 0;
+}
+
+.gpa-tabs .ant-tabs-nav {
+  margin-bottom: 0;
+}
+
+/* 表格样式 */
+.gpa-table {
+  background: #fff;
+  border-radius: 0 0 8px 8px;
+}
+
+.gpa-table .ant-table-thead > tr > th {
+  background: #fafafa;
+  font-weight: 600;
+  padding: 10px 8px;
+}
+
+.gpa-table .ant-table-tbody > tr > td {
+  padding: 8px;
+}
+
+.gpa-table .ant-table-tbody > tr:hover > td {
+  background: #e6f7ff;
+}
+
+.gpa-table .course-name {
+  font-weight: 500;
+  color: #262626;
+  display: flex;
+  align-items: center;
+}
+
+.gpa-table .course-code {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin-top: 2px;
+}
+
+.gpa-table .term-text {
+  font-size: 12px;
+  color: #595959;
+}
+
+/* 绩点颜色 */
+.gpa-high { color: #52c41a; font-weight: bold; }
+.gpa-normal { color: #1890ff; }
+.gpa-low { color: #faad14; }
+
+/* 输入框样式优化 */
+.gpa-table .ant-input-number,
+.gpa-table .ant-input {
+  background: transparent;
+}
+
+.gpa-table .ant-input-number:hover,
+.gpa-table .ant-input-number-focused,
+.gpa-table .ant-input:hover,
+.gpa-table .ant-input-focused {
+  background: #fff;
+}
+
+/* 提示列表 */
+.gpa-tips {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.gpa-tips li {
+  margin-bottom: 4px;
+}
+
+/* 抽屉内的搜索筛选区域 */
+.gpa-calculator-embedded .ant-drawer-body {
+  padding-top: 16px;
+}
+
+/* ===== 培养计划导入抽屉样式 ===== */
+.plan-import-drawer .ant-drawer-header {
+  border-bottom: 1px solid #f0f0f0;
+  padding: 14px 20px;
+}
+
+.plan-import-drawer .ant-drawer-body {
+  padding: 0 !important;
+  height: calc(100vh - 110px) !important;
+  overflow: hidden !important;
+}
+
+.plan-import-container {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+/* 左侧侧边栏 */
+.plan-import-sidebar {
+  width: 300px;
+  background: #fafafa;
+  border-right: 1px solid #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e8e8e8;
+}
+
+.sidebar-filters {
+  padding: 8px 0;
+}
+
+.sidebar-filters .ant-checkbox-wrapper {
+  font-size: 13px;
+  color: #595959;
+}
+
+.tree-container {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0 -8px;
+  padding: 0 8px;
+}
+
+.tree-container .ant-tree {
+  background: transparent;
+}
+
+.tree-container .ant-tree-treenode {
+  padding: 2px 0;
+}
+
+.tree-container .ant-tree-node-content-wrapper {
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.tree-container .ant-tree-node-content-wrapper:hover {
+  background: #e6f7ff;
+}
+
+.tree-container .ant-tree-node-selected .ant-tree-node-content-wrapper {
+  background: #1890ff;
+}
+
+.tree-container .ant-tree-node-selected .ant-tree-node-content-wrapper .node-name,
+.tree-container .ant-tree-node-selected .ant-tree-node-content-wrapper .course-count {
+  color: #fff !important;
+}
+
+/* 树节点样式 - 与培养计划页面保持一致 */
+.import-tree-node {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 2px 0;
+}
+
+.import-tree-node .node-name {
+  font-size: 13px;
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #262626;
+}
+
+.import-tree-node .node-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+/* 学分文字样式 */
+.import-tree-node .credit-text {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.import-tree-node .credit-text.earned {
+  color: #52c41a;
+}
+
+.import-tree-node .credit-text.required {
+  color: #262626;
+}
+
+.import-tree-node .credit-text.deficit {
+  color: #ff4d4f;
+  font-size: 11px;
+}
+
+.import-tree-node .credit-separator {
+  color: #8c8c8c;
+  font-size: 11px;
+}
+
+.import-tree-node .course-count {
+  font-size: 11px;
+  color: #8c8c8c;
+  background: #f0f0f0;
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin-left: 4px;
+}
+
+/* 右侧内容区 */
+.plan-import-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* 表格容器 - 占据剩余空间并可滚动 */
+.plan-import-content .ant-table-wrapper {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.content-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.content-toolbar .quick-filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.content-toolbar .quick-filters .ant-btn {
+  font-size: 12px;
+  padding: 0 12px;
+}
+
+.content-toolbar .quick-filters .filter-divider {
+  width: 1px;
+  height: 20px;
+  background: #d9d9d9;
+}
+
+.nature-filter-select {
+  padding: 4px 8px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #262626;
+  background: #fff;
+  cursor: pointer;
+  outline: none;
+}
+
+.nature-filter-select:hover {
+  border-color: #40a9ff;
+}
+
+.nature-filter-select:focus {
+  border-color: #1890ff;
+}
+
+/* 课程表格样式 */
+.plan-import-content .ant-table-wrapper {
+  flex: 1;
+  overflow: auto;
+}
+
+.plan-import-content .ant-table {
+  flex: 1;
+}
+
+.plan-import-content .ant-table-thead > tr > th {
+  background: #fafafa;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 10px 8px;
+}
+
+.plan-import-content .ant-table-tbody > tr > td {
+  padding: 10px 8px;
+  font-size: 13px;
+}
+
+.plan-import-content .course-name-cell {
+  font-weight: 500;
+  color: #262626;
+}
+
+.plan-import-content .category-cell,
+.plan-import-content .term-cell {
+  color: #595959;
+  font-size: 12px;
+}
+
+.plan-import-content .ant-tag {
+  font-size: 12px;
+}
+
+/* 空状态 */
+.plan-import-content .ant-empty {
+  margin-top: 60px;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .gpa-calculator-embedded {
+    padding: 8px;
+  }
+  
+  .gpa-stats-row .ant-col {
+    margin-bottom: 8px;
+  }
+  
+  .gpa-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .gpa-toolbar .ant-space {
+    justify-content: center;
+  }
+  
+  .gpa-table {
+    overflow-x: auto;
+  }
+}
+
+/* 动画效果 */
+.gpa-stats-row .stat-card {
+  animation: fadeInUp 0.3s ease-out;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
