@@ -12,7 +12,8 @@
     "dayjs": "^1.11.10"
   },
   "scripts": {
-    "start": "react-scripts start",
+    "start": "set NODE_OPTIONS=--openssl-legacy-provider && react-scripts start",
+    "start:unix": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start",
     "build": "react-scripts build"
   },
   "browserslist": {

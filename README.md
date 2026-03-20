@@ -130,7 +130,7 @@ cd frontend && npm start
 - [部署指南](docs/deployment/DEPLOYMENT.md) - 生产环境部署
 - [免密登录](docs/deployment/CAS_COOKIE_PERSISTENCE.md) - Cookie 持久化机制
 
-**完整文档索引：** [docs/README.md](docs/README.md)
+**完整文档索引：** [docs/ALL.md](docs/ALL.md)
 
 ---
 
