@@ -1,5 +1,5 @@
 # NEU 教务系统工具箱依赖
-# 使用: uv pip install -r requirements.txt
+# 使用: pip install -r requirements.txt
 
 # Web 框架
 fastapi>=0.104.0

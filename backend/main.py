@@ -1169,4 +1169,13 @@ async def delete_gpa_simulation_file(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    # 从环境变量读取端口，默认为 8000
+    port = int(os.environ.get("PORT", os.environ.get("BACKEND_PORT", "8000")))
+    host = os.environ.get("HOST", "0.0.0.0")
+    
+    print(f"启动 NEU 教务系统工具箱 API 服务...")
+    print(f"监听地址: http://{host}:{port}")
+    print(f"API 文档: http://{host}:{port}/docs")
+    
+    uvicorn.run(app, host=host, port=port)

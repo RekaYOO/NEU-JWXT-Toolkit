@@ -65,6 +65,11 @@ yarn-error.log*
 .env.test.local
 .env.production.local
 
+# 允许前端的默认环境配置（包含必要的开发服务器配置）
+# 注意：这些文件包含的是开发服务器的基础配置，不含敏感信息
+!frontend/.env
+!frontend/.env.development
+
 # Testing
 coverage/
 .coverage
