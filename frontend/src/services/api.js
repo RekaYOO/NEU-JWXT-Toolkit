@@ -4,11 +4,61 @@ const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 5000,  // 5秒超时
+  timeout: 30000,  // 30秒超时，避免快速切换页面时请求超时
   headers: {
     'Content-Type': 'application/json',
   },
 });
+
+// 存储正在进行的请求控制器，用于取消请求
+const pendingRequests = new Map();
+
+/**
+ * 创建带取消功能的请求配置
+ * @param {string} requestId - 请求唯一标识
+ * @returns {object} axios 配置
+ */
+export const createCancellableConfig = (requestId) => {
+  // 取消之前的同名请求
+  if (pendingRequests.has(requestId)) {
+    pendingRequests.get(requestId).abort();
+    pendingRequests.delete(requestId);
+  }
+  
+  const controller = new AbortController();
+  pendingRequests.set(requestId, controller);
+  
+  return {
+    signal: controller.signal,
+    // 请求完成后自动移除
+    onDownloadProgress: () => {
+      // 这里可以添加进度处理
+    }
+  };
+};
+
+/**
+ * 取消指定请求
+ * @param {string} requestId - 请求唯一标识
+ */
+export const cancelRequest = (requestId) => {
+  if (pendingRequests.has(requestId)) {
+    pendingRequests.get(requestId).abort();
+    pendingRequests.delete(requestId);
+    return true;
+  }
+  return false;
+};
+
+/**
+ * 取消所有请求
+ */
+export const cancelAllRequests = () => {
+  pendingRequests.forEach((controller) => {
+    controller.abort();
+  });
+  pendingRequests.clear();
+};
 
 // 状态检查
 export const checkStatus = async () => {
@@ -235,10 +285,12 @@ export const getUserInfo = async () => {
 
 /**
  * 获取用户头像图片
+ * @param {boolean} refresh - 是否强制刷新
  * @returns {Blob} 头像图片数据
  */
-export const getUserAvatar = async () => {
+export const getUserAvatar = async (refresh = false) => {
   const response = await api.get('/api/user/avatar', {
+    params: { refresh },
     responseType: 'blob'
   });
   return response.data;

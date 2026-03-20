@@ -255,9 +255,16 @@ async def login(request: LoginRequest):
 
 
 @app.post("/api/logout")
-async def logout():
-    """登出接口"""
+async def logout(clear_data: bool = Query(True, description="是否清理用户数据")):
+    """
+    登出接口
+    
+    Args:
+        clear_data: 是否清理用户数据（成绩、培养计划、头像等），默认 True
+    """
     global _auth_client
+    
+    result = {"success": True, "message": "已登出"}
     
     # 清除客户端的 cookie
     if _auth_client:
@@ -266,7 +273,19 @@ async def logout():
     _auth_client = None
     _auto_login.clear_login()
     
-    return {"success": True, "message": "已登出"}
+    # 清理用户数据（保留登录配置）
+    if clear_data:
+        try:
+            clear_result = _storage.clear_all_data(preserve_config=True)
+            _api_logger.info(f"[Logout] 清理数据: 删除 {clear_result['deleted_count']} 个文件, 保留 {clear_result['preserved_count']} 个配置")
+            result["data_cleared"] = True
+            result["cleared_files"] = clear_result["deleted_count"]
+        except Exception as e:
+            _api_logger.error(f"[Logout] 清理数据失败: {e}")
+            result["data_cleared"] = False
+            result["clear_error"] = str(e)
+    
+    return result
 
 
 @app.get("/api/scores", response_model=ScoresResponse)
@@ -973,28 +992,50 @@ async def get_user_info(auth: NEUAuthClient = Depends(require_auth)):
 
 
 @app.get("/api/user/avatar")
-async def get_user_avatar(auth: NEUAuthClient = Depends(require_auth)):
-    """获取用户头像图片"""
+async def get_user_avatar(
+    refresh: bool = Query(False, description="强制刷新头像"),
+    auth: NEUAuthClient = Depends(require_auth)
+):
+    """
+    获取用户头像图片
+    
+    支持缓存：默认使用本地缓存，refresh=true 时强制从服务器获取
+    """
     try:
-        _api_logger.info(f"[Avatar] 开始获取头像, user={auth.username}")
+        _api_logger.info(f"[Avatar] 开始获取头像, user={auth.username}, refresh={refresh}")
+        
         # 首先获取用户信息（包含头像token）
         user_info = auth.get_user_info()
-        _api_logger.info(f"[Avatar] 用户信息: {user_info}")
         
         if not user_info:
             _api_logger.warning("[Avatar] 获取用户信息失败")
             raise HTTPException(status_code=404, detail="获取用户信息失败")
         
-        if not user_info.get('avatar_token'):
+        avatar_token = user_info.get('avatar_token')
+        if not avatar_token:
             _api_logger.warning("[Avatar] 无头像token")
             raise HTTPException(status_code=404, detail="用户未上传头像")
         
-        avatar_data = auth.get_avatar(user_info['avatar_token'])
+        # 检查本地缓存
+        if not refresh:
+            cached_avatar = _storage.load_avatar()
+            if cached_avatar and _storage.is_avatar_valid(auth.username, avatar_token):
+                _api_logger.info(f"[Avatar] 使用本地缓存，大小: {len(cached_avatar)} bytes")
+                return Response(content=cached_avatar, media_type="image/png")
+        
+        # 从服务器获取
+        avatar_data = auth.get_avatar(avatar_token)
         if not avatar_data:
             _api_logger.warning("[Avatar] 获取头像数据失败")
             raise HTTPException(status_code=404, detail="头像不存在")
         
-        _api_logger.info(f"[Avatar] 成功获取头像，大小: {len(avatar_data)} bytes")
+        # 保存到本地缓存
+        try:
+            _storage.save_avatar(avatar_data, auth.username, avatar_token)
+            _api_logger.info(f"[Avatar] 已缓存头像，大小: {len(avatar_data)} bytes")
+        except Exception as cache_error:
+            _api_logger.warning(f"[Avatar] 缓存头像失败: {cache_error}")
+        
         return Response(content=avatar_data, media_type="image/png")
     except HTTPException:
         raise
