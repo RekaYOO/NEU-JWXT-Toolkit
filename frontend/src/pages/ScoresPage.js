@@ -9,7 +9,7 @@ import {
   CheckCircleOutlined, CalculatorOutlined, ExclamationCircleOutlined
 } from '@ant-design/icons';
 import GPACalculator from '../components/GPACalculator';
-import { getScores, refreshScores, getAcademicReport, refreshAcademicReport } from '../services/api';
+import { getScores, refreshScores, getAcademicReport, refreshAcademicReport, cancelRequest } from '../services/api';
 import { columnSettings } from '../utils/settings';
 import dayjs from 'dayjs';
 import './ScoresPage.css';
@@ -80,6 +80,11 @@ const ScoresPage = () => {
   // ===== 加载策略：优先从后端data目录读取 =====
   useEffect(() => {
     loadData();
+    
+    // 组件卸载时取消未完成的请求
+    return () => {
+      cancelRequest('scores');
+    };
   }, []);
 
   // 加载数据（优先后端本地data目录）
@@ -107,6 +112,11 @@ const ScoresPage = () => {
         setTimeout(() => checkForUpdates(scoresWithId), 1000);
       }
     } catch (error) {
+      // 如果是请求取消，不显示错误
+      if (error.name === 'CanceledError' || error.name === 'AbortError') {
+        console.log('[Scores] 请求已取消');
+        return;
+      }
       message.error('获取成绩失败: ' + error.message);
       setDataLoaded(true);
     }

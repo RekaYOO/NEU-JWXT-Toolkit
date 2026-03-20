@@ -12,7 +12,7 @@ import {
   ExclamationCircleOutlined, FilterOutlined, DownCircleOutlined, UpCircleOutlined,
   CheckSquareOutlined
 } from '@ant-design/icons';
-import { getAcademicReport, getAcademicReportSummary, refreshAcademicReport } from '../services/api';
+import { getAcademicReport, getAcademicReportSummary, refreshAcademicReport, cancelRequest } from '../services/api';
 import { columnSettings } from '../utils/settings';
 import dayjs from 'dayjs';
 import './AcademicReportPage.css';
@@ -389,6 +389,11 @@ const AcademicReportPage = () => {
       
       setDataLoaded(true);
     } catch (error) {
+      // 如果是请求取消，不显示错误
+      if (error.name === 'CanceledError' || error.name === 'AbortError') {
+        console.log('[AcademicReport] 请求已取消');
+        return;
+      }
       console.error('加载培养计划失败:', error);
       message.error('加载培养计划失败');
       setDataLoaded(true);
@@ -397,6 +402,11 @@ const AcademicReportPage = () => {
 
   useEffect(() => {
     loadData();
+    
+    // 组件卸载时取消未完成的请求
+    return () => {
+      cancelRequest('academicReport');
+    };
   }, []);
 
   // 刷新数据

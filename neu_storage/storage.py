@@ -227,6 +227,104 @@ class Storage:
         with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
     
+    # ── 头像缓存 ──────────────────────────────────────────────────────────────
+    
+    AVATAR_FILENAME = "avatar.png"
+    AVATAR_META_FILENAME = "avatar_meta.json"
+    
+    def get_avatar_path(self) -> str:
+        """获取头像文件路径"""
+        return self._get_path(self.AVATAR_FILENAME)
+    
+    def save_avatar(self, avatar_data: bytes, username: str, avatar_token: str) -> str:
+        """
+        保存头像到本地
+        
+        Args:
+            avatar_data: 头像图片二进制数据
+            username: 用户名
+            avatar_token: 头像 token（用于判断是否需要更新）
+            
+        Returns:
+            保存的文件路径
+        """
+        filepath = self._get_path(self.AVATAR_FILENAME)
+        
+        # 保存图片
+        with open(filepath, 'wb') as f:
+            f.write(avatar_data)
+        
+        # 保存元数据
+        meta = {
+            "username": username,
+            "avatar_token": avatar_token,
+            "saved_at": datetime.now().isoformat(),
+            "size_bytes": len(avatar_data)
+        }
+        self.save_config(meta, self.AVATAR_META_FILENAME)
+        
+        return filepath
+    
+    def load_avatar(self) -> Optional[bytes]:
+        """
+        从本地加载头像
+        
+        Returns:
+            头像二进制数据，不存在返回 None
+        """
+        filepath = self._get_path(self.AVATAR_FILENAME)
+        if not os.path.exists(filepath):
+            return None
+        
+        with open(filepath, 'rb') as f:
+            return f.read()
+    
+    def get_avatar_meta(self) -> Optional[Dict[str, Any]]:
+        """获取头像元数据"""
+        return self.load_config(self.AVATAR_META_FILENAME)
+    
+    def is_avatar_valid(self, current_username: str, current_avatar_token: str) -> bool:
+        """
+        检查本地头像是否有效
+        
+        Args:
+            current_username: 当前用户名
+            current_avatar_token: 当前头像 token
+            
+        Returns:
+            头像是否有效（存在且未变更用户/token）
+        """
+        filepath = self._get_path(self.AVATAR_FILENAME)
+        if not os.path.exists(filepath):
+            return False
+        
+        meta = self.get_avatar_meta()
+        if not meta:
+            return False
+        
+        # 检查用户名和 token 是否匹配
+        if meta.get("username") != current_username:
+            return False
+        if meta.get("avatar_token") != current_avatar_token:
+            return False
+        
+        return True
+    
+    def clear_avatar(self) -> bool:
+        """清除头像缓存"""
+        try:
+            avatar_path = self._get_path(self.AVATAR_FILENAME)
+            meta_path = self._get_path(self.AVATAR_META_FILENAME)
+            
+            if os.path.exists(avatar_path):
+                os.remove(avatar_path)
+            if os.path.exists(meta_path):
+                os.remove(meta_path)
+            
+            return True
+        except Exception:
+            return False
+    
     def save_credentials(self, username: str, password: str) -> str:
         """保存登录凭证"""
         config = {
@@ -285,6 +383,51 @@ class Storage:
         
         mtime = os.path.getmtime(filepath)
         return datetime.fromtimestamp(mtime)
+    
+    def clear_all_data(self, preserve_config: bool = True) -> Dict[str, Any]:
+        """
+        清理所有数据文件
+        
+        Args:
+            preserve_config: 是否保留配置文件（credentials.json, config.json）
+            
+        Returns:
+            清理结果统计
+        """
+        if not os.path.exists(self.config.data_dir):
+            return {"deleted": [], "preserved": [], "errors": []}
+        
+        # 定义需要保留的配置文件
+        config_files = {"config.json", "credentials.json"} if preserve_config else set()
+        
+        deleted = []
+        preserved = []
+        errors = []
+        
+        for item in os.listdir(self.config.data_dir):
+            item_path = os.path.join(self.config.data_dir, item)
+            
+            # 跳过目录（如 logs 子目录由日志系统管理）
+            if os.path.isdir(item_path):
+                continue
+            
+            if item in config_files:
+                preserved.append(item)
+                continue
+            
+            try:
+                os.remove(item_path)
+                deleted.append(item)
+            except Exception as e:
+                errors.append({"file": item, "error": str(e)})
+        
+        return {
+            "deleted": deleted,
+            "preserved": preserved,
+            "errors": errors,
+            "deleted_count": len(deleted),
+            "preserved_count": len(preserved)
+        }
     
     def save_json(self, data: Dict[str, Any], filename: str) -> str:
         """

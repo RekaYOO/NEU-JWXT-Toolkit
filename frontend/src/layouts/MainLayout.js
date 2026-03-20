@@ -22,53 +22,23 @@ const AVATAR_TIMESTAMP_KEY = 'neu_user_avatar_timestamp';
 const MainLayout = ({ userInfo, onLogout }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState(null);
+  const [isRefreshingAvatar, setIsRefreshingAvatar] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
-  // 加载用户头像
+  // 加载用户头像（仅使用缓存，不自动下载）
   useEffect(() => {
     const loadAvatar = async () => {
-      // 先尝试从本地加载
-      const cachedAvatar = localStorage.getItem(AVATAR_STORAGE_KEY);
-      const cachedTimestamp = localStorage.getItem(AVATAR_TIMESTAMP_KEY);
-      
-      // 如果缓存存在且在7天内，使用缓存
-      if (cachedAvatar && cachedTimestamp) {
-        const age = Date.now() - parseInt(cachedTimestamp);
-        if (age < 7 * 24 * 60 * 60 * 1000) {
-          setAvatarUrl(cachedAvatar);
-        }
-      }
-
-      // 从服务器获取最新头像
       try {
-        const userInfoData = await getUserInfo();
-        // 如果没有头像URL，不报错，直接返回
-        if (!userInfoData?.avatar_token) {
-          console.log('[Avatar] 用户未上传头像');
-          return;
-        }
-        
-        try {
-          const avatarBlob = await getUserAvatar();
-          if (avatarBlob && avatarBlob.size > 0) {
-            const url = URL.createObjectURL(avatarBlob);
-            setAvatarUrl(url);
-            
-            // 转换为 base64 存储到 localStorage
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              localStorage.setItem(AVATAR_STORAGE_KEY, reader.result);
-              localStorage.setItem(AVATAR_TIMESTAMP_KEY, Date.now().toString());
-            };
-            reader.readAsDataURL(avatarBlob);
-          }
-        } catch (avatarError) {
-          // 头像获取失败不显示错误，静默处理
-          console.log('[Avatar] 头像获取失败，使用默认头像');
+        // 从服务器获取头像（会自动使用缓存）
+        const avatarBlob = await getUserAvatar(false);
+        if (avatarBlob && avatarBlob.size > 0) {
+          const url = URL.createObjectURL(avatarBlob);
+          setAvatarUrl(url);
         }
       } catch (error) {
-        console.log('[Avatar] 获取用户信息失败:', error);
+        // 头像获取失败不显示错误，使用默认头像
+        console.log('[Avatar] 使用默认头像');
       }
     };
 
@@ -76,6 +46,29 @@ const MainLayout = ({ userInfo, onLogout }) => {
       loadAvatar();
     }
   }, [userInfo]);
+
+  // 刷新头像（点击头像时调用）
+  const refreshAvatar = async () => {
+    if (isRefreshingAvatar) return;
+    
+    setIsRefreshingAvatar(true);
+    try {
+      const avatarBlob = await getUserAvatar(true);
+      if (avatarBlob && avatarBlob.size > 0) {
+        // 释放旧的 blob URL
+        if (avatarUrl && avatarUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(avatarUrl);
+        }
+        const url = URL.createObjectURL(avatarBlob);
+        setAvatarUrl(url);
+        message.success('头像已更新');
+      }
+    } catch (error) {
+      message.error('头像更新失败');
+    } finally {
+      setIsRefreshingAvatar(false);
+    }
+  };
 
   const handleLogout = async () => {
     try {
@@ -164,6 +157,9 @@ const MainLayout = ({ userInfo, onLogout }) => {
                 <Avatar 
                   src={avatarUrl} 
                   icon={!avatarUrl && <UserOutlined />}
+                  onClick={refreshAvatar}
+                  style={{ cursor: 'pointer' }}
+                  title="点击刷新头像"
                 />
                 <span className="username">{userInfo || '用户'}</span>
               </Space>
