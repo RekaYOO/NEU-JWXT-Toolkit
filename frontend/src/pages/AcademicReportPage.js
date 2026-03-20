@@ -565,15 +565,30 @@ const AcademicReportPage = () => {
         }
 
         if (col.key === 'score') {
-          column.render = (text) => {
+          column.render = (text, record) => {
             if (!text) return '-';
-            const score = parseFloat(text);
+            
+            // 成绩颜色完全按照绩点显示：
+            // 绩点 3.5-5.0: 绿色
+            // 绩点 2.5-3.5: 青色
+            // 绩点 1.0-2.5: 蓝色
+            // 绩点 <1.0: 红色
+            
+            const gpa = parseFloat(record.gpa);
             let color = 'default';
-            if (!isNaN(score)) {
-              if (score >= 90) color = 'success';
-              else if (score >= 60) color = 'processing';
-              else color = 'error';
+            
+            if (!isNaN(gpa)) {
+              if (gpa >= 3.5) {
+                color = 'success';      // 绿色
+              } else if (gpa >= 2.5) {
+                color = 'cyan';         // 青色
+              } else if (gpa >= 1.0) {
+                color = 'blue';         // 蓝色
+              } else {
+                color = 'error';        // 红色
+              }
             }
+            
             return <Tag color={color}>{text}</Tag>;
           };
         }

@@ -333,11 +333,28 @@ const ScoresPage = () => {
         }
 
         if (col.key === 'score') {
-          column.render = (score) => {
-            let color = 'green';
-            if (score < 60) color = 'red';
-            else if (score < 70) color = 'orange';
-            else if (score < 80) color = 'blue';
+          column.render = (score, record) => {
+            // 成绩颜色完全按照绩点显示：
+            // 绩点 3.5-5.0: 绿色 (优)
+            // 绩点 2.5-3.5: 青色 (良)
+            // 绩点 1.0-2.5: 蓝色 (中/合格)
+            // 绩点 <1.0: 红色 (不合格)
+            
+            const gpa = parseFloat(record.gpa);
+            let color = 'default';
+            
+            if (!isNaN(gpa)) {
+              if (gpa >= 3.5) {
+                color = 'success';      // 绿色
+              } else if (gpa >= 2.5) {
+                color = 'cyan';         // 青色
+              } else if (gpa >= 1.0) {
+                color = 'blue';         // 蓝色
+              } else {
+                color = 'error';        // 红色
+              }
+            }
+            
             return <Tag color={color}>{score}</Tag>;
           };
         }
