@@ -143,9 +143,9 @@ def start_frontend(port=DEFAULT_FRONTEND_PORT, backend_port=DEFAULT_BACKEND_PORT
     env["FRONTEND_PORT"] = str(port)
     env["REACT_APP_BACKEND_PORT"] = str(backend_port)
     
-    # 设置 HOST 为 localhost 以避免 webpack dev server 的 allowedHosts 错误
-    # 不要设置为 0.0.0.0，否则会导致 allowedHosts[0] should be a non-empty string 错误
-    env["HOST"] = "localhost"
+    # 禁用 webpack dev server 的 host 检查，避免 allowedHosts 错误
+    # 这是 React Scripts v5 的已知问题，仅在开发环境使用
+    env["DANGEROUSLY_DISABLE_HOST_CHECK"] = "true"
     env["WDS_SOCKET_HOST"] = "localhost"
 
     # 默认 Node 选项，解决 OpenSSL 3.0 兼容性问题
