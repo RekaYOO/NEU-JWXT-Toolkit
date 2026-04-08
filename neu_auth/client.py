@@ -8,6 +8,7 @@ neu_auth/client.py
 - 票据失效自动重新登录
 - CAS Cookie 持久化（免密刷新票据）
 - 请求限流保护
+- 动态密钥刷新（登录失败自动从服务器获取最新公钥）
 """
 
 import base64
@@ -31,6 +32,10 @@ logger = logging.getLogger(__name__)
 CAS_BASE_URL = "https://pass.neu.edu.cn/tpass"
 CAS_LOGIN_URL = f"{CAS_BASE_URL}/login"
 
+# CAS 登录 JS 资源 URL（包含最新 RSA 公钥，每次从服务器拉取以保证最新）
+_LOGIN_JS_URL = f"{CAS_BASE_URL}/comm/neu/js/login_neu.js"
+
+# 内置默认 RSA 公钥（与服务器当前版本一致，fallback 使用）
 _RSA_PUBLIC_KEY_B64 = (
     "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnjA28DLKXZzxbKmo9/1W"
     "kVLf1mr+wtLXLXt6sC4WiBCtsbzF5ewm7ARZeAdS3iZtqlYPn6IcUoOw42H8nAK/"
@@ -52,6 +57,11 @@ DEFAULT_HEADERS = {
 
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # 秒
+
+# 登录错误类型
+LOGIN_ERR_WRONG_PWD = "WRONG_PASSWORD"   # 密码错误
+LOGIN_ERR_BAD_KEY = "BAD_KEY"             # 公钥/加密错误
+LOGIN_ERR_UNKNOWN = "UNKNOWN"             # 未知错误
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -76,7 +86,7 @@ def retry_on_error(max_retries: int = MAX_RETRIES, delay: float = RETRY_DELAY):
 
 
 def _rsa_encrypt(username: str, password: str) -> str:
-    """RSA加密"""
+    """RSA加密（使用内置默认公钥）"""
     der = base64.b64decode(_RSA_PUBLIC_KEY_B64)
     key = RSA.import_key(der)
     cipher = PKCS1_v1_5.new(key)
@@ -85,7 +95,138 @@ def _rsa_encrypt(username: str, password: str) -> str:
     return base64.b64encode(encrypted).decode("utf-8")
 
 
+def _rsa_encrypt_with_key(username: str, password: str, key_b64: str) -> str:
+    """
+    RSA加密（使用指定公钥）
+    
+    Args:
+        username: 学号
+        password: 密码
+        key_b64: Base64 编码的 RSA 公钥（PKCS#8/PKCS#1 DER 格式）
+        
+    Returns:
+        Base64 编码的加密结果
+    """
+    der = base64.b64decode(key_b64)
+    key = RSA.import_key(der)
+    cipher = PKCS1_v1_5.new(key)
+    plaintext = (username + password).encode("utf-8")
+    encrypted = cipher.encrypt(plaintext)
+    return base64.b64encode(encrypted).decode("utf-8")
+
+
+def _fetch_rsa_key_from_server(timeout: int = 10) -> Optional[str]:
+    """
+    从 CAS 服务器动态获取最新的 RSA 公钥
+    
+    公钥嵌在 login_neu.js 中，格式为：
+        const publicKeyStr = "MIIBIjANBg...";
+    
+    每次请求强制绕过缓存（Cache-Control: no-cache + query ts），
+    确保拿到服务端最新版本。
+    
+    Returns:
+        公钥 Base64 字符串，获取失败返回 None
+    """
+    try:
+        resp = requests.get(
+            _LOGIN_JS_URL,
+            params={"ts": str(int(time.time()))},   # 时间戳绕过 CDN 缓存
+            headers={
+                "Cache-Control": "no-cache",
+                "User-Agent": DEFAULT_HEADERS["User-Agent"],
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        
+        # 提取: const publicKeyStr = "MIIBIjANBg...";
+        match = re.search(
+            r'const\s+publicKeyStr\s*=\s*"([A-Za-z0-9+/=]+)"',
+            resp.text
+        )
+        if match:
+            key = match.group(1)
+            logger.debug(f"从服务器获取到新公钥，长度: {len(key)}")
+            return key
+        
+        logger.warning("未能从 login_neu.js 中提取到公钥")
+        return None
+        
+    except requests.RequestException as e:
+        logger.warning(f"从服务器获取公钥失败（网络错误）: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"从服务器获取公钥失败: {e}")
+        return None
+
+
+def _is_key_error(error_msg: str) -> bool:
+    """
+    判断登录错误是否可能由公钥问题引起
+    
+    当服务端公钥轮换后，旧公钥加密的密文会导致解密失败，
+    错误页面通常包含相关提示词。
+    """
+    if not error_msg:
+        return False
+    msg = error_msg.lower()
+    key_error_keywords = [
+        "crypto", "rsa", "encrypt", "decrypt",
+        "解密", "加密", "密文", "illegal", "bad",
+        "parameter", "padding", "cipher",
+        "服务异常", "系统异常", "操作异常",
+    ]
+    return any(kw in msg for kw in key_error_keywords)
+
+
+def _classify_login_error(error_msg: str) -> str:
+    """
+    对登录错误进行分类，用于判断是否需要触发密钥刷新
+    
+    Returns:
+        LOGIN_ERR_WRONG_PWD  - 密码/账号错误，不需要刷新公钥
+        LOGIN_ERR_BAD_KEY   - 公钥/加密错误，需要刷新公钥重试
+        LOGIN_ERR_UNKNOWN   - 无法确定
+    """
+    if not error_msg:
+        return LOGIN_ERR_UNKNOWN
+    msg = error_msg.lower()
+    
+    # 明确是密码/账号错误
+    pwd_keywords = [
+        "密码", "password", "wrong", "incorrect",
+        "账号", "用户名", "不存在", "学号",
+        "登录失败", "认证失败",
+    ]
+    if any(kw in msg for kw in pwd_keywords):
+        # 排除同时含有关键词的情况（优先判定为密钥问题）
+        if not any(kw in msg for kw in ["crypto", "rsa", "encrypt", "decrypt", "解密", "加密", "密文", "illegal"]):
+            return LOGIN_ERR_WRONG_PWD
+    
+    # 公钥/加密相关
+    if _is_key_error(error_msg):
+        return LOGIN_ERR_BAD_KEY
+    
+    return LOGIN_ERR_UNKNOWN
+
+
 # ── 主客户端 ──────────────────────────────────────────────────────────────────
+
+class NEULoginError(Exception):
+    """
+    登录失败异常
+    
+    Attributes:
+        error_type: 错误类型
+            - WRONG_PASSWORD: 密码错误
+            - BAD_KEY:        公钥/加密错误
+            - UNKNOWN:         未知错误
+    """
+    def __init__(self, message: str, error_type: str = LOGIN_ERR_UNKNOWN):
+        super().__init__(message)
+        self.error_type = error_type
+
 
 class NEUAuthClient:
     """
@@ -111,6 +252,9 @@ class NEUAuthClient:
         self.verify_ssl = verify_ssl
         self.target = "https://jwxt.neu.edu.cn"
         self.cookie_file = cookie_file  # Cookie 持久化文件路径
+        
+        # 当前使用的 RSA 公钥（每次登录时动态更新）
+        self._current_key: Optional[str] = None
 
         self._session = requests.Session()
         self._session.headers.update(DEFAULT_HEADERS)
@@ -127,6 +271,12 @@ class NEUAuthClient:
         """
         执行 CAS 登录
         
+        登录策略：
+        1. 优先使用内置公钥尝试登录
+        2. 若失败且疑似公钥问题，从服务器动态获取最新公钥
+        3. 用新公钥重试一次
+        4. 若仍失败，抛出 NEULoginError
+        
         Args:
             target: 目标系统 URL
             
@@ -137,7 +287,7 @@ class NEUAuthClient:
         service_url = self._resolve_service_url(target)
         logger.info("开始 CAS 登录...")
 
-        # Step 1: 获取登录页
+        # Step 1: 获取登录页（含 lt 等隐藏字段）
         login_page_url = f"{CAS_LOGIN_URL}?service={requests.utils.quote(service_url, safe='')}"
         resp = self._session.get(
             login_page_url,
@@ -155,39 +305,91 @@ class NEUAuthClient:
 
         hidden = self._extract_hidden_fields(resp.text)
 
-        # Step 2: 提交登录
-        rsa_encrypted = _rsa_encrypt(self.username, self.password)
-        form_data = {
-            "un": self.username,
-            "pd": self.password,
-            "rsa": rsa_encrypted,
-            "ul": str(len(self.username)),
-            "pl": str(len(self.password)),
-            "lt": hidden.get("lt", ""),
-            "execution": hidden.get("execution", "e1s1"),
-            "_eventId": "submit",
-        }
+        # Step 2: 首次尝试登录（使用内置/当前公钥）
+        key_to_use = self._current_key or _RSA_PUBLIC_KEY_B64
+        error_msg = self._do_login_submit(hidden, service_url, key_to_use)
+        
+        if error_msg is None:
+            self._logged_in = True
+            self._current_key = key_to_use  # 记录成功的密钥
+            self._save_cookies()
+            return True
 
-        post_url = f"{CAS_LOGIN_URL}?service={requests.utils.quote(service_url, safe='')}"
-        resp2 = self._session.post(
-            post_url,
-            data=form_data,
-            timeout=self.timeout,
-            verify=self.verify_ssl,
-            allow_redirects=True,
-        )
-        resp2.raise_for_status()
+        # Step 3: 分析错误，判断是否需要尝试刷新公钥
+        error_type = _classify_login_error(error_msg)
+        logger.warning(f"首次登录失败，错误类型: {error_type}，信息: {error_msg}")
 
-        # 检查登录结果
-        final_url = resp2.url
-        if urlparse(final_url).netloc == urlparse(CAS_LOGIN_URL).netloc:
-            error_msg = self._extract_error_message(resp2.text)
-            raise NEULoginError(f"登录失败: {error_msg}")
+        if error_type == LOGIN_ERR_BAD_KEY:
+            # 尝试从服务器获取最新公钥
+            new_key = _fetch_rsa_key_from_server(self.timeout)
+            if new_key and new_key != (self._current_key or _RSA_PUBLIC_KEY_B64):
+                logger.info(f"检测到服务器公钥已更新，清除旧 Cookie，重新尝试登录...")
+                self.clear_cookies()
+                error_msg = self._do_login_submit(hidden, service_url, new_key)
+                if error_msg is None:
+                    self._logged_in = True
+                    self._current_key = new_key
+                    self._save_cookies()
+                    return True
+                logger.warning(f"使用新公钥重试仍然失败: {error_msg}")
+            elif new_key is None:
+                logger.warning("无法从服务器获取新公钥（网络问题）")
 
-        self._logged_in = True
-        logger.info(f"登录成功，当前 URL: {final_url}")
-        self._save_cookies()  # 保存登录后的 cookies
-        return True
+        # 所有重试均失败
+        raise NEULoginError(f"登录失败: {error_msg}", error_type=error_type)
+
+    def _do_login_submit(
+        self,
+        hidden: dict,
+        service_url: str,
+        key_b64: str,
+    ) -> Optional[str]:
+        """
+        执行登录表单提交
+        
+        Args:
+            hidden: 从登录页提取的隐藏字段（lt 等）
+            service_url: CAS service URL
+            key_b64: 本次使用的 RSA 公钥
+            
+        Returns:
+            None 表示登录成功，
+            str 表示错误信息
+        """
+        try:
+            rsa_encrypted = _rsa_encrypt_with_key(
+                self.username, self.password, key_b64
+            )
+            form_data = {
+                "un": self.username,
+                "pd": self.password,
+                "rsa": rsa_encrypted,
+                "ul": str(len(self.username)),
+                "pl": str(len(self.password)),
+                "lt": hidden.get("lt", ""),
+                "execution": hidden.get("execution", "e1s1"),
+                "_eventId": "submit",
+            }
+
+            post_url = f"{CAS_LOGIN_URL}?service={requests.utils.quote(service_url, safe='')}"
+            resp2 = self._session.post(
+                post_url,
+                data=form_data,
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+                allow_redirects=True,
+            )
+            resp2.raise_for_status()
+
+            # 判断是否仍在 CAS 登录页（登录失败）
+            final_url = resp2.url
+            if urlparse(final_url).netloc == urlparse(CAS_LOGIN_URL).netloc:
+                return self._extract_error_message(resp2.text)
+            
+            return None  # 登录成功
+            
+        except requests.RequestException as e:
+            return f"网络错误: {e}"
 
     def ensure_login(self) -> bool:
         """
@@ -196,7 +398,7 @@ class NEUAuthClient:
         登录恢复优先级：
         1. 检查当前 session 是否有效
         2. 尝试用 CAS Cookie 刷新票据（免密）
-        3. 用账号密码重新登录
+        3. 用账号密码重新登录（自动触发密钥刷新逻辑）
         
         Returns:
             是否成功登录
@@ -228,7 +430,7 @@ class NEUAuthClient:
         if self._try_refresh_ticket(self.target):
             return True
         
-        # 第3步：用账号密码重新登录
+        # 第3步：用账号密码重新登录（会自动处理密钥刷新）
         logger.info("Cookie 失效，使用账号密码登录...")
         return self.login(self.target)
 
@@ -582,7 +784,4 @@ class NEUAuthClient:
 
 
 # ── 异常 ──────────────────────────────────────────────────────────────────────
-
-class NEULoginError(Exception):
-    """登录失败异常"""
-    pass
+# NEULoginError 已在上方定义（class 需在 raise 之前先定义）
