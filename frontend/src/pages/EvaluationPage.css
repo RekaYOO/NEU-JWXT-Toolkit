@@ -1,0 +1,58 @@
+.evaluation-page {
+  padding: 0;
+}
+
+.evaluation-page .ant-card-head-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.evaluation-page .ant-descriptions-item-label {
+  font-weight: 500;
+  background-color: #fafafa;
+}
+
+.evaluation-page .ant-table-small .ant-table-thead > tr > th {
+  background-color: #f5f5f5;
+  font-weight: 600;
+}
+
+/* 安全提示高亮 */
+.evaluation-page .ant-alert-with-action {
+  flex-wrap: wrap;
+}
+
+.evaluation-page .ant-alert-action {
+  margin-top: 8px;
+}
+
+/* 评分等级标签 */
+.score-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.score-badge.high {
+  background: #f6ffed;
+  color: #52c41a;
+  border: 1px solid #b7eb8f;
+}
+
+.score-badge.mid {
+  background: #fff7e6;
+  color: #fa8c16;
+  border: 1px solid #ffd591;
+}
+
+.score-badge.low {
+  background: #fff1f0;
+  color: #ff4d4f;
+  border: 1px solid #ffa39e;
+}

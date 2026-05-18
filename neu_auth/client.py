@@ -265,6 +265,7 @@ class NEUAuthClient:
         self._logged_in = False
         self._academic = None
         self._academic_report = None  # 学业监测报告 API
+        self._evaluation = None       # 教学质量评价系统 API
         
         # 尝试恢复之前的 session
         if cookie_file:
@@ -585,6 +586,14 @@ class NEUAuthClient:
             from neu_academic.report import AcademicReportAPI
             self._academic_report = AcademicReportAPI(self)
         return self._academic_report
+
+    @property
+    def evaluation(self):
+        """教学质量评价系统 API 入口（zljk.neu.edu.cn）"""
+        if self._evaluation is None:
+            from neu_evaluation.api import EvaluationAPI
+            self._evaluation = EvaluationAPI(self)
+        return self._evaluation
 
     def get_user_info(self) -> Dict[str, Any]:
         """

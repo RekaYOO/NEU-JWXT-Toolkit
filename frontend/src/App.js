@@ -6,6 +6,7 @@ import MainLayout from './layouts/MainLayout';
 import ScoresPage from './pages/ScoresPage';
 import AcademicReportPage from './pages/AcademicReportPage';
 import ExperimentCoursePage from './pages/ExperimentCoursePage';
+import EvaluationPage from './pages/EvaluationPage';
 import LogsPage from './pages/LogsPage';
 import { checkStatus } from './services/api';
 import './App.css';
@@ -82,6 +83,7 @@ function App() {
               <Route path="scores" element={<ScoresPage />} />
               <Route path="academic-report" element={<AcademicReportPage />} />
               <Route path="experiment-courses" element={<ExperimentCoursePage />} />
+              <Route path="evaluation" element={<EvaluationPage />} />
               <Route path="logs" element={<LogsPage />} />
             </Route>
           </Routes>
