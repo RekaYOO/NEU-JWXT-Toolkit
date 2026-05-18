@@ -10,6 +10,7 @@ import {
   FileTextOutlined,
   ScheduleOutlined,
   ExperimentOutlined,
+  StarOutlined,
 } from '@ant-design/icons';
 import { logout, getUserInfo, getUserAvatar } from '../services/api';
 import './MainLayout.css';
@@ -110,6 +111,11 @@ const MainLayout = ({ userInfo, onLogout }) => {
       key: '/experiment-courses',
       icon: <ExperimentOutlined />,
       label: '实验选课',
+    },
+    {
+      key: '/evaluation',
+      icon: <StarOutlined />,
+      label: '自动评教',
     },
     {
       key: '/logs',

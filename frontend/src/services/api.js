@@ -336,3 +336,75 @@ export const deleteGPASimulationFile = async (filename) => {
   const response = await api.delete(`/api/gpa-simulation/file/${filename}`);
   return response.data;
 };
+
+// ── 教学质量评价 API ─────────────────────────────────────────────────────────
+
+/**
+ * 获取评教任务列表（一级页面）
+ * @param {string} xnxq - 学年学期，默认 2025-2026-2
+ */
+export const getEvaluationTasks = async (xnxq = '2025-2026-2') => {
+  const response = await api.get('/api/evaluation/tasks', {
+    params: { xnxq }
+  });
+  return response.data;
+};
+
+/**
+ * 获取评教任务下的课程列表（二级页面）
+ * @param {string} taskId - 任务ID
+ * @param {string} xnxq - 学年学期
+ */
+export const getEvaluationCourses = async (taskId, xnxq = '2025-2026-2') => {
+  const response = await api.get(`/api/evaluation/tasks/${taskId}/courses`, {
+    params: { xnxq }
+  });
+  return response.data;
+};
+
+/**
+ * 获取课程的评教指标体系
+ * @param {string} xspjid - 学生评教ID
+ * @param {string} taskId - 任务ID
+ */
+export const getEvaluationIndicators = async (xspjid, taskId) => {
+  const response = await api.get(`/api/evaluation/courses/${xspjid}/indicators`, {
+    params: { task_id: taskId }
+  });
+  return response.data;
+};
+
+/**
+ * 提交评教结果（单门课程）
+ * @param {string} taskId - 任务ID
+ * @param {string} xspjid - 学生评教ID（课程标识）
+ * @param {string} strategy - 评分策略: highest/lowest/custom
+ * @param {Object} customScores - 自定义分数映射
+ * @param {boolean} dryRun - 是否仅预览不提交（默认true）
+ */
+export const submitEvaluation = async (taskId, xspjid, strategy = 'highest', customScores = null, dryRun = true) => {
+  const data = { task_id: taskId, xspjid, strategy, dry_run: dryRun };
+  if (customScores) data.custom_scores = customScores;
+  const response = await api.post('/api/evaluation/submit', data);
+  // 附加 task_id 和 xspjid 供前端使用
+  const result = response.data;
+  result._taskId = taskId;
+  result._xspjid = xspjid;
+  return result;
+};
+
+/**
+ * 批量评教（指定任务下选中的未评课程）
+ * @param {string} taskId - 评教任务ID
+ * @param {string} strategy - 评分策略
+ * @param {Object} customScores - 自定义分数映射
+ * @param {boolean} dryRun - 是否仅预览
+ * @param {string[]} xspjids - 选中的学生评教ID列表
+ */
+export const batchEvaluation = async (taskId, strategy = 'highest', customScores = null, dryRun = true, xspjids = null) => {
+  const data = { task_id: taskId, strategy, dry_run: dryRun };
+  if (customScores) data.custom_scores = customScores;
+  if (xspjids) data.xspjids = xspjids;
+  const response = await api.post('/api/evaluation/batch', data);
+  return response.data;
+};

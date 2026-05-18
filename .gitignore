@@ -9,7 +9,6 @@ develop-eggs/
 dist/
 downloads/
 eggs/
-.eggs/
 lib/
 lib64/
 parts/
@@ -21,21 +20,19 @@ wheels/
 *.egg
 
 # Virtual environments
-.venv/
 venv/
 ENV/
 env/
 
-# IDEs
-.vscode/
-.idea/
+# IDEs & OS
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
 Thumbs.db
+
+# 忽略所有点开头的目录（.git 除外，由 Git 自动处理）
+.*/
 
 # Data directory (keep directory structure, ignore all contents)
 data/*
@@ -74,12 +71,7 @@ yarn-error.log*
 coverage/
 .coverage
 htmlcov/
-.tox/
-.nox/
-.pytest_cache/
 
 # MyPy
-.mypy_cache/
 .dmypy.json
 dmypy.json
-/.workbuddy
