@@ -4,11 +4,12 @@ neu_auth/client.py
 东北大学统一身份认证（CAS）登录客户端
 
 特性：
+- HTTP/HTTPS 协议自动回退（目标服务协议切换时自动适配）
+- 动态密钥刷新（登录时从页面提取最新公钥，失败时自动从服务器获取）
 - 自动重试机制
 - 票据失效自动重新登录
 - CAS Cookie 持久化（免密刷新票据）
 - 请求限流保护
-- 动态密钥刷新（登录失败自动从服务器获取最新公钥）
 """
 
 import base64
@@ -253,8 +254,11 @@ class NEUAuthClient:
         self.target = "https://jwxt.neu.edu.cn"
         self.cookie_file = cookie_file  # Cookie 持久化文件路径
         
-        # 当前使用的 RSA 公钥（每次登录时动态更新）
+        # 当前使用的 RSA 公钥（每次登录时从页面动态更新）
         self._current_key: Optional[str] = None
+        
+        # 已知可用的协议（https:// 或 http://），用于 jwxt.neu.edu.cn 请求的协议回退
+        self._protocol_override: Optional[str] = None
 
         self._session = requests.Session()
         self._session.headers.update(DEFAULT_HEADERS)
@@ -266,16 +270,14 @@ class NEUAuthClient:
         if cookie_file:
             self._load_cookies()
 
-    @retry_on_error(max_retries=3, delay=2)
     def login(self, target: str = "https://jwxt.neu.edu.cn") -> bool:
         """
-        执行 CAS 登录
+        执行 CAS 登录（含 HTTP/HTTPS 协议回退）
         
         登录策略：
-        1. 优先使用内置公钥尝试登录
-        2. 若失败且疑似公钥问题，从服务器动态获取最新公钥
-        3. 用新公钥重试一次
-        4. 若仍失败，抛出 NEULoginError
+        1. 优先使用目标 URL 的协议尝试登录
+        2. 若连接失败（ConnectionError/SSLError/重定向循环），自动切换协议重试
+        3. 核心登录流程：优先从登录页面提取最新 RSA 公钥，失败时从 JS 文件刷新
         
         Args:
             target: 目标系统 URL
@@ -284,6 +286,37 @@ class NEUAuthClient:
             登录是否成功
         """
         self.target = target
+        try:
+            return self._do_login(target)
+        except (requests.ConnectionError, requests.SSLError,
+                requests.TooManyRedirects) as e:
+            alt_target = self._swap_protocol(target)
+            if alt_target == target:
+                raise  # URL 不含可切换协议
+            logger.warning(
+                f"登录 {target} 失败 ({type(e).__name__})，"
+                f"尝试协议回退: {alt_target}"
+            )
+            self.target = alt_target
+            return self._do_login(alt_target)
+
+    @retry_on_error(max_retries=3, delay=2)
+    def _do_login(self, target: str) -> bool:
+        """
+        CAS 登录核心逻辑
+        
+        流程：
+        1. 获取登录页 → 从 HTML 提取最新 RSA 公钥
+        2. 使用提取/缓存的公钥尝试登录
+        3. 若失败且非密码错误 → 从 JS 文件刷新公钥重试
+        4. 若仍失败 → 抛出 NEULoginError
+        
+        Args:
+            target: 目标系统 URL
+            
+        Returns:
+            登录是否成功
+        """
         service_url = self._resolve_service_url(target)
         logger.info("开始 CAS 登录...")
 
@@ -301,11 +334,18 @@ class NEUAuthClient:
         if urlparse(resp.url).netloc != urlparse(CAS_LOGIN_URL).netloc:
             logger.info("已有有效会话")
             self._logged_in = True
+            self._save_cookies()
             return True
 
         hidden = self._extract_hidden_fields(resp.text)
 
-        # Step 2: 首次尝试登录（使用内置/当前公钥）
+        # Step 1.5: 尝试从登录页 HTML 提取最新 RSA 公钥
+        html_key = self._extract_rsa_key_from_html(resp.text)
+        if html_key and html_key != (self._current_key or _RSA_PUBLIC_KEY_B64):
+            logger.info("从登录页面提取到新 RSA 公钥，将优先使用")
+            self._current_key = html_key
+
+        # Step 2: 首次尝试登录（使用当前/提取的公钥）
         key_to_use = self._current_key or _RSA_PUBLIC_KEY_B64
         error_msg = self._do_login_submit(hidden, service_url, key_to_use)
         
@@ -315,16 +355,25 @@ class NEUAuthClient:
             self._save_cookies()
             return True
 
-        # Step 3: 分析错误，判断是否需要尝试刷新公钥
+        # Step 3: 分析错误，非密码错误时尝试刷新公钥
         error_type = _classify_login_error(error_msg)
         logger.warning(f"首次登录失败，错误类型: {error_type}，信息: {error_msg}")
 
-        if error_type == LOGIN_ERR_BAD_KEY:
-            # 尝试从服务器获取最新公钥
+        if error_type != LOGIN_ERR_WRONG_PWD:
+            # 非密码错误 → 尝试从服务器 JS 文件获取最新公钥
             new_key = _fetch_rsa_key_from_server(self.timeout)
-            if new_key and new_key != (self._current_key or _RSA_PUBLIC_KEY_B64):
-                logger.info(f"检测到服务器公钥已更新，清除旧 Cookie，重新尝试登录...")
+            if new_key and new_key != key_to_use:
+                logger.info("检测到服务器公钥已更新，清除旧 Cookie，重新尝试登录...")
                 self.clear_cookies()
+                # 重新获取登录页（Cookie 已清除）
+                resp = self._session.get(
+                    login_page_url,
+                    timeout=self.timeout,
+                    verify=self.verify_ssl,
+                    allow_redirects=True,
+                )
+                resp.raise_for_status()
+                hidden = self._extract_hidden_fields(resp.text)
                 error_msg = self._do_login_submit(hidden, service_url, new_key)
                 if error_msg is None:
                     self._logged_in = True
@@ -396,7 +445,7 @@ class NEUAuthClient:
         确保已登录
         
         登录恢复优先级：
-        1. 检查当前 session 是否有效
+        1. 检查当前 session 是否有效（含协议回退）
         2. 尝试用 CAS Cookie 刷新票据（免密）
         3. 用账号密码重新登录（自动触发密钥刷新逻辑）
         
@@ -407,18 +456,25 @@ class NEUAuthClient:
             # 测试当前会话是否有效
             try:
                 time.sleep(0.1)
-                resp = self._session.get(
-                    "https://jwxt.neu.edu.cn/jwapp/sys/homeapp/api/home/currentUser.do",
+                resp = self._session_request(
+                    "GET",
+                    f"{self.target}/jwapp/sys/homeapp/api/home/currentUser.do",
                     timeout=5,
                     allow_redirects=False
                 )
-                if resp.status_code == 200:
+                # 302 跳到 CAS 说明 session 已失效
+                if resp.status_code == 302 and "pass.neu.edu.cn" in resp.headers.get("Location", ""):
+                    pass  # 会话失效，继续后续流程
+                elif resp.status_code == 200:
                     try:
                         data = resp.json()
                         if data.get("code") == "0":
                             return True
                     except:
                         pass
+                elif resp.status_code not in (301, 302, 303, 307, 308):
+                    # 非重定向且非成功，可能是网络问题，仍尝试下一步
+                    pass
             except:
                 pass
             
@@ -454,16 +510,35 @@ class NEUAuthClient:
         if "timeout" not in kwargs:
             kwargs["timeout"] = self.timeout
         
-        # 发送请求
-        resp = self._session.request(method, url, **kwargs)
+        # 发送请求（含协议回退）
+        resp = self._session_request(method, url, **kwargs)
         
-        # 检查是否需要重新登录（302重定向到登录页）
-        if resp.status_code == 302 and "pass.neu.edu.cn" in resp.headers.get("Location", ""):
-            logger.info("检测到票据失效，重新登录...")
+        # 检查是否需要重新登录
+        # 有两种情况：
+        # 1. allow_redirects=False 时直接看 302 状态码 + Location 头
+        # 2. allow_redirects=True（默认）时，跟随重定向后最终落在 CAS 页面
+        _redirected_to_cas = False
+        allow_redirects = kwargs.get("allow_redirects", True)
+        if not allow_redirects:
+            # 直接看 302
+            if resp.status_code == 302 and "pass.neu.edu.cn" in resp.headers.get("Location", ""):
+                _redirected_to_cas = True
+        else:
+            # 检查重定向历史中是否经过 CAS
+            for r in resp.history:
+                if r.status_code in (301, 302, 303, 307, 308) and "pass.neu.edu.cn" in r.headers.get("Location", ""):
+                    _redirected_to_cas = True
+                    break
+            # 也检查最终 URL 是否落在 CAS
+            if not _redirected_to_cas and "pass.neu.edu.cn" in resp.url:
+                _redirected_to_cas = True
+        
+        if _redirected_to_cas:
+            logger.info("检测到票据失效（重定向到 CAS），重新登录...")
             self._logged_in = False
             self.ensure_login()
-            # 重试原请求
-            resp = self._session.request(method, url, **kwargs)
+            # 重试原请求（含协议回退）
+            resp = self._session_request(method, url, **kwargs)
         
         return resp
 
@@ -566,7 +641,7 @@ class NEUAuthClient:
         
         try:
             # 步骤1：获取文件信息
-            file_info_url = f"http://jwxt.neu.edu.cn/jwapp/sys/emapcomponent/file/getUploadedAttachment/{avatar_token}.do"
+            file_info_url = f"https://jwxt.neu.edu.cn/jwapp/sys/emapcomponent/file/getUploadedAttachment/{avatar_token}.do"
             resp = self.get(file_info_url)
             print(f"[Avatar] 文件信息状态: {resp.status_code}")
             
@@ -586,7 +661,7 @@ class NEUAuthClient:
                     if file_url:
                         # fileUrl 是相对路径，需要拼接域名
                         if file_url.startswith('/'):
-                            download_url = f"http://jwxt.neu.edu.cn{file_url}"
+                            download_url = f"https://jwxt.neu.edu.cn{file_url}"
                         else:
                             download_url = file_url
                         
@@ -751,12 +826,18 @@ class NEUAuthClient:
 
     @staticmethod
     def _resolve_service_url(target: str) -> str:
-        """解析 CAS service URL"""
+        """
+        解析 CAS service URL
+        
+        自动使用 target 的协议（http/https），
+        以适配目标服务器的协议切换。
+        """
         parsed = urlparse(target)
         host = parsed.netloc.lower()
+        scheme = parsed.scheme or "https"
         
         if "jwxt.neu.edu.cn" in host:
-            return "http://jwxt.neu.edu.cn/jwapp/sys/homeapp/index.do"
+            return f"{scheme}://jwxt.neu.edu.cn/jwapp/sys/homeapp/index.do"
         
         return target
 
@@ -781,6 +862,78 @@ class NEUAuthClient:
             if el and el.get_text(strip=True):
                 return el.get_text(strip=True)
         return "未知错误"
+
+    @staticmethod
+    def _swap_protocol(url: str) -> str:
+        """交换 URL 的 HTTP/HTTPS 协议"""
+        if url.startswith("https://"):
+            return "http://" + url[8:]
+        elif url.startswith("http://"):
+            return "https://" + url[7:]
+        return url
+
+    @staticmethod
+    def _extract_rsa_key_from_html(html: str) -> Optional[str]:
+        """
+        从 CAS 登录页 HTML 中提取 RSA 公钥
+        
+        公钥可能出现在以下位置：
+        1. 内联 JS 变量: var/const/let publicKeyStr = "MIIBIjANBg..."
+        2. 隐藏表单域: <input type="hidden" id="publicKey" value="MIIBIjANBg...">
+        
+        Returns:
+            公钥 Base64 字符串，未找到返回 None
+        """
+        patterns = [
+            # JS 变量赋值（覆盖 var/const/let，单引号/双引号）
+            r'(?:var|const|let)\s+publicKeyStr\s*=\s*["\']([A-Za-z0-9+/=]+)["\']',
+            r'(?:var|const|let)\s+publicKey\s*=\s*["\']([A-Za-z0-9+/=]+)["\']',
+            # 隐藏表单域
+            r'<input[^>]*id=["\']publicKey["\'][^>]*value=["\']([A-Za-z0-9+/=]+)["\']',
+            r'<input[^>]*value=["\']([A-Za-z0-9+/=]+)["\'][^>]*id=["\']publicKey["\']',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html)
+            if match:
+                key = match.group(1)
+                if len(key) > 100:  # RSA 公钥长度阈值
+                    logger.debug(f"从登录页 HTML 提取到 RSA 公钥，长度: {len(key)}")
+                    return key
+        return None
+
+    def _session_request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """
+        发送 HTTP 请求，对 jwxt.neu.edu.cn 自动进行协议回退
+        
+        当目标服务器在 HTTP/HTTPS 之间切换时：
+        1. 优先使用已知的可用协议（_protocol_override）
+        2. 连接失败时自动切换协议重试
+        3. 回退成功后记住可用协议，后续请求直接使用
+        """
+        # 应用已知可用协议
+        if self._protocol_override and "jwxt.neu.edu.cn" in url:
+            current_scheme = "https://" if url.startswith("https://") else "http://"
+            if current_scheme != self._protocol_override:
+                url = self._protocol_override + url[len(current_scheme):]
+        
+        try:
+            return self._session.request(method, url, **kwargs)
+        except (requests.ConnectionError, requests.SSLError,
+                requests.TooManyRedirects) as e:
+            # 仅对 jwxt.neu.edu.cn 进行协议回退
+            if "jwxt.neu.edu.cn" not in url:
+                raise
+            
+            alt_url = self._swap_protocol(url)
+            logger.info(
+                f"请求 {url} 失败 ({type(e).__name__})，"
+                f"尝试协议回退: {alt_url}"
+            )
+            resp = self._session.request(method, alt_url, **kwargs)
+            # 记住可用协议，后续请求直接使用
+            self._protocol_override = "https://" if alt_url.startswith("https://") else "http://"
+            logger.info(f"协议回退成功，后续请求将使用 {self._protocol_override}")
+            return resp
 
 
 # ── 异常 ──────────────────────────────────────────────────────────────────────
