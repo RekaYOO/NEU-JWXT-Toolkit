@@ -143,8 +143,8 @@ class ExperimentCourse:
 class ExperimentCourseAPI:
     """实验选课 API"""
 
-    # 注意：教务系统使用 HTTP 而非 HTTPS
-    BASE_URL = "http://jwxt.neu.edu.cn/jwapp/sys/syxkapp"
+    # 注意：教务系统可能使用 HTTP 或 HTTPS，协议回退由 NEUAuthClient 自动处理
+    BASE_URL = "https://jwxt.neu.edu.cn/jwapp/sys/syxkapp"
     HEADERS = {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}
 
     def __init__(self, client: NEUAuthClient):
