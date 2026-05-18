@@ -9,6 +9,7 @@
 - [STORAGE.md](guides/STORAGE.md) - 本地数据存储
 - [LOGGING.md](guides/LOGGING.md) - 日志系统
 - [GPA_SIMULATOR.md](guides/GPA_SIMULATOR.md) - GPA模拟器
+- [EVALUATION.md](guides/EVALUATION.md) - 自动评教系统
 - [FRONTEND_SETTINGS.md](guides/FRONTEND_SETTINGS.md) - 前端设置存储
 
 ### 📚 reference/ - API参考

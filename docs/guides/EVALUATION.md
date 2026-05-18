@@ -1,0 +1,252 @@
+# 自动评教系统 (Evaluation)
+
+## 概述
+
+教学质量评价（评教）模块用于自动化 NEU 教学质量监控与评价平台 (`zljk.neu.edu.cn`) 的学生阶段评价流程。
+
+与教务系统 (`jwxt.neu.edu.cn`) 不同，评教系统使用**独立的 JWT 认证体系**，通过 CAS 票据换取 accessToken 后访问。
+
+## 功能特性
+
+- [x] 获取评教任务列表（一级页面）
+- [x] 获取任务下的课程列表（二级页面）
+- [x] 查看评教指标体系（评分细则）
+- [x] 已评课程查看逐项评分详情（dfdj / score）
+- [x] 单门课程自动评分与提交
+- [x] 批量自动评教（支持勾选指定课程）
+- [x] 评分预览（dry_run 模式）
+- [x] 三种评分策略：最高分、最低分、自定义
+
+---
+
+## 技术架构
+
+### 认证体系
+
+评教系统使用独立的 JWT 认证（与教务系统 session 完全不同）：
+
+```
+用户 CAS 登录
+    │
+    ▼
+获取 Service Ticket
+    │
+    ▼
+GET /api/cas_ticket_verify?ticket=xxx
+    │
+    ▼
+获得 JWT accessToken
+    │
+    ▼
+后续请求头：
+  Authorization: Bearer {jwt}
+  X-Tenant-ID: default
+```
+
+JWT 在过期前 60 秒自动刷新。
+
+### 数据流
+
+```
+前端 EvaluationPage
+    │
+    ├─> GET  /api/evaluation/tasks
+    ├─> GET  /api/evaluation/tasks/{id}/courses
+    ├─> GET  /api/evaluation/courses/{xspjid}/indicators
+    ├─> POST /api/evaluation/submit   (dry_run=true/false)
+    └─> POST /api/evaluation/batch    (dry_run=true/false)
+    │
+    ▼
+backend/main.py (FastAPI)
+    │
+    ▼
+neu_evaluation.api.EvaluationAPI
+    │
+    ▼
+zljk.neu.edu.cn (JWT 认证)
+```
+
+---
+
+## 数据模型
+
+### EvaluationTask（评教任务）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `task_id` | str | 任务ID |
+| `task_name` | str | 任务名称 |
+| `total_count` | int | 总课程数 |
+| `evaluated_count` | int | 已评课程数 |
+| `pending_count` | int | 待评课程数 |
+
+### CourseEvaluation（待评课程）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `xspjid` | str | 学生评教ID（课程唯一标识） |
+| `task_id` | str | 所属任务ID |
+| `course_name` | str | 课程名称 |
+| `teacher_name` | str | 教师姓名 |
+| `department` | str | 开课单位 |
+| `course_type_name` | str | 课程属性名称 |
+| `is_evaluated` | bool | 是否已评（`issubmit == "0"`） |
+| `score` | float | 评分（可选） |
+
+### EvaluationIndicator（评教指标项）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `zbid` | str | 指标ID |
+| `zbmc` | str | 指标名称 |
+| `evaltype` | int | 1=选择型, 2=文本型 |
+| `sfdx` | int | 1=多选, 0=单选 |
+| `sfbt` | int | 1=必填, 0=选填 |
+| `weight` | float | 权重（百分比） |
+| `fz` | float | 分值 |
+| `level_json` | List[Dict] | 等级选项（level/djfz/weight/djremak） |
+| `dfdj` | Any | 已选打分等级（已评课程由远程API返回） |
+| `result` | str | 文本评价结果 |
+
+### EvaluationTarget（指标体系）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `libid` | str | 指标库ID |
+| `libname` | str | 指标库名称 |
+| `preface` | str | 评教说明前言 |
+| `total_score` | float | 总分（如 1000） |
+| `indicators` | List[EvaluationIndicator] | 指标列表 |
+
+---
+
+## 评分策略
+
+`ScoringStrategy` 提供三种内置策略：
+
+| 策略 | 行为 | 用途 |
+|------|------|------|
+| `highest` | 第一个选择指标给 5，其余给 6（多选首项 `[6,5]`） | 默认策略，给最高分 |
+| `lowest` | 第一个选择指标给 2，其余给 1（多选首项 `[1,2]`） | 给最低分 |
+| `custom` | 按 `custom_scores` 映射打分 | 用户自定义 |
+
+分数映射表：
+
+| 等级 (dfdj) | 分数 (score) |
+|-------------|--------------|
+| 6 | 100 |
+| 5 | 90 |
+| 4 | 80 |
+| 3 | 70 |
+| 2 | 60 |
+| 1 | 50 |
+
+⚠️ **注意**：远程系统会拦截"全部选项相同"的评分，因此 `highest`/`lowest` 策略会故意让第一题得分与其他题不同，避免提交被拒。
+
+---
+
+## 后端 API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/evaluation/tasks` | GET | 获取评教任务列表（支持 `?xnxq=`） |
+| `/api/evaluation/tasks/{task_id}/courses` | GET | 获取任务下的课程列表 |
+| `/api/evaluation/courses/{xspjid}/indicators` | GET | 获取课程指标体系（含已评分数） |
+| `/api/evaluation/submit` | POST | 单课程提交/预览 |
+| `/api/evaluation/batch` | POST | 批量提交/预览 |
+
+### POST /api/evaluation/submit
+
+请求体：
+
+```json
+{
+  "task_id": "42d44c9fb4b5c2ac8ae1778396122877",
+  "xspjid": "39f4e8f7ea1e44aea09fb34b5c14efcc",
+  "strategy": "highest",
+  "custom_scores": null,
+  "dry_run": true
+}
+```
+
+响应体（`dry_run=true` 预览模式）：
+
+```json
+{
+  "dry_run": true,
+  "course_name": "系统工程",
+  "teacher_name": "丁嵩",
+  "strategy": "highest",
+  "indicators": [
+    {
+      "zbid": "fc99c19bdbbd44ae856f1266918ba0f1",
+      "zbmc": "教学目标",
+      "evaltype": 1,
+      "dfdj": 5,
+      "score": 90
+    }
+  ],
+  "validation": {
+    "valid": true,
+    "errors": []
+  },
+  "message": "安全模式预览，未实际提交。"
+}
+```
+
+### POST /api/evaluation/batch
+
+请求体：
+
+```json
+{
+  "task_id": "42d44c9fb4b5c2ac8ae1778396122877",
+  "strategy": "highest",
+  "custom_scores": null,
+  "dry_run": true,
+  "delay": 2.0,
+  "xspjids": ["xspjid1", "xspjid2"]
+}
+```
+
+**关键字段**：
+- `dry_run`: `true` = 仅预览验证，`false` = 真正提交
+- `xspjids`: 选中的课程 ID 列表。为空时默认提交全部待评课程（但前端已强制要求勾选）
+- `delay`: 批量提交间隔（秒），默认 2.0
+
+---
+
+## 安全设计
+
+### 1. 安全模式（Safety Mode）
+
+- 前端全局开关，默认 **开启**
+- 开启时，所有"提交"按钮实际执行 **预览（dry_run=true）**
+- 关闭后，才会真正发送 `dry_run=false` 请求
+- 切换开关位于页面顶部 Alert 区域
+
+### 2. 批量提交强制勾选
+
+- 批量操作必须勾选至少一门课程
+- 未勾选时按钮置灰，点击提示"请先勾选至少一门待评课程"
+- 后端同样支持 `xspjids` 过滤，双重保障
+
+### 3. 评分验证
+
+提交前自动验证：
+- 所有必填（`sfbt=1`）指标必须有评分
+- 选择型指标的分数不能全部相同
+
+### 4. 提交间隔
+
+批量评教支持 `delay` 参数（默认 2 秒），逐条提交避免请求过快。
+
+---
+
+## 注意事项
+
+- ⚠️ 评教系统**不支持重试**。重复提交会被后端拒绝，代码中将"重复提交"视为已成功（跳过）。
+- ⚠️ 评教使用独立的 JWT 认证，与教务系统 session 无关。
+- 已评课程的指标详情显示依赖远程系统是否在 `queryEvalTargetTreeForEval` 响应中返回 `dfdj` 字段。
+- 自定义分数策略（`custom`）目前前端无输入界面，选择后若未传 `custom_scores` 会验证失败。
+- 学期参数 `xnxq` 默认自动获取（优先远程默认学期，兜底 `"2025-2026-2"`）。

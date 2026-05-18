@@ -454,6 +454,166 @@ HEADERS = {
 | `/api/user/info` | GET | 获取用户信息 |
 | `/api/user/avatar` | GET | 获取头像图片（返回二进制） |
 
+## 9. 教学质量评价模块 (neu_evaluation)
+
+### 9.1 EvaluationAPI
+
+挂载方式：独立实例化（非 `NEUAuthClient` 挂载）
+
+```python
+from neu_evaluation.api import EvaluationAPI
+from neu_auth import NEUAuthClient
+
+auth = NEUAuthClient("学号", "密码")
+api = EvaluationAPI(auth)
+
+tasks = api.get_tasks()                   # 获取评教任务
+courses = api.get_courses(task_id)        # 获取课程列表
+target = api.get_evaluation_target(task_id, xspjid)  # 获取指标体系
+result = api.submit_evaluation(course, target, "highest")  # 提交评教
+```
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `get_tasks` | xnxq=None | List[EvaluationTask] | 获取评教任务列表，不传则自动获取默认学期 |
+| `get_courses` | task_id, xnxq=None | List[CourseEvaluation] | 获取任务下的课程列表 |
+| `get_evaluation_target` | task_id, xspjid="", xnxqid="" | EvaluationTarget | 获取指标体系，空 xnxqid 自动获取默认学期 |
+| `get_default_cycle` | - | str | 获取当前默认学年学期 |
+| `build_submit_data` | course, target, strategy, custom_scores | Dict | 构建提交载荷 |
+| `submit_evaluation` | course, target, strategy, custom_scores | Dict | 验证并提交评教 |
+| `evaluate_course` | course, strategy, custom_scores | Dict | 一站式：获取指标→评分→提交 |
+| `evaluate_all_pending` | task_id, xnxq, strategy, custom_scores, delay | List[Dict] | 批量评教所有待评课程 |
+
+### 9.2 数据模型
+
+#### EvaluationTask
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `task_id` | str | 任务ID |
+| `task_name` | str | 任务名称 |
+| `total_count` | int | 总课程数 |
+| `evaluated_count` | int | 已评课程数 |
+| `pending_count` | int | 待评课程数 |
+
+#### CourseEvaluation
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `xspjid` | str | 学生评教ID |
+| `task_id` | str | 所属任务ID |
+| `course_name` | str | 课程名称 |
+| `teacher_name` | str | 教师姓名 |
+| `department` | str | 开课单位 |
+| `is_evaluated` | bool | `issubmit == "0"` |
+| `score` | Optional[float] | 评分 |
+| `xnxqid` | str | 学年学期 |
+
+#### EvaluationIndicator
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `zbid` | str | 指标ID |
+| `zbmc` | str | 指标名称 |
+| `evaltype` | int | 1=选择型, 2=文本型 |
+| `sfdx` | int | 1=多选, 0=单选 |
+| `sfbt` | int | 1=必填, 0=选填 |
+| `weight` | float | 权重（%） |
+| `fz` | float | 分值 |
+| `level_json` | List[Dict] | 等级选项 |
+| `dfdj` | Any | 已选打分等级 |
+| `result` | str | 文本评价结果 |
+
+#### EvaluationTarget
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `libid` | str | 指标库ID |
+| `libname` | str | 指标库名称 |
+| `preface` | str | 评教说明前言 |
+| `total_score` | float | 总分 |
+| `indicators` | List[EvaluationIndicator] | 指标列表 |
+
+### 9.3 后端 API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/evaluation/tasks` | GET | 获取评教任务列表（支持 `?xnxq=`） |
+| `/api/evaluation/tasks/{task_id}/courses` | GET | 获取任务下的课程列表 |
+| `/api/evaluation/courses/{xspjid}/indicators` | GET | 获取课程指标体系（`?task_id=`） |
+| `/api/evaluation/submit` | POST | 单课程提交/预览 |
+| `/api/evaluation/batch` | POST | 批量提交/预览 |
+
+### 9.4 评分策略
+
+| 策略 | 方法 | 首题得分 | 其余得分 |
+|------|------|----------|----------|
+| `highest` | `ScoringStrategy.highest()` | 5 | 6 |
+| `lowest` | `ScoringStrategy.lowest()` | 2 | 1 |
+| `custom` | `ScoringStrategy.custom()` | 按 `custom_scores` 映射 | 同上 |
+
+分数换算：`6→100`, `5→90`, `4→80`, `3→70`, `2→60`, `1→50`
+
+⚠️ **注意**：首题故意不同，避免远程系统"全部相同"拦截。
+
+### 9.5 请求/响应示例
+
+#### POST /api/evaluation/submit（预览模式）
+
+**请求：**
+```json
+{
+  "task_id": "42d44c9fb4b5c2ac8ae1778396122877",
+  "xspjid": "39f4e8f7ea1e44aea09fb34b5c14efcc",
+  "strategy": "highest",
+  "custom_scores": null,
+  "dry_run": true
+}
+```
+
+**响应：**
+```json
+{
+  "dry_run": true,
+  "course_name": "系统工程",
+  "teacher_name": "丁嵩",
+  "strategy": "highest",
+  "indicators": [
+    {"zbid": "...", "zbmc": "教学目标", "evaltype": 1, "dfdj": 5, "score": 90},
+    {"zbid": "...", "zbmc": "教学内容", "evaltype": 1, "dfdj": 6, "score": 100}
+  ],
+  "validation": {"valid": true, "errors": []}
+}
+```
+
+#### POST /api/evaluation/batch（批量预览）
+
+**请求：**
+```json
+{
+  "task_id": "42d44c9fb4b5c2ac8ae1778396122877",
+  "strategy": "highest",
+  "custom_scores": null,
+  "dry_run": true,
+  "delay": 2.0,
+  "xspjids": ["id1", "id2"]
+}
+```
+
+**响应：**
+```json
+{
+  "results": [
+    {"course_name": "...", "teacher_name": "...", "success": true, "avg_score": 99.0}
+  ],
+  "total": 2,
+  "pending_count": 2,
+  "success_count": 2,
+  "dry_run": true,
+  "message": "批量预览完成，未实际提交"
+}
+```
+
 ## 7. 调用流程
 
 ### 7.1 成绩查询流程
