@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Card, Table, Button, Tag, Space, Modal, Descriptions, Spin,
-  message, Alert, Tooltip, Steps, Progress, InputNumber, Select,
-  Collapse, Typography, Divider, Switch, Popconfirm, Badge,
+  message, Alert, Tooltip, Progress, Select, Typography, Divider,
+  Switch, Popconfirm, Badge, Radio, Input, List, Form,
 } from 'antd';
 import {
-  StarOutlined, StarFilled, EyeOutlined, ThunderboltOutlined,
+  StarOutlined, EyeOutlined, ThunderboltOutlined,
   SafetyCertificateOutlined, ExclamationCircleOutlined,
   CheckCircleOutlined, CloseCircleOutlined, TrophyOutlined,
   LoadingOutlined, LeftOutlined, UnorderedListOutlined,
+  EditOutlined, FileTextOutlined,
 } from '@ant-design/icons';
 import {
   getEvaluationTasks, getEvaluationCourses, getEvaluationIndicators,
@@ -17,7 +18,7 @@ import {
 import './EvaluationPage.css';
 
 const { Text, Title } = Typography;
-const { Panel } = Collapse;
+const { TextArea } = Input;
 
 // dfdj 评分等级映射
 const SCORE_MAP = { 6: 100, 5: 90, 4: 80, 3: 70, 2: 60, 1: 50 };
@@ -25,20 +26,27 @@ const SCORE_LABELS = {
   6: '优秀 (100)', 5: '很好 (90)', 4: '好 (80)',
   3: '较好 (70)', 2: '一般 (60)', 1: '较差 (50)',
 };
+const SCORE_OPTIONS = [
+  { value: 6, label: '优秀 (100)' },
+  { value: 5, label: '很好 (90)' },
+  { value: 4, label: '好 (80)' },
+  { value: 3, label: '较好 (70)' },
+  { value: 2, label: '一般 (60)' },
+  { value: 1, label: '较差 (50)' },
+];
 
 const EvaluationPage = () => {
   // ── 状态 ────────────────────────────────────────────────────────────────
   const [tasks, setTasks] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [selectedTask, setSelectedTask] = useState(null); // 当前选中的一级任务
+  const [selectedTask, setSelectedTask] = useState(null);
   const [courses, setCourses] = useState([]);
   const [coursesLoading, setCoursesLoading] = useState(false);
+
+  // 详情弹窗（已评课程查看详情）
   const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [currentDetail, setCurrentDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [previewData, setPreviewData] = useState(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewModalVisible, setPreviewModalVisible] = useState(false);
 
   // 全局策略
   const [globalStrategy, setGlobalStrategy] = useState('highest');
@@ -49,6 +57,20 @@ const EvaluationPage = () => {
 
   // 安全开关
   const [safetyMode, setSafetyMode] = useState(true);
+
+  // 单独评价弹窗
+  const [evaluateModalVisible, setEvaluateModalVisible] = useState(false);
+  const [evaluateCourse, setEvaluateCourse] = useState(null);
+  const [evaluateIndicators, setEvaluateIndicators] = useState([]);
+  const [evaluateLoading, setEvaluateLoading] = useState(false);
+  const [evaluateSubmitting, setEvaluateSubmitting] = useState(false);
+
+  // 批量进度弹窗
+  const [progressModalVisible, setProgressModalVisible] = useState(false);
+  const [progressCurrent, setProgressCurrent] = useState(0);
+  const [progressTotal, setProgressTotal] = useState(0);
+  const [progressResults, setProgressResults] = useState([]);
+  const [progressCourseName, setProgressCourseName] = useState('');
 
   // ── 加载任务列表（一级） ────────────────────────────────────────────────
   const loadTasks = useCallback(async () => {
@@ -84,7 +106,7 @@ const EvaluationPage = () => {
     }
   };
 
-  // ── 查看指标详情 ───────────────────────────────────────────────────────
+  // ── 查看详情（已评课程） ────────────────────────────────────────────────
   const handleViewDetail = async (record) => {
     setDetailLoading(true);
     setDetailModalVisible(true);
@@ -96,6 +118,7 @@ const EvaluationPage = () => {
         teacher_name: record.teacher_name,
         is_evaluated: record.is_evaluated,
         score: record.score,
+        avg_score: record.avg_score,
       });
     } catch (error) {
       message.error('获取评教指标失败');
@@ -104,49 +127,179 @@ const EvaluationPage = () => {
     }
   };
 
-  // ── 预览评分 ───────────────────────────────────────────────────────────
-  const handlePreview = async (record, strategy) => {
-    setPreviewLoading(true);
-    setPreviewModalVisible(true);
-    setPreviewData(null);
+  // ── 打开单独评价弹窗 ───────────────────────────────────────────────────
+  const handleOpenEvaluate = async (record) => {
+    setEvaluateCourse(record);
+    setEvaluateModalVisible(true);
+    setEvaluateLoading(true);
+    setEvaluateIndicators([]);
     try {
-      const data = await submitEvaluation(record.task_id, record.xspjid, strategy || globalStrategy, null, true);
-      setPreviewData(data);
+      const data = await getEvaluationIndicators(record.xspjid, record.task_id);
+      const indicators = (data.indicators || []).map(ind => ({
+        ...ind,
+        // 默认未选择
+        _customDfdj: ind.evaltype === 1 ? undefined : ind.dfdj,
+        _customResult: ind.result || '',
+      }));
+      setEvaluateIndicators(indicators);
     } catch (error) {
-      message.error('预览评分失败');
+      message.error('获取评教指标失败');
     } finally {
-      setPreviewLoading(false);
+      setEvaluateLoading(false);
     }
   };
 
-  // ── 单个提交（安全模式：仅预览） ────────────────────────────────────────
-  const handleSubmitOne = async (record, strategy) => {
-    if (safetyMode) {
-      handlePreview(record, strategy);
+  // ── 修改单独评价的某题分数 ──────────────────────────────────────────────
+  const handleScoreChange = (zbid, value) => {
+    setEvaluateIndicators(prev =>
+      prev.map(ind =>
+        ind.zbid === zbid ? { ...ind, _customDfdj: value } : ind
+      )
+    );
+  };
+
+  // ── 修改单独评价的文本结果 ──────────────────────────────────────────────
+  const handleResultChange = (zbid, value) => {
+    setEvaluateIndicators(prev =>
+      prev.map(ind =>
+        ind.zbid === zbid ? { ...ind, _customResult: value } : ind
+      )
+    );
+  };
+
+  // ── 应用策略填充到评价弹窗 ──────────────────────────────────────────────
+  const handleApplyStrategy = (strategy) => {
+    setEvaluateIndicators(prev => {
+      let selectionCount = 0;
+      return prev.map(ind => {
+        if (ind.evaltype !== 1) return ind;
+        let dfdj;
+        if (strategy === 'highest') {
+          if (ind.sfdx === 1) {
+            dfdj = [6, 5];
+          } else {
+            dfdj = selectionCount === 0 ? 5 : 6;
+          }
+        } else {
+          if (ind.sfdx === 1) {
+            dfdj = selectionCount === 0 ? [1, 2] : [1];
+          } else {
+            dfdj = selectionCount === 0 ? 2 : 1;
+          }
+        }
+        selectionCount += 1;
+        return { ...ind, _customDfdj: dfdj };
+      });
+    });
+  };
+
+  // ── 提交单独评价 ────────────────────────────────────────────────────────
+  const handleSubmitEvaluate = async () => {
+    if (!evaluateCourse || !selectedTask) return;
+
+    // 验证
+    const errors = [];
+    const selectionScores = [];
+    for (const ind of evaluateIndicators) {
+      if (ind.evaltype === 1) {
+        if (ind.sfbt === 1 && (ind._customDfdj === undefined || ind._customDfdj === null)) {
+          errors.push(`必填指标未评分: ${ind.zbmc}`);
+        }
+        if (ind._customDfdj !== undefined && ind._customDfdj !== null) {
+          if (Array.isArray(ind._customDfdj)) {
+            selectionScores.push(...ind._customDfdj);
+          } else {
+            selectionScores.push(ind._customDfdj);
+          }
+        }
+      } else if (ind.sfbt === 1 && !ind._customResult) {
+        errors.push(`必填文本指标未填写: ${ind.zbmc}`);
+      }
+    }
+    if (selectionScores.length > 1 && new Set(selectionScores.map(String)).size === 1) {
+      errors.push('评价选项不能全部相同');
+    }
+    if (errors.length > 0) {
+      Modal.error({ title: '评分验证失败', content: errors.join('；') });
       return;
     }
 
-    Modal.confirm({
-      title: '确认提交评教',
-      content: `即将提交：${record.course_name} - ${record.teacher_name}。评教系统不支持重试！`,
-      okText: '确认提交',
-      okType: 'danger',
-      cancelText: '取消',
-      onOk: async () => {
-        try {
-          const result = await submitEvaluation(record.task_id, record.xspjid, strategy || globalStrategy, null, false);
-          if (result.success) {
-            message.success(`${record.course_name} 评教提交成功`);
-            // 刷新课程列表
-            if (selectedTask) handleSelectTask(selectedTask);
+    if (safetyMode) {
+      // 安全模式：仅预览
+      const previewItems = evaluateIndicators.map(ind => {
+        const item = { zbid: ind.zbid, zbmc: ind.zbmc, evaltype: ind.evaltype };
+        if (ind.evaltype === 1) {
+          const dfdj = ind._customDfdj;
+          if (Array.isArray(dfdj)) {
+            item.dfdj = dfdj;
+            item.score = dfdj.map(v => SCORE_MAP[v] || 0);
+          } else if (dfdj !== undefined && dfdj !== null) {
+            item.dfdj = dfdj;
+            item.score = SCORE_MAP[dfdj] || 0;
           } else {
-            message.error(`提交失败: ${result.message}`);
+            item.dfdj = null;
+            item.score = 0;
           }
-        } catch (error) {
-          message.error('提交异常');
+        } else {
+          item.result = ind._customResult || '';
         }
-      },
-    });
+        return item;
+      });
+
+      Modal.info({
+        title: '安全模式 - 评分预览',
+        width: 600,
+        content: (
+          <div style={{ marginTop: 16 }}>
+            <Table
+              dataSource={previewItems}
+              columns={previewIndicatorColumns}
+              rowKey="zbid"
+              size="small"
+              pagination={false}
+              scroll={{ y: 300 }}
+            />
+          </div>
+        ),
+        onOk: () => {},
+      });
+      return;
+    }
+
+    // 实际提交
+    setEvaluateSubmitting(true);
+    try {
+      // 构建 custom_scores 和 text_results
+      const customScores = {};
+      const textResults = {};
+      for (const ind of evaluateIndicators) {
+        if (ind.evaltype === 1 && ind._customDfdj !== undefined && ind._customDfdj !== null) {
+          customScores[ind.zbid] = ind._customDfdj;
+        } else if (ind.evaltype !== 1 && ind._customResult) {
+          textResults[ind.zbid] = ind._customResult;
+        }
+      }
+
+      const result = await submitEvaluation(
+        selectedTask.task_id,
+        evaluateCourse.xspjid,
+        'custom',
+        customScores,
+        false,
+        textResults
+      );
+      if (result.success) {
+        message.success(`${evaluateCourse.course_name} 评教提交成功`);
+        setEvaluateModalVisible(false);
+        if (selectedTask) handleSelectTask(selectedTask);
+      } else {
+        message.error(`提交失败: ${result.message}`);
+      }
+    } catch (error) {
+      message.error('提交异常');
+    } finally {
+      setEvaluateSubmitting(false);
+    }
   };
 
   // ── 批量评教 ────────────────────────────────────────────────────────────
@@ -157,21 +310,20 @@ const EvaluationPage = () => {
     }
     const pendingCourses = courses.filter(c => !c.is_evaluated);
 
-    // 强制要求勾选课程，未勾选不能提交
     if (selectedXspjIds.length === 0) {
       message.warning('请先勾选至少一门待评课程');
       return;
     }
-    const targetXspjIds = selectedXspjIds;
+    const targetCourses = pendingCourses.filter(c => selectedXspjIds.includes(c.xspjid));
 
     if (safetyMode) {
       Modal.info({
         title: '安全模式 - 批量预览',
-        content: `将预览 ${targetXspjIds.length} 门课程的评分方案，不会实际提交。`,
+        content: `将预览 ${targetCourses.length} 门课程的评分方案，不会实际提交。`,
         onOk: async () => {
           setBatchRunning(true);
           try {
-            const data = await batchEvaluation(selectedTask.task_id, globalStrategy, null, true, targetXspjIds);
+            const data = await batchEvaluation(selectedTask.task_id, globalStrategy, null, true, selectedXspjIds);
             const successCount = data.success_count || 0;
             message.info(`预览完成：${successCount}/${data.pending_count} 门课程验证通过`);
           } catch (error) {
@@ -184,29 +336,81 @@ const EvaluationPage = () => {
       return;
     }
 
-    // 非安全模式：实际批量提交
+    // 非安全模式：实际批量提交（带进度条）
     Modal.confirm({
       title: '确认批量提交评教',
-      content: `将对 ${targetXspjIds.length} 门课程提交评教。评教系统不支持重试！`,
+      content: `将对 ${targetCourses.length} 门课程提交评教。评教系统不支持重试！`,
       okText: '确认提交',
       okType: 'danger',
       cancelText: '取消',
       onOk: async () => {
         setBatchRunning(true);
-        try {
-          const data = await batchEvaluation(selectedTask.task_id, globalStrategy, null, false, targetXspjIds);
-          const successCount = data.success_count || 0;
-          message.info(`批量评教完成：成功 ${successCount}/${data.total}`);
-          // 刷新
-          handleSelectTask(selectedTask);
-          loadTasks();
-        } catch (error) {
-          message.error('批量评教异常');
-        } finally {
-          setBatchRunning(false);
+        setProgressModalVisible(true);
+        setProgressTotal(targetCourses.length);
+        setProgressCurrent(0);
+        setProgressResults([]);
+
+        const results = [];
+        for (let i = 0; i < targetCourses.length; i++) {
+          const course = targetCourses[i];
+          setProgressCurrent(i + 1);
+          setProgressCourseName(course.course_name);
+
+          try {
+            const result = await submitEvaluation(
+              selectedTask.task_id,
+              course.xspjid,
+              globalStrategy,
+              null,
+              false
+            );
+            const item = {
+              course_name: course.course_name,
+              teacher_name: course.teacher_name,
+              success: result.success,
+              message: result.message || (result.success ? '提交成功' : '提交失败'),
+              avg_score: result.data?.task?.zpf,
+            };
+            results.push(item);
+            setProgressResults(prev => [...prev, item]);
+
+            if (result.success) {
+              message.success(`${course.course_name} 提交成功`);
+            } else {
+              message.error(`${course.course_name} 提交失败: ${result.message}`);
+            }
+          } catch (error) {
+            const item = {
+              course_name: course.course_name,
+              teacher_name: course.teacher_name,
+              success: false,
+              message: '提交异常',
+            };
+            results.push(item);
+            setProgressResults(prev => [...prev, item]);
+            message.error(`${course.course_name} 提交异常`);
+          }
+
+          // 间隔 2 秒（最后一个不需要）
+          if (i < targetCourses.length - 1) {
+            await new Promise(r => setTimeout(r, 2000));
+          }
         }
+
+        const successCount = results.filter(r => r.success).length;
+        message.info(`批量评教完成：成功 ${successCount}/${targetCourses.length}`);
+
+        // 刷新
+        handleSelectTask(selectedTask);
+        loadTasks();
+        setBatchRunning(false);
       },
     });
+  };
+
+  // ── 关闭进度弹窗 ────────────────────────────────────────────────────────
+  const handleCloseProgress = () => {
+    setProgressModalVisible(false);
   };
 
   // ── 一级任务列 ──────────────────────────────────────────────────────────
@@ -259,8 +463,54 @@ const EvaluationPage = () => {
     },
   ];
 
-  // ── 二级课程列 ──────────────────────────────────────────────────────────
-  const courseColumns = [
+  // ── 待评课程列 ──────────────────────────────────────────────────────────
+  const pendingColumns = [
+    {
+      title: '课程名称',
+      dataIndex: 'course_name',
+      key: 'course_name',
+      width: 220,
+      ellipsis: true,
+    },
+    {
+      title: '教师姓名',
+      dataIndex: 'teacher_name',
+      key: 'teacher_name',
+      width: 100,
+    },
+    {
+      title: '开课单位',
+      dataIndex: 'department',
+      key: 'department',
+      width: 150,
+      ellipsis: true,
+    },
+    {
+      title: '评价状态',
+      dataIndex: 'is_evaluated',
+      key: 'is_evaluated',
+      width: 100,
+      render: () => <Tag color="orange" icon={<ExclamationCircleOutlined />}>未评</Tag>,
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 120,
+      render: (_, record) => (
+        <Button
+          size="small"
+          type="primary"
+          icon={<EditOutlined />}
+          onClick={() => handleOpenEvaluate(record)}
+        >
+          评价
+        </Button>
+      ),
+    },
+  ];
+
+  // ── 已评课程列 ──────────────────────────────────────────────────────────
+  const completedColumns = [
     {
       title: '课程名称',
       dataIndex: 'course_name',
@@ -293,50 +543,36 @@ const EvaluationPage = () => {
       dataIndex: 'is_evaluated',
       key: 'is_evaluated',
       width: 100,
-      render: (val) => val
-        ? <Tag color="green" icon={<CheckCircleOutlined />}>已评</Tag>
-        : <Tag color="orange" icon={<ExclamationCircleOutlined />}>未评</Tag>,
+      render: () => <Tag color="green" icon={<CheckCircleOutlined />}>已评</Tag>,
+    },
+    {
+      title: '已评均分',
+      dataIndex: 'avg_score',
+      key: 'avg_score',
+      width: 100,
+      align: 'center',
+      render: (val) => val !== undefined && val !== null
+        ? <Text strong style={{ color: '#52c41a' }}>{val}</Text>
+        : <Text type="secondary">-</Text>,
     },
     {
       title: '操作',
       key: 'action',
-      width: 260,
+      width: 100,
       render: (_, record) => (
-        <Space size="small">
-          <Button
-            size="small"
-            icon={<EyeOutlined />}
-            onClick={() => handleViewDetail(record)}
-          >
-            指标
-          </Button>
-          {!record.is_evaluated && (
-            <>
-              <Button
-                size="small"
-                type="primary"
-                icon={<TrophyOutlined />}
-                onClick={() => handlePreview(record, 'highest')}
-              >
-                最高分预览
-              </Button>
-              <Button
-                size="small"
-                danger
-                icon={<SafetyCertificateOutlined />}
-                onClick={() => handleSubmitOne(record, globalStrategy)}
-              >
-                {safetyMode ? '预览' : '提交'}
-              </Button>
-            </>
-          )}
-        </Space>
+        <Button
+          size="small"
+          icon={<FileTextOutlined />}
+          onClick={() => handleViewDetail(record)}
+        >
+          详情
+        </Button>
       ),
     },
   ];
 
-  // ── 指标表格列定义 ──────────────────────────────────────────────────────
-  const indicatorColumns = [
+  // ── 详情弹窗中的指标列（已评课程，不显示选项） ──────────────────────────
+  const detailIndicatorColumns = [
     {
       title: '指标名称',
       dataIndex: 'zbmc',
@@ -378,21 +614,6 @@ const EvaluationPage = () => {
       key: 'fz',
       width: 80,
       render: (val) => val > 0 ? `${val}` : '-',
-    },
-    {
-      title: '选项',
-      dataIndex: 'level_json',
-      key: 'level_json',
-      width: 200,
-      ellipsis: true,
-      render: (levelJson) => {
-        if (!levelJson || !Array.isArray(levelJson) || levelJson.length === 0) return '-';
-        return levelJson.map(opt => {
-          const label = opt.mc || opt.name || '';
-          const val = opt.df || opt.value || '';
-          return `${label}(${val})`;
-        }).join('、');
-      },
     },
     {
       title: '已评等级',
@@ -514,7 +735,6 @@ const EvaluationPage = () => {
             options={[
               { value: 'highest', label: '最高分（首题5其余6）' },
               { value: 'lowest', label: '最低分（首题2其余1）' },
-              { value: 'custom', label: '自定义分数' },
             ]}
           />
           {selectedTask && (
@@ -603,7 +823,7 @@ const EvaluationPage = () => {
                 </Title>
                 <Table
                   dataSource={pendingCourses}
-                  columns={courseColumns}
+                  columns={pendingColumns}
                   rowKey="xspjid"
                   size="small"
                   pagination={false}
@@ -624,17 +844,7 @@ const EvaluationPage = () => {
                 </Title>
                 <Table
                   dataSource={completedCourses}
-                  columns={courseColumns.filter(c => c.key !== 'action').concat([{
-                    title: '操作',
-                    key: 'action',
-                    width: 80,
-                    render: (_, record) => (
-                      <Button size="small" icon={<EyeOutlined />}
-                        onClick={() => handleViewDetail(record)}>
-                        指标
-                      </Button>
-                    ),
-                  }])}
+                  columns={completedColumns}
                   rowKey="xspjid"
                   size="small"
                   pagination={false}
@@ -652,9 +862,9 @@ const EvaluationPage = () => {
         </Card>
       )}
 
-      {/* ── 指标详情弹窗 ──────────────────────────────────────────────────── */}
+      {/* ── 详情弹窗（已评课程） ──────────────────────────────────────────── */}
       <Modal
-        title="评教指标体系"
+        title="评教详情"
         open={detailModalVisible}
         onCancel={() => { setDetailModalVisible(false); setCurrentDetail(null); }}
         width={900}
@@ -671,9 +881,7 @@ const EvaluationPage = () => {
               <Descriptions.Item label="课程">{currentDetail.course_name}</Descriptions.Item>
               <Descriptions.Item label="教师">{currentDetail.teacher_name}</Descriptions.Item>
               <Descriptions.Item label="评价状态">
-                {currentDetail.is_evaluated
-                  ? <Tag color="green" icon={<CheckCircleOutlined />}>已评</Tag>
-                  : <Tag color="orange" icon={<ExclamationCircleOutlined />}>未评</Tag>}
+                <Tag color="green" icon={<CheckCircleOutlined />}>已评</Tag>
               </Descriptions.Item>
               <Descriptions.Item label="总分">{currentDetail.total_score}</Descriptions.Item>
               <Descriptions.Item label="已评均分">
@@ -696,7 +904,7 @@ const EvaluationPage = () => {
 
             <Table
               dataSource={currentDetail.indicators || []}
-              columns={indicatorColumns}
+              columns={detailIndicatorColumns}
               rowKey="zbid"
               size="small"
               pagination={false}
@@ -708,97 +916,178 @@ const EvaluationPage = () => {
         )}
       </Modal>
 
-      {/* ── 预览弹窗 ──────────────────────────────────────────────────────── */}
+      {/* ── 单独评价弹窗 ──────────────────────────────────────────────────── */}
       <Modal
-        title="评分预览"
-        open={previewModalVisible}
-        onCancel={() => { setPreviewModalVisible(false); setPreviewData(null); }}
-        width={700}
-        footer={
+        title={
           <Space>
-            <Button onClick={() => setPreviewModalVisible(false)}>关闭</Button>
-            {!safetyMode && previewData?.validation?.valid && (
-              <Popconfirm
-                title="确认提交？评教系统不支持重试！"
-                onConfirm={async () => {
-                  try {
-                    const data = previewData;
-                    const result = await submitEvaluation(
-                      data._taskId, data._xspjid, data.strategy || globalStrategy, null, false
-                    );
-                    if (result.success) {
-                      message.success('提交成功');
-                      setPreviewModalVisible(false);
-                      if (selectedTask) handleSelectTask(selectedTask);
-                    } else {
-                      message.error(`提交失败: ${result.message}`);
-                    }
-                  } catch (e) {
-                    message.error('提交异常');
-                  }
-                }}
-              >
-                <Button type="primary" danger>确认提交</Button>
-              </Popconfirm>
-            )}
+            <EditOutlined />
+            <span>评价课程</span>
           </Space>
         }
+        open={evaluateModalVisible}
+        onCancel={() => setEvaluateModalVisible(false)}
+        width={800}
+        confirmLoading={evaluateSubmitting}
+        okText={safetyMode ? '预览' : '提交评教'}
+        onOk={handleSubmitEvaluate}
+        bodyStyle={{ maxHeight: '70vh', overflow: 'auto' }}
       >
-        {previewLoading ? (
+        {evaluateLoading ? (
           <div style={{ textAlign: 'center', padding: 40 }}>
             <Spin indicator={<LoadingOutlined style={{ fontSize: 32 }} />} />
           </div>
-        ) : previewData ? (
+        ) : evaluateCourse ? (
           <div>
             <Descriptions bordered size="small" column={2} style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="课程">{previewData.course_name}</Descriptions.Item>
-              <Descriptions.Item label="教师">{previewData.teacher_name}</Descriptions.Item>
-              <Descriptions.Item label="策略">
-                {previewData.strategy === 'highest' ? '最高分' :
-                 previewData.strategy === 'lowest' ? '最低分' : '自定义'}
-              </Descriptions.Item>
-              <Descriptions.Item label="模式">
-                {previewData.dry_run ? <Tag color="blue">预览</Tag> : <Tag color="red">实际提交</Tag>}
-              </Descriptions.Item>
+              <Descriptions.Item label="课程">{evaluateCourse.course_name}</Descriptions.Item>
+              <Descriptions.Item label="教师">{evaluateCourse.teacher_name}</Descriptions.Item>
+              <Descriptions.Item label="开课单位">{evaluateCourse.department || '-'}</Descriptions.Item>
+              <Descriptions.Item label="课程属性">{evaluateCourse.course_type_name || '-'}</Descriptions.Item>
             </Descriptions>
 
-            {/* 验证结果 */}
-            {previewData.validation && (
-              <Alert
-                message={previewData.validation.valid ? '评分验证通过' : '评分验证失败'}
-                description={
-                  previewData.validation.errors?.length > 0
-                    ? previewData.validation.errors.join('；')
-                    : '所有必填项已填写，分数分布合理'
-                }
-                type={previewData.validation.valid ? 'success' : 'error'}
-                showIcon
-                style={{ marginBottom: 16 }}
-              />
-            )}
-
-            {previewData.dry_run && (
-              <Alert
-                message="安全模式 - 仅预览"
-                description="当前为安全模式，未实际提交。关闭安全模式后方可提交。"
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
-              />
-            )}
-
-            <Title level={5}>评分详情</Title>
-            <Table
-              dataSource={previewData.indicators || []}
-              columns={previewIndicatorColumns}
-              rowKey="zbid"
-              size="small"
-              pagination={false}
-              scroll={{ y: 300 }}
+            <Alert
+              message="评分提示"
+              description={
+                <div>
+                  <div>1. 选择型指标请点击对应的评分等级</div>
+                  <div>2. 文本型指标可填写评价内容（选填可不填）</div>
+                  <div>3. 评价选项不能全部相同，否则会被系统拦截</div>
+                  <div>4. 可使用下方快捷按钮一键填充</div>
+                </div>
+              }
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
             />
+
+            <Space style={{ marginBottom: 16 }}>
+              <Button size="small" onClick={() => handleApplyStrategy('highest')}>
+                最高分填充
+              </Button>
+              <Button size="small" danger onClick={() => handleApplyStrategy('lowest')}>
+                最低分填充
+              </Button>
+            </Space>
+
+            <div>
+              {evaluateIndicators.map((ind, idx) => (
+                <div
+                  key={ind.zbid}
+                  style={{
+                    marginBottom: 12,
+                    padding: 12,
+                    background: '#fafafa',
+                    borderRadius: 8,
+                    border: '1px solid #f0f0f0',
+                  }}
+                >
+                  <div style={{ marginBottom: 8, fontWeight: 500 }}>
+                    {idx + 1}. {ind.zbmc}
+                    {ind.sfbt === 1 && <Tag color="red" style={{ marginLeft: 8 }}>必填</Tag>}
+                    {ind.evaltype === 1 ? <Tag style={{ marginLeft: 8 }}>选择</Tag> : <Tag style={{ marginLeft: 8 }}>文本</Tag>}
+                    {ind.weight > 0 && <Text type="secondary" style={{ marginLeft: 8 }}>权重 {ind.weight}%</Text>}
+                  </div>
+
+                  {ind.evaltype === 1 ? (
+                    <Radio.Group
+                      value={
+                        Array.isArray(ind._customDfdj)
+                          ? ind._customDfdj[0]
+                          : ind._customDfdj
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (ind.sfdx === 1) {
+                          handleScoreChange(ind.zbid, [val, val === 6 ? 5 : val + 1]);
+                        } else {
+                          handleScoreChange(ind.zbid, val);
+                        }
+                      }}
+                    >
+                      <Space wrap>
+                        {SCORE_OPTIONS.map(opt => (
+                          <Radio.Button key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </Radio.Button>
+                        ))}
+                      </Space>
+                    </Radio.Group>
+                  ) : (
+                    <TextArea
+                      rows={2}
+                      placeholder="请输入评价内容（选填）"
+                      value={ind._customResult}
+                      onChange={(e) => handleResultChange(ind.zbid, e.target.value)}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
-          <Text type="secondary">无预览数据</Text>
+          <Text type="secondary">无数据</Text>
+        )}
+      </Modal>
+
+      {/* ── 批量进度弹窗 ──────────────────────────────────────────────────── */}
+      <Modal
+        title="批量评教进度"
+        open={progressModalVisible}
+        onCancel={handleCloseProgress}
+        footer={
+          <Button onClick={handleCloseProgress} disabled={batchRunning}>
+            {batchRunning ? '提交中...' : '关闭'}
+          </Button>
+        }
+        closable={!batchRunning}
+        maskClosable={!batchRunning}
+        width={600}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <Progress
+            percent={progressTotal > 0 ? Math.round((progressCurrent / progressTotal) * 100) : 0}
+            status={batchRunning ? 'active' : 'success'}
+            format={() => `${progressCurrent} / ${progressTotal}`}
+          />
+          {batchRunning && progressCourseName && (
+            <div style={{ textAlign: 'center', marginTop: 8 }}>
+              <Text type="secondary">
+                正在提交：<Text strong>{progressCourseName}</Text>
+              </Text>
+            </div>
+          )}
+        </div>
+
+        <List
+          size="small"
+          bordered
+          dataSource={progressResults}
+          renderItem={(item) => (
+            <List.Item>
+              <Space>
+                {item.success
+                  ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                  : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                }
+                <Text>{item.course_name}</Text>
+                <Text type="secondary">{item.teacher_name}</Text>
+                {item.avg_score !== undefined && item.avg_score !== null && (
+                  <Tag color="blue">均分 {item.avg_score}</Tag>
+                )}
+                <Text type={item.success ? 'secondary' : 'danger'}>{item.message}</Text>
+              </Space>
+            </List.Item>
+          )}
+          style={{ maxHeight: 300, overflow: 'auto' }}
+          locale={{ emptyText: '暂无提交记录' }}
+        />
+
+        {!batchRunning && progressResults.length > 0 && (
+          <div style={{ marginTop: 16, textAlign: 'center' }}>
+            <Text strong>
+              完成：成功 {progressResults.filter(r => r.success).length} / {progressResults.length}
+            </Text>
+          </div>
         )}
       </Modal>
     </div>

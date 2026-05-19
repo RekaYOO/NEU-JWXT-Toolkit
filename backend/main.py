@@ -1213,7 +1213,8 @@ class EvaluationSubmitRequest(BaseModel):
     task_id: str = Field(..., description="评教任务ID（一级任务ID）")
     xspjid: str = Field(..., description="学生评教ID（课程评价记录ID）")
     strategy: str = Field(default="highest", description="评分策略: highest/lowest/custom")
-    custom_scores: Optional[Dict[str, int]] = Field(default=None, description="自定义分数映射")
+    custom_scores: Optional[Dict[str, Any]] = Field(default=None, description="自定义分数映射")
+    text_results: Optional[Dict[str, str]] = Field(default=None, description="文本型指标内容 {zbid: text}")
     dry_run: bool = Field(default=True, description="是否仅预览不提交（默认True，安全模式）")
 
 
@@ -1221,7 +1222,7 @@ class EvaluationBatchRequest(BaseModel):
     """批量评教请求"""
     task_id: str = Field(..., description="评教任务ID")
     strategy: str = Field(default="highest", description="评分策略")
-    custom_scores: Optional[Dict[str, int]] = Field(default=None, description="自定义分数映射")
+    custom_scores: Optional[Dict[str, Any]] = Field(default=None, description="自定义分数映射")
     dry_run: bool = Field(default=True, description="是否仅预览不提交")
     delay: float = Field(default=2.0, description="提交间隔（秒）")
     xspjids: Optional[List[str]] = Field(default=None, description="选中的学生评教ID列表，为空则提交全部待评课程")
@@ -1337,6 +1338,7 @@ async def get_evaluation_courses(
                     "is_evaluated": c.is_evaluated,
                     "is_kpj": c.is_kpj,
                     "score": c.score,
+                    "avg_score": c.avg_score,
                 }
                 for c in courses
             ],
@@ -1464,6 +1466,12 @@ async def submit_evaluation(
         target = api.get_evaluation_target(request.task_id, request.xspjid, course.xnxqid)
         if not target:
             raise HTTPException(status_code=500, detail="获取评教指标体系失败")
+
+        # 应用文本型指标内容
+        if request.text_results:
+            for ind in target.indicators:
+                if ind.zbid in request.text_results:
+                    ind.result = request.text_results[ind.zbid]
 
         if request.dry_run:
             # 安全模式：仅返回预览数据
