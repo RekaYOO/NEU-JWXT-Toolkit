@@ -383,9 +383,21 @@ const AcademicReportPage = () => {
         last_update: reportData.last_update,
       });
       
-      // 默认展开第一层
-      const firstLevelKeys = (reportData.categories || []).map(c => c.wid);
-      setExpandedKeys(firstLevelKeys);
+      // 默认展开所有节点
+      const collectAllKeys = (nodes) => {
+        const keys = [];
+        const traverse = (list) => {
+          list.forEach(node => {
+            keys.push(node.wid);
+            if (node.children && node.children.length > 0) {
+              traverse(node.children);
+            }
+          });
+        };
+        traverse(nodes || []);
+        return keys;
+      };
+      setExpandedKeys(collectAllKeys(reportData.categories));
       
       setDataLoaded(true);
     } catch (error) {
@@ -950,7 +962,7 @@ const AcademicReportPage = () => {
                 }
                 description={
                   <div className="incomplete-list">
-                    {(showAllIncomplete ? electiveStats.categories : electiveStats.categories.slice(0, 3)).map(cat => (
+                    {electiveStats.categories.map(cat => (
                       <div 
                         key={cat.wid} 
                         className="incomplete-item"
@@ -982,19 +994,7 @@ const AcademicReportPage = () => {
                         </span>
                       </div>
                     ))}
-                    {electiveStats.categories.length > 3 && (
-                      <div 
-                        className="more" 
-                        onClick={() => setShowAllIncomplete(!showAllIncomplete)}
-                        style={{ cursor: 'pointer', color: '#1890ff' }}
-                      >
-                        {showAllIncomplete ? (
-                          <><UpCircleOutlined /> 收起</>
-                        ) : (
-                          <><DownCircleOutlined /> 展开 {electiveStats.categories.length - 3} 项</>
-                        )}
-                      </div>
-                    )}
+
                   </div>
                 }
                 type="warning"
