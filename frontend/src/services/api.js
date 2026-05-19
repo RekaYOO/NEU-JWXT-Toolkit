@@ -381,10 +381,12 @@ export const getEvaluationIndicators = async (xspjid, taskId) => {
  * @param {string} strategy - 评分策略: highest/lowest/custom
  * @param {Object} customScores - 自定义分数映射
  * @param {boolean} dryRun - 是否仅预览不提交（默认true）
+ * @param {Object} textResults - 文本型指标内容 {zbid: text}
  */
-export const submitEvaluation = async (taskId, xspjid, strategy = 'highest', customScores = null, dryRun = true) => {
+export const submitEvaluation = async (taskId, xspjid, strategy = 'highest', customScores = null, dryRun = true, textResults = null) => {
   const data = { task_id: taskId, xspjid, strategy, dry_run: dryRun };
   if (customScores) data.custom_scores = customScores;
+  if (textResults) data.text_results = textResults;
   const response = await api.post('/api/evaluation/submit', data);
   // 附加 task_id 和 xspjid 供前端使用
   const result = response.data;
