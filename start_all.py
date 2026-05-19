@@ -57,7 +57,7 @@ def start_backend(port=DEFAULT_BACKEND_PORT):
     print("=" * 60)
 
     venv_python = get_venv_python()
-    backend_main = os.path.join("backend", "main.py")
+    backend_main = os.path.join("backend", "app", "main.py")
 
     if not os.path.exists(venv_python):
         print(f"错误: 虚拟环境未找到: {venv_python}")

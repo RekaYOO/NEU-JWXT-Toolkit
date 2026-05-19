@@ -9,11 +9,8 @@ neu_storage/integration.py
 import os
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
-import sys
-sys.path.insert(0, r"E:\code\NEUT")
-
-from neu_auth import NEUAuthClient
-from neu_academic.api import CourseScore
+from backend.core.auth import NEUAuthClient
+from backend.core.academic.api import CourseScore
 from .storage import Storage, StorageConfig
 
 
@@ -350,7 +347,7 @@ class AcademicReportStorage:
         # 获取远程数据
         if need_refresh:
             try:
-                from neu_academic.report import AcademicReportAPI
+                from backend.core.academic.report import AcademicReportAPI
                 api = AcademicReportAPI(auth)
                 report = api.get_report()
                 
@@ -406,7 +403,7 @@ class AcademicReportStorage:
             刷新结果
         """
         try:
-            from neu_academic.report import AcademicReportAPI
+            from backend.core.academic.report import AcademicReportAPI
             api = AcademicReportAPI(auth)
             report = api.get_report()
             

@@ -2,7 +2,7 @@
 neu_academic - 东北大学教务系统成绩获取与计算包
 
 使用示例：
-    >>> from neu_auth import NEUAuthClient
+    >>> from backend.core.auth import NEUAuthClient
     >>> 
     >>> auth = NEUAuthClient("学号", "密码")
     >>> auth.login()

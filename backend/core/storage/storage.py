@@ -14,10 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
-import sys
-sys.path.insert(0, r"E:\code\NEUT")
-
-from neu_academic.api import CourseScore, TermScores
+from backend.core.academic.api import CourseScore, TermScores
 
 
 @dataclass
