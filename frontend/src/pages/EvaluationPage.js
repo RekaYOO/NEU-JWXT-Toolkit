@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Card, Table, Button, Tag, Space, Modal, Descriptions, Spin,
   message, Alert, Tooltip, Progress, Select, Typography, Divider,
@@ -55,8 +55,8 @@ const EvaluationPage = () => {
   const [selectedXspjIds, setSelectedXspjIds] = useState([]);
   const [batchRunning, setBatchRunning] = useState(false);
 
-  // 安全开关
-  const [safetyMode, setSafetyMode] = useState(true);
+  // 须知确认
+  const [acknowledged, setAcknowledged] = useState(false);
 
   // 单独评价弹窗
   const [evaluateModalVisible, setEvaluateModalVisible] = useState(false);
@@ -71,6 +71,7 @@ const EvaluationPage = () => {
   const [progressTotal, setProgressTotal] = useState(0);
   const [progressResults, setProgressResults] = useState([]);
   const [progressCourseName, setProgressCourseName] = useState('');
+  const abortBatchRef = useRef(false);
 
   // ── 加载任务列表（一级） ────────────────────────────────────────────────
   const loadTasks = useCallback(async () => {
@@ -224,45 +225,8 @@ const EvaluationPage = () => {
       return;
     }
 
-    if (safetyMode) {
-      // 安全模式：仅预览
-      const previewItems = evaluateIndicators.map(ind => {
-        const item = { zbid: ind.zbid, zbmc: ind.zbmc, evaltype: ind.evaltype };
-        if (ind.evaltype === 1) {
-          const dfdj = ind._customDfdj;
-          if (Array.isArray(dfdj)) {
-            item.dfdj = dfdj;
-            item.score = dfdj.map(v => SCORE_MAP[v] || 0);
-          } else if (dfdj !== undefined && dfdj !== null) {
-            item.dfdj = dfdj;
-            item.score = SCORE_MAP[dfdj] || 0;
-          } else {
-            item.dfdj = null;
-            item.score = 0;
-          }
-        } else {
-          item.result = ind._customResult || '';
-        }
-        return item;
-      });
-
-      Modal.info({
-        title: '安全模式 - 评分预览',
-        width: 600,
-        content: (
-          <div style={{ marginTop: 16 }}>
-            <Table
-              dataSource={previewItems}
-              columns={previewIndicatorColumns}
-              rowKey="zbid"
-              size="small"
-              pagination={false}
-              scroll={{ y: 300 }}
-            />
-          </div>
-        ),
-        onOk: () => {},
-      });
+    if (!acknowledged) {
+      message.warning('请先阅读须知');
       return;
     }
 
@@ -285,7 +249,6 @@ const EvaluationPage = () => {
         evaluateCourse.xspjid,
         'custom',
         customScores,
-        false,
         textResults
       );
       if (result.success) {
@@ -314,36 +277,26 @@ const EvaluationPage = () => {
       message.warning('请先勾选至少一门待评课程');
       return;
     }
-    const targetCourses = pendingCourses.filter(c => selectedXspjIds.includes(c.xspjid));
 
-    if (safetyMode) {
-      Modal.info({
-        title: '安全模式 - 批量预览',
-        content: `将预览 ${targetCourses.length} 门课程的评分方案，不会实际提交。`,
-        onOk: async () => {
-          setBatchRunning(true);
-          try {
-            const data = await batchEvaluation(selectedTask.task_id, globalStrategy, null, true, selectedXspjIds);
-            const successCount = data.success_count || 0;
-            message.info(`预览完成：${successCount}/${data.pending_count} 门课程验证通过`);
-          } catch (error) {
-            message.error('批量预览失败');
-          } finally {
-            setBatchRunning(false);
-          }
-        },
-      });
+    if (!acknowledged) {
+      message.warning('请先阅读须知');
       return;
     }
 
-    // 非安全模式：实际批量提交（带进度条）
-    Modal.confirm({
+    const targetCourses = pendingCourses.filter(c => selectedXspjIds.includes(c.xspjid));
+
+    const strategyLabel = globalStrategy === 'highest' ? '最高分（首题5其余6）' : '最低分（首题2其余1）';
+
+    // 实际批量提交（带进度条）
+    const confirmModal = Modal.confirm({
       title: '确认批量提交评教',
-      content: `将对 ${targetCourses.length} 门课程提交评教。评教系统不支持重试！`,
+      content: `将对 ${targetCourses.length} 门课程提交评教。评教系统不支持重试！\n\n当前评分策略：${strategyLabel}`,
       okText: '确认提交',
       okType: 'danger',
       cancelText: '取消',
       onOk: async () => {
+        confirmModal.destroy();
+        abortBatchRef.current = false;
         setBatchRunning(true);
         setProgressModalVisible(true);
         setProgressTotal(targetCourses.length);
@@ -352,6 +305,11 @@ const EvaluationPage = () => {
 
         const results = [];
         for (let i = 0; i < targetCourses.length; i++) {
+          if (abortBatchRef.current) {
+            message.warning('批量评教已终止');
+            break;
+          }
+
           const course = targetCourses[i];
           setProgressCurrent(i + 1);
           setProgressCourseName(course.course_name);
@@ -361,8 +319,7 @@ const EvaluationPage = () => {
               selectedTask.task_id,
               course.xspjid,
               globalStrategy,
-              null,
-              false
+              null
             );
             const item = {
               course_name: course.course_name,
@@ -391,14 +348,19 @@ const EvaluationPage = () => {
             message.error(`${course.course_name} 提交异常`);
           }
 
-          // 间隔 2 秒（最后一个不需要）
-          if (i < targetCourses.length - 1) {
-            await new Promise(r => setTimeout(r, 2000));
+          // 间隔 0.5 秒（最后一个不需要）
+          if (i < targetCourses.length - 1 && !abortBatchRef.current) {
+            await new Promise(r => setTimeout(r, 500));
           }
         }
 
         const successCount = results.filter(r => r.success).length;
-        message.info(`批量评教完成：成功 ${successCount}/${targetCourses.length}`);
+        const totalProcessed = results.length;
+        if (!abortBatchRef.current) {
+          message.info(`批量评教完成：成功 ${successCount}/${totalProcessed}`);
+        } else {
+          message.info(`批量评教已终止：成功 ${successCount}/${totalProcessed}`);
+        }
 
         // 刷新
         handleSelectTask(selectedTask);
@@ -688,23 +650,22 @@ const EvaluationPage = () => {
 
   return (
     <div className="evaluation-page">
-      {/* 顶部安全提示 */}
+      {/* 顶部须知提示 */}
       <Alert
-        message="评教安全模式已开启"
-        description="当前为安全模式，所有提交操作仅预览不实际提交。如需实际提交，请关闭安全模式开关。评教系统不支持重试，请谨慎操作！"
+        message="评教须知"
+        description="由于教务系统存在更改接口等可能性，为了防止出现异常，当前自动评价脚本基于“2025-2026学年春季学期学生评教”完成和测试，请确保评教学期匹配后再进行操作。"
         type="warning"
         showIcon
         style={{ marginBottom: 16 }}
         action={
-          <Space align="center">
-            <Text>安全模式</Text>
-            <Switch
-              checked={safetyMode}
-              onChange={setSafetyMode}
-              checkedChildren="开"
-              unCheckedChildren="关"
-            />
-          </Space>
+          <Button
+            type="primary"
+            size="small"
+            onClick={() => setAcknowledged(true)}
+            disabled={acknowledged}
+          >
+            {acknowledged ? '已知晓' : '已知晓'}
+          </Button>
         }
       />
 
@@ -766,13 +727,13 @@ const EvaluationPage = () => {
             </Button>
             <Button
               type="primary"
-              danger={!safetyMode}
+              danger
               icon={<SafetyCertificateOutlined />}
               onClick={handleBatchEvaluate}
               loading={batchRunning}
               disabled={pendingCourses.length === 0 || selectedXspjIds.length === 0}
             >
-              {safetyMode ? '批量预览' : '批量提交'} ({selectedXspjIds.length})
+              批量提交 ({selectedXspjIds.length})
             </Button>
           </Space>
         )}
@@ -806,9 +767,7 @@ const EvaluationPage = () => {
           title={
             <Space>
               <LeftOutlined style={{ cursor: 'pointer' }} onClick={() => { setSelectedTask(null); setCourses([]); }} />
-              <Badge count={pendingCourses.length} offset={[6, 0]}>
-                <ExclamationCircleOutlined style={{ fontSize: 18 }} />
-              </Badge>
+              <ExclamationCircleOutlined style={{ fontSize: 18 }} />
               <span>{selectedTask.task_name} - 课程列表</span>
             </Space>
           }
@@ -928,9 +887,9 @@ const EvaluationPage = () => {
         onCancel={() => setEvaluateModalVisible(false)}
         width={800}
         confirmLoading={evaluateSubmitting}
-        okText={safetyMode ? '预览' : '提交评教'}
+        okText="提交评教"
         onOk={handleSubmitEvaluate}
-        bodyStyle={{ maxHeight: '70vh', overflow: 'auto' }}
+        styles={{ body: { maxHeight: '70vh', overflow: 'auto' } }}
       >
         {evaluateLoading ? (
           <div style={{ textAlign: 'center', padding: 40 }}>
@@ -1035,9 +994,16 @@ const EvaluationPage = () => {
         open={progressModalVisible}
         onCancel={handleCloseProgress}
         footer={
-          <Button onClick={handleCloseProgress} disabled={batchRunning}>
-            {batchRunning ? '提交中...' : '关闭'}
-          </Button>
+          <Space>
+            {batchRunning && (
+              <Button danger onClick={() => { abortBatchRef.current = true; }}>
+                终止
+              </Button>
+            )}
+            <Button onClick={handleCloseProgress} disabled={batchRunning}>
+              {batchRunning ? '提交中...' : '关闭'}
+            </Button>
+          </Space>
         }
         closable={!batchRunning}
         maskClosable={!batchRunning}
