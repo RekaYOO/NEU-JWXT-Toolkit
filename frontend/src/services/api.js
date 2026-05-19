@@ -380,11 +380,10 @@ export const getEvaluationIndicators = async (xspjid, taskId) => {
  * @param {string} xspjid - 学生评教ID（课程标识）
  * @param {string} strategy - 评分策略: highest/lowest/custom
  * @param {Object} customScores - 自定义分数映射
- * @param {boolean} dryRun - 是否仅预览不提交（默认true）
  * @param {Object} textResults - 文本型指标内容 {zbid: text}
  */
-export const submitEvaluation = async (taskId, xspjid, strategy = 'highest', customScores = null, dryRun = true, textResults = null) => {
-  const data = { task_id: taskId, xspjid, strategy, dry_run: dryRun };
+export const submitEvaluation = async (taskId, xspjid, strategy = 'highest', customScores = null, textResults = null) => {
+  const data = { task_id: taskId, xspjid, strategy };
   if (customScores) data.custom_scores = customScores;
   if (textResults) data.text_results = textResults;
   const response = await api.post('/api/evaluation/submit', data);
@@ -400,11 +399,10 @@ export const submitEvaluation = async (taskId, xspjid, strategy = 'highest', cus
  * @param {string} taskId - 评教任务ID
  * @param {string} strategy - 评分策略
  * @param {Object} customScores - 自定义分数映射
- * @param {boolean} dryRun - 是否仅预览
  * @param {string[]} xspjids - 选中的学生评教ID列表
  */
-export const batchEvaluation = async (taskId, strategy = 'highest', customScores = null, dryRun = true, xspjids = null) => {
-  const data = { task_id: taskId, strategy, dry_run: dryRun };
+export const batchEvaluation = async (taskId, strategy = 'highest', customScores = null, xspjids = null) => {
+  const data = { task_id: taskId, strategy };
   if (customScores) data.custom_scores = customScores;
   if (xspjids) data.xspjids = xspjids;
   const response = await api.post('/api/evaluation/batch', data);

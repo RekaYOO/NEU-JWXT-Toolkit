@@ -26,6 +26,10 @@ from neu_storage import Storage, AcademicStorage, AutoLoginManager, AcademicRepo
 from neu_log import setup_logging, LogConfig, LogCategory, LogLevel, get_logger
 from neu_log.access_logger import FastAPILogMiddleware
 from neu_log.manager import LogManager
+from mock_evaluation import (
+    EVAL_TEST_MODE, get_mock_tasks, get_mock_courses,
+    get_mock_indicators, mock_submit, mock_batch,
+)
 
 # ── 初始化（在创建 FastAPI 应用之前）────────────────────────────────────────────
 
@@ -1215,7 +1219,6 @@ class EvaluationSubmitRequest(BaseModel):
     strategy: str = Field(default="highest", description="评分策略: highest/lowest/custom")
     custom_scores: Optional[Dict[str, Any]] = Field(default=None, description="自定义分数映射")
     text_results: Optional[Dict[str, str]] = Field(default=None, description="文本型指标内容 {zbid: text}")
-    dry_run: bool = Field(default=True, description="是否仅预览不提交（默认True，安全模式）")
 
 
 class EvaluationBatchRequest(BaseModel):
@@ -1223,7 +1226,6 @@ class EvaluationBatchRequest(BaseModel):
     task_id: str = Field(..., description="评教任务ID")
     strategy: str = Field(default="highest", description="评分策略")
     custom_scores: Optional[Dict[str, Any]] = Field(default=None, description="自定义分数映射")
-    dry_run: bool = Field(default=True, description="是否仅预览不提交")
     delay: float = Field(default=2.0, description="提交间隔（秒）")
     xspjids: Optional[List[str]] = Field(default=None, description="选中的学生评教ID列表，为空则提交全部待评课程")
 
@@ -1267,6 +1269,9 @@ async def get_evaluation_tasks(
 
     返回所有评教任务，每个任务包含待评/已评课程数
     """
+    if EVAL_TEST_MODE:
+        return get_mock_tasks()
+
     try:
         from neu_evaluation.api import EvaluationAPI
         api = EvaluationAPI(auth)
@@ -1311,6 +1316,9 @@ async def get_evaluation_courses(
 
     返回指定任务下所有待评价和已评价的课程
     """
+    if EVAL_TEST_MODE:
+        return get_mock_courses(task_id)
+
     try:
         from neu_evaluation.api import EvaluationAPI
         api = EvaluationAPI(auth)
@@ -1365,6 +1373,9 @@ async def get_evaluation_indicators(
 
     返回指定课程的评分指标（评分细则）
     """
+    if EVAL_TEST_MODE:
+        return get_mock_indicators(xspjid, task_id)
+
     try:
         from neu_evaluation.api import EvaluationAPI
         api = EvaluationAPI(auth)
@@ -1444,9 +1455,11 @@ async def submit_evaluation(
     """
     提交评教结果
 
-    ⚠️ 评教系统不支持重试！dry_run=True 时仅预览不提交。
-    需要显式设置 dry_run=false 才会真正提交。
+    ⚠️ 评教系统不支持重试！
     """
+    if EVAL_TEST_MODE:
+        return mock_submit(request)
+
     try:
         from neu_evaluation.api import EvaluationAPI, CourseEvaluation
         api = EvaluationAPI(auth)
@@ -1472,46 +1485,6 @@ async def submit_evaluation(
             for ind in target.indicators:
                 if ind.zbid in request.text_results:
                     ind.result = request.text_results[ind.zbid]
-
-        if request.dry_run:
-            # 安全模式：仅返回预览数据
-            from neu_evaluation.api import ScoringStrategy
-            if request.strategy == "highest":
-                scored = ScoringStrategy.highest(target.indicators)
-            elif request.strategy == "lowest":
-                scored = ScoringStrategy.lowest(target.indicators)
-            else:
-                scored = ScoringStrategy.custom(target.indicators, request.custom_scores or {})
-
-            validation = api._validate_scoring(scored)
-
-            score_map = {6: 100, 5: 90, 4: 80, 3: 70, 2: 60, 1: 50}
-            preview_items = []
-            for ind in scored:
-                item = {"zbid": ind.zbid, "zbmc": ind.zbmc, "evaltype": ind.evaltype}
-                if ind.evaltype == 1:
-                    if isinstance(ind.dfdj, list):
-                        item["dfdj"] = ind.dfdj
-                        item["score"] = [score_map.get(d, 0) for d in ind.dfdj]
-                    elif ind.dfdj is not None:
-                        item["dfdj"] = ind.dfdj
-                        item["score"] = score_map.get(ind.dfdj, 0)
-                    else:
-                        item["dfdj"] = None
-                        item["score"] = 0
-                else:
-                    item["result"] = ind.result
-                preview_items.append(item)
-
-            return {
-                "dry_run": True,
-                "course_name": course.course_name,
-                "teacher_name": course.teacher_name,
-                "strategy": request.strategy,
-                "indicators": preview_items,
-                "validation": validation,
-                "message": "安全模式预览，未实际提交。设置 dry_run=false 以实际提交。",
-            }
 
         # 实际提交
         result = api.submit_evaluation(course, target, request.strategy, request.custom_scores)
@@ -1546,8 +1519,10 @@ async def batch_evaluation(
 
     对指定任务下选中的未评课程应用相同策略进行评教。
     若未提供 xspjids，则默认提交全部待评课程。
-    dry_run=True 时仅预览，不实际提交。
     """
+    if EVAL_TEST_MODE:
+        return mock_batch(request)
+
     import time
     try:
         from neu_evaluation.api import EvaluationAPI
@@ -1568,59 +1543,6 @@ async def batch_evaluation(
                 "pending_count": 0,
                 "success_count": 0,
                 "message": "没有待评课程",
-                "dry_run": request.dry_run,
-            }
-
-        if request.dry_run:
-            # 批量预览：仅展示待评课程和验证结果
-            from neu_evaluation.api import ScoringStrategy
-            preview_results = []
-            for course in pending:
-                target = api.get_evaluation_target(course.task_id, course.xspjid, course.xnxqid)
-                if not target:
-                    preview_results.append({
-                        "course_name": course.course_name,
-                        "teacher_name": course.teacher_name,
-                        "success": False,
-                        "message": "获取指标体系失败",
-                    })
-                    continue
-
-                if request.strategy == "highest":
-                    scored = ScoringStrategy.highest(target.indicators)
-                elif request.strategy == "lowest":
-                    scored = ScoringStrategy.lowest(target.indicators)
-                else:
-                    scored = ScoringStrategy.custom(target.indicators, request.custom_scores or {})
-
-                validation = api._validate_scoring(scored)
-
-                avg_score = 0
-                score_count = 0
-                for ind in scored:
-                    if ind.evaltype == 1 and ind.dfdj is not None:
-                        if isinstance(ind.dfdj, list):
-                            avg_score += max(ind.dfdj)
-                        else:
-                            avg_score += ind.dfdj
-                        score_count += 1
-                avg_score = round(avg_score / score_count, 1) if score_count > 0 else 0
-
-                preview_results.append({
-                    "course_name": course.course_name,
-                    "teacher_name": course.teacher_name,
-                    "success": validation["valid"],
-                    "avg_score": avg_score,
-                    "validation": validation,
-                })
-
-            return {
-                "results": preview_results,
-                "total": len(pending),
-                "pending_count": len(pending),
-                "success_count": sum(1 for r in preview_results if r["success"]),
-                "dry_run": True,
-                "message": "批量预览完成，未实际提交",
             }
 
         # 实际批量提交：只对选中的 pending 课程逐条提交
@@ -1643,7 +1565,6 @@ async def batch_evaluation(
             "total": len(results),
             "pending_count": len(pending),
             "success_count": success_count,
-            "dry_run": False,
         }
     except Exception as e:
         import traceback
