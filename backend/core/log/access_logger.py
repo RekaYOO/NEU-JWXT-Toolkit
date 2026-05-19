@@ -137,7 +137,7 @@ class FastAPILogMiddleware:
     
     用法:
         from fastapi import FastAPI
-        from neu_log import FastAPILogMiddleware
+        from backend.core.log import FastAPILogMiddleware
         
         app = FastAPI()
         app.add_middleware(FastAPILogMiddleware)

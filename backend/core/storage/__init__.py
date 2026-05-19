@@ -8,8 +8,8 @@ neu_storage - 本地数据存储模块
     - 与 neu_auth/neu_academic 集成
 
 使用示例：
-    >>> from neu_auth import NEUAuthClient
-    >>> from neu_storage import Storage, AcademicStorage, quick_save
+    >>> from backend.core.auth import NEUAuthClient
+    >>> from backend.core.storage import Storage, AcademicStorage, quick_save
     >>> 
     >>> auth = NEUAuthClient("学号", "密码")
     >>> auth.login()

@@ -13,6 +13,6 @@ neu_evaluation
 注意：评教系统不支持重试，提交前务必确认数据正确。
 """
 
-from neu_evaluation.api import EvaluationAPI
+from backend.core.evaluation.api import EvaluationAPI
 
 __all__ = ["EvaluationAPI"]

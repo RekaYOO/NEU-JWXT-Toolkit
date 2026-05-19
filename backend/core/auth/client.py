@@ -575,7 +575,7 @@ class NEUAuthClient:
     def academic(self):
         """成绩 API 入口"""
         if self._academic is None:
-            from neu_academic.api import AcademicAPI
+            from backend.core.academic.api import AcademicAPI
             self._academic = AcademicAPI(self)
         return self._academic
 
@@ -583,7 +583,7 @@ class NEUAuthClient:
     def academic_report(self):
         """学业监测报告 API 入口"""
         if self._academic_report is None:
-            from neu_academic.report import AcademicReportAPI
+            from backend.core.academic.report import AcademicReportAPI
             self._academic_report = AcademicReportAPI(self)
         return self._academic_report
 
@@ -591,7 +591,7 @@ class NEUAuthClient:
     def evaluation(self):
         """教学质量评价系统 API 入口（zljk.neu.edu.cn）"""
         if self._evaluation is None:
-            from neu_evaluation.api import EvaluationAPI
+            from backend.core.evaluation.api import EvaluationAPI
             self._evaluation = EvaluationAPI(self)
         return self._evaluation
 
