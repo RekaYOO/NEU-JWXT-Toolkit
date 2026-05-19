@@ -21,7 +21,6 @@ import {
 } from '../services/api';
 import './GPACalculator.css';
 
-const { TabPane } = Tabs;
 const { Text } = Typography;
 
 /**
@@ -1020,7 +1019,7 @@ const GPACalculator = forwardRef(({
             max={20}
             step={0.5}
             style={{ width: 65 }}
-            bordered={false}
+            variant="borderless"
           />
         ) : (
           <span>{text}</span>
@@ -1069,7 +1068,7 @@ const GPACalculator = forwardRef(({
             onPressEnter={(e) => handleInputBlur(record.key, 'score', e.target.value)}
             size="small"
             style={{ width: 75 }}
-            bordered={false}
+            variant="borderless"
             placeholder="成绩"
           />
         ) : (
@@ -1112,7 +1111,7 @@ const GPACalculator = forwardRef(({
             max={5}
             step={0.1}
             style={{ width: 65 }}
-            bordered={false}
+            variant="borderless"
             placeholder="绩点"
           />
         ) : (
@@ -1313,13 +1312,19 @@ const GPACalculator = forwardRef(({
       </div>
 
       {/* 标签页 */}
-      <Tabs activeKey={activeTab} onChange={setActiveTab} size="small" className="gpa-tabs">
-        <TabPane tab={`全部 ${courses.length}`} key="all" />
-        <TabPane tab={`真实 ${stats.realCount}`} key="real" />
-        <TabPane tab={`模拟 ${stats.customCount}`} key="custom" />
-        <TabPane tab={`有绩点 ${stats.passedCount}`} key="passed" />
-        <TabPane tab={`待输入 ${courses.filter(c => !c.gpa && !c.score).length}`} key="pending" />
-      </Tabs>
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        size="small"
+        className="gpa-tabs"
+        items={[
+          { label: `全部 ${courses.length}`, key: 'all' },
+          { label: `真实 ${stats.realCount}`, key: 'real' },
+          { label: `模拟 ${stats.customCount}`, key: 'custom' },
+          { label: `有绩点 ${stats.passedCount}`, key: 'passed' },
+          { label: `待输入 ${courses.filter(c => !c.gpa && !c.score).length}`, key: 'pending' },
+        ]}
+      />
 
       {/* 课程列表 */}
       <Table
@@ -1378,7 +1383,8 @@ const GPACalculator = forwardRef(({
       >
         {planLoading ? (
           <div style={{ textAlign: 'center', padding: '60px' }}>
-            <Spin tip="正在加载培养计划..." />
+            <Spin />
+            <div style={{ marginTop: 12, color: '#999' }}>正在加载培养计划...</div>
           </div>
         ) : (
           <div className="plan-import-container">
@@ -1449,7 +1455,7 @@ const GPACalculator = forwardRef(({
                 />
                 <Space size="small" className="quick-filters">
                   {/* 性质筛选组 - 互斥 */}
-                  <Button.Group>
+                  <Space.Compact>
                     <Button
                       size="small"
                       type={quickFilters.includes('必修') ? 'primary' : 'default'}
@@ -1482,12 +1488,12 @@ const GPACalculator = forwardRef(({
                     >
                       选修
                     </Button>
-                  </Button.Group>
+                  </Space.Compact>
                   
                   <div className="filter-divider" />
                   
                   {/* 状态筛选组 - 互斥 */}
-                  <Button.Group>
+                  <Space.Compact>
                     <Button
                       size="small"
                       type={quickFilters.includes('已选课') ? 'primary' : 'default'}
@@ -1520,7 +1526,7 @@ const GPACalculator = forwardRef(({
                     >
                       未修读
                     </Button>
-                  </Button.Group>
+                  </Space.Compact>
                 </Space>
               </div>
               
@@ -1629,7 +1635,10 @@ const GPACalculator = forwardRef(({
         width={700}
       >
         {filesLoading ? (
-          <div style={{ textAlign: 'center', padding: '40px' }}><Spin tip="加载文件列表..." /></div>
+          <div style={{ textAlign: 'center', padding: '40px' }}>
+            <Spin />
+            <div style={{ marginTop: 12, color: '#999' }}>加载文件列表...</div>
+          </div>
         ) : serverFiles.length > 0 ? (
           <List
             dataSource={serverFiles}
