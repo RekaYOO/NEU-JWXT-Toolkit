@@ -47,24 +47,23 @@ cd frontend && npm install && cd ..
 ### 启动
 
 ```bash
-# 一键启动前后端
+# 默认模式（推荐日常使用）：单端口，后端自动挂载前端构建产物
 python start_all.py
-```
 
-或分别启动：
+# 如需强制重新构建前端
+python start_all.py --build
 
-```bash
-# 终端1：后端
-.venv\Scripts\python backend\main.py
-
-# 终端2：前端
-cd frontend && npm start
+# 开发模式：前后端双服务，前端支持热重载
+python start_all.py --dev
 ```
 
 ### 访问
 
-- 前端界面: http://localhost:3000
-- API 文档: http://localhost:8000/docs
+| 模式 | 访问地址 | 说明 |
+|------|----------|------|
+| 默认 | http://localhost:8000 | 单端口，前后端合一 |
+| 开发 | http://localhost:3000 | 前端 dev server（热重载） |
+| API 文档 | http://localhost:8000/docs | 两种模式均可访问 |
 
 ---
 
@@ -72,7 +71,7 @@ cd frontend && npm start
 
 ### 首次使用
 
-1. 打开 http://localhost:3000
+1. 打开 http://localhost:8000（或开发模式下的 http://localhost:3000）
 2. 输入学号和密码登录
 3. 勾选"记住密码"可实现自动登录
 4. 成绩数据会自动保存到本地

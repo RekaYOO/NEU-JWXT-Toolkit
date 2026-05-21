@@ -11,12 +11,6 @@ from backend.core.auth import NEUAuthClient
 router = APIRouter()
 
 
-@router.get("/")
-async def root():
-    """根路径"""
-    return {"message": "NEU教务系统工具箱 API", "version": "1.2.0"}
-
-
 @router.get("/api/status")
 async def get_status():
     """获取登录状态和存储信息"""

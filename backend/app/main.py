@@ -18,6 +18,8 @@ if _PROJECT_ROOT not in sys.path:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from starlette.responses import FileResponse
 
 from backend.core.log.access_logger import FastAPILogMiddleware
 from backend.app.dependencies import _log_config
@@ -53,6 +55,27 @@ app.include_router(experiment.router, prefix="/api")
 app.include_router(user.router, prefix="/api")
 app.include_router(gpa.router, prefix="/api")
 app.include_router(evaluation.router, prefix="/api")
+
+# ── 前端静态文件（生产/本地单端口模式）──────────────────────────────────────────
+
+_FRONTEND_BUILD_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "frontend", "build"
+)
+
+if os.path.isdir(_FRONTEND_BUILD_DIR):
+    # 挂载静态资源目录
+    app.mount("/static", StaticFiles(directory=os.path.join(_FRONTEND_BUILD_DIR, "static")), name="static")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """SPA fallback：非 API 路由都返回 index.html"""
+        # API 路由已在上方注册，不会走到这里
+        # 文件系统存在的静态文件（如 favicon.ico）优先返回
+        target = os.path.join(_FRONTEND_BUILD_DIR, full_path)
+        if os.path.isfile(target):
+            return FileResponse(target)
+        return FileResponse(os.path.join(_FRONTEND_BUILD_DIR, "index.html"))
 
 # ── 启动 ──────────────────────────────────────────────────────────────────────
 
