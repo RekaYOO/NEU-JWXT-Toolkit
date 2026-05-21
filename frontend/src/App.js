@@ -7,6 +7,7 @@ import ScoresPage from './pages/ScoresPage';
 import AcademicReportPage from './pages/AcademicReportPage';
 import ExperimentCoursePage from './pages/ExperimentCoursePage';
 import EvaluationPage from './pages/EvaluationPage';
+import ExamPage from './pages/ExamPage';
 import LogsPage from './pages/LogsPage';
 import { checkStatus } from './services/api';
 import './App.css';
@@ -84,6 +85,7 @@ function App() {
               <Route path="academic-report" element={<AcademicReportPage />} />
               <Route path="experiment-courses" element={<ExperimentCoursePage />} />
               <Route path="evaluation" element={<EvaluationPage />} />
+              <Route path="exams" element={<ExamPage />} />
               <Route path="logs" element={<LogsPage />} />
             </Route>
           </Routes>

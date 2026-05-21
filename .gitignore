@@ -75,3 +75,6 @@ htmlcov/
 # MyPy
 .dmypy.json
 dmypy.json
+
+# AI Skills (project-specific agent context, not version controlled)
+skills/

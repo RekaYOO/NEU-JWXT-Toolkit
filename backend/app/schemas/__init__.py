@@ -9,6 +9,7 @@ from .logs import LogSummaryResponse, LogEntryResponse, LogListResponse
 from .report import CreditSummaryModel, CourseModel, CategoryNodeModel, AcademicReportResponse
 from .gpa import GPASimulationExportRequest, GPASimulationFile
 from .evaluation import EvaluationSubmitRequest, EvaluationBatchRequest
+from .exam import ExamTerm, ExamItem, ExamListResponse, ExamTermsResponse
 
 __all__ = [
     "LoginRequest", "LoginResponse",
@@ -17,4 +18,5 @@ __all__ = [
     "CreditSummaryModel", "CourseModel", "CategoryNodeModel", "AcademicReportResponse",
     "GPASimulationExportRequest", "GPASimulationFile",
     "EvaluationSubmitRequest", "EvaluationBatchRequest",
+    "ExamTerm", "ExamItem", "ExamListResponse", "ExamTermsResponse",
 ]

@@ -23,7 +23,7 @@ from starlette.responses import FileResponse
 
 from backend.core.log.access_logger import FastAPILogMiddleware
 from backend.app.dependencies import _log_config
-from backend.app.routers import auth, scores, logs, report, experiment, user, gpa, evaluation
+from backend.app.routers import auth, scores, logs, report, experiment, user, gpa, evaluation, exam
 
 # ── FastAPI 应用 ───────────────────────────────────────────────────────────────
 
@@ -55,6 +55,7 @@ app.include_router(experiment.router, prefix="/api")
 app.include_router(user.router, prefix="/api")
 app.include_router(gpa.router, prefix="/api")
 app.include_router(evaluation.router, prefix="/api")
+app.include_router(exam.router, prefix="/api")
 
 # ── 前端静态文件（生产/本地单端口模式）──────────────────────────────────────────
 

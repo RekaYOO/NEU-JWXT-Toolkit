@@ -337,6 +337,40 @@ export const deleteGPASimulationFile = async (filename) => {
   return response.data;
 };
 
+// ── 考试安排 API ─────────────────────────────────────────────────────────────
+
+/**
+ * 获取考试学期列表
+ */
+export const getExamTerms = async () => {
+  const response = await api.get('/api/exams/terms');
+  return response.data;
+};
+
+/**
+ * 获取考试安排列表
+ * @param {string} termCode - 学期代码
+ */
+export const getExams = async (termCode = '') => {
+  const response = await api.get('/api/exams', {
+    params: { term_code: termCode }
+  });
+  return response.data;
+};
+
+/**
+ * 导出考试安排为 ICS 日历文件
+ * @param {string} termCode - 学期代码
+ * @returns {Blob} ICS 文件数据
+ */
+export const exportExamsICS = async (termCode = '') => {
+  const response = await api.get('/api/exams/export-ics', {
+    params: { term_code: termCode },
+    responseType: 'blob',
+  });
+  return response.data;
+};
+
 // ── 教学质量评价 API ─────────────────────────────────────────────────────────
 
 /**

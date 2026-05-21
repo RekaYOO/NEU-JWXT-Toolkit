@@ -11,6 +11,7 @@ import {
   ScheduleOutlined,
   ExperimentOutlined,
   StarOutlined,
+  CalendarOutlined,
 } from '@ant-design/icons';
 import { logout, getUserInfo, getUserAvatar } from '../services/api';
 import './MainLayout.css';
@@ -116,6 +117,11 @@ const MainLayout = ({ userInfo, onLogout }) => {
       key: '/evaluation',
       icon: <StarOutlined />,
       label: '自动评教',
+    },
+    {
+      key: '/exams',
+      icon: <CalendarOutlined />,
+      label: '我的考试',
     },
     {
       key: '/logs',
