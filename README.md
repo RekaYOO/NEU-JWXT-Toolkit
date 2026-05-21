@@ -127,22 +127,22 @@ cd frontend && npm start
 
 ## 📚 文档
 
-**开发指南：**
-- [快速开始](QUICKSTART.md) - 详细安装和启动指南
-- [前端规范](docs/guides/FRONTEND.md) - 前端开发规范
-- [架构设计](docs/guides/ARCHITECTURE.md) - 项目架构说明
-- [培养计划解析](docs/reference/ACADEMIC_REPORT.md) - 培养计划数据结构详解
+**开发文档：**
+- [架构设计](docs/开发/架构设计.md) - 项目架构说明与扩展指南
+- [前端开发](docs/开发/前端开发.md) - 前端开发规范与设置存储
+- [数据存储](docs/开发/数据存储.md) - 本地数据持久化
+- [日志系统](docs/开发/日志系统.md) - 日志系统文档
 
-**API 参考：**
-- [后端 API](docs/reference/API.md) - REST API 接口文档
-- [外部接口](docs/reference/EXTERNAL_APIS.md) - 教务系统接口汇总
-- [字段映射](docs/reference/FIELD_MAPPING.md) - 接口字段对照表
+**功能说明：**
+- [成绩查询](docs/功能/成绩查询.md) - 成绩获取、数据模型与接口字段
+- [培养计划](docs/功能/培养计划.md) - 培养计划数据结构详解
+- [GPA 模拟器](docs/功能/GPA模拟器.md) - GPA 模拟功能说明
+- [自动评教](docs/功能/自动评教.md) - 自动评教系统
 
-**部署运维：**
-- [部署指南](docs/deployment/DEPLOYMENT.md) - 生产环境部署
-- [免密登录](docs/deployment/CAS_COOKIE_PERSISTENCE.md) - Cookie 持久化机制
+**部署运行：**
+- [快速开始](docs/快速开始.md) - 环境搭建、生产部署与免密登录
 
-**完整文档索引：** [docs/ALL.md](docs/ALL.md)
+---
 
 ---
 
