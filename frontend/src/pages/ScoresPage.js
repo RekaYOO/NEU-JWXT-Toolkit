@@ -11,6 +11,7 @@ import {
 import GPACalculator from '../components/GPACalculator';
 import { getScores, refreshScores, getAcademicReport, refreshAcademicReport, cancelRequest } from '../services/api';
 import { columnSettings } from '../utils/settings';
+import { compareAcademicTerms } from '../utils/termSort';
 import dayjs from 'dayjs';
 import './ScoresPage.css';
 
@@ -27,9 +28,110 @@ const DEFAULT_COLUMNS = [
   { key: 'exam_type', title: '考核方式', visible: false, width: 100 },
   { key: 'exam_status', title: '考试状态', visible: false, width: 100 },
   { key: 'is_passed', title: '状态', visible: true, width: 80 },
+  { key: 'mean_adjust_delta', title: '均分贡献', visible: false, width: 100 },
+  { key: 'exclude_delta', title: '保留贡献', visible: false, width: 100 },
 ];
 
 const getDefaultColumns = () => JSON.parse(JSON.stringify(DEFAULT_COLUMNS));
+
+const NUMERIC_COLUMN_KEYS = ['score', 'gpa', 'credit'];
+const IMPACT_COLUMN_KEYS = ['mean_adjust_delta', 'exclude_delta'];
+const IMPACT_EPSILON = 0.00005;
+
+const IMPACT_COLUMN_HELP = {
+  mean_adjust_delta: '这门课相对当前平均 GPA 的贡献量，正数表示拉高 GPA',
+  exclude_delta: '保留这门课相对剔除它的贡献量，正数表示拉高 GPA',
+};
+
+const IMPACT_FILTERS = [
+  { text: '正向', value: 'positive' },
+  { text: '负向', value: 'negative' },
+  { text: '无影响', value: 'zero' },
+];
+
+const normalizeColumnConfig = (config) => {
+  const defaults = getDefaultColumns();
+  if (!Array.isArray(config)) return defaults;
+
+  const defaultMap = new Map(defaults.map(col => [col.key, col]));
+  const normalized = config
+    .filter(col => defaultMap.has(col.key))
+    .map(col => {
+      const defaultCol = defaultMap.get(col.key);
+      return { ...defaultCol, ...col, title: defaultCol.title };
+    });
+  const existingKeys = new Set(normalized.map(col => col.key));
+  const missingColumns = defaults.filter(col => !existingKeys.has(col.key));
+
+  return [...normalized, ...missingColumns];
+};
+
+const getNumericValue = (value) => {
+  const number = parseFloat(value);
+  return Number.isNaN(number) ? 0 : number;
+};
+
+const getScoreNumericValue = (record, key) => {
+  if (key === 'score') {
+    return getNumericValue(record.score_value || record.score);
+  }
+  return getNumericValue(record[key]);
+};
+
+const calculateImpactScores = (scores) => {
+  const totalCredits = scores.reduce((sum, score) => sum + getNumericValue(score.credit), 0);
+  const totalPoints = scores.reduce(
+    (sum, score) => sum + getNumericValue(score.gpa) * getNumericValue(score.credit),
+    0
+  );
+  const currentGpa = totalCredits > 0 ? totalPoints / totalCredits : 0;
+
+  return scores.map(score => {
+    const credit = getNumericValue(score.credit);
+    const gpa = getNumericValue(score.gpa);
+    const meanAdjustDelta = totalCredits > 0
+      ? (credit * (gpa - currentGpa)) / totalCredits
+      : 0;
+    const remainingCredits = totalCredits - credit;
+    const excludeDelta = remainingCredits > 0
+      ? currentGpa - ((totalPoints - gpa * credit) / remainingCredits)
+      : null;
+
+    return {
+      ...score,
+      mean_adjust_delta: meanAdjustDelta,
+      exclude_delta: excludeDelta,
+    };
+  });
+};
+
+const formatSignedDelta = (value) => {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
+  const normalized = Math.abs(value) < IMPACT_EPSILON ? 0 : value;
+  return `${normalized > 0 ? '+' : ''}${normalized.toFixed(4)}`;
+};
+
+const getImpactSign = (value) => {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return null;
+  if (value > IMPACT_EPSILON) return 'positive';
+  if (value < -IMPACT_EPSILON) return 'negative';
+  return 'zero';
+};
+
+const matchesImpactFilter = (value, filterValue) => getImpactSign(value) === filterValue;
+
+const compareNullableNumbers = (a, b, order) => {
+  const aNumber = Number(a);
+  const bNumber = Number(b);
+  const aValid = a !== null && a !== undefined && !Number.isNaN(aNumber);
+  const bValid = b !== null && b !== undefined && !Number.isNaN(bNumber);
+
+  if (!aValid && !bValid) return 0;
+  if (!aValid) return 1;
+  if (!bValid) return -1;
+
+  return order === 'ascend' ? aNumber - bNumber : bNumber - aNumber;
+};
 
 // 比对两组成绩数据是否相同
 const isScoresEqual = (localScores, remoteScores) => {
@@ -60,7 +162,7 @@ const ScoresPage = () => {
   
   // 列配置
   const [columnConfig, setColumnConfig] = useState(() => 
-    columnSettings.load(getDefaultColumns(), 'columnConfig')
+    normalizeColumnConfig(columnSettings.load(getDefaultColumns(), 'columnConfig'))
   );
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   
@@ -93,10 +195,10 @@ const ScoresPage = () => {
       // 调用后端API，优先读取本地data目录
       const data = await getScores(false);
       
-      const scoresWithId = data.scores.map((s, index) => ({
+      const scoresWithId = calculateImpactScores(data.scores.map((s, index) => ({
         ...s,
         _id: `${s.code}-${s.term}-${index}`
-      }));
+      })));
       
       setAllScores(scoresWithId);
       setDisplayScores(scoresWithId);
@@ -161,10 +263,10 @@ const ScoresPage = () => {
       ]);
       
       const data = await getScores(true);
-      const scoresWithId = data.scores.map((s, index) => ({
+      const scoresWithId = calculateImpactScores(data.scores.map((s, index) => ({
         ...s,
         _id: `${s.code}-${s.term}-${index}`
-      }));
+      })));
       
       setAllScores(scoresWithId);
       setDisplayScores(scoresWithId);
@@ -256,7 +358,19 @@ const ScoresPage = () => {
     let filtered = [...allScores];
     Object.keys(newFilters).forEach(key => {
       if (newFilters[key] && newFilters[key].length > 0) {
-        filtered = filtered.filter(item => newFilters[key].includes(item[key]));
+        if (IMPACT_COLUMN_KEYS.includes(key)) {
+          filtered = filtered.filter(item => newFilters[key].some(value => matchesImpactFilter(item[key], value)));
+        } else if (NUMERIC_COLUMN_KEYS.includes(key)) {
+          const [min, max] = newFilters[key];
+          const minVal = min === undefined || min === null || min === '' ? 0 : parseFloat(min);
+          const maxVal = max === undefined || max === null || max === '' ? 999 : parseFloat(max);
+          filtered = filtered.filter(item => {
+            const recordVal = getScoreNumericValue(item, key);
+            return recordVal >= minVal && recordVal <= maxVal;
+          });
+        } else {
+          filtered = filtered.filter(item => newFilters[key].includes(item[key]));
+        }
       }
     });
 
@@ -272,10 +386,19 @@ const ScoresPage = () => {
           bVal = b[field];
         }
         
-        if (field === 'score' || field === 'gpa' || field === 'credit') {
+        if (NUMERIC_COLUMN_KEYS.includes(field)) {
           aVal = parseFloat(aVal) || 0;
           bVal = parseFloat(bVal) || 0;
           return order === 'ascend' ? aVal - bVal : bVal - aVal;
+        }
+
+        if (IMPACT_COLUMN_KEYS.includes(field)) {
+          return compareNullableNumbers(aVal, bVal, order);
+        }
+
+        if (field === 'term' || field === 'term_display') {
+          const cmp = compareAcademicTerms(aVal, bVal);
+          return order === 'ascend' ? cmp : -cmp;
         }
         
         aVal = String(aVal || '');
@@ -301,13 +424,13 @@ const ScoresPage = () => {
           sorter: true,
         };
 
-        if (col.key !== 'score' && col.key !== 'gpa' && col.key !== 'credit') {
+        if (!NUMERIC_COLUMN_KEYS.includes(col.key) && !IMPACT_COLUMN_KEYS.includes(col.key)) {
           column.filters = getFilterOptions(col.key);
           column.filterSearch = true;
           column.onFilter = (value, record) => record[col.key] === value;
         }
 
-        if (col.key === 'score' || col.key === 'gpa' || col.key === 'credit') {
+        if (NUMERIC_COLUMN_KEYS.includes(col.key)) {
           column.filterDropdown = ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
             <div style={{ padding: 8 }}>
               <Space direction="vertical">
@@ -325,10 +448,22 @@ const ScoresPage = () => {
             const [min, max] = value;
             const minVal = parseFloat(min) || 0;
             const maxVal = parseFloat(max) || 999;
-            const recordVal = col.key === 'score' 
-              ? (parseFloat(record.score_value) || 0)
-              : (parseFloat(record[col.key]) || 0);
+            const recordVal = getScoreNumericValue(record, col.key);
             return recordVal >= minVal && recordVal <= maxVal;
+          };
+        }
+
+        if (IMPACT_COLUMN_KEYS.includes(col.key)) {
+          column.filters = IMPACT_FILTERS;
+          column.onFilter = (value, record) => matchesImpactFilter(record[col.key], value);
+          column.render = (value) => {
+            const sign = getImpactSign(value);
+            const className = sign ? `impact-delta impact-${sign}` : 'impact-delta';
+            return (
+              <Tooltip title={IMPACT_COLUMN_HELP[col.key]}>
+                <span className={className}>{formatSignedDelta(value)}</span>
+              </Tooltip>
+            );
           };
         }
 

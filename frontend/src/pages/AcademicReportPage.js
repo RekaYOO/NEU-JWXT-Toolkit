@@ -14,6 +14,7 @@ import {
 } from '@ant-design/icons';
 import { getAcademicReport, getAcademicReportSummary, refreshAcademicReport, cancelRequest } from '../services/api';
 import { columnSettings } from '../utils/settings';
+import { compareAcademicTerms } from '../utils/termSort';
 import dayjs from 'dayjs';
 import './AcademicReportPage.css';
 
@@ -525,6 +526,9 @@ const AcademicReportPage = () => {
           sorter: (a, b) => {
             if (col.key === 'credit') {
               return (a.credit || 0) - (b.credit || 0);
+            }
+            if (col.key === 'term_code') {
+              return compareAcademicTerms(a.term_code, b.term_code);
             }
             return String(a[col.key] || '').localeCompare(String(b[col.key] || ''));
           },

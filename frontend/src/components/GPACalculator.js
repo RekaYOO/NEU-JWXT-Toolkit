@@ -19,9 +19,72 @@ import {
   getGPASimulationFile,
   deleteGPASimulationFile
 } from '../services/api';
+import { compareAcademicTerms } from '../utils/termSort';
 import './GPACalculator.css';
 
 const { Text } = Typography;
+
+const parseRangeFilter = (value) => {
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+};
+
+const setRangeFilterValue = (setSelectedKeys, range) => {
+  const hasMin = range.min !== undefined && range.min !== null && range.min !== '';
+  const hasMax = range.max !== undefined && range.max !== null && range.max !== '';
+  setSelectedKeys(hasMin || hasMax ? [JSON.stringify({
+    min: hasMin ? range.min : null,
+    max: hasMax ? range.max : null,
+  })] : []);
+};
+
+const numericRangeFilterDropdown = (minPlaceholder, maxPlaceholder) => (
+  { setSelectedKeys, selectedKeys, confirm, clearFilters }
+) => {
+  const range = parseRangeFilter(selectedKeys?.[0]);
+  return (
+    <div style={{ padding: 8 }}>
+      <Space direction="vertical">
+        <InputNumber
+          placeholder={minPlaceholder}
+          value={range.min}
+          onChange={(value) => setRangeFilterValue(setSelectedKeys, { ...range, min: value })}
+          style={{ width: 120 }}
+        />
+        <InputNumber
+          placeholder={maxPlaceholder}
+          value={range.max}
+          onChange={(value) => setRangeFilterValue(setSelectedKeys, { ...range, max: value })}
+          style={{ width: 120 }}
+        />
+        <Space>
+          <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+          <Button size="small" onClick={() => { clearFilters?.(); confirm(); }}>重置</Button>
+        </Space>
+      </Space>
+    </div>
+  );
+};
+
+const matchesNumericRange = (filterValue, recordValue) => {
+  const { min, max } = parseRangeFilter(filterValue);
+  const value = parseFloat(recordValue);
+  if (Number.isNaN(value)) return false;
+  if (min !== undefined && min !== null && value < Number(min)) return false;
+  if (max !== undefined && max !== null && value > Number(max)) return false;
+  return true;
+};
+
+const getCourseSource = (record) => {
+  if (record.isReal) return '真实';
+  if (record.fromPlan) return '计划';
+  if (record.isCustom) return '自定义';
+  return '模拟';
+};
 
 /**
  * GPA计算器组件 - 嵌入式版本（纯本地存储）
@@ -43,6 +106,13 @@ const GPACalculator = forwardRef(({
   const [editingKey, setEditingKey] = useState(null);
   const [activeTab, setActiveTab] = useState('all');
   const [isSimulating, setIsSimulating] = useState(false);
+  const [courseTablePagination, setCourseTablePagination] = useState({
+    current: 1,
+    pageSize: 10,
+    showSizeChanger: true,
+    pageSizeOptions: ['10', '20', '50', '100'],
+    showTotal: (total) => `共 ${total} 门课程`,
+  });
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -954,14 +1024,50 @@ const GPACalculator = forwardRef(({
     setConflictModalVisible(false);
   };
 
+  const courseFilterOptions = useMemo(() => {
+    const toOptions = (values) => [...new Set(values.filter(Boolean))]
+      .map(value => ({ text: value, value }));
+
+    return {
+      term: toOptions(courses.map(c => c.term)).sort((a, b) => compareAcademicTerms(a.value, b.value)),
+      type: [
+        { text: '真实', value: '真实' },
+        { text: '计划', value: '计划' },
+        { text: '模拟', value: '模拟' },
+        { text: '自定义', value: '自定义' },
+      ].filter(option => courses.some(course => getCourseSource(course) === option.value)),
+    };
+  }, [courses]);
+
   // ===== 表格列 =====
-  const columns = [
+  const columns = useMemo(() => [
     {
       title: '课程',
       dataIndex: 'name',
       key: 'name',
       width: 220,
-      sorter: (a, b) => a.name.localeCompare(b.name),
+      sorter: (a, b) => (a.name || '').localeCompare(b.name || '', 'zh-CN'),
+      filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
+        <div style={{ padding: 8 }}>
+          <Input
+            placeholder="搜索课程或代码"
+            value={selectedKeys[0]}
+            onChange={e => setSelectedKeys(e.target.value ? [e.target.value] : [])}
+            onPressEnter={() => confirm()}
+            style={{ width: 200, marginBottom: 8, display: 'block' }}
+          />
+          <Space>
+            <Button type="primary" onClick={() => confirm()} size="small">搜索</Button>
+            <Button onClick={() => { clearFilters?.(); confirm(); }} size="small">重置</Button>
+          </Space>
+        </div>
+      ),
+      filterIcon: filtered => <SearchOutlined style={{ color: filtered ? '#1890ff' : undefined }} />,
+      onFilter: (value, record) => {
+        const keyword = String(value || '').toLowerCase();
+        return String(record.name || '').toLowerCase().includes(keyword) ||
+          String(record.code || '').toLowerCase().includes(keyword);
+      },
       render: (text, record) => {
         if (editingKey === record.key && record.isCustom) {
           return (
@@ -994,6 +1100,8 @@ const GPACalculator = forwardRef(({
       width: 80,
       align: 'center',
       sorter: (a, b) => a.credit - b.credit,
+      filterDropdown: numericRangeFilterDropdown('最小学分', '最大学分'),
+      onFilter: (value, record) => matchesNumericRange(value, record.credit),
       render: (text, record) => {
         if (editingKey === record.key && record.isCustom) {
           return (
@@ -1037,6 +1145,8 @@ const GPACalculator = forwardRef(({
         const bNum = parseFloat(b.score) || 0;
         return aNum - bNum;
       },
+      filterDropdown: numericRangeFilterDropdown('最低成绩', '最高成绩'),
+      onFilter: (value, record) => matchesNumericRange(value, record.score),
       render: (text, record) => {
         if (editingKey === record.key && record.isCustom) {
           return (
@@ -1085,6 +1195,8 @@ const GPACalculator = forwardRef(({
       width: 80,
       align: 'center',
       sorter: (a, b) => a.gpa - b.gpa,
+      filterDropdown: numericRangeFilterDropdown('最低绩点', '最高绩点'),
+      onFilter: (value, record) => matchesNumericRange(value, record.gpa),
       render: (text, record) => {
         if (editingKey === record.key && record.isCustom) {
           return (
@@ -1126,7 +1238,10 @@ const GPACalculator = forwardRef(({
       dataIndex: 'term',
       key: 'term',
       width: 150,
-      sorter: (a, b) => (a.term || '').localeCompare(b.term || ''),
+      sorter: (a, b) => compareAcademicTerms(a.term, b.term),
+      filters: courseFilterOptions.term,
+      filterSearch: true,
+      onFilter: (value, record) => record.term === value,
       render: (text) => <span className="term-text">{text || '-'}</span>,
     },
     {
@@ -1134,17 +1249,8 @@ const GPACalculator = forwardRef(({
       dataIndex: 'courseType',
       key: 'courseType',
       width: 90,
-      filters: [
-        { text: '真实', value: 'real' },
-        { text: '计划', value: 'plan' },
-        { text: '模拟', value: 'simulated' },
-      ],
-      onFilter: (value, record) => {
-        if (value === 'real') return record.isReal;
-        if (value === 'plan') return record.fromPlan;
-        if (value === 'simulated') return !record.isReal && !record.fromPlan;
-        return false;
-      },
+      filters: courseFilterOptions.type,
+      onFilter: (value, record) => getCourseSource(record) === value,
       render: (text, record) => {
         if (record.isReal) return <Tag size="small" color="success">真实</Tag>;
         if (record.fromPlan) return <Tag size="small" color="processing">计划</Tag>;
@@ -1178,78 +1284,7 @@ const GPACalculator = forwardRef(({
         </Space>
       ),
     }] : []),
-  ];
-
-  // 培养计划表格列（带表头筛选）
-  const planColumns = [
-    { 
-      title: '课程名称', 
-      dataIndex: 'name', 
-      key: 'name',
-      width: 250,
-      sorter: (a, b) => a.name.localeCompare(b.name),
-      filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
-        <div style={{ padding: 8 }}>
-          <Input
-            placeholder="搜索课程名称"
-            value={selectedKeys[0]}
-            onChange={e => setSelectedKeys(e.target.value ? [e.target.value] : [])}
-            onPressEnter={confirm}
-            style={{ width: 200, marginBottom: 8, display: 'block' }}
-          />
-          <Space>
-            <Button type="primary" onClick={confirm} size="small">搜索</Button>
-            <Button onClick={clearFilters} size="small">重置</Button>
-          </Space>
-        </div>
-      ),
-      filterIcon: filtered => <SearchOutlined style={{ color: filtered ? '#1890ff' : undefined }} />,
-      onFilter: (value, record) => record.name.toLowerCase().includes(value.toLowerCase()),
-    },
-    { 
-      title: '学分', 
-      dataIndex: 'credit', 
-      key: 'credit', 
-      width: 70, 
-      align: 'center',
-      sorter: (a, b) => a.credit - b.credit,
-    },
-    { 
-      title: '类别', 
-      dataIndex: 'category', 
-      key: 'category', 
-      width: 140,
-      sorter: (a, b) => (a.category || '').localeCompare(b.category || ''),
-      filters: [...new Set(getPlannedCourses.map(c => c.category).filter(Boolean))].map(c => ({ text: c, value: c })),
-      onFilter: (value, record) => record.category === value,
-    },
-    { 
-      title: '性质', 
-      dataIndex: 'courseType', 
-      key: 'courseType', 
-      width: 80,
-      filters: [...new Set(getPlannedCourses.map(c => c.courseType).filter(Boolean))].map(n => ({ text: n, value: n })),
-      onFilter: (value, record) => record.courseType === value,
-    },
-    { 
-      title: '学期', 
-      dataIndex: 'term', 
-      key: 'term', 
-      width: 160,
-      sorter: (a, b) => (a.term || '').localeCompare(b.term || ''),
-      filters: [...new Set(getPlannedCourses.map(c => c.term).filter(Boolean))].map(t => ({ text: t, value: t })),
-      onFilter: (value, record) => record.term === value,
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 90,
-      filters: [...new Set(getPlannedCourses.map(c => c.status).filter(Boolean))].map(s => ({ text: s, value: s })),
-      onFilter: (value, record) => record.status === value,
-      render: (text) => <Tag size="small">{text || '未修'}</Tag>,
-    },
-  ];
+  ], [courseFilterOptions, editForm, editingKey, isSimulating]);
 
   // 筛选课程
   const filteredCourses = useMemo(() => {
@@ -1332,7 +1367,12 @@ const GPACalculator = forwardRef(({
         dataSource={filteredCourses}
         rowKey="key"
         size="small"
-        pagination={{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['10', '20', '50'], showTotal: (total) => `共 ${total} 门课程` }}
+        pagination={courseTablePagination}
+        onChange={(pagination) => setCourseTablePagination(prev => ({
+          ...prev,
+          current: pagination.current,
+          pageSize: pagination.pageSize,
+        }))}
         scroll={{ x: 'max-content' }}
         className="gpa-table"
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无课程，请添加或导入" /> }}
@@ -1543,6 +1583,27 @@ const GPACalculator = forwardRef(({
                     key: 'name',
                     width: 240,
                     sorter: (a, b) => (a.name || '').localeCompare(b.name || ''),
+                    filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
+                      <div style={{ padding: 8 }}>
+                        <Input
+                          placeholder="搜索课程或代码"
+                          value={selectedKeys[0]}
+                          onChange={e => setSelectedKeys(e.target.value ? [e.target.value] : [])}
+                          onPressEnter={() => confirm()}
+                          style={{ width: 200, marginBottom: 8, display: 'block' }}
+                        />
+                        <Space>
+                          <Button type="primary" onClick={() => confirm()} size="small">搜索</Button>
+                          <Button onClick={() => { clearFilters?.(); confirm(); }} size="small">重置</Button>
+                        </Space>
+                      </div>
+                    ),
+                    filterIcon: filtered => <SearchOutlined style={{ color: filtered ? '#1890ff' : undefined }} />,
+                    onFilter: (value, record) => {
+                      const keyword = String(value || '').toLowerCase();
+                      return String(record.name || '').toLowerCase().includes(keyword) ||
+                        String(record.code || '').toLowerCase().includes(keyword);
+                    },
                     render: (text) => <span className="course-name-cell">{text}</span>
                   },
                   { 
@@ -1552,6 +1613,8 @@ const GPACalculator = forwardRef(({
                     width: 70, 
                     align: 'center',
                     sorter: (a, b) => a.credit - b.credit,
+                    filterDropdown: numericRangeFilterDropdown('最小学分', '最大学分'),
+                    onFilter: (value, record) => matchesNumericRange(value, record.credit),
                   },
                   { 
                     title: '性质', 
@@ -1576,8 +1639,11 @@ const GPACalculator = forwardRef(({
                     dataIndex: 'term', 
                     key: 'term', 
                     width: 180,
-                    sorter: (a, b) => (a.term || '').localeCompare(b.term || ''),
-                    filters: [...new Set(getPlannedCourses.map(c => c.term).filter(Boolean))].map(t => ({ text: t, value: t })),
+                    sorter: (a, b) => compareAcademicTerms(a.term, b.term),
+                    filters: [...new Set(getPlannedCourses.map(c => c.term).filter(Boolean))]
+                      .map(t => ({ text: t, value: t }))
+                      .sort((a, b) => compareAcademicTerms(a.value, b.value)),
+                    filterSearch: true,
                     onFilter: (value, record) => record.term === value,
                     render: (text) => <span className="term-cell">{text}</span>
                   },

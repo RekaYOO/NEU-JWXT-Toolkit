@@ -32,6 +32,23 @@
   color: #1890ff;
 }
 
+.impact-delta {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.impact-positive {
+  color: #389e0d;
+}
+
+.impact-negative {
+  color: #cf1322;
+}
+
+.impact-zero {
+  color: #8c8c8c;
+}
+
 .scores-table-card {
   margin-top: 16px;
 }
