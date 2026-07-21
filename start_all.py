@@ -14,6 +14,7 @@
 
 import argparse
 import atexit
+import hashlib
 import os
 import platform
 import subprocess
@@ -39,6 +40,62 @@ def get_venv_python():
     if is_windows():
         return os.path.join(".venv", "Scripts", "python.exe")
     return os.path.join(".venv", "bin", "python")
+
+
+def _requirements_fingerprint():
+    """Return a stable fingerprint for the backend dependency manifest."""
+    try:
+        with open("requirements.txt", "rb") as requirements_file:
+            return hashlib.sha256(requirements_file.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def ensure_backend_environment():
+    """Create the venv and install requirements when the manifest changed."""
+    venv_python = get_venv_python()
+    requirements_file = "requirements.txt"
+    marker_file = os.path.join(".venv", ".neu-jwxt-requirements.sha256")
+
+    if not os.path.exists(requirements_file):
+        print(f"错误: 依赖文件未找到: {requirements_file}")
+        return False
+
+    if not os.path.exists(venv_python):
+        print("正在创建 Python 虚拟环境...")
+        try:
+            subprocess.run([sys.executable, "-m", "venv", ".venv"], check=True)
+        except subprocess.CalledProcessError as error:
+            print(f"创建虚拟环境失败: {error}")
+            return False
+
+    fingerprint = _requirements_fingerprint()
+    installed_fingerprint = ""
+    try:
+        with open(marker_file, "r", encoding="ascii") as marker:
+            installed_fingerprint = marker.read().strip()
+    except OSError:
+        pass
+
+    if fingerprint and fingerprint == installed_fingerprint:
+        return True
+
+    print("正在安装 Python 依赖...")
+    environment = os.environ.copy()
+    # Keep pip deterministic on Chinese Windows installations as well.
+    environment["PYTHONUTF8"] = "1"
+    try:
+        subprocess.run(
+            [venv_python, "-m", "pip", "install", "--disable-pip-version-check", "-r", requirements_file],
+            check=True,
+            env=environment,
+        )
+        with open(marker_file, "w", encoding="ascii") as marker:
+            marker.write(fingerprint)
+        return True
+    except subprocess.CalledProcessError as error:
+        print(f"安装 Python 依赖失败: {error}")
+        return False
 
 
 def _get_file_mtime(path):
@@ -233,14 +290,7 @@ def start_backend(port=DEFAULT_BACKEND_PORT):
     venv_python = get_venv_python()
     backend_main = os.path.join("backend", "app", "main.py")
 
-    if not os.path.exists(venv_python):
-        print(f"错误: 虚拟环境未找到: {venv_python}")
-        print("请先创建虚拟环境并安装依赖:")
-        print("  python -m venv .venv")
-        if is_windows():
-            print("  .venv\\Scripts\\pip install -r requirements.txt")
-        else:
-            print("  .venv/bin/pip install -r requirements.txt")
+    if not ensure_backend_environment():
         return None
 
     if not os.path.exists(backend_main):
@@ -261,7 +311,7 @@ def start_frontend(port=DEFAULT_FRONTEND_PORT, backend_port=DEFAULT_BACKEND_PORT
     env = {
         "PORT": str(port),
         "FRONTEND_PORT": str(port),
-        "REACT_APP_BACKEND_PORT": str(backend_port),
+        "REACT_APP_API_URL": f"http://localhost:{backend_port}",
         "DANGEROUSLY_DISABLE_HOST_CHECK": "true",
         "WDS_SOCKET_HOST": "localhost",
     }

@@ -35,10 +35,8 @@ NEU教务系统第三方工具箱，提供成绩查询、培养计划查看、�
 git clone https://github.com/RekaYOO/NEU-JWXT-Toolkit.git
 cd NEU-JWXT-Toolkit
 
-# 安装 Python 依赖
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+# 首次启动会自动创建 .venv 并安装 Python 依赖
+python start_all.py
 
 # 安装前端依赖
 cd frontend && npm install && cd ..
@@ -55,6 +53,15 @@ python start_all.py --build
 
 # 开发模式：前后端双服务，前端支持热重载
 python start_all.py --dev
+```
+
+首次运行会自动创建 `.venv`，并使用 `.venv\Scripts\python -m pip` 安装
+`requirements.txt`。依赖清单只含 ASCII 注释，可在中文 Windows 的 GBK 默认编码环境中正常读取。
+
+手动安装时使用：
+
+```powershell
+.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
 ### 访问
@@ -75,6 +82,12 @@ python start_all.py --dev
 2. 输入学号和密码登录
 3. 勾选"记住密码"可实现自动登录
 4. 成绩数据会自动保存到本地
+
+### 访问方式
+
+- **校内直连**：适用于校园网络，使用学号和密码登录。
+- **WebVPN**：适用于校外网络。可优先使用“微信扫码快速登录”；也可使用账号密码，统一认证要求时会继续完成短信验证码二次认证。
+- 登录成功后的 Cookie 保存于 `data/session.json`。服务重启后会先尝试恢复该会话；会话失效时需要重新认证。
 
 ### 成绩查询
 

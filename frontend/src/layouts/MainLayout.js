@@ -74,7 +74,10 @@ const MainLayout = ({ userInfo, onLogout }) => {
 
   const handleLogout = async () => {
     try {
-      await logout();
+      const result = await logout();
+      if (!result.success) {
+        throw new Error(result.message || '后端未完成登出');
+      }
       // 清除头像缓存
       localStorage.removeItem(AVATAR_STORAGE_KEY);
       localStorage.removeItem(AVATAR_TIMESTAMP_KEY);

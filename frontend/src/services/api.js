@@ -77,7 +77,7 @@ export const checkStatus = async () => {
 };
 
 // 登录
-export const login = async (username, password, remember = false, networkMode = 'auto') => {
+export const login = async (username, password, remember = false, networkMode = 'direct') => {
   const response = await api.post('/api/login', {
     username,
     password,
@@ -99,6 +99,30 @@ export const getWebVPNQRStatus = async (flowId) => {
 
 export const cancelWebVPNQRLogin = async (flowId) => {
   const response = await api.post('/api/webvpn/qr/cancel', { flow_id: flowId });
+  return response.data;
+};
+
+export const startWebVPNPasswordLogin = async (username, password, remember = false) => {
+  const response = await api.post('/api/webvpn/password/start', { username, password, remember });
+  return response.data;
+};
+
+export const sendWebVPNSMSCode = async (flowId) => {
+  const response = await api.post('/api/webvpn/sms/send', { flow_id: flowId });
+  return response.data;
+};
+
+export const verifyWebVPNSMSCode = async (flowId, code, trustDevice = false) => {
+  const response = await api.post('/api/webvpn/sms/verify', {
+    flow_id: flowId,
+    code,
+    trust_device: trustDevice,
+  });
+  return response.data;
+};
+
+export const cancelWebVPNSMSLogin = async (flowId) => {
+  const response = await api.post('/api/webvpn/sms/cancel', { flow_id: flowId });
   return response.data;
 };
 

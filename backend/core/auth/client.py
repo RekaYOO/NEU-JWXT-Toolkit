@@ -14,6 +14,7 @@ neu_auth/client.py
 
 import base64
 import json
+import os
 import re
 import time
 import logging
@@ -79,7 +80,7 @@ def retry_on_error(max_retries: int = MAX_RETRIES, delay: float = RETRY_DELAY):
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
-                except (requests.RequestException, NEULoginError) as e:
+                except requests.RequestException as e:
                     last_exception = e
                     logger.warning(f"请求失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                     if attempt < max_retries - 1:
@@ -240,6 +241,10 @@ class WebVPNLoginError(NEULoginError):
     """The WebVPN QR login flow could not be completed."""
 
 
+class DirectAccessError(NEULoginError):
+    """A direct-campus request could not reach the academic system."""
+
+
 class NEUAuthClient:
     """
     东北大学统一身份认证登录客户端
@@ -257,7 +262,7 @@ class NEUAuthClient:
         timeout: int = 15,
         verify_ssl: bool = True,
         cookie_file: Optional[str] = None,
-        network_mode: str = "auto",
+        network_mode: str = "direct",
     ):
         self.username = username
         self.password = password
@@ -265,8 +270,8 @@ class NEUAuthClient:
         self.verify_ssl = verify_ssl
         self.target = "https://jwxt.neu.edu.cn"
         self.cookie_file = cookie_file  # Cookie 持久化文件路径
-        if network_mode not in {"auto", "direct", "webvpn"}:
-            raise ValueError("network_mode 必须为 auto、direct 或 webvpn")
+        if network_mode not in {"direct", "webvpn"}:
+            raise ValueError("network_mode 必须为 direct 或 webvpn")
         self.network_mode = network_mode
         self.active_mode = "webvpn" if network_mode == "webvpn" else "direct"
         
@@ -283,6 +288,7 @@ class NEUAuthClient:
         self._academic_report = None  # 学业监测报告 API
         self._evaluation = None       # 教学质量评价系统 API
         self._webvpn_qr_flow: Optional[Dict[str, Any]] = None
+        self._webvpn_sms_flow: Optional[Dict[str, Any]] = None
         
         # 尝试恢复之前的 session
         if cookie_file:
@@ -305,31 +311,19 @@ class NEUAuthClient:
         """
         self.target = target
         if self.active_mode == "webvpn":
-            raise WebVPNRequiredError("当前为 WebVPN 模式，请使用二维码登录")
+            raise WebVPNRequiredError("当前为 WebVPN 模式，请使用微信扫码或短信验证码登录")
         try:
             return self._do_login(target)
         except WebVPNRequiredError:
             self.active_mode = "webvpn"
             raise
         except NEULoginError as e:
-            if self.network_mode == "auto" and "网络错误" in str(e):
-                self.active_mode = "webvpn"
-                raise WebVPNRequiredError("校内教务系统无法直连，请使用 WebVPN 登录") from e
+            if "网络错误" in str(e):
+                raise DirectAccessError("直连教务系统失败，请检查校园网络；校外请切换 WebVPN 模式") from e
             raise
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError,
                 requests.exceptions.Timeout, requests.exceptions.TooManyRedirects) as e:
-            if self.network_mode == "auto":
-                self.active_mode = "webvpn"
-                raise WebVPNRequiredError("校内教务系统无法直连，请使用 WebVPN 登录") from e
-            alt_target = self._swap_protocol(target)
-            if alt_target == target:
-                raise  # URL 不含可切换协议
-            logger.warning(
-                f"登录 {target} 失败 ({type(e).__name__})，"
-                f"尝试协议回退: {alt_target}"
-            )
-            self.target = alt_target
-            return self._do_login(alt_target)
+            raise DirectAccessError("直连教务系统超时，请检查校园网络；校外请切换 WebVPN 模式") from e
 
     @retry_on_error(max_retries=3, delay=2)
     def _do_login(self, target: str) -> bool:
@@ -441,28 +435,8 @@ class NEUAuthClient:
             str 表示错误信息
         """
         try:
-            rsa_encrypted = _rsa_encrypt_with_key(
-                self.username, self.password, key_b64
-            )
-            form_data = {
-                "un": self.username,
-                "pd": self.password,
-                "rsa": rsa_encrypted,
-                "ul": str(len(self.username)),
-                "pl": str(len(self.password)),
-                "lt": hidden.get("lt", ""),
-                "execution": hidden.get("execution", "e1s1"),
-                "_eventId": "submit",
-            }
-
             post_url = f"{CAS_LOGIN_URL}?service={requests.utils.quote(service_url, safe='')}"
-            resp2 = self._session.post(
-                post_url,
-                data=form_data,
-                timeout=self.timeout,
-                verify=self.verify_ssl,
-                allow_redirects=True,
-            )
+            resp2 = self._submit_login_form(hidden, key_b64, post_url)
             resp2.raise_for_status()
 
             # 判断是否仍在 CAS 登录页（登录失败）
@@ -477,6 +451,36 @@ class NEUAuthClient:
             
         except requests.RequestException as e:
             return f"网络错误: {e}"
+
+    def _build_login_form(self, hidden: Dict[str, str], key_b64: str) -> Dict[str, str]:
+        """Build the same credentials payload used by the official CAS form."""
+        rsa_encrypted = _rsa_encrypt_with_key(self.username, self.password, key_b64)
+        return {
+            "un": self.username,
+            "pd": self.password,
+            "rsa": rsa_encrypted,
+            "ul": str(len(self.username)),
+            "pl": str(len(self.password)),
+            "lt": hidden.get("lt", ""),
+            "execution": hidden.get("execution", "e1s1"),
+            "_eventId": "submit",
+        }
+
+    def _submit_login_form(
+        self,
+        hidden: Dict[str, str],
+        key_b64: str,
+        post_url: str,
+        form_data: Optional[Dict[str, str]] = None,
+    ) -> requests.Response:
+        """Submit a direct or WebVPN-proxied CAS password form."""
+        return self._session.post(
+            post_url,
+            data=form_data or self._build_login_form(hidden, key_b64),
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+            allow_redirects=True,
+        )
 
     # ── WebVPN QR 登录 ─────────────────────────────────────────────────────────
 
@@ -633,6 +637,178 @@ class NEUAuthClient:
     def cancel_webvpn_qr_login(self, flow_id: Optional[str] = None) -> None:
         if self._webvpn_qr_flow and (flow_id is None or self._webvpn_qr_flow["id"] == flow_id):
             self._webvpn_qr_flow = None
+
+    # ── WebVPN password and SMS login ────────────────────────────────────────
+
+    @staticmethod
+    def _extract_login_form_action(html: str, page_url: str) -> str:
+        """Resolve the real CAS form action, including a WebVPN proxy prefix."""
+        soup = BeautifulSoup(html, "lxml")
+        form = soup.select_one("form#loginForm") or soup.select_one("form[action]")
+        action = form.get("action", "") if form else ""
+        return urljoin(page_url, action or page_url)
+
+    @staticmethod
+    def _extract_phone_challenge(html: str) -> Optional[tuple[str, str]]:
+        """Extract the server-issued values passed to the official phone() handler."""
+        match = re.search(
+            r"phone\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)",
+            html,
+        )
+        return (match.group(1), match.group(2)) if match else None
+
+    def _get_webvpn_sms_flow(self, flow_id: str) -> Dict[str, Any]:
+        flow = self._webvpn_sms_flow
+        if not flow or flow["id"] != flow_id:
+            raise WebVPNLoginError("短信验证流程不存在或已被替换")
+        if time.time() >= flow["expires_at"]:
+            self._webvpn_sms_flow = None
+            raise WebVPNLoginError("短信验证码登录已过期，请重新输入账号密码")
+        return flow
+
+    def start_webvpn_password_login(self) -> Dict[str, Any]:
+        """Submit the real proxied CAS form and detect WebVPN device verification."""
+        self.active_mode = "webvpn"
+        self._webvpn_sms_flow = None
+        try:
+            page = self._session.get(
+                WEBVPN_ENTRY_URL,
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+                allow_redirects=True,
+            )
+            page.raise_for_status()
+            logger.info(
+                "WebVPN password login page: status=%s final=%s",
+                page.status_code,
+                self._safe_url_metadata(page.url),
+            )
+            if not self._is_webvpn_login_url(page.url):
+                if self._webvpn_health_check():
+                    self._logged_in = True
+                    self._save_cookies()
+                    return {"status": "authenticated", "username": self.username or None}
+                raise WebVPNLoginError("未能打开 WebVPN 统一认证页面")
+
+            hidden = self._extract_hidden_fields(page.text)
+            key_b64 = self._extract_rsa_key_from_html(page.text) or _RSA_PUBLIC_KEY_B64
+            post_url = self._extract_login_form_action(page.text, page.url)
+            form_data = self._build_login_form(hidden, key_b64)
+            response = self._submit_login_form(hidden, key_b64, post_url, form_data)
+            response.raise_for_status()
+
+            challenge = self._extract_phone_challenge(response.text)
+            logger.info(
+                "WebVPN password submit: status=%s final=%s sms_challenge=%s",
+                response.status_code,
+                self._safe_url_metadata(response.url),
+                bool(challenge),
+            )
+            if challenge:
+                murmur, details = challenge
+                self._webvpn_sms_flow = {
+                    "id": str(uuid.uuid4()),
+                    "device_url": urljoin(response.url, "device"),
+                    "murmur": murmur,
+                    "details": details,
+                    "post_url": post_url,
+                    "form_data": form_data,
+                    "expires_at": time.time() + 180,
+                }
+                return {"status": "sms_required", "flow_id": self._webvpn_sms_flow["id"], "expires_in": 180}
+
+            if self._is_webvpn_login_url(response.url):
+                error = self._extract_error_message(response.text)
+                raise NEULoginError(f"登录失败: {error}", _classify_login_error(error))
+
+            self._sync_cas_cookie_to_webvpn({})
+            if not self._webvpn_health_check():
+                raise WebVPNLoginError("账号认证完成，但未能建立教务系统会话")
+            self._logged_in = True
+            self._save_cookies()
+            return {"status": "authenticated", "username": self.username or None}
+        except requests.exceptions.Timeout as error:
+            raise WebVPNLoginError("WebVPN 登录请求超时，请检查网络或改用微信扫码快速登录") from error
+        except requests.RequestException as error:
+            raise WebVPNLoginError(f"WebVPN 请求失败: {error}") from error
+
+    def send_webvpn_sms_code(self, flow_id: str) -> Dict[str, Any]:
+        """Ask the official proxied CAS endpoint to send the SMS code."""
+        flow = self._get_webvpn_sms_flow(flow_id)
+        try:
+            response = self._session.post(
+                flow["device_url"], data={"m": "2"}, timeout=self.timeout,
+                verify=self.verify_ssl, headers={"X-Requested-With": "XMLHttpRequest"},
+            )
+            response.raise_for_status()
+            result = response.json()
+        except (requests.RequestException, ValueError) as error:
+            raise WebVPNLoginError(f"发送短信验证码失败: {error}") from error
+
+        info = result.get("info")
+        logger.info(
+            "WebVPN SMS send response: status=%s info=%s keys=%s",
+            response.status_code,
+            info,
+            sorted(result.keys()),
+        )
+        if info == "send":
+            return {"status": "sent"}
+        if info == "max":
+            raise WebVPNLoginError("发送过于频繁，请稍后再试")
+        if info == "unknow":
+            raise WebVPNLoginError("统一认证未绑定手机号码，无法进行短信验证")
+        raise WebVPNLoginError("短信验证码发送失败")
+
+    def verify_webvpn_sms_code(self, flow_id: str, code: str, trust_device: bool = False) -> Dict[str, Any]:
+        """Verify a code with device m=3, then submit the pending CAS form."""
+        flow = self._get_webvpn_sms_flow(flow_id)
+        try:
+            response = self._session.post(
+                flow["device_url"],
+                data={
+                    "d": flow["murmur"], "i": flow["details"], "m": "3",
+                    "u": self.username, "c": code, "s": "1" if trust_device else "0",
+                },
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+                headers={"X-Requested-With": "XMLHttpRequest"},
+            )
+            response.raise_for_status()
+            info = response.json().get("info")
+        except (requests.RequestException, ValueError) as error:
+            raise WebVPNLoginError(f"验证短信验证码失败: {error}") from error
+
+        logger.info("WebVPN SMS verify response: status=%s info=%s", response.status_code, info)
+        if info == "codeErr":
+            raise WebVPNLoginError("验证码有误")
+        if info == "timeout":
+            raise WebVPNLoginError("验证码已超时，请重新开始登录")
+        if info not in {"ok", "most"}:
+            raise WebVPNLoginError("短信验证码验证失败")
+
+        try:
+            completion = self._submit_login_form({}, _RSA_PUBLIC_KEY_B64, flow["post_url"], flow["form_data"])
+            completion.raise_for_status()
+            logger.info(
+                "WebVPN SMS completion submit: status=%s final=%s",
+                completion.status_code,
+                self._safe_url_metadata(completion.url),
+            )
+            self._sync_cas_cookie_to_webvpn({})
+            if not self._webvpn_health_check():
+                raise WebVPNLoginError("短信验证完成，但未能建立教务系统会话")
+        finally:
+            self._webvpn_sms_flow = None
+
+        self._logged_in = True
+        self._save_cookies()
+        message = "设备数量已达上限，系统已解除最早的授信设备并完成登录" if info == "most" else "登录成功"
+        return {"status": "authenticated", "username": self.username or None, "message": message}
+
+    def cancel_webvpn_sms_login(self, flow_id: Optional[str] = None) -> None:
+        if self._webvpn_sms_flow and (flow_id is None or self._webvpn_sms_flow["id"] == flow_id):
+            self._webvpn_sms_flow = None
 
     def get_webvpn_qr_diagnostics(self) -> Dict[str, Any]:
         """Expose only non-secret QR redirect diagnostics for local debugging."""
@@ -1025,7 +1201,8 @@ class NEUAuthClient:
                     })
 
             if cookies:
-                with open(self.cookie_file, "w", encoding="utf-8") as f:
+                temporary_file = f"{self.cookie_file}.tmp"
+                with open(temporary_file, "w", encoding="utf-8") as f:
                     json.dump({
                         "version": 2,
                         "username": self.username,
@@ -1033,6 +1210,7 @@ class NEUAuthClient:
                         "cookies": cookies,
                         "saved_at": time.time(),
                     }, f, ensure_ascii=False)
+                os.replace(temporary_file, self.cookie_file)
                 logger.debug(f"Cookie 已保存到 {self.cookie_file}")
             return True
         except Exception as e:
@@ -1088,10 +1266,11 @@ class NEUAuthClient:
     def clear_cookies(self) -> None:
         """清除保存的 Cookie"""
         if self.cookie_file:
-            import os
             if os.path.exists(self.cookie_file):
                 os.remove(self.cookie_file)
                 logger.debug(f"Cookie 文件已删除: {self.cookie_file}")
+        self._session.cookies.clear()
+        self._logged_in = False
 
     # ── CAS 票据刷新 ──────────────────────────────────────────────────────────
     
@@ -1259,10 +1438,6 @@ class NEUAuthClient:
             return self._session.request(method, url, **kwargs)
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError,
                 requests.exceptions.Timeout, requests.exceptions.TooManyRedirects) as e:
-            hostname = urlparse(url).hostname or ""
-            if self.network_mode == "auto" and self.active_mode == "direct" and hostname.endswith(".neu.edu.cn"):
-                self.active_mode = "webvpn"
-                raise WebVPNRequiredError("校内服务无法直连，请使用 WebVPN 登录") from e
             # 仅对 jwxt.neu.edu.cn 进行协议回退
             if "jwxt.neu.edu.cn" not in url:
                 raise

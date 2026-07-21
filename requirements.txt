@@ -1,16 +1,16 @@
-# NEU 教务系统工具箱依赖
-# 使用: pip install -r requirements.txt
+# NEU JWXT Toolkit dependencies
+# Install with: python -m pip install -r requirements.txt
 
-# Web 框架
+# Web framework
 fastapi>=0.104.0
 uvicorn>=0.24.0
 pydantic>=2.5.0
 python-multipart>=0.0.6
 
-# HTTP & 解析
+# HTTP and HTML parsing
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
 
-# 加密
+# Cryptography
 pycryptodome>=3.19.0

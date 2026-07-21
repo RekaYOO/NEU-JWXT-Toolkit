@@ -73,6 +73,7 @@ def get_auth_client() -> Optional[NEUAuthClient]:
         # 尝试确保登录（内部会优先用 Cookie 刷新）
         if _auth_client.ensure_login():
             return _auth_client
+        _auth_client = None
 
     # 2. 先尝试恢复二维码/WebVPN Cookie 会话，不要求保存密码
     session_client = NEUAuthClient(cookie_file=COOKIE_FILE)

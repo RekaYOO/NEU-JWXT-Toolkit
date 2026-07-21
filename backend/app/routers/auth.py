@@ -5,9 +5,15 @@ from backend.app.dependencies import (
     _storage, _academic_storage, _auto_login, _api_logger, COOKIE_FILE,
     get_auth_client, peek_auth_client, set_auth_client
 )
-from backend.app.schemas import LoginRequest, LoginResponse, WebVPNQRStartRequest, WebVPNQRStatusRequest
+from backend.app.schemas import (
+    LoginRequest, LoginResponse, WebVPNQRStartRequest, WebVPNQRStatusRequest,
+    WebVPNPasswordStartRequest, WebVPNSMSCodeRequest, WebVPNSMSVerifyRequest,
+)
 from backend.core.auth import NEUAuthClient
-from backend.core.auth.client import WebVPNLoginError, WebVPNRequiredError
+from backend.core.auth.client import (
+    DirectAccessError, LOGIN_ERR_WRONG_PWD, NEULoginError,
+    WebVPNLoginError, WebVPNRequiredError,
+)
 
 router = APIRouter()
 
@@ -28,7 +34,7 @@ async def get_status():
         "last_update": last_update.isoformat() if last_update else None,
         "storage": storage_info,
         "current_user": client.username if client else None,
-        "network_mode": client.active_mode if client else "auto",
+        "network_mode": client.active_mode if client else "direct",
     }
 
 
@@ -76,11 +82,32 @@ async def login(request: LoginRequest):
             message=str(e),
             requires_webvpn=True,
             network_mode="webvpn",
+            error_code="DIRECT_ACCESS_FAILED",
+            suggestion="校外网络请选择 WebVPN，并使用微信扫码快速登录或账号密码登录。",
+        )
+    except DirectAccessError as e:
+        return LoginResponse(
+            success=False,
+            message=str(e),
+            requires_webvpn=True,
+            network_mode="direct",
+            error_code="DIRECT_ACCESS_FAILED",
+            suggestion="请检查校园网络；校外网络请选择 WebVPN。",
+        )
+    except NEULoginError as e:
+        wrong_password = e.error_type == LOGIN_ERR_WRONG_PWD
+        return LoginResponse(
+            success=False,
+            message=str(e),
+            error_code="WRONG_PASSWORD" if wrong_password else "REQUEST_ERROR",
+            suggestion="请检查学号和密码。" if wrong_password else "请稍后重试；若持续失败请查看日志。",
         )
     except Exception as e:
         return LoginResponse(
             success=False,
-            message=f"登录错误: {str(e)}"
+            message=f"登录错误: {str(e)}",
+            error_code="REQUEST_ERROR",
+            suggestion="请稍后重试；若持续失败请查看日志。",
         )
 
 
@@ -126,11 +153,76 @@ async def cancel_webvpn_qr_login(request: WebVPNQRStatusRequest):
     return {"success": True}
 
 
-@router.get("/api/webvpn/qr/diagnostics")
-async def get_webvpn_qr_diagnostics():
-    """Temporary local-only view of non-secret QR redirect metadata."""
+def _save_webvpn_password_login(client: NEUAuthClient, remember: bool) -> None:
+    set_auth_client(client)
+    if remember:
+        _auto_login.save_login(client)
+    try:
+        _academic_storage.refresh_scores(client)
+    except Exception as error:
+        _api_logger.warning(f"[WebVPN] 自动保存成绩失败: {error}")
+
+
+@router.post("/api/webvpn/password/start")
+async def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
+    """Start real WebVPN password login and return an SMS challenge when required."""
+    try:
+        client = NEUAuthClient(
+            request.username, request.password, cookie_file=COOKIE_FILE, network_mode="webvpn"
+        )
+        result = client.start_webvpn_password_login()
+        if result["status"] == "authenticated":
+            _save_webvpn_password_login(client, request.remember)
+        else:
+            # The flow stays only in memory and is discarded on server restart.
+            client._webvpn_sms_flow["remember"] = request.remember
+            set_auth_client(client)
+        return {"success": True, **result}
+    except NEULoginError as error:
+        return {
+            "success": False, "message": str(error),
+            "error_code": "WRONG_PASSWORD" if error.error_type == LOGIN_ERR_WRONG_PWD else "WEBVPN_TIMEOUT",
+            "suggestion": "请检查网络；响应较慢时建议优先使用微信扫码快速登录。",
+        }
+    except Exception as error:
+        _api_logger.exception("[WebVPN] 账号密码登录失败")
+        return {
+            "success": False, "message": f"WebVPN 登录失败: {error}",
+            "error_code": "WEBVPN_TIMEOUT", "suggestion": "请检查网络或改用微信扫码快速登录。",
+        }
+
+
+@router.post("/api/webvpn/sms/send")
+async def send_webvpn_sms_code(request: WebVPNSMSCodeRequest):
     client = peek_auth_client()
-    return {"success": client is not None, "diagnostics": client.get_webvpn_qr_diagnostics() if client else {}}
+    if client is None:
+        return {"success": False, "message": "短信验证流程不存在，请重新登录"}
+    try:
+        return {"success": True, **client.send_webvpn_sms_code(request.flow_id)}
+    except WebVPNLoginError as error:
+        return {"success": False, "message": str(error)}
+
+
+@router.post("/api/webvpn/sms/verify")
+async def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
+    client = peek_auth_client()
+    if client is None:
+        return {"success": False, "message": "短信验证流程不存在，请重新登录"}
+    try:
+        remember = bool((client._webvpn_sms_flow or {}).get("remember"))
+        result = client.verify_webvpn_sms_code(request.flow_id, request.code, request.trust_device)
+        _save_webvpn_password_login(client, remember)
+        return {"success": True, **result}
+    except WebVPNLoginError as error:
+        return {"success": False, "message": str(error)}
+
+
+@router.post("/api/webvpn/sms/cancel")
+async def cancel_webvpn_sms_login(request: WebVPNSMSCodeRequest):
+    client = peek_auth_client()
+    if client:
+        client.cancel_webvpn_sms_login(request.flow_id)
+    return {"success": True}
 
 
 @router.post("/api/logout")
@@ -141,13 +233,15 @@ async def logout(clear_data: bool = Query(True, description="是否清理用户�
     Args:
         clear_data: 是否清理用户数据（成绩、培养计划、头像等），默认 True
     """
-    global _auth_client
-
     result = {"success": True, "message": "已登出"}
 
-    # 清除客户端的 cookie
-    if _auth_client:
-        _auth_client.clear_cookies()
+    # 清除当前内存会话及其持久化 Cookie。
+    client = peek_auth_client()
+    if client:
+        client.cancel_webvpn_qr_login()
+        client.cancel_webvpn_sms_login()
+        client.clear_cookies()
+        client.session.cookies.clear()
 
     set_auth_client(None)
     _auto_login.clear_login()
