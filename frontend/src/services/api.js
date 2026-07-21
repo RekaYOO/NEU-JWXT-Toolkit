@@ -10,6 +10,16 @@ const api = axios.create({
   },
 });
 
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      window.dispatchEvent(new CustomEvent('neu-auth-required'));
+    }
+    return Promise.reject(error);
+  }
+);
+
 // 存储正在进行的请求控制器，用于取消请求
 const pendingRequests = new Map();
 
@@ -67,12 +77,28 @@ export const checkStatus = async () => {
 };
 
 // 登录
-export const login = async (username, password, remember = false) => {
+export const login = async (username, password, remember = false, networkMode = 'auto') => {
   const response = await api.post('/api/login', {
     username,
     password,
-    remember
+    remember,
+    network_mode: networkMode,
   });
+  return response.data;
+};
+
+export const startWebVPNQRLogin = async (username = '') => {
+  const response = await api.post('/api/webvpn/qr/start', { username: username || null });
+  return response.data;
+};
+
+export const getWebVPNQRStatus = async (flowId) => {
+  const response = await api.post('/api/webvpn/qr/status', { flow_id: flowId });
+  return response.data;
+};
+
+export const cancelWebVPNQRLogin = async (flowId) => {
+  const response = await api.post('/api/webvpn/qr/cancel', { flow_id: flowId });
   return response.data;
 };
 

@@ -3,7 +3,7 @@ Pydantic 模型定义
 按领域拆分为独立模块
 """
 
-from .auth import LoginRequest, LoginResponse
+from .auth import LoginRequest, LoginResponse, WebVPNQRStartRequest, WebVPNQRStatusRequest
 from .scores import CourseScoreModel, TermScoresModel, ScoresResponse, ColumnConfig
 from .logs import LogSummaryResponse, LogEntryResponse, LogListResponse
 from .report import CreditSummaryModel, CourseModel, CategoryNodeModel, AcademicReportResponse
@@ -12,7 +12,7 @@ from .evaluation import EvaluationSubmitRequest, EvaluationBatchRequest
 from .exam import ExamTerm, ExamItem, ExamListResponse, ExamTermsResponse
 
 __all__ = [
-    "LoginRequest", "LoginResponse",
+    "LoginRequest", "LoginResponse", "WebVPNQRStartRequest", "WebVPNQRStatusRequest",
     "CourseScoreModel", "TermScoresModel", "ScoresResponse", "ColumnConfig",
     "LogSummaryResponse", "LogEntryResponse", "LogListResponse",
     "CreditSummaryModel", "CourseModel", "CategoryNodeModel", "AcademicReportResponse",

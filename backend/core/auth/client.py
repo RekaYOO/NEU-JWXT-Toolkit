@@ -13,18 +13,21 @@ neu_auth/client.py
 """
 
 import base64
-import pickle
+import json
 import re
 import time
 import logging
+import uuid
 from functools import wraps
 from typing import Optional, Callable, Dict, Any
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import urlencode, urljoin, urlparse, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
+
+from backend.core.network import WEBVPN_ENTRY_URL, WEBVPN_ORIGIN, WebVPNUrlCodec
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +232,14 @@ class NEULoginError(Exception):
         self.error_type = error_type
 
 
+class WebVPNRequiredError(NEULoginError):
+    """Direct campus access is unavailable and WebVPN authentication is needed."""
+
+
+class WebVPNLoginError(NEULoginError):
+    """The WebVPN QR login flow could not be completed."""
+
+
 class NEUAuthClient:
     """
     东北大学统一身份认证登录客户端
@@ -241,11 +252,12 @@ class NEUAuthClient:
 
     def __init__(
         self,
-        username: str,
-        password: str,
+        username: str = "",
+        password: str = "",
         timeout: int = 15,
         verify_ssl: bool = True,
         cookie_file: Optional[str] = None,
+        network_mode: str = "auto",
     ):
         self.username = username
         self.password = password
@@ -253,6 +265,10 @@ class NEUAuthClient:
         self.verify_ssl = verify_ssl
         self.target = "https://jwxt.neu.edu.cn"
         self.cookie_file = cookie_file  # Cookie 持久化文件路径
+        if network_mode not in {"auto", "direct", "webvpn"}:
+            raise ValueError("network_mode 必须为 auto、direct 或 webvpn")
+        self.network_mode = network_mode
+        self.active_mode = "webvpn" if network_mode == "webvpn" else "direct"
         
         # 当前使用的 RSA 公钥（每次登录时从页面动态更新）
         self._current_key: Optional[str] = None
@@ -266,6 +282,7 @@ class NEUAuthClient:
         self._academic = None
         self._academic_report = None  # 学业监测报告 API
         self._evaluation = None       # 教学质量评价系统 API
+        self._webvpn_qr_flow: Optional[Dict[str, Any]] = None
         
         # 尝试恢复之前的 session
         if cookie_file:
@@ -287,10 +304,23 @@ class NEUAuthClient:
             登录是否成功
         """
         self.target = target
+        if self.active_mode == "webvpn":
+            raise WebVPNRequiredError("当前为 WebVPN 模式，请使用二维码登录")
         try:
             return self._do_login(target)
-        except (requests.ConnectionError, requests.SSLError,
-                requests.TooManyRedirects) as e:
+        except WebVPNRequiredError:
+            self.active_mode = "webvpn"
+            raise
+        except NEULoginError as e:
+            if self.network_mode == "auto" and "网络错误" in str(e):
+                self.active_mode = "webvpn"
+                raise WebVPNRequiredError("校内教务系统无法直连，请使用 WebVPN 登录") from e
+            raise
+        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError,
+                requests.exceptions.Timeout, requests.exceptions.TooManyRedirects) as e:
+            if self.network_mode == "auto":
+                self.active_mode = "webvpn"
+                raise WebVPNRequiredError("校内教务系统无法直连，请使用 WebVPN 登录") from e
             alt_target = self._swap_protocol(target)
             if alt_target == target:
                 raise  # URL 不含可切换协议
@@ -330,6 +360,10 @@ class NEUAuthClient:
             allow_redirects=True,
         )
         resp.raise_for_status()
+
+        if WebVPNUrlCodec.is_webvpn_url(resp.url):
+            self.active_mode = "webvpn"
+            raise WebVPNRequiredError("教务系统已跳转到 WebVPN 登录页")
 
         # 如果已登录（直接跳转到目标系统）
         if urlparse(resp.url).netloc != urlparse(CAS_LOGIN_URL).netloc:
@@ -433,6 +467,9 @@ class NEUAuthClient:
 
             # 判断是否仍在 CAS 登录页（登录失败）
             final_url = resp2.url
+            if WebVPNUrlCodec.is_webvpn_url(final_url):
+                self.active_mode = "webvpn"
+                raise WebVPNRequiredError("教务系统已跳转到 WebVPN 登录页")
             if urlparse(final_url).netloc == urlparse(CAS_LOGIN_URL).netloc:
                 return self._extract_error_message(resp2.text)
             
@@ -440,6 +477,247 @@ class NEUAuthClient:
             
         except requests.RequestException as e:
             return f"网络错误: {e}"
+
+    # ── WebVPN QR 登录 ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_webvpn_login_url(url: str) -> bool:
+        parsed = urlparse(url)
+        return (
+            parsed.hostname == "webvpn.neu.edu.cn"
+            and "/tpass/login" in parsed.path
+        )
+
+    @staticmethod
+    def _safe_url_metadata(url: str) -> Dict[str, Any]:
+        """Return redirect diagnostics without retaining tickets or query data."""
+        parsed = urlparse(url)
+        return {
+            "host": parsed.hostname or "",
+            "path": parsed.path or "/",
+            "query_keys": sorted(parse_qs(parsed.query, keep_blank_values=True).keys()),
+        }
+
+    @staticmethod
+    def _safe_set_cookie_names(response: requests.Response) -> list[str]:
+        raw_headers = getattr(response.raw, "headers", None)
+        if raw_headers and hasattr(raw_headers, "getlist"):
+            return [item.split("=", 1)[0] for item in raw_headers.getlist("Set-Cookie")]
+        header = response.headers.get("Set-Cookie", "")
+        return [header.split("=", 1)[0]] if header else []
+
+    def _safe_cookie_metadata(self) -> list[Dict[str, str]]:
+        return [
+            {"name": cookie.name, "domain": cookie.domain}
+            for cookie in self._session.cookies
+            if cookie.domain.lstrip(".").endswith("neu.edu.cn")
+        ]
+
+    def start_webvpn_qr_login(self) -> Dict[str, Any]:
+        """Create a QR login flow bound to this client's requests session."""
+        self.active_mode = "webvpn"
+        service = WEBVPN_ENTRY_URL
+        direct_login_url = f"{CAS_LOGIN_URL}?service={requests.utils.quote(service, safe='')}"
+        response = self._session.get(
+            direct_login_url,
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+
+        parsed_login_url = urlparse(response.url)
+        if parsed_login_url.hostname != "pass.neu.edu.cn" or "/tpass/login" not in parsed_login_url.path:
+            raise WebVPNLoginError("WebVPN 统一认证页面未处于二维码登录状态")
+
+        qr_uuid = str(uuid.uuid4())
+        # The official QR payload uses a direct CAS URL and keeps service
+        # verbatim. Proxying this URL only opens WebVPN in the scanner.
+        qr_content = f"{CAS_BASE_URL}/qyQrLogin?uuid={qr_uuid}&service={service}"
+        self._webvpn_qr_flow = {
+            "id": str(uuid.uuid4()),
+            "uuid": qr_uuid,
+            "qr_status_url": f"{CAS_BASE_URL}/checkQRCodeScan",
+            "login_page_url": direct_login_url,
+            "expires_at": time.time() + 180,
+        }
+        return {
+            "flow_id": self._webvpn_qr_flow["id"],
+            "qr_content": qr_content,
+            "expires_in": 180,
+            "poll_interval": 3,
+        }
+
+    def poll_webvpn_qr_login(self, flow_id: str) -> Dict[str, Any]:
+        """Poll the real CAS QR endpoint and finalize the same HTTP session."""
+        flow = self._webvpn_qr_flow
+        if not flow or flow["id"] != flow_id:
+            raise WebVPNLoginError("二维码登录流程不存在或已被替换")
+        if time.time() >= flow["expires_at"]:
+            self._webvpn_qr_flow = None
+            return {"status": "expired"}
+
+        status_url = (
+            f"{flow['qr_status_url']}?"
+            f"{urlencode({'random': time.time(), 'uuid': flow['uuid']})}"
+        )
+        response = self._session.get(
+            status_url,
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+            headers={
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": flow["login_page_url"],
+            },
+        )
+        response.raise_for_status()
+        if not response.text.strip():
+            # The production endpoint deliberately returns an empty body while
+            # the QR code has not been scanned yet.
+            return {"status": "pending"}
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise WebVPNLoginError("二维码状态接口返回了非 JSON 响应") from exc
+
+        redirect_url = result.get("redirect_url")
+        if not redirect_url:
+            return {"status": "pending"}
+
+        callback_url = urljoin(flow["login_page_url"], redirect_url)
+        flow["callback"] = self._safe_url_metadata(callback_url)
+        flow["cookies_after_poll"] = self._safe_cookie_metadata()
+        flow["poll_set_cookies"] = self._safe_set_cookie_names(response)
+        callback_host = urlparse(callback_url).hostname
+        if callback_host not in {"pass.neu.edu.cn", "webvpn.neu.edu.cn"}:
+            raise WebVPNLoginError("二维码登录返回了不受信任的跳转地址")
+
+        # Match the official page: follow the CAS redirect first, then let its
+        # service ticket establish the WebVPN session.  Converting a pass URL
+        # before this request breaks the ticket callback chain.
+        completion = self._session.get(
+            callback_url,
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+            allow_redirects=True,
+        )
+        completion.raise_for_status()
+        flow["completion"] = {
+            "status_code": completion.status_code,
+            "final": self._safe_url_metadata(completion.url),
+            "history": [
+                {
+                    "status_code": item.status_code,
+                    "location": self._safe_url_metadata(item.headers.get("Location", "")),
+                }
+                for item in completion.history
+            ],
+            "cookies": self._safe_cookie_metadata(),
+            "set_cookies": self._safe_set_cookie_names(completion),
+        }
+        logger.info("WebVPN QR callback diagnostics: %s", flow["completion"])
+        self._sync_cas_cookie_to_webvpn(flow)
+
+        # WebVPN may leave the browser on its proxied CAS page even after it
+        # has issued the gateway ticket cookie.  The actual success criterion
+        # is whether that cookie can establish the target JWXT session.
+        if not self._webvpn_health_check(flow):
+            raise WebVPNLoginError("扫码已完成，但未能建立教务系统会话")
+
+        self._logged_in = True
+        self._webvpn_qr_flow = None
+        self._save_cookies()
+        return {"status": "authenticated", "username": self.username or None}
+
+    def cancel_webvpn_qr_login(self, flow_id: Optional[str] = None) -> None:
+        if self._webvpn_qr_flow and (flow_id is None or self._webvpn_qr_flow["id"] == flow_id):
+            self._webvpn_qr_flow = None
+
+    def get_webvpn_qr_diagnostics(self) -> Dict[str, Any]:
+        """Expose only non-secret QR redirect diagnostics for local debugging."""
+        flow = self._webvpn_qr_flow or {}
+        return {
+            key: flow[key]
+            for key in (
+                "callback", "cookies_after_poll", "poll_set_cookies",
+                "completion", "cookie_bridge", "health",
+            )
+            if key in flow
+        }
+
+    def _sync_cas_cookie_to_webvpn(self, diagnostics: Dict[str, Any]) -> None:
+        """Mirror CASTGC into WebVPN's virtual pass.neu.edu.cn cookie store."""
+        cas_cookie = next(
+            (
+                cookie for cookie in self._session.cookies
+                if cookie.name == "CASTGC" and cookie.domain.lstrip(".") == "pass.neu.edu.cn"
+            ),
+            None,
+        )
+        if cas_cookie is None:
+            diagnostics["cookie_bridge"] = {"attempted": False, "reason": "CASTGC missing"}
+            return
+
+        response = self._session.post(
+            f"{WEBVPN_ORIGIN}/wengine-vpn/cookie",
+            params={
+                "method": "set",
+                "host": "pass.neu.edu.cn",
+                "scheme": "https",
+                "path": "/tpass/login",
+                # requests performs the same one-time URL encoding as the
+                # gateway script's encodeURIComponent call.
+                "ck_data": f"{cas_cookie.name}={cas_cookie.value}",
+            },
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        response.raise_for_status()
+        diagnostics["cookie_bridge"] = {
+            "attempted": True,
+            "status_code": response.status_code,
+            "response_is_json": response.headers.get("Content-Type", "").startswith("application/json"),
+            "set_cookies": self._safe_set_cookie_names(response),
+        }
+
+    def _webvpn_health_check(self, diagnostics: Optional[Dict[str, Any]] = None) -> bool:
+        health_url = "https://jwxt.neu.edu.cn/jwapp/sys/homeapp/api/home/currentUser.do"
+        try:
+            response = self._session_request(
+                "POST",
+                health_url,
+                data={},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=min(self.timeout, 10),
+                allow_redirects=True,
+            )
+            if diagnostics is not None:
+                diagnostics["health"] = {
+                    "status_code": response.status_code,
+                    "final": self._safe_url_metadata(response.url),
+                    "history": [
+                        {
+                            "status_code": item.status_code,
+                            "location": self._safe_url_metadata(item.headers.get("Location", "")),
+                        }
+                        for item in response.history
+                    ],
+                    "cookies": self._safe_cookie_metadata(),
+                }
+            if self._is_webvpn_login_url(response.url):
+                return False
+            data = response.json()
+            if diagnostics is not None:
+                diagnostics["health"]["response_code"] = data.get("code")
+            if data.get("code") != "0":
+                return False
+            user_data = data.get("datas", {})
+            self.username = user_data.get("userId") or self.username
+            return True
+        except (requests.RequestException, ValueError):
+            return False
 
     def ensure_login(self) -> bool:
         """
@@ -453,6 +731,14 @@ class NEUAuthClient:
         Returns:
             是否成功登录
         """
+        if self.active_mode == "webvpn":
+            if self._webvpn_health_check():
+                self._logged_in = True
+                self._save_cookies()
+                return True
+            self._logged_in = False
+            return False
+
         if self._logged_in:
             # 测试当前会话是否有效
             try:
@@ -486,6 +772,9 @@ class NEUAuthClient:
         # 第2步：尝试用 CAS Cookie 刷新票据（免密）
         if self._try_refresh_ticket(self.target):
             return True
+
+        if not self.username or not self.password:
+            return False
         
         # 第3步：用账号密码重新登录（会自动处理密钥刷新）
         logger.info("Cookie 失效，使用账号密码登录...")
@@ -505,7 +794,10 @@ class NEUAuthClient:
         """
         # 确保已登录
         if not self._logged_in:
-            self.ensure_login()
+            if not self.ensure_login():
+                if self.active_mode == "webvpn":
+                    raise WebVPNRequiredError("WebVPN 会话无效，请重新扫码登录")
+                raise NEULoginError("未登录或登录已过期")
         
         # 添加默认超时
         if "timeout" not in kwargs:
@@ -522,26 +814,37 @@ class NEUAuthClient:
         allow_redirects = kwargs.get("allow_redirects", True)
         if not allow_redirects:
             # 直接看 302
-            if resp.status_code == 302 and "pass.neu.edu.cn" in resp.headers.get("Location", ""):
+            if resp.status_code in (301, 302, 303, 307, 308) and self._is_auth_redirect(resp.headers.get("Location", "")):
                 _redirected_to_cas = True
         else:
             # 检查重定向历史中是否经过 CAS
             for r in resp.history:
-                if r.status_code in (301, 302, 303, 307, 308) and "pass.neu.edu.cn" in r.headers.get("Location", ""):
+                if r.status_code in (301, 302, 303, 307, 308) and self._is_auth_redirect(r.headers.get("Location", "")):
                     _redirected_to_cas = True
                     break
             # 也检查最终 URL 是否落在 CAS
-            if not _redirected_to_cas and "pass.neu.edu.cn" in resp.url:
+            if not _redirected_to_cas and self._is_auth_redirect(resp.url):
                 _redirected_to_cas = True
         
         if _redirected_to_cas:
-            logger.info("检测到票据失效（重定向到 CAS），重新登录...")
+            logger.info("检测到票据失效（重定向到认证页），重新登录...")
             self._logged_in = False
-            self.ensure_login()
+            if not self.ensure_login():
+                if self.active_mode == "webvpn":
+                    raise WebVPNRequiredError("WebVPN 会话已过期，请重新扫码登录")
+                raise NEULoginError("统一认证会话已过期")
             # 重试原请求（含协议回退）
             resp = self._session_request(method, url, **kwargs)
         
         return resp
+
+    def _is_auth_redirect(self, url: str) -> bool:
+        parsed = urlparse(url)
+        return (
+            "pass.neu.edu.cn" in url
+            or self._is_webvpn_login_url(url)
+            or (parsed.hostname == "webvpn.neu.edu.cn" and parsed.path.startswith("/login"))
+        )
 
     def get(self, url: str, **kwargs) -> requests.Response:
         """发送 GET 请求"""
@@ -708,23 +1011,28 @@ class NEUAuthClient:
             return False
         
         try:
-            # 只保存 pass.neu.edu.cn 域下的 cookie（CAS 登录状态）
-            cas_cookies = {}
+            cookies = []
             for cookie in self._session.cookies:
-                if "pass.neu.edu.cn" in cookie.domain or cookie.domain.endswith(".neu.edu.cn"):
-                    cas_cookies[cookie.name] = {
+                domain = cookie.domain.lstrip(".")
+                if domain.endswith("neu.edu.cn"):
+                    cookies.append({
+                        "name": cookie.name,
                         "value": cookie.value,
                         "domain": cookie.domain,
                         "path": cookie.path,
-                    }
-            
-            if cas_cookies:
-                with open(self.cookie_file, 'wb') as f:
-                    pickle.dump({
+                        "expires": cookie.expires,
+                        "secure": cookie.secure,
+                    })
+
+            if cookies:
+                with open(self.cookie_file, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "version": 2,
                         "username": self.username,
-                        "cookies": cas_cookies,
+                        "active_mode": self.active_mode,
+                        "cookies": cookies,
                         "saved_at": time.time(),
-                    }, f)
+                    }, f, ensure_ascii=False)
                 logger.debug(f"Cookie 已保存到 {self.cookie_file}")
             return True
         except Exception as e:
@@ -746,22 +1054,28 @@ class NEUAuthClient:
             if not os.path.exists(self.cookie_file):
                 return False
             
-            with open(self.cookie_file, 'rb') as f:
-                data = pickle.load(f)
+            with open(self.cookie_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
             
             # 检查用户名是否匹配
-            if data.get("username") != self.username:
+            saved_username = data.get("username", "")
+            if self.username and saved_username and saved_username != self.username:
                 logger.debug("Cookie 用户名不匹配")
                 return False
+            if not self.username:
+                self.username = saved_username
+            self.active_mode = data.get("active_mode", self.active_mode)
             
             # 恢复 cookies
             from requests.cookies import create_cookie
-            for name, cookie_data in data.get("cookies", {}).items():
+            for cookie_data in data.get("cookies", []):
                 cookie = create_cookie(
-                    name=name,
+                    name=cookie_data["name"],
                     value=cookie_data["value"],
                     domain=cookie_data["domain"],
                     path=cookie_data["path"],
+                    expires=cookie_data.get("expires"),
+                    secure=cookie_data.get("secure", False),
                 )
                 self._session.cookies.set_cookie(cookie)
             
@@ -919,6 +1233,22 @@ class NEUAuthClient:
         2. 连接失败时自动切换协议重试
         3. 回退成功后记住可用协议，后续请求直接使用
         """
+        # WebVPN 模式下，业务层仍传原始校内 URL；在此处统一转换。
+        if self.active_mode == "webvpn" and not WebVPNUrlCodec.is_webvpn_url(url):
+            hostname = urlparse(url).hostname or ""
+            if hostname.endswith(".neu.edu.cn"):
+                url = WebVPNUrlCodec.convert_url(url)
+                headers = dict(kwargs.get("headers") or {})
+                referer = headers.get("Referer")
+                if referer and not WebVPNUrlCodec.is_webvpn_url(referer):
+                    referer_host = urlparse(referer).hostname or ""
+                    if referer_host.endswith(".neu.edu.cn"):
+                        headers["Referer"] = WebVPNUrlCodec.convert_url(referer)
+                origin = headers.get("Origin")
+                if origin and (urlparse(origin).hostname or "").endswith(".neu.edu.cn"):
+                    headers["Origin"] = WEBVPN_ORIGIN
+                kwargs["headers"] = headers
+
         # 应用已知可用协议
         if self._protocol_override and "jwxt.neu.edu.cn" in url:
             current_scheme = "https://" if url.startswith("https://") else "http://"
@@ -927,8 +1257,12 @@ class NEUAuthClient:
         
         try:
             return self._session.request(method, url, **kwargs)
-        except (requests.ConnectionError, requests.SSLError,
-                requests.TooManyRedirects) as e:
+        except (requests.exceptions.ConnectionError, requests.exceptions.SSLError,
+                requests.exceptions.Timeout, requests.exceptions.TooManyRedirects) as e:
+            hostname = urlparse(url).hostname or ""
+            if self.network_mode == "auto" and self.active_mode == "direct" and hostname.endswith(".neu.edu.cn"):
+                self.active_mode = "webvpn"
+                raise WebVPNRequiredError("校内服务无法直连，请使用 WebVPN 登录") from e
             # 仅对 jwxt.neu.edu.cn 进行协议回退
             if "jwxt.neu.edu.cn" not in url:
                 raise

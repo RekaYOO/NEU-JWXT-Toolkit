@@ -3,10 +3,11 @@ from fastapi import APIRouter, HTTPException, Query
 
 from backend.app.dependencies import (
     _storage, _academic_storage, _auto_login, _api_logger, COOKIE_FILE,
-    get_auth_client, set_auth_client
+    get_auth_client, peek_auth_client, set_auth_client
 )
-from backend.app.schemas import LoginRequest, LoginResponse
+from backend.app.schemas import LoginRequest, LoginResponse, WebVPNQRStartRequest, WebVPNQRStatusRequest
 from backend.core.auth import NEUAuthClient
+from backend.core.auth.client import WebVPNLoginError, WebVPNRequiredError
 
 router = APIRouter()
 
@@ -26,7 +27,8 @@ async def get_status():
         "has_local_data": storage_info["csv_count"] > 0,
         "last_update": last_update.isoformat() if last_update else None,
         "storage": storage_info,
-        "current_user": client.username if client else None
+        "current_user": client.username if client else None,
+        "network_mode": client.active_mode if client else "auto",
     }
 
 
@@ -38,7 +40,8 @@ async def login(request: LoginRequest):
         client = NEUAuthClient(
             request.username,
             request.password,
-            cookie_file=COOKIE_FILE
+            cookie_file=COOKIE_FILE,
+            network_mode=request.network_mode,
         )
         success = client.login()
 
@@ -58,7 +61,8 @@ async def login(request: LoginRequest):
             return LoginResponse(
                 success=True,
                 message="登录成功",
-                username=request.username
+                username=request.username,
+                network_mode=client.active_mode,
             )
         else:
             return LoginResponse(
@@ -66,11 +70,67 @@ async def login(request: LoginRequest):
                 message="登录失败"
             )
 
+    except WebVPNRequiredError as e:
+        return LoginResponse(
+            success=False,
+            message=str(e),
+            requires_webvpn=True,
+            network_mode="webvpn",
+        )
     except Exception as e:
         return LoginResponse(
             success=False,
             message=f"登录错误: {str(e)}"
         )
+
+
+@router.post("/api/webvpn/qr/start")
+async def start_webvpn_qr_login(request: WebVPNQRStartRequest):
+    """Create an application-managed QR login session for WebVPN."""
+    try:
+        client = NEUAuthClient(
+            username=request.username or "",
+            cookie_file=COOKIE_FILE,
+            network_mode="webvpn",
+        )
+        flow = client.start_webvpn_qr_login()
+        set_auth_client(client)
+        return {"success": True, **flow}
+    except Exception as e:
+        return {"success": False, "message": f"无法启动 WebVPN 二维码登录: {e}"}
+
+
+@router.post("/api/webvpn/qr/status")
+async def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
+    """Poll an in-memory WebVPN QR flow without creating a second session."""
+    client = peek_auth_client()
+    if client is None:
+        return {"success": False, "status": "missing", "message": "二维码登录流程不存在"}
+    try:
+        result = client.poll_webvpn_qr_login(request.flow_id)
+        return {"success": True, **result}
+    except WebVPNLoginError as e:
+        return {
+            "success": False,
+            "status": "error",
+            "message": str(e),
+            "diagnostics": client.get_webvpn_qr_diagnostics(),
+        }
+
+
+@router.post("/api/webvpn/qr/cancel")
+async def cancel_webvpn_qr_login(request: WebVPNQRStatusRequest):
+    client = peek_auth_client()
+    if client:
+        client.cancel_webvpn_qr_login(request.flow_id)
+    return {"success": True}
+
+
+@router.get("/api/webvpn/qr/diagnostics")
+async def get_webvpn_qr_diagnostics():
+    """Temporary local-only view of non-secret QR redirect metadata."""
+    client = peek_auth_client()
+    return {"success": client is not None, "diagnostics": client.get_webvpn_qr_diagnostics() if client else {}}
 
 
 @router.post("/api/logout")

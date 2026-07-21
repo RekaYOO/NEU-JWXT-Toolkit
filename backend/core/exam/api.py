@@ -55,7 +55,7 @@ class ExamAPI:
     def get_terms(self) -> List[Dict[str, Any]]:
         """获取学期列表"""
         try:
-            resp = self._client.session.get(self.TERMS_URL, headers=self.HEADERS, timeout=10)
+            resp = self._client.get(self.TERMS_URL, headers=self.HEADERS, timeout=10)
             data = resp.json()
             if data.get("code") == "0":
                 return data.get("datas", [])
@@ -79,7 +79,7 @@ class ExamAPI:
             return []
 
         try:
-            resp = self._client.session.post(
+            resp = self._client.post(
                 self.EXAMS_URL,
                 data={"termCode": term_code},
                 headers=self.HEADERS,

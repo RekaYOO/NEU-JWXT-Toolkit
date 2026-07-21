@@ -19,7 +19,7 @@ _storage = Storage()
 _academic_storage = AcademicStorage(_storage)
 
 # Cookie 持久化文件路径
-COOKIE_FILE = os.path.join(_storage.config.data_dir, "session.pkl")
+COOKIE_FILE = os.path.join(_storage.config.data_dir, "session.json")
 
 # 初始化日志系统
 _log_config = LogConfig(
@@ -50,6 +50,11 @@ def set_auth_client(client: Optional[NEUAuthClient]):
     _auth_client = client
 
 
+def peek_auth_client() -> Optional[NEUAuthClient]:
+    """Return the in-memory client without triggering a login attempt."""
+    return _auth_client
+
+
 # ── 依赖函数 ──────────────────────────────────────────────────────────────────
 
 def get_auth_client() -> Optional[NEUAuthClient]:
@@ -69,7 +74,13 @@ def get_auth_client() -> Optional[NEUAuthClient]:
         if _auth_client.ensure_login():
             return _auth_client
 
-    # 2. 尝试加载保存的凭证并创建客户端
+    # 2. 先尝试恢复二维码/WebVPN Cookie 会话，不要求保存密码
+    session_client = NEUAuthClient(cookie_file=COOKIE_FILE)
+    if session_client.ensure_login():
+        _auth_client = session_client
+        return _auth_client
+
+    # 3. 尝试加载保存的凭证并创建客户端
     creds = _storage.load_credentials()
     if creds:
         username, password = creds
