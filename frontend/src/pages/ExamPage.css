@@ -1,7 +1,5 @@
 .exam-page {
-  padding: 20px;
-  max-width: 1200px;
-  margin: 0 auto;
+  padding: 0;
 }
 
 .exam-page-header {
@@ -9,6 +7,8 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--color-line);
   flex-wrap: wrap;
   gap: 12px;
 }
@@ -16,7 +16,7 @@
 .exam-page-header h2 {
   margin: 0;
   font-size: 22px;
-  color: #1f1f1f;
+  color: var(--color-ink);
 }
 
 .exam-header-actions {
@@ -31,12 +31,13 @@
 
 .stat-card {
   text-align: center;
-  border-radius: 8px;
-  transition: all 0.3s;
+  border-radius: var(--radius-lg);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .stat-card:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  border-color: #ccd7dc;
+  box-shadow: var(--shadow-sm);
 }
 
 .stat-upcoming .ant-statistic-title {
@@ -58,9 +59,10 @@
 }
 
 .exam-group {
-  background: #fafafa;
-  border-radius: 12px;
-  padding: 16px;
+  padding: 20px 0 0;
+  background: transparent;
+  border-top: 1px solid var(--color-line);
+  border-radius: 0;
 }
 
 .exam-group-title {
@@ -80,14 +82,14 @@
 }
 
 .exam-card {
-  border-radius: 10px;
-  border: 1px solid #f0f0f0;
-  transition: all 0.3s;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-line-soft);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .exam-card:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  transform: translateY(-2px);
+  border-color: #ccd7dc;
+  box-shadow: 0 4px 14px rgba(23, 33, 43, 0.07);
 }
 
 .exam-status-0 {
@@ -145,7 +147,7 @@
 
 @media (max-width: 768px) {
   .exam-page {
-    padding: 12px;
+    padding: 0;
   }
 
   .exam-page-header {

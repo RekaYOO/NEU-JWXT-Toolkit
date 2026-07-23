@@ -23,8 +23,8 @@
 }
 
 .gpa-stats-row .stat-card.highlight {
-  background: linear-gradient(135deg, #e6f7ff 0%, #f0f5ff 100%);
-  border: 1px solid #91caff;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
 }
 
 .gpa-stats-row .ant-statistic-title {
@@ -105,7 +105,7 @@
 
 /* 绩点颜色 */
 .gpa-high { color: #52c41a; font-weight: bold; }
-.gpa-normal { color: #1890ff; }
+.gpa-normal { color: var(--color-brand); }
 .gpa-low { color: #faad14; }
 
 /* 输入框样式优化 */

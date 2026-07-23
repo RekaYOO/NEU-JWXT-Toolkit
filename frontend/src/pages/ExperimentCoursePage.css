@@ -1,6 +1,6 @@
 /* 实验选课页面样式 */
 .experiment-course-page {
-  padding: 16px;
+  padding: 0;
 }
 
 .page-header {
@@ -33,7 +33,7 @@
 .experiment-course-page .stat-value {
   font-size: 32px;
   font-weight: bold;
-  color: #1890ff;
+  color: var(--color-brand);
 }
 
 .experiment-course-page .stat-card.success .stat-value {
@@ -73,8 +73,9 @@
 /* 展开的项目列表 */
 .projects-container {
   padding: 16px;
-  background: #fafafa;
-  border-radius: 4px;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-line-soft);
+  border-radius: var(--radius-md);
 }
 
 .projects-header {
@@ -96,8 +97,8 @@
   align-items: center;
   padding: 12px 16px;
   background: #fff;
-  border-radius: 4px;
-  border: 1px solid #f0f0f0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-line-soft);
 }
 
 .project-item.selected {
@@ -225,7 +226,7 @@
 
 @media (max-width: 576px) {
   .experiment-course-page {
-    padding: 8px;
+    padding: 0;
   }
 
   .experiment-course-page .stats-row {

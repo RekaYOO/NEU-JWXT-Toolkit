@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, message } from 'antd';
+import { ConfigProvider, Layout, Spin, message } from 'antd';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import MainLayout from './layouts/MainLayout';
@@ -13,6 +13,59 @@ import { checkStatus } from './services/api';
 import './App.css';
 
 const { Content } = Layout;
+
+const appTheme = {
+  token: {
+    colorPrimary: '#2563eb',
+    colorInfo: '#2563eb',
+    colorSuccess: '#16a34a',
+    colorWarning: '#d97706',
+    colorError: '#dc2626',
+    colorText: '#1e293b',
+    colorTextSecondary: '#64748b',
+    colorBorder: '#d8e0e8',
+    colorBorderSecondary: '#e8edf2',
+    colorBgLayout: '#f4f6f8',
+    colorBgContainer: '#ffffff',
+    borderRadius: 6,
+    borderRadiusLG: 8,
+    controlHeight: 36,
+    fontFamily: "'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', Arial, sans-serif",
+  },
+  components: {
+    Button: {
+      borderRadius: 6,
+      primaryShadow: 'none',
+      defaultShadow: 'none',
+      fontWeight: 600,
+    },
+    Card: {
+      borderRadiusLG: 8,
+      headerBg: '#ffffff',
+      paddingLG: 20,
+    },
+    Menu: {
+      darkItemBg: '#ffffff',
+      darkSubMenuItemBg: '#ffffff',
+      darkItemColor: '#475569',
+      darkItemHoverBg: '#f1f5f9',
+      darkItemSelectedBg: '#eaf2ff',
+      darkItemSelectedColor: '#1d4ed8',
+      itemBorderRadius: 6,
+    },
+    Table: {
+      headerBg: '#f4f6f7',
+      headerColor: '#34414b',
+      headerSplitColor: '#e1e6e9',
+      rowHoverBg: '#f5fafb',
+      borderColor: '#e1e6e9',
+    },
+    Tabs: {
+      itemSelectedColor: '#2563eb',
+      inkBarColor: '#2563eb',
+    },
+  },
+};
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -66,14 +119,21 @@ function App() {
   };
 
   if (isLoading) {
-    return <div className="loading">加载中...</div>;
+    return (
+      <div className="loading" role="status" aria-live="polite">
+        <div className="loading-mark">NEU</div>
+        <Spin size="large" />
+        <span>正在连接教务服务</span>
+      </div>
+    );
   }
 
   return (
-    <Router>
-      <Layout className="app-layout">
-        <Content className="app-content">
-          <Routes>
+    <ConfigProvider theme={appTheme}>
+      <Router>
+        <Layout className="app-layout">
+          <Content className="app-content">
+            <Routes>
             <Route 
               path="/login" 
               element={
@@ -98,10 +158,11 @@ function App() {
               <Route path="exams" element={<ExamPage />} />
               <Route path="logs" element={<LogsPage />} />
             </Route>
-          </Routes>
-        </Content>
-      </Layout>
-    </Router>
+            </Routes>
+          </Content>
+        </Layout>
+      </Router>
+    </ConfigProvider>
   );
 }
 

@@ -5,13 +5,13 @@
   position: relative;
 }
 
-/* 悬挂式学分统计卡片 - 圆角流线型设计 */
+/* 学分统计摘要：位于内容流内，避免遮挡全局顶栏 */
 .credit-summary-float {
-  position: fixed;
-  top: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 100;
+  position: relative;
+  z-index: 10;
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
   transition: all 0.3s ease;
   cursor: pointer;
 }
@@ -19,20 +19,19 @@
 .credit-summary-float .float-hint {
   display: inline-flex;
   align-items: center;
-  color: #666;
+  color: var(--color-muted);
   font-size: 13px;
-  padding: 8px 20px;
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(10px);
-  border-radius: 20px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-  border: 1px solid #e8e8e8;
+  padding: 8px 14px;
+  background: #ffffff;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--color-line);
   white-space: nowrap;
 }
 
 .credit-summary-float .float-hint .anticon {
   margin-right: 6px;
-  color: #1890ff;
+  color: var(--color-brand);
 }
 
 .credit-summary-float .float-content {
@@ -44,11 +43,10 @@
   width: 600px;
   max-width: 90vw;
   padding: 16px;
-  background: rgba(255, 255, 255, 0.98);
-  backdrop-filter: blur(10px);
-  border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
-  border: 1px solid #e8e8e8;
+  background: #ffffff;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--color-line);
 }
 
 .credit-summary-float:hover .float-content,
@@ -62,9 +60,9 @@
   pointer-events: none;
 }
 
-/* 主内容区域 - 顶头放置（悬挂卡片不占位） */
+/* 主内容区域 */
 .main-content-wrapper {
-  height: calc(100vh - 60px);
+  height: calc(100vh - 104px);
   margin-top: 0;
   padding: 0 16px;
 }
@@ -399,6 +397,25 @@
 @media (max-width: 768px) {
   .academic-report-page {
     padding: 8px;
+  }
+
+  .credit-summary-float {
+    width: 100%;
+    margin-bottom: 12px;
+  }
+
+  .credit-summary-float .float-hint {
+    width: 100%;
+    justify-content: center;
+    overflow: hidden;
+    padding-inline: 8px;
+    font-size: 12px;
+    text-overflow: ellipsis;
+  }
+
+  .credit-summary-float .float-content {
+    width: calc(100vw - 48px);
+    max-width: none;
   }
   
   .credit-summary-card .ant-statistic-title {

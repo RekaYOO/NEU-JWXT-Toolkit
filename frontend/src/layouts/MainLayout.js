@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, Button, Avatar, Dropdown, Space, message } from 'antd';
+import { Layout, Menu, Button, Avatar, Drawer, Dropdown, Grid, Tooltip, message } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   BookOutlined,
@@ -12,8 +12,9 @@ import {
   ExperimentOutlined,
   StarOutlined,
   CalendarOutlined,
+  MenuOutlined,
 } from '@ant-design/icons';
-import { logout, getUserInfo, getUserAvatar } from '../services/api';
+import { logout, getUserAvatar } from '../services/api';
 import './MainLayout.css';
 
 const { Header, Sider, Content } = Layout;
@@ -21,12 +22,26 @@ const { Header, Sider, Content } = Layout;
 const AVATAR_STORAGE_KEY = 'neu_user_avatar';
 const AVATAR_TIMESTAMP_KEY = 'neu_user_avatar_timestamp';
 
+const menuItems = [
+  { key: '/scores', icon: <BookOutlined />, label: '成绩' },
+  { key: '/academic-report', icon: <ScheduleOutlined />, label: '培养计划' },
+  { key: '/experiment-courses', icon: <ExperimentOutlined />, label: '实验选课' },
+  { key: '/evaluation', icon: <StarOutlined />, label: '自动评教' },
+  { key: '/exams', icon: <CalendarOutlined />, label: '我的考试' },
+  { key: '/logs', icon: <FileTextOutlined />, label: '系统日志' },
+];
+
+const pageTitles = Object.fromEntries(menuItems.map(({ key, label }) => [key, label]));
+
 const MainLayout = ({ userInfo, onLogout }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState(null);
   const [isRefreshingAvatar, setIsRefreshingAvatar] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.md;
 
   // 加载用户头像（仅使用缓存，不自动下载）
   useEffect(() => {
@@ -48,6 +63,12 @@ const MainLayout = ({ userInfo, onLogout }) => {
       loadAvatar();
     }
   }, [userInfo]);
+
+  useEffect(() => () => {
+    if (avatarUrl && avatarUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(avatarUrl);
+    }
+  }, [avatarUrl]);
 
   // 刷新头像（点击头像时调用）
   const refreshAvatar = async () => {
@@ -100,89 +121,112 @@ const MainLayout = ({ userInfo, onLogout }) => {
     },
   ];
 
-  const menuItems = [
-    {
-      key: '/scores',
-      icon: <BookOutlined />,
-      label: '成绩',
-    },
-    {
-      key: '/academic-report',
-      icon: <ScheduleOutlined />,
-      label: '培养计划',
-    },
-    {
-      key: '/experiment-courses',
-      icon: <ExperimentOutlined />,
-      label: '实验选课',
-    },
-    {
-      key: '/evaluation',
-      icon: <StarOutlined />,
-      label: '自动评教',
-    },
-    {
-      key: '/exams',
-      icon: <CalendarOutlined />,
-      label: '我的考试',
-    },
-    {
-      key: '/logs',
-      icon: <FileTextOutlined />,
-      label: '系统日志',
-    },
-  ];
-
   const onMenuClick = ({ key }) => {
     navigate(key);
+    setMobileNavOpen(false);
   };
+
+  const handleNavigationToggle = () => {
+    if (isMobile) {
+      setMobileNavOpen((open) => !open);
+      return;
+    }
+    setCollapsed((value) => !value);
+  };
+
+  const navigation = (
+    <Menu
+      theme="dark"
+      mode="inline"
+      selectedKeys={[location.pathname]}
+      items={menuItems}
+      onClick={onMenuClick}
+      aria-label="主要导航"
+    />
+  );
+
+  const brand = (compact = false) => (
+    <div className={`app-brand${compact ? ' is-compact' : ''}`}>
+      <span className="app-brand-mark">NEU</span>
+      {!compact && (
+        <span className="app-brand-name">
+          教务工具箱
+          <small>ACADEMIC TOOLKIT</small>
+        </span>
+      )}
+    </div>
+  );
+
+  const navigationToggle = (
+    <Button
+      type="text"
+      aria-label={isMobile ? '打开导航' : (collapsed ? '展开导航' : '收起导航')}
+      aria-expanded={isMobile ? mobileNavOpen : !collapsed}
+      icon={isMobile ? <MenuOutlined /> : (collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />)}
+      onClick={handleNavigationToggle}
+      className="collapse-btn"
+    />
+  );
 
   return (
     <Layout className="main-layout">
-      <Sider
-        trigger={null}
-        collapsible
-        collapsed={collapsed}
-        className="main-sider"
+      {!isMobile && (
+        <Sider
+          trigger={null}
+          collapsible
+          collapsed={collapsed}
+          width={240}
+          collapsedWidth={80}
+          className="main-sider"
+        >
+          {brand(collapsed)}
+          <nav className="main-nav">{navigation}</nav>
+          {!collapsed && <div className="sider-footer">本地运行 · 数据仅存于当前设备</div>}
+        </Sider>
+      )}
+
+      <Drawer
+        className="mobile-nav-drawer"
+        placement="left"
+        width={280}
+        open={isMobile && mobileNavOpen}
+        onClose={() => setMobileNavOpen(false)}
+        title={brand(false)}
+        styles={{ body: { padding: 0 } }}
       >
-        <div className="logo">
-          {collapsed ? 'NEU' : 'NEU工具箱'}
-        </div>
-        <Menu
-          theme="dark"
-          mode="inline"
-          selectedKeys={[location.pathname]}
-          items={menuItems}
-          onClick={onMenuClick}
-        />
-      </Sider>
+        <nav className="main-nav">{navigation}</nav>
+      </Drawer>
 
       <Layout>
         <Header className="main-header">
-          <Button
-            type="text"
-            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-            onClick={() => setCollapsed(!collapsed)}
-            className="collapse-btn"
-          />
+          <div className="header-leading">
+            {isMobile ? navigationToggle : (
+              <Tooltip title={collapsed ? '展开导航' : '收起导航'}>
+                {navigationToggle}
+              </Tooltip>
+            )}
+            <div className="page-context">
+              <span className="page-context-label">教务工作台</span>
+              <strong>{pageTitles[location.pathname] || '教务工具箱'}</strong>
+            </div>
+          </div>
 
           <div className="header-right">
-            <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-              <Space className="user-info">
+            <Dropdown menu={{ items: userMenuItems }} placement="bottomRight" trigger={['click']}>
+              <Button type="text" className="user-info" aria-label="打开用户菜单">
                 <Avatar 
                   src={avatarUrl} 
                   icon={!avatarUrl && <UserOutlined />}
                   onClick={refreshAvatar}
-                  style={{ cursor: 'pointer' }}
                   title="点击刷新头像"
                 />
-                <span className="username">{userInfo || '用户'}</span>
-              </Space>
+                {!isMobile && <span className="username">{userInfo || '用户'}</span>}
+              </Button>
             </Dropdown>
           </div>
         </Header>
 
-        <Content className="main-content">
+        <Content className="workspace-content">
           <Outlet />
         </Content>
       </Layout>

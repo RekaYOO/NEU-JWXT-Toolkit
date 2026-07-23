@@ -29,7 +29,7 @@
 
 .gpa {
   font-weight: bold;
-  color: #1890ff;
+  color: var(--color-brand);
 }
 
 .impact-delta {
@@ -65,7 +65,7 @@
 }
 
 .filter-active-icon {
-  color: #1890ff;
+  color: var(--color-brand);
   font-size: 12px;
 }
 
@@ -75,7 +75,7 @@
 }
 
 .scores-table-card .ant-table-thead > tr > th {
-  background: #fafafa;
+  background: #f8fafc;
   font-weight: 600;
   padding: 12px 8px;
 }
@@ -85,7 +85,7 @@
 }
 
 .scores-table-card .ant-table-tbody > tr:hover > td {
-  background: #e6f7ff;
+  background: #f5f8ff;
 }
 
 /* 分页样式 */

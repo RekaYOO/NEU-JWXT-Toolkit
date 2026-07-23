@@ -223,7 +223,10 @@ const LoginPage = ({ onLoginSuccess }) => {
   if (checking) {
     return (
       <div className="login-page">
-        <Spin size="large" tip="检查登录状态..." />
+        <div className="login-status" role="status" aria-live="polite">
+          <Spin size="large" />
+          <span>正在检查登录状态</span>
+        </div>
       </div>
     );
   }
@@ -350,7 +353,7 @@ const LoginPage = ({ onLoginSuccess }) => {
         confirmLoading={smsLoading}
         onOk={verifySMSCode}
         onCancel={cancelSMSLogin}
-        destroyOnClose
+        destroyOnHidden
       >
         <div className="sms-auth-content">
           <SafetyCertificateOutlined className="sms-auth-icon" />

@@ -471,8 +471,8 @@ const ScoresPage = () => {
           column.render = (score, record) => {
             // 成绩颜色完全按照绩点显示：
             // 绩点 3.5-5.0: 绿色 (优)
-            // 绩点 2.5-3.5: 青色 (良)
-            // 绩点 1.0-2.5: 蓝色 (中/合格)
+            // 绩点 2.5-3.5: 蓝色 (良)
+            // 绩点 1.0-2.5: 橙色 (中/合格)
             // 绩点 <1.0: 红色 (不合格)
             
             const gpa = parseFloat(record.gpa);
@@ -480,13 +480,13 @@ const ScoresPage = () => {
             
             if (!isNaN(gpa)) {
               if (gpa >= 3.5) {
-                color = 'success';      // 绿色
+                color = 'success';
               } else if (gpa >= 2.5) {
-                color = 'cyan';         // 青色
+                color = 'processing';
               } else if (gpa >= 1.0) {
-                color = 'blue';         // 蓝色
+                color = 'warning';
               } else {
-                color = 'error';        // 红色
+                color = 'error';
               }
             }
             
@@ -608,12 +608,12 @@ const ScoresPage = () => {
         </Col>
         <Col xs={24} sm={12} md={6}>
           <Card>
-            <Statistic title="平均绩点" value={stats.avgGpa} precision={3} prefix={<TrophyOutlined />} valueStyle={{ color: '#3f8600' }} />
+            <Statistic title="平均绩点" value={stats.avgGpa} precision={3} prefix={<TrophyOutlined />} valueStyle={{ color: 'var(--color-brand)' }} />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
           <Card>
-            <Statistic title="已通过" value={stats.passedCount} prefix={<SafetyOutlined />} valueStyle={{ color: '#3f8600' }} />
+            <Statistic title="已通过" value={stats.passedCount} prefix={<SafetyOutlined />} valueStyle={{ color: 'var(--color-success)' }} />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
