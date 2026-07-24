@@ -5,59 +5,96 @@
   position: relative;
 }
 
-/* 学分统计摘要：位于内容流内，避免遮挡全局顶栏 */
+/* 学分统计摘要：挂载到全局顶栏中部，不参与页面内容布局 */
 .credit-summary-float {
   position: relative;
-  z-index: 10;
-  display: flex;
-  justify-content: center;
-  margin-bottom: 12px;
-  transition: all 0.3s ease;
-  cursor: pointer;
+  width: max-content;
+  max-width: 100%;
 }
 
 .credit-summary-float .float-hint {
-  display: inline-flex;
+  height: 38px;
+  display: flex;
   align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 0 12px;
   color: var(--color-muted);
   font-size: 13px;
-  padding: 8px 14px;
-  background: #ffffff;
+  font-family: inherit;
+  background: var(--color-surface-muted);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
-  border: 1px solid var(--color-line);
+  border: 1px solid var(--color-line-soft);
   white-space: nowrap;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
 }
 
 .credit-summary-float .float-hint .anticon {
-  margin-right: 6px;
   color: var(--color-brand);
+  transition: transform 160ms ease;
+}
+
+.credit-summary-float .summary-title {
+  color: var(--color-ink);
+  font-weight: 700;
+}
+
+.credit-summary-float .summary-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.credit-summary-float .summary-detail i {
+  color: var(--color-subtle);
+  font-style: normal;
+}
+
+.credit-summary-float .summary-detail b {
+  margin-left: 2px;
+  padding-left: 9px;
+  color: #b45309;
+  border-left: 1px solid var(--color-line);
+  font-weight: 700;
+}
+
+.credit-summary-float .summary-compact {
+  display: none;
+  color: var(--color-muted);
+  font-weight: 650;
+}
+
+.credit-summary-float:hover .float-hint,
+.credit-summary-float.expanded .float-hint {
+  color: var(--color-brand);
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.credit-summary-float.expanded .float-hint .anticon {
+  transform: rotate(180deg);
 }
 
 .credit-summary-float .float-content {
   display: none;
   position: absolute;
-  top: 0;
+  top: 100%;
   left: 50%;
+  z-index: 30;
   transform: translateX(-50%);
   width: 600px;
   max-width: 90vw;
   padding: 16px;
   background: #ffffff;
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
   border: 1px solid var(--color-line);
 }
 
 .credit-summary-float:hover .float-content,
 .credit-summary-float.expanded .float-content {
   display: block;
-}
-
-.credit-summary-float:hover .float-hint,
-.credit-summary-float.expanded .float-hint {
-  opacity: 0;
-  pointer-events: none;
 }
 
 /* 主内容区域 */
@@ -383,6 +420,16 @@
 }
 
 /* 响应式设计 */
+@media (max-width: 1200px) {
+  .credit-summary-float .summary-detail {
+    display: none;
+  }
+
+  .credit-summary-float .summary-compact {
+    display: inline;
+  }
+}
+
 @media (max-width: 992px) {
   .main-content > .ant-col {
     margin-bottom: 16px;
@@ -400,22 +447,30 @@
   }
 
   .credit-summary-float {
-    width: 100%;
-    margin-bottom: 12px;
+    width: min(100%, 180px);
   }
 
   .credit-summary-float .float-hint {
     width: 100%;
     justify-content: center;
     overflow: hidden;
-    padding-inline: 8px;
+    padding-inline: 10px;
     font-size: 12px;
     text-overflow: ellipsis;
+  }
+
+  .credit-summary-float .summary-detail {
+    display: none;
+  }
+
+  .credit-summary-float .summary-compact {
+    display: inline;
   }
 
   .credit-summary-float .float-content {
     position: fixed;
     top: 64px;
+    left: 50%;
     width: calc(100vw - 24px);
     max-width: none;
     max-height: calc(100vh - 88px);

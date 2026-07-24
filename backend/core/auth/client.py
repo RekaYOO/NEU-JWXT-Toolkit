@@ -1211,6 +1211,8 @@ class NEUAuthClient:
                         "saved_at": time.time(),
                     }, f, ensure_ascii=False)
                 os.replace(temporary_file, self.cookie_file)
+                if os.name != "nt":
+                    os.chmod(self.cookie_file, 0o600)
                 logger.debug(f"Cookie 已保存到 {self.cookie_file}")
             return True
         except Exception as e:

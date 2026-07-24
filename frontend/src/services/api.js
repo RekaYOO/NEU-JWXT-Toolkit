@@ -14,11 +14,40 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      window.dispatchEvent(new CustomEvent('neu-auth-required'));
+      if (error.response?.data?.code === 'ACCESS_REQUIRED') {
+        window.dispatchEvent(new CustomEvent('neu-access-required'));
+      } else if (!error.config?.url?.startsWith('/api/access/')) {
+        window.dispatchEvent(new CustomEvent('neu-auth-required'));
+      }
     }
     return Promise.reject(error);
   }
 );
+
+export const getHealth = async () => {
+  const response = await api.get('/api/health');
+  return response.data;
+};
+
+export const getAccessStatus = async () => {
+  const response = await api.get('/api/access/status');
+  return response.data;
+};
+
+export const loginAccessGateway = async (password) => {
+  const response = await api.post('/api/access/login', { password });
+  return response.data;
+};
+
+export const logoutAccessGateway = async () => {
+  const response = await api.post('/api/access/logout');
+  return response.data;
+};
+
+export const shutdownRuntime = async () => {
+  const response = await api.post('/api/runtime/shutdown');
+  return response.data;
+};
 
 // 存储正在进行的请求控制器，用于取消请求
 const pendingRequests = new Map();

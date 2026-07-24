@@ -1,0 +1,201 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  web:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: npm ci
+      - working-directory: frontend
+        env:
+          REACT_APP_API_URL: ""
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: frontend/build
+          if-no-files-found: error
+
+  windows:
+    needs: web
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-build.lock
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: frontend/build
+      - run: python -m pip install --disable-pip-version-check -r requirements-build.lock
+      - name: Build frozen desktop application
+        run: pyinstaller packaging/pyinstaller/desktop.spec --distpath dist --workpath build/pyinstaller --clean --noconfirm
+      - name: Smoke test desktop application
+        shell: pwsh
+        env:
+          NEU_JWXT_NO_BROWSER: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $process = Start-Process -FilePath ".\dist\NEU-JWXT-Toolkit\NEU-JWXT-Toolkit.exe" -PassThru
+          $instance = Join-Path $env:LOCALAPPDATA "NEU-JWXT-Toolkit\desktop-instance.json"
+          $healthy = $false
+          for ($i = 0; $i -lt 80; $i++) {
+            if (Test-Path $instance) {
+              $state = Get-Content $instance -Raw | ConvertFrom-Json
+              try {
+                $health = Invoke-RestMethod "$($state.url)/api/health" -TimeoutSec 1
+                if ($health.status -eq "ok") { $healthy = $true; break }
+              } catch {}
+            }
+            Start-Sleep -Milliseconds 125
+          }
+          if (-not $healthy) { Stop-Process -Id $process.Id -Force; throw "Desktop health check failed" }
+          $homepage = Invoke-WebRequest "$($state.url)/app" -UseBasicParsing
+          if ($homepage.StatusCode -ne 200 -or $homepage.Content -notmatch 'id="root"') {
+            Stop-Process -Id $process.Id -Force
+            throw "Bundled homepage check failed"
+          }
+          $second = Start-Process -FilePath ".\dist\NEU-JWXT-Toolkit\NEU-JWXT-Toolkit.exe" -PassThru
+          if (-not $second.WaitForExit(5000) -or $second.ExitCode -ne 0) {
+            Stop-Process -Id $second.Id -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $process.Id -Force
+            throw "Desktop single-instance check failed"
+          }
+          Invoke-RestMethod "$($state.url)/api/runtime/shutdown" -Method Post | Out-Null
+          if (-not $process.WaitForExit(5000)) {
+            Stop-Process -Id $process.Id -Force
+            throw "Desktop shutdown check failed"
+          }
+          $forbidden = Get-ChildItem ".\dist\NEU-JWXT-Toolkit" -Recurse -File |
+            Where-Object { $_.Name -match '^(session\.json|scores.*\.csv|credentials.*|\.env.*)$' -or $_.Extension -eq '.log' }
+          if ($forbidden) { throw "Desktop bundle contains runtime data" }
+      - name: Create portable archive
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          New-Item -ItemType Directory -Force release | Out-Null
+          Compress-Archive -Path "dist\NEU-JWXT-Toolkit\*" -DestinationPath "release\NEU-JWXT-Toolkit-$version-windows-x64-portable.zip"
+      - name: Build Inno Setup installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $version = (Get-Content VERSION -Raw).Trim()
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$pwd\dist\NEU-JWXT-Toolkit" "packaging\windows\installer.iss"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: release/*
+          if-no-files-found: error
+
+  linux:
+    needs: web
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-build.lock
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: frontend/build
+      - run: python -m pip install --disable-pip-version-check -r requirements-build.lock
+      - name: Build frozen server application
+        run: pyinstaller packaging/pyinstaller/server.spec --distpath dist --workpath build/pyinstaller --clean --noconfirm
+      - name: Smoke test server application
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/neu-config" "$RUNNER_TEMP/neu-data"
+          python - <<'PY'
+          import json, secrets
+          from pathlib import Path
+          from backend.core.runtime.access import hash_access_password
+          target = Path(__import__("os").environ["RUNNER_TEMP"]) / "neu-config" / "config.json"
+          target.write_text(json.dumps({
+              "profile": "server",
+              "host": "127.0.0.1",
+              "port": 18765,
+              "access_password": hash_access_password("release-test-password"),
+              "session_secret": secrets.token_urlsafe(48),
+              "trusted_proxies": ["127.0.0.1"]
+          }), encoding="utf-8")
+          PY
+          NEU_JWXT_DATA_DIR="$RUNNER_TEMP/neu-data" \
+            dist/neu-jwxt-server/neu-jwxt-server serve \
+            --config "$RUNNER_TEMP/neu-config/config.json" >"$RUNNER_TEMP/server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 80); do
+            curl --fail --silent http://127.0.0.1:18765/api/health >/dev/null && break
+            sleep 0.125
+          done
+          curl --fail http://127.0.0.1:18765/api/health
+          curl --fail --silent http://127.0.0.1:18765/ | grep -q 'id="root"'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18765/api/status)" = "401"
+          kill "$SERVER_PID"
+          wait "$SERVER_PID" || true
+          trap - EXIT
+      - name: Assemble Linux package
+        shell: bash
+        run: |
+          VERSION="$(tr -d '\r\n' < VERSION)"
+          PACKAGE="release/neu-jwxt-toolkit"
+          mkdir -p "$PACKAGE/app" "$PACKAGE/examples"
+          cp -a dist/neu-jwxt-server/. "$PACKAGE/app/"
+          cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/neu-jwxt-toolkit.service "$PACKAGE/"
+          cp packaging/linux/examples/* "$PACKAGE/examples/"
+          chmod +x "$PACKAGE/install.sh" "$PACKAGE/uninstall.sh" "$PACKAGE/app/neu-jwxt-server"
+          tar -C release -czf "release/NEU-JWXT-Toolkit-$VERSION-linux-amd64.tar.gz" neu-jwxt-toolkit
+          rm -rf "$PACKAGE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: release/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches VERSION
+        run: test "${GITHUB_REF_NAME}" = "v$(tr -d '\r\n' < VERSION)"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-release"
+          path: release
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: release
+        run: sha256sum * > SHA256SUMS.txt
+      - name: Attest release files
+        uses: actions/attest@v4
+        with:
+          subject-path: release/*
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release/* --generate-notes --verify-tag

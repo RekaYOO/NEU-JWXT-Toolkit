@@ -23,27 +23,37 @@ from starlette.responses import FileResponse
 
 from backend.core.log.access_logger import FastAPILogMiddleware
 from backend.app.dependencies import _log_config
-from backend.app.routers import auth, scores, logs, report, experiment, user, gpa, evaluation, exam
+from backend.app.routers import auth, scores, logs, report, experiment, user, gpa, evaluation, exam, runtime
+from backend.core.runtime import get_runtime_config, resource_path
+from backend.core.runtime.access import AccessGatewayMiddleware
+
+runtime_config = get_runtime_config()
 
 # ── FastAPI 应用 ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="NEU教务系统工具箱 API",
     description="东北大学教务系统工具箱后端服务",
-    version="1.2.0"
+    version=runtime_config.version,
+    docs_url="/docs" if runtime_config.profile == "development" else None,
+    redoc_url="/redoc" if runtime_config.profile == "development" else None,
+    openapi_url="/openapi.json" if runtime_config.profile == "development" else None,
 )
 
 # 日志中间件（必须在 CORS 之前）
 app.add_middleware(FastAPILogMiddleware, config=_log_config)
 
 # CORS 配置
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if runtime_config.profile == "development":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^http://(?:localhost|127\.0\.0\.1):\d+$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+app.add_middleware(AccessGatewayMiddleware, config=runtime_config)
 
 # ── 路由挂载 ───────────────────────────────────────────────────────────────────
 
@@ -56,13 +66,11 @@ app.include_router(user.router, prefix="/api")
 app.include_router(gpa.router, prefix="/api")
 app.include_router(evaluation.router, prefix="/api")
 app.include_router(exam.router, prefix="/api")
+app.include_router(runtime.router)
 
 # ── 前端静态文件（生产/本地单端口模式）──────────────────────────────────────────
 
-_FRONTEND_BUILD_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "frontend", "build"
-)
+_FRONTEND_BUILD_DIR = str(resource_path("frontend", "build"))
 
 if os.path.isdir(_FRONTEND_BUILD_DIR):
     # 挂载静态资源目录
@@ -84,8 +92,8 @@ if __name__ == "__main__":
     import uvicorn
 
     # 从环境变量读取端口，默认为 8000
-    port = int(os.environ.get("PORT", os.environ.get("BACKEND_PORT", "8000")))
-    host = os.environ.get("HOST", "0.0.0.0")
+    port = runtime_config.port
+    host = runtime_config.host
 
     print(f"启动 NEU 教务系统工具箱 API 服务...")
     print(f"监听地址: http://{host}:{port}")

@@ -4,7 +4,7 @@ NEU教务系统第三方工具箱，提供成绩查询、培养计划查看、�
 
 保留了原汁原味的拼音+英语命名法(bushi)
 
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev)
 
@@ -21,12 +21,23 @@ NEU教务系统第三方工具箱，提供成绩查询、培养计划查看、�
 | ⭐ **自动评教** | 自动化教学质量评价，支持单课/批量提交与预览 |
 ---
 
-## 🚀 快速开始
+## 🚀 推荐安装方式
+
+从 GitHub Releases 下载与系统匹配的 `1.3.0` 发行包，无需预装 Python 或 Node.js：
+
+- Windows 本机使用：下载 `NEU-JWXT-Toolkit-1.3.0-windows-x64-setup.exe`。安装后从开始菜单启动；也可下载便携 ZIP，解压后直接运行。
+- Linux 服务端使用：下载 `NEU-JWXT-Toolkit-1.3.0-linux-amd64.tar.gz`，解压后执行 `sudo ./install.sh`，再按文档配置 Caddy 或 Nginx。
+
+Windows 版本只监听本机地址。Linux 版本默认只监听 `127.0.0.1`，必须通过独立子域名反向代理后供其他设备访问，并由独立访问密码保护。
+
+详见 [Windows 本地安装](docs/部署/Windows本地安装.md) 和 [Linux 轻量服务](docs/部署/Linux轻量服务.md)。
+
+## 🧰 从源码运行
 
 ### 环境要求
 
-- Python 3.8+
-- Node.js 16+
+- Python 3.11
+- Node.js 20
 
 ### 安装
 
@@ -70,7 +81,7 @@ python start_all.py --dev
 |------|----------|------|
 | 默认 | http://localhost:8000 | 单端口，前后端合一 |
 | 开发 | http://localhost:3000 | 前端 dev server（热重载） |
-| API 文档 | http://localhost:8000/docs | 两种模式均可访问 |
+| API 文档 | http://localhost:8000/docs | 仅源码开发模式开放 |
 
 ---
 
@@ -155,6 +166,9 @@ python start_all.py --dev
 
 **部署运行：**
 - [快速开始](docs/快速开始.md) - 环境搭建、生产部署与免密登录
+- [Windows 本地安装](docs/部署/Windows本地安装.md) - 安装版、便携版、数据位置与退出方式
+- [Linux 轻量服务](docs/部署/Linux轻量服务.md) - 安装、反向代理、升级、回滚与卸载
+- [发行与 CI/CD](docs/开发/发行与CI.md) - 版本、构建矩阵、发行物和安全边界
 
 ---
 

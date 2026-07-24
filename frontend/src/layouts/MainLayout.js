@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, Button, Avatar, Drawer, Dropdown, Grid, Tooltip, message } from 'antd';
+import { Layout, Menu, Button, Avatar, Drawer, Dropdown, Grid, Tooltip, message, Modal } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   BookOutlined,
@@ -13,8 +13,9 @@ import {
   StarOutlined,
   CalendarOutlined,
   MenuOutlined,
+  PoweroffOutlined,
 } from '@ant-design/icons';
-import { logout, getUserAvatar } from '../services/api';
+import { logout, getUserAvatar, shutdownRuntime } from '../services/api';
 import './MainLayout.css';
 
 const { Header, Sider, Content } = Layout;
@@ -33,7 +34,7 @@ const menuItems = [
 
 const pageTitles = Object.fromEntries(menuItems.map(({ key, label }) => [key, label]));
 
-const MainLayout = ({ userInfo, onLogout }) => {
+const MainLayout = ({ userInfo, onLogout, runtimeProfile = 'development' }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState(null);
   const [isRefreshingAvatar, setIsRefreshingAvatar] = useState(false);
@@ -119,6 +120,27 @@ const MainLayout = ({ userInfo, onLogout }) => {
       label: '退出登录',
       onClick: handleLogout,
     },
+    ...(runtimeProfile === 'desktop' ? [{
+      type: 'divider',
+    }, {
+      key: 'shutdown',
+      danger: true,
+      icon: <PoweroffOutlined />,
+      label: '退出本地服务',
+      onClick: () => {
+        Modal.confirm({
+          title: '退出本地服务？',
+          content: '退出后需要从桌面或开始菜单重新启动。',
+          okText: '退出',
+          okButtonProps: { danger: true },
+          cancelText: '取消',
+          onOk: async () => {
+            await shutdownRuntime();
+            window.setTimeout(() => window.close(), 250);
+          },
+        });
+      },
+    }] : []),
   ];
 
   const onMenuClick = ({ key }) => {
@@ -181,7 +203,13 @@ const MainLayout = ({ userInfo, onLogout }) => {
         >
           {brand(collapsed)}
           <nav className="main-nav">{navigation}</nav>
-          {!collapsed && <div className="sider-footer">本地运行 · 数据仅存于当前设备</div>}
+          {!collapsed && (
+            <div className="sider-footer">
+              {runtimeProfile === 'server'
+                ? '私有服务 · 仅限本人设备访问'
+                : '本地运行 · 数据仅存于当前设备'}
+            </div>
+          )}
         </Sider>
       )}
 
@@ -198,7 +226,7 @@ const MainLayout = ({ userInfo, onLogout }) => {
       </Drawer>
 
       <Layout>
-        <Header className="main-header">
+        <Header className={`main-header ${location.pathname === '/academic-report' ? 'has-center-slot' : ''}`}>
           <div className="header-leading">
             {isMobile ? navigationToggle : (
               <Tooltip title={collapsed ? '展开导航' : '收起导航'}>
@@ -210,6 +238,12 @@ const MainLayout = ({ userInfo, onLogout }) => {
               <strong>{pageTitles[location.pathname] || '教务工具箱'}</strong>
             </div>
           </div>
+
+          <div
+            id="workspace-header-center"
+            className="header-center-slot"
+            aria-label="页面快捷信息"
+          />
 
           <div className="header-right">
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight" trigger={['click']}>

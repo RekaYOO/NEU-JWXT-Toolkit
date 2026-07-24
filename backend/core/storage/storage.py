@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 
 from backend.core.academic.api import CourseScore, TermScores
+from backend.core.runtime import get_runtime_config
+from backend.core.runtime.config import secure_file
 
 
 @dataclass
@@ -26,8 +28,7 @@ class StorageConfig:
     
     def __post_init__(self):
         if not self.data_dir:
-            # 使用当前工作目录下的 data/ 文件夹
-            self.data_dir = os.path.join(os.getcwd(), "data")
+            self.data_dir = str(get_runtime_config().data_dir)
 
 
 class Storage:
@@ -107,12 +108,14 @@ class Storage:
                     "raw_data": json.dumps(s.raw_data, ensure_ascii=False) if s.raw_data else "",
                 }
                 writer.writerow(row)
+        secure_file(Path(filepath))
         
         # 同时保存元数据
         if metadata:
             meta_filepath = filepath.replace('.csv', '_meta.json')
             with open(meta_filepath, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
+            secure_file(Path(meta_filepath))
         
         return filepath
     
@@ -211,6 +214,7 @@ class Storage:
         
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
+        secure_file(Path(filepath))
         
         return filepath
     
@@ -250,6 +254,7 @@ class Storage:
         # 保存图片
         with open(filepath, 'wb') as f:
             f.write(avatar_data)
+        secure_file(Path(filepath))
         
         # 保存元数据
         meta = {
@@ -440,6 +445,7 @@ class Storage:
         filepath = self._get_path(filename)
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        secure_file(Path(filepath))
         return filepath
     
     def load_json(self, filename: str) -> Optional[Dict[str, Any]]:

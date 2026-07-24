@@ -297,7 +297,12 @@ def start_backend(port=DEFAULT_BACKEND_PORT):
         print(f"错误: 后端主文件未找到: {backend_main}")
         return None
 
-    env = {"PORT": str(port), "BACKEND_PORT": str(port)}
+    env = {
+        "PORT": str(port),
+        "BACKEND_PORT": str(port),
+        "HOST": "127.0.0.1",
+        "NEU_JWXT_PROFILE": "development",
+    }
     return start_process([venv_python, backend_main], env=env)
 
 

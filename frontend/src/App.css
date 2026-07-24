@@ -87,19 +87,6 @@ select {
   background: var(--color-canvas);
 }
 
-.loading-mark {
-  display: grid;
-  place-items: center;
-  width: 56px;
-  height: 40px;
-  color: #fff;
-  background: var(--color-nav);
-  border-bottom: 3px solid var(--color-accent);
-  border-radius: var(--radius-sm);
-  font-size: 16px;
-  font-weight: 800;
-}
-
 /* Shared workspace rhythm */
 .scores-page,
 .academic-report-page,

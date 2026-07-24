@@ -1,0 +1,69 @@
+.access-login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(37, 99, 235, 0.08), transparent 34%),
+    var(--color-canvas);
+}
+
+.access-login-card {
+  width: min(100%, 420px);
+  border: 1px solid var(--color-line);
+  box-shadow: var(--shadow-md);
+}
+
+.access-login-card .ant-card-body {
+  padding: 32px;
+}
+
+.access-login-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  color: var(--color-brand);
+}
+
+.access-login-brand > span {
+  padding: 6px 8px 4px;
+  border: 1px solid #bfdbfe;
+  border-bottom: 3px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.access-login-brand .anticon {
+  font-size: 26px;
+}
+
+.access-login-card h2 {
+  margin-bottom: 8px;
+  color: var(--color-ink);
+  font-size: 24px;
+}
+
+.access-login-form {
+  margin-top: 28px;
+}
+
+.access-login-alert {
+  margin: 20px 0;
+}
+
+@media (max-width: 480px) {
+  .access-login-page {
+    align-items: start;
+    padding: 16px 12px;
+  }
+
+  .access-login-card {
+    margin-top: 8vh;
+  }
+
+  .access-login-card .ant-card-body {
+    padding: 24px 20px;
+  }
+}

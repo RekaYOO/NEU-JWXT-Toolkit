@@ -9,7 +9,8 @@ import ExperimentCoursePage from './pages/ExperimentCoursePage';
 import EvaluationPage from './pages/EvaluationPage';
 import ExamPage from './pages/ExamPage';
 import LogsPage from './pages/LogsPage';
-import { checkStatus } from './services/api';
+import AccessLoginPage from './pages/AccessLoginPage';
+import { checkStatus, getAccessStatus, getHealth } from './services/api';
 import './App.css';
 
 const { Content } = Layout;
@@ -71,14 +72,30 @@ function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [userInfo, setUserInfo] = useState(null);
+  const [accessState, setAccessState] = useState({
+    required: false,
+    configured: true,
+    authenticated: true,
+  });
+  const [runtimeProfile, setRuntimeProfile] = useState('development');
 
-  // 检查登录状态（带超时处理）
+  const loadApplicationState = async () => {
+    const [access, health] = await Promise.all([getAccessStatus(), getHealth()]);
+    setAccessState(access);
+    setRuntimeProfile(health.profile || 'development');
+    if (!access.required || access.authenticated) {
+      const status = await checkStatus();
+      setIsLoggedIn(status.is_logged_in);
+      setUserInfo(status.current_user);
+    }
+    return access;
+  };
+
+  // 先检查服务器访问门，再检查教务登录状态。
   useEffect(() => {
     const init = async () => {
       try {
-        const status = await checkStatus();
-        setIsLoggedIn(status.is_logged_in);
-        setUserInfo(status.current_user);
+        await loadApplicationState();
       } catch (error) {
         // 静默处理，不弹窗打扰用户，只在控制台记录
         console.log('后端服务未就绪，以未登录状态启动');
@@ -94,6 +111,16 @@ function App() {
     init();
     
     return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const requireAccess = () => {
+      setAccessState(previous => ({ ...previous, required: true, authenticated: false }));
+      setIsLoggedIn(false);
+      setUserInfo(null);
+    };
+    window.addEventListener('neu-access-required', requireAccess);
+    return () => window.removeEventListener('neu-access-required', requireAccess);
   }, []);
 
   useEffect(() => {
@@ -121,10 +148,27 @@ function App() {
   if (isLoading) {
     return (
       <div className="loading" role="status" aria-live="polite">
-        <div className="loading-mark">NEU</div>
         <Spin size="large" />
         <span>正在连接教务服务</span>
       </div>
+    );
+  }
+
+  if (accessState.required && !accessState.authenticated) {
+    return (
+      <ConfigProvider theme={appTheme}>
+        <AccessLoginPage
+          configured={accessState.configured}
+          onSuccess={async () => {
+            setIsLoading(true);
+            try {
+              await loadApplicationState();
+            } finally {
+              setIsLoading(false);
+            }
+          }}
+        />
+      </ConfigProvider>
     );
   }
 
@@ -146,7 +190,11 @@ function App() {
               path="/" 
               element={
                 isLoggedIn ? 
-                  <MainLayout userInfo={userInfo} onLogout={handleLogout} /> :
+                  <MainLayout
+                    userInfo={userInfo}
+                    onLogout={handleLogout}
+                    runtimeProfile={runtimeProfile}
+                  /> :
                   <Navigate to="/login" />
               }
             >

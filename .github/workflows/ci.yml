@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-build.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-build.lock
+      - name: Run backend tests
+        run: python -m pytest backend/tests
+      - name: Compile backend
+        run: python -m compileall -q backend launchers
+      - name: Validate Linux installer scripts
+        run: bash -n packaging/linux/install.sh packaging/linux/uninstall.sh
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          REACT_APP_API_URL: ""
+        run: npm run build
+      - name: Verify production API is same-origin
+        shell: bash
+        run: |
+          ! grep -R --include='main.*.js' -F 'baseURL:"http://localhost:8000"' frontend/build/static/js
+
+      - name: Verify production application
+        run: python -m pytest tests

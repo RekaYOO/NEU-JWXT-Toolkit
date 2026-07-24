@@ -1,0 +1,25 @@
+[Unit]
+Description=NEU JWXT Toolkit private service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=neu-jwxt
+Group=neu-jwxt
+WorkingDirectory=/var/lib/neu-jwxt-toolkit
+Environment=NEU_JWXT_PROFILE=server
+Environment=NEU_JWXT_CONFIG=/etc/neu-jwxt-toolkit/config.json
+Environment=NEU_JWXT_DATA_DIR=/var/lib/neu-jwxt-toolkit
+ExecStart=/opt/neu-jwxt-toolkit/app/neu-jwxt-server serve --config /etc/neu-jwxt-toolkit/config.json
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/neu-jwxt-toolkit
+
+[Install]
+WantedBy=multi-user.target

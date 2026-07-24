@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Table, Card, Statistic, Row, Col, Button, Tag, message, Alert,
   Tooltip, Dropdown, Checkbox, Space, InputNumber, Typography, Progress,
@@ -353,6 +354,11 @@ const AcademicReportPage = () => {
   
   // 悬挂式学分统计卡片展开状态
   const [summaryExpanded, setSummaryExpanded] = useState(false);
+  const [headerPortalTarget, setHeaderPortalTarget] = useState(null);
+
+  useEffect(() => {
+    setHeaderPortalTarget(document.getElementById('workspace-header-center'));
+  }, []);
   
   // 列配置
   const [columnConfig, setColumnConfig] = useState(() => {
@@ -844,82 +850,105 @@ const AcademicReportPage = () => {
 
   return (
     <div className="academic-report-page">
-      {/* 悬挂式学分统计卡片 */}
-      <div 
-        className={`credit-summary-float ${summaryExpanded ? 'expanded' : ''}`}
-        onMouseEnter={() => setSummaryExpanded(true)}
-        onMouseLeave={() => setSummaryExpanded(false)}
-      >
-        <div className="float-hint">
-          <DownOutlined /> 学分统计: 已修{creditSummary.total_passed || 0} / 要求{creditSummary.total_required || 0} (还差{creditSummary.total_remaining || 0})
-        </div>
-        <div className="float-content">
-          <Row gutter={[24, 24]} align="middle">
-            <Col xs={24} sm={6} md={4}>
-              <div className="credit-progress">
-                <Progress
-                  type="circle"
-                  percent={creditSummary.completion_rate || 0}
-                  size={80}
-                  strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
-                  format={(percent) => (
-                    <div className="progress-text">
-                      <div className="percent">{percent}%</div>
-                    </div>
-                  )}
-                />
-              </div>
-            </Col>
-            <Col xs={24} sm={18} md={20}>
-              <Row gutter={[16, 16]}>
-                <Col xs={12} sm={6}>
-                  <Statistic
-                    title="要求学分"
-                    value={creditSummary.total_required || 0}
-                    suffix="学分"
-                    valueStyle={{ fontSize: '16px' }}
+      {headerPortalTarget && createPortal(
+        <div
+          className={`credit-summary-float ${summaryExpanded ? 'expanded' : ''}`}
+          onMouseEnter={() => setSummaryExpanded(true)}
+          onMouseLeave={() => setSummaryExpanded(false)}
+        >
+          <button
+            type="button"
+            className="float-hint"
+            aria-expanded={summaryExpanded}
+            aria-controls="credit-summary-panel"
+            onClick={() => setSummaryExpanded(expanded => !expanded)}
+          >
+            <DownOutlined />
+            <span className="summary-title">学分统计</span>
+            <span className="summary-detail">
+              已修 {creditSummary.total_passed || 0}
+              <i>/</i>
+              要求 {creditSummary.total_required || 0}
+              <b>还差 {creditSummary.total_remaining || 0}</b>
+            </span>
+            <span className="summary-compact">
+              {creditSummary.total_passed || 0}/{creditSummary.total_required || 0}
+            </span>
+          </button>
+          <div
+            id="credit-summary-panel"
+            className="float-content"
+            role="region"
+            aria-label="学分统计详情"
+          >
+            <Row gutter={[24, 24]} align="middle">
+              <Col xs={24} sm={6} md={4}>
+                <div className="credit-progress">
+                  <Progress
+                    type="circle"
+                    percent={creditSummary.completion_rate || 0}
+                    size={80}
+                    strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
+                    format={(percent) => (
+                      <div className="progress-text">
+                        <div className="percent">{percent}%</div>
+                      </div>
+                    )}
                   />
-                </Col>
-                <Col xs={12} sm={6}>
-                  <Statistic
-                    title="已修学分"
-                    value={creditSummary.total_passed || 0}
-                    suffix="学分"
-                    valueStyle={{ color: '#52c41a', fontSize: '16px' }}
-                    prefix={<CheckCircleOutlined />}
+                </div>
+              </Col>
+              <Col xs={24} sm={18} md={20}>
+                <Row gutter={[16, 16]}>
+                  <Col xs={12} sm={6}>
+                    <Statistic
+                      title="要求学分"
+                      value={creditSummary.total_required || 0}
+                      suffix="学分"
+                      valueStyle={{ fontSize: '16px' }}
+                    />
+                  </Col>
+                  <Col xs={12} sm={6}>
+                    <Statistic
+                      title="已修学分"
+                      value={creditSummary.total_passed || 0}
+                      suffix="学分"
+                      valueStyle={{ color: '#52c41a', fontSize: '16px' }}
+                      prefix={<CheckCircleOutlined />}
+                    />
+                  </Col>
+                  <Col xs={12} sm={6}>
+                    <Statistic
+                      title="已选学分"
+                      value={creditSummary.total_selected || 0}
+                      suffix="学分"
+                      valueStyle={{ color: '#1890ff', fontSize: '16px' }}
+                      prefix={<ClockCircleOutlined />}
+                    />
+                  </Col>
+                  <Col xs={12} sm={6}>
+                    <Statistic
+                      title="还差学分"
+                      value={creditSummary.total_remaining || 0}
+                      suffix="学分"
+                      valueStyle={{ color: creditSummary.total_remaining > 0 ? '#faad14' : '#52c41a', fontSize: '16px' }}
+                      prefix={<ExclamationCircleOutlined />}
+                    />
+                  </Col>
+                </Row>
+                <div className="credit-progress-bar" style={{ marginTop: 8 }}>
+                  <Progress
+                    percent={creditSummary.completion_rate || 0}
+                    strokeColor="#52c41a"
+                    showInfo={false}
+                    size="small"
                   />
-                </Col>
-                <Col xs={12} sm={6}>
-                  <Statistic
-                    title="已选学分"
-                    value={creditSummary.total_selected || 0}
-                    suffix="学分"
-                    valueStyle={{ color: '#1890ff', fontSize: '16px' }}
-                    prefix={<ClockCircleOutlined />}
-                  />
-                </Col>
-                <Col xs={12} sm={6}>
-                  <Statistic
-                    title="还差学分"
-                    value={creditSummary.total_remaining || 0}
-                    suffix="学分"
-                    valueStyle={{ color: creditSummary.total_remaining > 0 ? '#faad14' : '#52c41a', fontSize: '16px' }}
-                    prefix={<ExclamationCircleOutlined />}
-                  />
-                </Col>
-              </Row>
-              <div className="credit-progress-bar" style={{ marginTop: 8 }}>
-                <Progress
-                  percent={creditSummary.completion_rate || 0}
-                  strokeColor="#52c41a"
-                  showInfo={false}
-                  size="small"
-                />
-              </div>
-            </Col>
-          </Row>
-        </div>
-      </div>
+                </div>
+              </Col>
+            </Row>
+          </div>
+        </div>,
+        headerPortalTarget
+      )}
 
       {/* 主内容区域 */}
       <div className="main-content-wrapper">

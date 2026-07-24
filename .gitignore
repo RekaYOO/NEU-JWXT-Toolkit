@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 build/
+release/
 develop-eggs/
 dist/
 downloads/
@@ -33,6 +34,9 @@ Thumbs.db
 
 # 忽略所有点开头的目录（.git 除外，由 Git 自动处理）
 .*/
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
 
 # Data directory (keep directory structure, ignore all contents)
 data/*

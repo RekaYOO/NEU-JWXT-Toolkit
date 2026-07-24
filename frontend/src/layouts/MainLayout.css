@@ -124,6 +124,22 @@
   align-items: center;
 }
 
+.header-center-slot {
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  width: min(580px, calc(100% - 500px));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.header-center-slot > * {
+  pointer-events: auto;
+}
+
 .header-leading {
   min-width: 0;
   gap: 10px;
@@ -257,6 +273,14 @@
 
   .page-context strong {
     font-size: 16px;
+  }
+
+  .main-header.has-center-slot .page-context {
+    display: none;
+  }
+
+  .main-header.has-center-slot .header-center-slot {
+    width: calc(100% - 144px);
   }
 
   .workspace-content {
