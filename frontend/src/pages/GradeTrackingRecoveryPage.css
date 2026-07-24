@@ -1,0 +1,96 @@
+.tracking-recovery-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #f4f6f8;
+}
+
+.tracking-recovery-card {
+  width: min(440px, 100%);
+  border-color: #dbe3ec;
+  box-shadow: 0 18px 45px rgba(30, 41, 59, 0.1);
+}
+
+.tracking-recovery-card h1 {
+  margin: 18px 0 24px;
+  color: #1e293b;
+  font-size: 23px;
+  text-align: center;
+}
+
+.tracking-recovery-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #2563eb;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.tracking-recovery-state,
+.tracking-recovery-result {
+  min-height: 230px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 16px;
+  text-align: center;
+}
+
+.tracking-recovery-qr {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0 16px;
+}
+
+.tracking-recovery-countdown {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 16px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.tracking-recovery-result.is-success > .anticon {
+  color: #16a34a;
+  font-size: 48px;
+}
+
+.tracking-recovery-result h2,
+.tracking-recovery-result p {
+  margin: 0;
+}
+
+.tracking-recovery-result small,
+.tracking-recovery-footnote {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.tracking-recovery-footnote {
+  margin: 22px 0 0;
+  text-align: center;
+}
+
+@media (max-width: 480px) {
+  .tracking-recovery-page {
+    align-items: stretch;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  .tracking-recovery-card {
+    width: 100%;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .tracking-recovery-card .ant-card-body {
+    padding: 24px 20px;
+  }
+}

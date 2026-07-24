@@ -14,6 +14,7 @@ import {
   CalendarOutlined,
   MenuOutlined,
   PoweroffOutlined,
+  BellOutlined,
 } from '@ant-design/icons';
 import { logout, getUserAvatar, shutdownRuntime } from '../services/api';
 import './MainLayout.css';
@@ -25,6 +26,7 @@ const AVATAR_TIMESTAMP_KEY = 'neu_user_avatar_timestamp';
 
 const menuItems = [
   { key: '/scores', icon: <BookOutlined />, label: '成绩' },
+  { key: '/grade-tracking', icon: <BellOutlined />, label: '成绩追踪' },
   { key: '/academic-report', icon: <ScheduleOutlined />, label: '培养计划' },
   { key: '/experiment-courses', icon: <ExperimentOutlined />, label: '实验选课' },
   { key: '/evaluation', icon: <StarOutlined />, label: '自动评教' },

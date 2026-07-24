@@ -16,6 +16,15 @@ from functools import wraps
 from .logger import get_logger, LogCategory, LogConfig
 
 
+def redact_sensitive_path(path: str) -> str:
+    if "/grade-tracking/recovery/" not in path:
+        return path
+    prefix, _, suffix = path.partition("/grade-tracking/recovery/")
+    trailing = suffix.split("/", 1)[1] if "/" in suffix else ""
+    redacted = f"{prefix}/grade-tracking/recovery/<redacted>"
+    return f"{redacted}/{trailing}" if trailing else redacted
+
+
 class AccessLogger:
     """访问日志记录器"""
     
@@ -158,7 +167,7 @@ class FastAPILogMiddleware:
         
         # 提取请求信息
         method = scope.get("method", "")
-        path = scope.get("path", "")
+        path = redact_sensitive_path(scope.get("path", ""))
         headers = dict(scope.get("headers", []))
         
         client_ip = scope.get("client", ("unknown", 0))[0]

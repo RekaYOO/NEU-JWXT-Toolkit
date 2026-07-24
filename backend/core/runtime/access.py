@@ -146,6 +146,13 @@ PUBLIC_API_PATHS = {
 }
 
 
+def is_public_api_path(path: str) -> bool:
+    return (
+        path in PUBLIC_API_PATHS
+        or path.startswith("/api/grade-tracking/recovery/")
+    )
+
+
 class AccessGatewayMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, config: RuntimeConfig):
         super().__init__(app)
@@ -155,7 +162,7 @@ class AccessGatewayMiddleware(BaseHTTPMiddleware):
         if (
             not self.config.access_gateway_enabled
             or not request.url.path.startswith("/api/")
-            or request.url.path in PUBLIC_API_PATHS
+            or is_public_api_path(request.url.path)
         ):
             return await call_next(request)
 

@@ -11,6 +11,7 @@ from backend.core.auth import NEUAuthClient
 from backend.core.storage import Storage, AcademicStorage, AutoLoginManager, AcademicReportStorage
 from backend.core.log import setup_logging, LogConfig, LogLevel, LogCategory, get_logger
 from backend.core.log.manager import LogManager
+from backend.core.tracking import GradeTrackingService
 
 # ── 全局状态 ──────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,9 @@ def set_auth_client(client: Optional[NEUAuthClient]):
     """设置当前认证客户端"""
     global _auth_client
     _auth_client = client
+    tracker = globals().get("_grade_tracker")
+    if tracker and client is not None and client.is_logged_in:
+        tracker.invalidate_recovery_link()
 
 
 def peek_auth_client() -> Optional[NEUAuthClient]:
@@ -73,6 +77,10 @@ def get_auth_client() -> Optional[NEUAuthClient]:
         # 尝试确保登录（内部会优先用 Cookie 刷新）
         if _auth_client.ensure_login():
             return _auth_client
+        # 网页二维码或短信认证尚未完成时必须保留同一个 Session，
+        # 后续状态接口仍需使用其中的 flow id、Cookie 和统一认证上下文。
+        if _auth_client._webvpn_qr_flow or _auth_client._webvpn_sms_flow:
+            return None
         _auth_client = None
 
     # 2. 先尝试恢复二维码/WebVPN Cookie 会话，不要求保存密码
@@ -97,6 +105,33 @@ def get_auth_client() -> Optional[NEUAuthClient]:
             return _auth_client
 
     return None
+
+
+def _start_tracking_qr_login():
+    client = NEUAuthClient(
+        cookie_file=COOKIE_FILE,
+        network_mode="webvpn",
+        restore_session=False,
+    )
+    return client, client.start_webvpn_qr_login(expires_in=300)
+
+
+def _interactive_login_pending() -> bool:
+    return bool(
+        _auth_client
+        and (_auth_client._webvpn_qr_flow or _auth_client._webvpn_sms_flow)
+    )
+
+
+_grade_tracker = GradeTrackingService(
+    data_dir=_storage.config.data_dir,
+    auth_provider=get_auth_client,
+    score_storage=_storage,
+    logger=_api_logger,
+    qr_login_starter=_start_tracking_qr_login,
+    auth_setter=set_auth_client,
+    login_flow_pending=_interactive_login_pending,
+)
 
 
 def require_auth() -> NEUAuthClient:

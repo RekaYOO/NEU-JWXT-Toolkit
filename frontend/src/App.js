@@ -8,6 +8,8 @@ import AcademicReportPage from './pages/AcademicReportPage';
 import ExperimentCoursePage from './pages/ExperimentCoursePage';
 import EvaluationPage from './pages/EvaluationPage';
 import ExamPage from './pages/ExamPage';
+import GradeTrackingPage from './pages/GradeTrackingPage';
+import GradeTrackingRecoveryPage from './pages/GradeTrackingRecoveryPage';
 import LogsPage from './pages/LogsPage';
 import AccessLoginPage from './pages/AccessLoginPage';
 import { checkStatus, getAccessStatus, getHealth } from './services/api';
@@ -69,6 +71,12 @@ const appTheme = {
 };
 
 function App() {
+  const recoveryMatch = window.location.pathname.match(
+    /^\/grade-tracking\/recovery\/([^/]+)\/?$/
+  );
+  const recoveryToken = recoveryMatch
+    ? decodeURIComponent(recoveryMatch[1])
+    : null;
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [userInfo, setUserInfo] = useState(null);
@@ -94,6 +102,10 @@ function App() {
   // 先检查服务器访问门，再检查教务登录状态。
   useEffect(() => {
     const init = async () => {
+      if (recoveryToken) {
+        setIsLoading(false);
+        return;
+      }
       try {
         await loadApplicationState();
       } catch (error) {
@@ -111,7 +123,7 @@ function App() {
     init();
     
     return () => clearTimeout(timer);
-  }, []);
+  }, [recoveryToken]);
 
   useEffect(() => {
     const requireAccess = () => {
@@ -151,6 +163,14 @@ function App() {
         <Spin size="large" />
         <span>正在连接教务服务</span>
       </div>
+    );
+  }
+
+  if (recoveryToken) {
+    return (
+      <ConfigProvider theme={appTheme}>
+        <GradeTrackingRecoveryPage token={recoveryToken} />
+      </ConfigProvider>
     );
   }
 
@@ -200,6 +220,7 @@ function App() {
             >
               <Route index element={<Navigate to="/scores" />} />
               <Route path="scores" element={<ScoresPage />} />
+              <Route path="grade-tracking" element={<GradeTrackingPage />} />
               <Route path="academic-report" element={<AcademicReportPage />} />
               <Route path="experiment-courses" element={<ExperimentCoursePage />} />
               <Route path="evaluation" element={<EvaluationPage />} />

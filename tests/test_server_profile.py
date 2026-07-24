@@ -72,6 +72,11 @@ def test_server_access_gateway_and_static_frontend(tmp_path):
         )
         assert homepage.status_code == 200
         assert "access-control-allow-origin" not in homepage.headers
+        recovery = requests.get(
+            f"{base_url}/api/grade-tracking/recovery/invalid-token/status"
+        )
+        assert recovery.status_code == 404
+        assert recovery.json()["detail"] == "一次性登录链接不存在或已失效"
         protected = requests.get(f"{base_url}/api/status")
         assert protected.status_code == 401
         assert protected.json()["code"] == "ACCESS_REQUIRED"

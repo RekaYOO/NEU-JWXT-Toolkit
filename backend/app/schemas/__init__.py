@@ -24,3 +24,4 @@ __all__ = [
     "EvaluationSubmitRequest", "EvaluationBatchRequest",
     "ExamTerm", "ExamItem", "ExamListResponse", "ExamTermsResponse",
 ]
+from .tracking import GradeTrackingConfigUpdate

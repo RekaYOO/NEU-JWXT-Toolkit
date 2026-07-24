@@ -184,6 +184,54 @@ export const refreshScores = async () => {
   return response.data;
 };
 
+// ── 成绩追踪 API ─────────────────────────────────────────────────────────────
+
+export const getGradeTrackingConfig = async () => {
+  const response = await api.get('/api/grade-tracking/config');
+  return response.data;
+};
+
+export const updateGradeTrackingConfig = async (config) => {
+  const response = await api.put('/api/grade-tracking/config', config);
+  return response.data;
+};
+
+export const getGradeTrackingStatus = async () => {
+  const response = await api.get('/api/grade-tracking/status');
+  return response.data;
+};
+
+export const checkGradesNow = async () => {
+  const response = await api.post('/api/grade-tracking/check');
+  return response.data;
+};
+
+export const testGradeTrackingEmail = async () => {
+  const response = await api.post('/api/grade-tracking/test-email');
+  return response.data;
+};
+
+export const getGradeTrackingRecoveryStatus = async (token) => {
+  const response = await api.get(
+    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/status`
+  );
+  return response.data;
+};
+
+export const startGradeTrackingRecovery = async (token) => {
+  const response = await api.post(
+    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/start`
+  );
+  return response.data;
+};
+
+export const pollGradeTrackingRecovery = async (token) => {
+  const response = await api.get(
+    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/poll`
+  );
+  return response.data;
+};
+
 // 获取默认列配置
 export const getDefaultColumns = async () => {
   const response = await api.get('/api/columns/default');

@@ -400,7 +400,11 @@ class Storage:
             return {"deleted": [], "preserved": [], "errors": []}
         
         # 定义需要保留的配置文件
-        config_files = {"config.json", "credentials.json"} if preserve_config else set()
+        config_files = {
+            "config.json",
+            "credentials.json",
+            "grade_tracking_config.json",
+        } if preserve_config else set()
         
         deleted = []
         preserved = []

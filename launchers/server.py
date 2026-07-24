@@ -74,6 +74,7 @@ def _serve(config_path: Path) -> int:
         proxy_headers=True,
         forwarded_allow_ips=",".join(config.trusted_proxies),
         log_level="info",
+        access_log=False,
     )
     return 0
 

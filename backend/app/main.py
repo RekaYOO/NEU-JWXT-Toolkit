@@ -10,6 +10,7 @@ FastAPI 后端服务入口
 
 import os
 import sys
+from contextlib import asynccontextmanager
 
 # 确保项目根目录在 PYTHONPATH 中，以支持 backend.* 绝对导入
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,12 +23,22 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
 from backend.core.log.access_logger import FastAPILogMiddleware
-from backend.app.dependencies import _log_config
-from backend.app.routers import auth, scores, logs, report, experiment, user, gpa, evaluation, exam, runtime
+from backend.app.dependencies import _grade_tracker, _log_config
+from backend.app.routers import auth, scores, logs, report, experiment, user, gpa, evaluation, exam, runtime, tracking
 from backend.core.runtime import get_runtime_config, resource_path
 from backend.core.runtime.access import AccessGatewayMiddleware
 
 runtime_config = get_runtime_config()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _grade_tracker.start()
+    try:
+        yield
+    finally:
+        _grade_tracker.stop()
+
 
 # ── FastAPI 应用 ───────────────────────────────────────────────────────────────
 
@@ -38,6 +49,7 @@ app = FastAPI(
     docs_url="/docs" if runtime_config.profile == "development" else None,
     redoc_url="/redoc" if runtime_config.profile == "development" else None,
     openapi_url="/openapi.json" if runtime_config.profile == "development" else None,
+    lifespan=lifespan,
 )
 
 # 日志中间件（必须在 CORS 之前）
@@ -66,6 +78,7 @@ app.include_router(user.router, prefix="/api")
 app.include_router(gpa.router, prefix="/api")
 app.include_router(evaluation.router, prefix="/api")
 app.include_router(exam.router, prefix="/api")
+app.include_router(tracking.router, prefix="/api/grade-tracking")
 app.include_router(runtime.router)
 
 # ── 前端静态文件（生产/本地单端口模式）──────────────────────────────────────────
@@ -99,4 +112,4 @@ if __name__ == "__main__":
     print(f"监听地址: http://{host}:{port}")
     print(f"API 文档: http://{host}:{port}/docs")
 
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, access_log=False)

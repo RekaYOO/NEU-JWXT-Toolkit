@@ -519,8 +519,9 @@ class NEUAuthClient:
             if cookie.domain.lstrip(".").endswith("neu.edu.cn")
         ]
 
-    def start_webvpn_qr_login(self) -> Dict[str, Any]:
+    def start_webvpn_qr_login(self, expires_in: int = 180) -> Dict[str, Any]:
         """Create a QR login flow bound to this client's requests session."""
+        expires_in = max(60, min(int(expires_in), 600))
         self.active_mode = "webvpn"
         service = WEBVPN_ENTRY_URL
         direct_login_url = f"{CAS_LOGIN_URL}?service={requests.utils.quote(service, safe='')}"
@@ -545,12 +546,12 @@ class NEUAuthClient:
             "uuid": qr_uuid,
             "qr_status_url": f"{CAS_BASE_URL}/checkQRCodeScan",
             "login_page_url": direct_login_url,
-            "expires_at": time.time() + 180,
+            "expires_at": time.time() + expires_in,
         }
         return {
             "flow_id": self._webvpn_qr_flow["id"],
             "qr_content": qr_content,
-            "expires_in": 180,
+            "expires_in": expires_in,
             "poll_interval": 3,
         }
 

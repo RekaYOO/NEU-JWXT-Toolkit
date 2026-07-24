@@ -137,6 +137,8 @@ async def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
         return {"success": False, "status": "missing", "message": "二维码登录流程不存在"}
     try:
         result = client.poll_webvpn_qr_login(request.flow_id)
+        if result.get("status") == "authenticated":
+            set_auth_client(client)
         return {"success": True, **result}
     except WebVPNLoginError as e:
         return {
