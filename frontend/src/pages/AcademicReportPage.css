@@ -396,7 +396,7 @@
 
 @media (max-width: 768px) {
   .academic-report-page {
-    padding: 8px;
+    padding: 0;
   }
 
   .credit-summary-float {
@@ -414,8 +414,54 @@
   }
 
   .credit-summary-float .float-content {
-    width: calc(100vw - 48px);
+    position: fixed;
+    top: 64px;
+    width: calc(100vw - 24px);
     max-width: none;
+    max-height: calc(100vh - 88px);
+    overflow-y: auto;
+  }
+
+  .main-content-wrapper {
+    height: auto;
+    min-height: 0;
+    padding: 0;
+  }
+
+  .main-content-wrapper .main-content {
+    height: auto;
+  }
+
+  .main-content-wrapper .main-content > .ant-col {
+    height: auto;
+    padding: 0 !important;
+  }
+
+  .tree-container-wrapper {
+    display: none;
+  }
+
+  .table-container-wrapper {
+    height: auto;
+    overflow: visible;
+  }
+
+  .courses-table-card {
+    height: auto;
+  }
+
+  .courses-table-card .ant-card-head {
+    padding-inline: 14px;
+  }
+
+  .courses-table-card .ant-card-body {
+    padding: 12px;
+    overflow: visible;
+  }
+
+  .courses-table-card .ant-card-extra .ant-btn {
+    flex: 1;
+    min-width: 0;
   }
   
   .credit-summary-card .ant-statistic-title {
@@ -431,18 +477,127 @@
   }
   
   .course-stats-bar {
-    padding: 8px 12px;
+    padding: 10px 12px;
+    overflow: hidden;
   }
   
   .course-stats-bar .ant-space {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    gap: 8px 16px;
+  }
+
+  .mobile-plan-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
+  }
+
+  .mobile-plan-summary > span {
+    min-width: 0;
+    padding: 4px 6px;
+    text-align: center;
+  }
+
+  .mobile-plan-summary small,
+  .mobile-plan-summary b {
+    display: block;
+  }
+
+  .mobile-plan-summary small {
+    color: var(--color-muted);
+    font-size: 10px;
+  }
+
+  .mobile-plan-summary b {
+    margin-top: 2px;
+    color: #334155;
+    font-size: 14px;
   }
   
   .data-table .ant-table-thead > tr > th,
   .data-table .ant-table-tbody > tr > td {
     padding: 8px;
+  }
+
+  .academic-mobile-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .academic-mobile-course {
+    padding: 14px;
+    background: #fff;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  }
+
+  .academic-mobile-course__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .academic-mobile-course__header > div {
+    min-width: 0;
+  }
+
+  .academic-mobile-course__header strong {
+    display: block;
+    color: var(--color-text);
+    font-size: 15px;
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .academic-mobile-course__header span {
+    display: block;
+    margin-top: 3px;
+    color: var(--color-muted);
+    font-size: 11px;
+  }
+
+  .academic-mobile-course__header .ant-tag {
+    flex-shrink: 0;
+    margin-inline-end: 0;
+  }
+
+  .academic-mobile-course__details {
+    display: grid;
+    grid-template-columns: 0.65fr 0.8fr 2fr;
+    gap: 8px;
+    margin-top: 12px;
+    padding-top: 11px;
+    border-top: 1px solid #edf1f5;
+  }
+
+  .academic-mobile-course__details small,
+  .academic-mobile-course__details b {
+    display: block;
+  }
+
+  .academic-mobile-course__details small {
+    color: var(--color-muted);
+    font-size: 10px;
+  }
+
+  .academic-mobile-course__details b {
+    margin-top: 2px;
+    color: #334155;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  .academic-focus-toolbar {
+    flex-shrink: 0;
+  }
+
+  .footer-info {
+    padding: 12px 6px 0;
+    font-size: 12px;
   }
 }
 
@@ -456,6 +611,25 @@
     height: 16px;
     line-height: 16px;
   }
+}
+
+@media (max-width: 359px) {
+  .academic-mobile-course__details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.mobile-category-drawer .ant-drawer-body {
+  padding: 14px;
+}
+
+.mobile-category-drawer .ant-tree {
+  background: transparent;
+}
+
+.mobile-category-drawer .ant-tree-node-content-wrapper {
+  min-height: 36px;
+  padding-block: 6px;
 }
 
 /* 树形组件样式优化 */

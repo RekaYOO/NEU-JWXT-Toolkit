@@ -95,11 +95,201 @@
 
 /* 响应式 */
 @media (max-width: 768px) {
-  .stats-row .ant-col {
-    margin-bottom: 16px;
+  .scores-page .stats-row {
+    margin-bottom: 12px;
+    row-gap: 10px;
   }
-  
+
+  .scores-page .stats-row .ant-col {
+    margin-bottom: 0;
+  }
+
+  .scores-page .stats-row .ant-card-body {
+    padding: 14px 10px;
+  }
+
+  .scores-page .stats-row .ant-statistic-title {
+    font-size: 12px;
+  }
+
+  .scores-page .stats-row .ant-statistic-content {
+    font-size: 19px;
+  }
+
   .scores-table-card {
-    overflow-x: auto;
+    overflow: hidden;
+  }
+
+  .scores-table-card .ant-card-head {
+    padding-inline: 14px;
+  }
+
+  .scores-table-card .ant-card-body {
+    padding: 12px;
+  }
+
+  .scores-table-card .ant-card-extra .ant-btn {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .mobile-course-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .mobile-focus-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    background: #f8fafc;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+  }
+
+  .mobile-focus-toolbar > div:first-child {
+    min-width: 0;
+  }
+
+  .mobile-focus-toolbar strong,
+  .mobile-focus-toolbar span {
+    display: block;
+  }
+
+  .mobile-focus-toolbar strong {
+    color: #334155;
+    font-size: 13px;
+  }
+
+  .mobile-focus-toolbar span {
+    margin-top: 2px;
+    color: var(--color-muted);
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-course-card {
+    padding: 14px;
+    background: #ffffff;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  }
+
+  .mobile-course-card__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .mobile-course-card__identity {
+    min-width: 0;
+  }
+
+  .mobile-course-card__identity strong {
+    display: block;
+    color: var(--color-text);
+    font-size: 15px;
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .mobile-course-card__identity > span {
+    display: block;
+    margin-top: 4px;
+    color: var(--color-muted);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .mobile-score-value {
+    min-width: 54px;
+    padding: 6px 8px;
+    color: var(--color-brand-strong);
+    text-align: center;
+    background: var(--color-brand-soft);
+    border: 1px solid #cfe0ff;
+    border-radius: 10px;
+  }
+
+  .mobile-score-value span {
+    display: block;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.15;
+  }
+
+  .mobile-score-value small {
+    color: #64748b;
+    font-size: 10px;
+  }
+
+  .mobile-course-card__meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+    align-items: end;
+    gap: 8px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #edf1f5;
+  }
+
+  .mobile-course-card__meta > span small,
+  .mobile-course-card__meta > span b {
+    display: block;
+  }
+
+  .mobile-course-card__meta small {
+    color: var(--color-muted);
+    font-size: 11px;
+  }
+
+  .mobile-course-card__meta b {
+    margin-top: 2px;
+    color: #334155;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-course-card__meta .ant-tag {
+    margin-inline-end: 0;
+  }
+
+  .mobile-list-pagination {
+    margin: 18px 0 4px !important;
+  }
+}
+
+@media (max-width: 359px) {
+  .mobile-focus-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .mobile-focus-toolbar .ant-segmented {
+    width: 100%;
+  }
+
+  .mobile-focus-toolbar .ant-segmented-group {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .mobile-course-card__meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mobile-course-card__meta .ant-tag {
+    grid-column: 1 / -1;
+    width: fit-content;
   }
 }

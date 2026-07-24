@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Table, Card, Statistic, Row, Col, Button, Tag, message, Alert,
   Tooltip, Dropdown, Checkbox, Space, InputNumber, Typography, Progress,
-  Tree, Badge, Empty, Divider, Switch
+  Tree, Badge, Empty, Divider, Switch, Drawer, Pagination, Grid, Segmented
 } from 'antd';
 import {
   ReloadOutlined, BookOutlined, CheckCircleOutlined, TrophyOutlined,
@@ -19,6 +19,7 @@ import dayjs from 'dayjs';
 import './AcademicReportPage.css';
 
 const { Title, Text } = Typography;
+const { useBreakpoint } = Grid;
 
 // 列配置 - 添加is_passed列（默认隐藏）
 const DEFAULT_COLUMNS = [
@@ -328,6 +329,8 @@ const calcRequiredRemainingCredits = (categories) => {
 };
 
 const AcademicReportPage = () => {
+  const screens = useBreakpoint();
+  const isMobile = !screens.md;
   // 数据状态
   const [report, setReport] = useState(null);
   const [categories, setCategories] = useState([]);
@@ -341,6 +344,7 @@ const AcademicReportPage = () => {
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [expandedKeys, setExpandedKeys] = useState([]);
   const [autoExpandParent, setAutoExpandParent] = useState(true);
+  const [mobileCategoryOpen, setMobileCategoryOpen] = useState(false);
   
   // 表格筛选状态
   
@@ -365,6 +369,8 @@ const AcademicReportPage = () => {
     pageSizeOptions: ['10', '20', '50', '100'],
     showTotal: (total) => `共 ${total} 门课程`,
   });
+  const [mobilePlanView, setMobilePlanView] = useState('pending');
+  const [mobilePage, setMobilePage] = useState(1);
 
   // 加载数据
   const loadData = async () => {
@@ -455,6 +461,8 @@ const AcademicReportPage = () => {
       setDisplayCourses(allCourses);
     }
     setPagination(prev => ({ ...prev, current: 1 }));
+    setMobilePage(1);
+    if (isMobile) setMobileCategoryOpen(false);
   };
 
   // 处理树节点展开
@@ -704,6 +712,30 @@ const AcademicReportPage = () => {
     };
   }, [filteredCourses]);
 
+  const mobileFocusedCourses = useMemo(() => {
+    let courses = filteredCourses;
+    if (mobilePlanView === 'selected') courses = courses.filter(course => course.is_selected);
+    if (mobilePlanView === 'pending') courses = courses.filter(course => !course.is_passed);
+
+    return [...courses].sort((a, b) => {
+      if (Boolean(a.is_selected) !== Boolean(b.is_selected)) return a.is_selected ? -1 : 1;
+      if ((a.course_nature === '必修') !== (b.course_nature === '必修')) {
+        return a.course_nature === '必修' ? -1 : 1;
+      }
+      return compareAcademicTerms(a.term_code, b.term_code);
+    });
+  }, [filteredCourses, mobilePlanView]);
+
+  const mobileCourses = useMemo(() => {
+    const start = (mobilePage - 1) * 10;
+    return mobileFocusedCourses.slice(start, start + 10);
+  }, [mobileFocusedCourses, mobilePage]);
+
+  const handleMobilePageChange = (current) => {
+    setMobilePage(current);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   // 计算整个树的选修/必修统计（用于左侧栏）
   const electiveStats = useMemo(() => {
     const incompleteCategories = findElectiveLeafCategories(categories);
@@ -891,6 +923,48 @@ const AcademicReportPage = () => {
 
       {/* 主内容区域 */}
       <div className="main-content-wrapper">
+        <Drawer
+          title="选择课程类别"
+          placement="left"
+          width={Math.min(360, typeof window === 'undefined' ? 360 : window.innerWidth * 0.9)}
+          open={mobileCategoryOpen}
+          onClose={() => setMobileCategoryOpen(false)}
+          className="mobile-category-drawer"
+        >
+          {totalIncompleteCount > 0 && (
+            <Alert
+              message={`仍有 ${totalIncompleteCount} 个类别存在学分缺口`}
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          <Button
+            type={selectedKeys.length === 0 ? 'primary' : 'default'}
+            block
+            onClick={() => {
+              setSelectedKeys([]);
+              setDisplayCourses(allCourses);
+              setPagination(prev => ({ ...prev, current: 1 }));
+              setMobilePage(1);
+              setMobileCategoryOpen(false);
+            }}
+            style={{ marginBottom: 12 }}
+          >
+            查看全部课程
+          </Button>
+          <Tree
+            showIcon
+            onSelect={onSelect}
+            onExpand={onExpand}
+            selectedKeys={selectedKeys}
+            expandedKeys={expandedKeys}
+            autoExpandParent={autoExpandParent}
+            treeData={treeData}
+            className="academic-tree"
+            blockNode
+          />
+        </Drawer>
         <Row gutter={[16, 16]} className="main-content">
           {/* 左侧：类别导航树 */}
           <Col xs={24} lg={8} xl={7} className="tree-container-wrapper">
@@ -1044,7 +1118,12 @@ const AcademicReportPage = () => {
             }
             extra={
               <Space>
-                <Dropdown
+                {isMobile && (
+                  <Button icon={<FolderOutlined />} onClick={() => setMobileCategoryOpen(true)}>
+                    选择类别
+                  </Button>
+                )}
+                {!isMobile && <Dropdown
                   menu={{ items: columnMenuItems }}
                   open={columnMenuOpen}
                   onOpenChange={setColumnMenuOpen}
@@ -1054,7 +1133,7 @@ const AcademicReportPage = () => {
                   <Button icon={<SettingOutlined />}>
                     列设置
                   </Button>
-                </Dropdown>
+                </Dropdown>}
                 
                 <Tooltip title={dataInfo.last_update ? `最后保存: ${dayjs(dataInfo.last_update).format('YYYY-MM-DD HH:mm:ss')}` : '点击刷新云端数据'}>
                   <Button
@@ -1070,53 +1149,123 @@ const AcademicReportPage = () => {
           >
             {/* 统计信息 */}
             <div className="course-stats-bar" style={{ marginBottom: 16, flexShrink: 0 }}>
-              <Space size="large" wrap>
-                <span>
-                  <CheckCircleOutlined style={{ color: '#52c41a' }} /> 已通过: 
-                  <Text strong style={{ color: '#52c41a' }}> {stats.passed}</Text> 门
-                </span>
-                <span>
-                  <ClockCircleOutlined style={{ color: '#1890ff' }} /> 已选课: 
-                  <Text strong style={{ color: '#1890ff' }}> {stats.selected}</Text> 门
-                </span>
-                <span>
-                  <BookOutlined style={{ color: '#8c8c8c' }} /> 未修读: 
-                  <Text strong> {stats.planned}</Text> 门
-                </span>
-                <span>
-                  <TrophyOutlined style={{ color: '#faad14' }} /> 总学分: 
-                  <Text strong> {stats.totalCredits.toFixed(2)}</Text> 学分
-                </span>
-                {/* 当前层级必修还差学分 */}
-                {currentLevelStats.requiredRemaining > 0 && (
+              {isMobile ? (
+                <div className="mobile-plan-summary">
                   <span>
-                    <SafetyOutlined style={{ color: '#ff4d4f' }} /> 必修还差: 
-                    <Text strong style={{ color: '#ff4d4f' }}> {currentLevelStats.requiredRemaining}</Text> 学分
+                    <small>待完成</small>
+                    <b>{stats.total - stats.passed} 门</b>
                   </span>
-                )}
-                {/* 当前层级选修还差学分 */}
-                {currentLevelStats.electiveRemaining > 0 && (
                   <span>
-                    <ExclamationCircleOutlined style={{ color: '#faad14' }} /> 选修还差: 
-                    <Text strong style={{ color: '#faad14' }}> {currentLevelStats.electiveRemaining}</Text> 学分
+                    <small>已选课程</small>
+                    <b>{stats.selected} 门</b>
                   </span>
-                )}
-              </Space>
+                  <span>
+                    <small>还差学分</small>
+                    <b>{(currentLevelStats.requiredRemaining + currentLevelStats.electiveRemaining).toFixed(2)}</b>
+                  </span>
+                </div>
+              ) : (
+                <Space size="large" wrap>
+                  <span>
+                    <CheckCircleOutlined style={{ color: '#52c41a' }} /> 已通过:
+                    <Text strong style={{ color: '#52c41a' }}> {stats.passed}</Text> 门
+                  </span>
+                  <span>
+                    <ClockCircleOutlined style={{ color: '#1890ff' }} /> 已选课:
+                    <Text strong style={{ color: '#1890ff' }}> {stats.selected}</Text> 门
+                  </span>
+                  <span>
+                    <BookOutlined style={{ color: '#8c8c8c' }} /> 未修读:
+                    <Text strong> {stats.planned}</Text> 门
+                  </span>
+                  <span>
+                    <TrophyOutlined style={{ color: '#faad14' }} /> 总学分:
+                    <Text strong> {stats.totalCredits.toFixed(2)}</Text> 学分
+                  </span>
+                  {currentLevelStats.requiredRemaining > 0 && (
+                    <span>
+                      <SafetyOutlined style={{ color: '#ff4d4f' }} /> 必修还差:
+                      <Text strong style={{ color: '#ff4d4f' }}> {currentLevelStats.requiredRemaining}</Text> 学分
+                    </span>
+                  )}
+                  {currentLevelStats.electiveRemaining > 0 && (
+                    <span>
+                      <ExclamationCircleOutlined style={{ color: '#faad14' }} /> 选修还差:
+                      <Text strong style={{ color: '#faad14' }}> {currentLevelStats.electiveRemaining}</Text> 学分
+                    </span>
+                  )}
+                </Space>
+              )}
             </div>
 
-            <div className="table-scroll-container">
-              <Table
-                columns={tableColumns}
-                dataSource={filteredCourses}
-                rowKey="_id"
-                pagination={pagination}
-                onChange={handleTableChange}
-                scroll={{ x: 'max-content' }}
-                bordered={false}
-                size="middle"
-                className="data-table"
-              />
-            </div>
+            {isMobile ? (
+              <>
+                <div className="mobile-focus-toolbar academic-focus-toolbar">
+                  <div>
+                    <strong>当前关注</strong>
+                    <span>{selectedCategoryName || '全部课程类别'}</span>
+                  </div>
+                  <Segmented
+                    size="small"
+                    value={mobilePlanView}
+                    options={[
+                      { label: '待完成', value: 'pending' },
+                      { label: '已选', value: 'selected' },
+                      { label: '全部', value: 'all' },
+                    ]}
+                    onChange={value => {
+                      setMobilePlanView(value);
+                      setMobilePage(1);
+                    }}
+                  />
+                </div>
+                <div className="academic-mobile-list" aria-label="培养计划课程列表">
+                  {mobileCourses.map(course => (
+                    <article className="academic-mobile-course" key={course._id}>
+                      <div className="academic-mobile-course__header">
+                        <div>
+                          <strong>{course.course_name}</strong>
+                        </div>
+                        <StatusTag
+                          status={course.status}
+                          isPassed={course.is_passed}
+                          isSelected={course.is_selected}
+                          isPlanned={course.is_planned}
+                        />
+                      </div>
+                      <div className="academic-mobile-course__details">
+                        <span><small>学分</small><b>{course.credit ?? '-'}</b></span>
+                        <span><small>性质</small><b>{course.course_nature || '-'}</b></span>
+                        <span><small>学期</small><b>{formatTermCode(course.term_code)}</b></span>
+                      </div>
+                    </article>
+                  ))}
+                  {mobileCourses.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有需要关注的课程" />}
+                </div>
+                <Pagination
+                  className="mobile-list-pagination"
+                  simple
+                  current={mobilePage}
+                  pageSize={10}
+                  total={mobileFocusedCourses.length}
+                  onChange={handleMobilePageChange}
+                />
+              </>
+            ) : (
+              <div className="table-scroll-container">
+                <Table
+                  columns={tableColumns}
+                  dataSource={filteredCourses}
+                  rowKey="_id"
+                  pagination={pagination}
+                  onChange={handleTableChange}
+                  scroll={{ x: 'max-content' }}
+                  bordered={false}
+                  size="middle"
+                  className="data-table"
+                />
+              </div>
+            )}
           </Card>
         </Col>
       </Row>

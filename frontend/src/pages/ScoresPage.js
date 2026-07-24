@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   Table, Card, Statistic, Row, Col, Button, Tag, message, Alert,
-  Tooltip, Dropdown, Checkbox, Space, InputNumber, Modal
+  Tooltip, Dropdown, Checkbox, Space, InputNumber, Modal, Pagination, Grid, Segmented, Empty
 } from 'antd';
 import { 
   ReloadOutlined, TrophyOutlined, BookOutlined, SafetyOutlined,
@@ -37,6 +37,7 @@ const getDefaultColumns = () => JSON.parse(JSON.stringify(DEFAULT_COLUMNS));
 const NUMERIC_COLUMN_KEYS = ['score', 'gpa', 'credit'];
 const IMPACT_COLUMN_KEYS = ['mean_adjust_delta', 'exclude_delta'];
 const IMPACT_EPSILON = 0.00005;
+const { useBreakpoint } = Grid;
 
 const IMPACT_COLUMN_HELP = {
   mean_adjust_delta: '这门课相对当前平均 GPA 的贡献量，正数表示拉高 GPA',
@@ -150,6 +151,8 @@ const isScoresEqual = (localScores, remoteScores) => {
 };
 
 const ScoresPage = () => {
+  const screens = useBreakpoint();
+  const isMobile = !screens.md;
   const [allScores, setAllScores] = useState([]);
   const [displayScores, setDisplayScores] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
@@ -174,6 +177,8 @@ const ScoresPage = () => {
     pageSizeOptions: ['10', '20', '50', '100'],
     showTotal: (total) => `共 ${total} 门课程`,
   });
+  const [mobileView, setMobileView] = useState('latest');
+  const [mobilePage, setMobilePage] = useState(1);
 
   // GPA计算器
   const [isSimulating, setIsSimulating] = useState(false);
@@ -561,6 +566,29 @@ const ScoresPage = () => {
     };
   }, [allScores]);
 
+  const latestTerm = useMemo(() => {
+    const terms = [...new Set(displayScores.map(score => score.term_display || score.term).filter(Boolean))];
+    return terms.sort(compareAcademicTerms)[0] || null;
+  }, [displayScores]);
+
+  const mobileFocusedScores = useMemo(() => {
+    if (mobileView === 'failed') return displayScores.filter(score => !score.is_passed);
+    if (mobileView === 'latest' && latestTerm) {
+      return displayScores.filter(score => (score.term_display || score.term) === latestTerm);
+    }
+    return displayScores;
+  }, [displayScores, latestTerm, mobileView]);
+
+  const mobileScores = useMemo(() => {
+    const start = (mobilePage - 1) * 10;
+    return mobileFocusedScores.slice(start, start + 10);
+  }, [mobileFocusedScores, mobilePage]);
+
+  const handleMobilePageChange = (current) => {
+    setMobilePage(current);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   // GPA模拟
   const startSimulation = () => {
     setIsSimulating(true);
@@ -601,22 +629,22 @@ const ScoresPage = () => {
     <div className="scores-page">
       {/* 统计卡片 */}
       <Row gutter={16} className="stats-row">
-        <Col xs={24} sm={12} md={6}>
+          <Col xs={12} sm={12} md={6}>
           <Card>
             <Statistic title="课程总数" value={stats.totalCourses} prefix={<BookOutlined />} />
           </Card>
         </Col>
-        <Col xs={24} sm={12} md={6}>
+          <Col xs={12} sm={12} md={6}>
           <Card>
             <Statistic title="平均绩点" value={stats.avgGpa} precision={3} prefix={<TrophyOutlined />} valueStyle={{ color: 'var(--color-brand)' }} />
           </Card>
         </Col>
-        <Col xs={24} sm={12} md={6}>
+          <Col xs={12} sm={12} md={6}>
           <Card>
             <Statistic title="已通过" value={stats.passedCount} prefix={<SafetyOutlined />} valueStyle={{ color: 'var(--color-success)' }} />
           </Card>
         </Col>
-        <Col xs={24} sm={12} md={6}>
+          <Col xs={12} sm={12} md={6}>
           <Card>
             <Statistic title="总学分" value={stats.totalCredits} precision={1} />
           </Card>
@@ -635,17 +663,19 @@ const ScoresPage = () => {
         <Card
           className="scores-table-card"
           title={
-            <Space>
+            <Space className="scores-card-title">
               <span>成绩明细</span>
-              <Dropdown
-                menu={{ items: columnMenuItems }}
-                open={columnMenuOpen}
-                onOpenChange={setColumnMenuOpen}
-                placement="bottomLeft"
-                arrow
-              >
-                <Button icon={<SettingOutlined />} size="small">列设置</Button>
-              </Dropdown>
+              {!isMobile && (
+                <Dropdown
+                  menu={{ items: columnMenuItems }}
+                  open={columnMenuOpen}
+                  onOpenChange={setColumnMenuOpen}
+                  placement="bottomLeft"
+                  arrow
+                >
+                  <Button icon={<SettingOutlined />} size="small">列设置</Button>
+                </Dropdown>
+              )}
             </Space>
           }
           extra={
@@ -668,16 +698,72 @@ const ScoresPage = () => {
             </Space>
           }
         >
-          <Table
-            columns={tableColumns}
-            dataSource={displayScores}
-            rowKey="_id"
-            scroll={{ x: 'max-content' }}
-            pagination={pagination}
-            onChange={handleTableChange}
-            bordered
-            size="middle"
-          />
+          {isMobile ? (
+            <>
+              <div className="mobile-focus-toolbar">
+                <div>
+                  <strong>快速查看</strong>
+                  <span>{mobileView === 'latest' ? latestTerm : '只保留当前需要的信息'}</span>
+                </div>
+                <Segmented
+                  size="small"
+                  value={mobileView}
+                  options={[
+                    { label: '最近', value: 'latest' },
+                    { label: '未通过', value: 'failed' },
+                    { label: '全部', value: 'all' },
+                  ]}
+                  onChange={value => {
+                    setMobileView(value);
+                    setMobilePage(1);
+                  }}
+                />
+              </div>
+              <div className="mobile-course-list" aria-label="成绩明细">
+                {mobileScores.map(course => (
+                  <article className="mobile-course-card" key={course._id}>
+                    <div className="mobile-course-card__header">
+                      <div className="mobile-course-card__identity">
+                        <strong>{course.name}</strong>
+                        <span>{course.term_display || course.term}</span>
+                      </div>
+                      <div className="mobile-score-value">
+                        <span>{course.score}</span>
+                        <small>成绩</small>
+                      </div>
+                    </div>
+                    <div className="mobile-course-card__meta">
+                      <span><small>绩点</small><b>{Number(course.gpa || 0).toFixed(2)}</b></span>
+                      <span><small>学分</small><b>{course.credit ?? '-'}</b></span>
+                      <Tag color={course.is_passed ? 'success' : 'error'}>
+                        {course.is_passed ? '已通过' : '未通过'}
+                      </Tag>
+                    </div>
+                  </article>
+                ))}
+                {mobileScores.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有符合条件的成绩" />}
+              </div>
+              <Pagination
+                className="mobile-list-pagination"
+                simple
+                current={mobilePage}
+                pageSize={10}
+                total={mobileFocusedScores.length}
+                onChange={handleMobilePageChange}
+              />
+            </>
+          ) : (
+            <Table
+              columns={tableColumns}
+              dataSource={displayScores}
+              rowKey="_id"
+              scroll={{ x: 'max-content' }}
+              pagination={pagination}
+              onChange={handleTableChange}
+              bordered
+              size="middle"
+            />
+          )}
         </Card>
       )}
 
