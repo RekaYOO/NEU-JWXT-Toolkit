@@ -1,9 +1,13 @@
 import importlib
 import json
 import os
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from backend.core.runtime.access import (
     COOKIE_TTL_SECONDS,
@@ -85,3 +89,24 @@ def test_server_config_is_loaded(monkeypatch, tmp_path):
     assert config.port == 19001
     assert config.access_gateway_enabled
     assert config.access_password_hash == password_data["hash"]
+
+
+def test_shutdown_route_is_desktop_only():
+    from backend.app.routers import runtime
+
+    with patch.object(runtime, "config", SimpleNamespace(desktop_mode=False)):
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(runtime.desktop_shutdown())
+
+    assert error.value.status_code == 404
+
+    timer = Mock()
+    with (
+        patch.object(runtime, "config", SimpleNamespace(desktop_mode=True)),
+        patch.object(runtime.threading, "Timer", return_value=timer) as timer_class,
+    ):
+        result = asyncio.run(runtime.desktop_shutdown())
+
+    assert result == {"success": True}
+    timer_class.assert_called_once()
+    timer.start.assert_called_once_with()

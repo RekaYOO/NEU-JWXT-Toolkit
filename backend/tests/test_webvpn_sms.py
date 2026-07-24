@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from backend.core.auth.client import NEUAuthClient
@@ -45,6 +48,62 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         self.assertEqual(post_calls[2].kwargs["data"]["d"], "murmur")
         self.assertEqual(post_calls[2].kwargs["data"]["i"], "details")
         self.assertEqual(post_calls[3].kwargs["data"]["un"], "20250001")
+
+    def test_explicit_login_can_skip_stale_persisted_cookies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cookie_file = Path(directory) / "session.json"
+            cookie_file.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "username": "20250001",
+                        "active_mode": "webvpn",
+                        "cookies": [
+                            {
+                                "name": "stale_gateway",
+                                "value": "stale",
+                                "domain": ".webvpn.neu.edu.cn",
+                                "path": "/",
+                                "expires": None,
+                                "secure": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            restored = NEUAuthClient(
+                "20250001",
+                cookie_file=str(cookie_file),
+                network_mode="webvpn",
+            )
+            clean = NEUAuthClient(
+                "20250001",
+                cookie_file=str(cookie_file),
+                network_mode="webvpn",
+                restore_session=False,
+            )
+
+        self.assertIn("stale_gateway", {cookie.name for cookie in restored.session.cookies})
+        self.assertNotIn("stale_gateway", {cookie.name for cookie in clean.session.cookies})
+
+    def test_webvpn_entry_retries_once_after_clearing_unusable_cookies(self):
+        unexpected_page = self._response("https://webvpn.neu.edu.cn/portal")
+        login_page = self._response(
+            "https://webvpn.neu.edu.cn/https/token/tpass/login?service=test"
+        )
+        client = NEUAuthClient("20250001", "secret", network_mode="webvpn")
+        client._session = Mock()
+        client.session.get.side_effect = [unexpected_page, login_page]
+
+        with patch.object(client, "_webvpn_health_check", return_value=False):
+            result, session_is_valid = client._open_webvpn_password_page()
+
+        self.assertIs(result, login_page)
+        self.assertFalse(session_is_valid)
+        self.assertEqual(client.session.get.call_count, 2)
+        client.session.cookies.clear.assert_called_once_with()
 
 
 if __name__ == "__main__":

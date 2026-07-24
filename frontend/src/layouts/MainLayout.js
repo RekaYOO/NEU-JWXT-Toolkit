@@ -39,6 +39,7 @@ const MainLayout = ({ userInfo, onLogout, runtimeProfile = 'development' }) => {
   const [avatarUrl, setAvatarUrl] = useState(null);
   const [isRefreshingAvatar, setIsRefreshingAvatar] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [serviceStopped, setServiceStopped] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const screens = Grid.useBreakpoint();
@@ -135,13 +136,39 @@ const MainLayout = ({ userInfo, onLogout, runtimeProfile = 'development' }) => {
           okButtonProps: { danger: true },
           cancelText: '取消',
           onOk: async () => {
-            await shutdownRuntime();
-            window.setTimeout(() => window.close(), 250);
+            try {
+              const result = await shutdownRuntime();
+              if (!result.success) {
+                throw new Error('本地服务未确认退出');
+              }
+              setServiceStopped(true);
+            } catch (error) {
+              message.error('退出本地服务失败，请稍后重试');
+              throw error;
+            }
           },
         });
       },
     }] : []),
   ];
+
+  if (serviceStopped) {
+    return (
+      <main className="service-stopped-page" role="status" aria-live="assertive">
+        <div className="service-stopped-card">
+          <span className="service-stopped-icon" aria-hidden="true">
+            <PoweroffOutlined />
+          </span>
+          <span className="service-stopped-kicker">LOCAL SERVICE STOPPED</span>
+          <h1>本地服务已退出</h1>
+          <p>当前页面已无法继续使用，可以安全关闭。</p>
+          <div className="service-stopped-hint">
+            如需再次使用，请从桌面或开始菜单重新启动 NEU 教务工具箱。
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   const onMenuClick = ({ key }) => {
     navigate(key);

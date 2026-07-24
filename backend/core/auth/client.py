@@ -263,6 +263,7 @@ class NEUAuthClient:
         verify_ssl: bool = True,
         cookie_file: Optional[str] = None,
         network_mode: str = "direct",
+        restore_session: bool = True,
     ):
         self.username = username
         self.password = password
@@ -290,8 +291,9 @@ class NEUAuthClient:
         self._webvpn_qr_flow: Optional[Dict[str, Any]] = None
         self._webvpn_sms_flow: Optional[Dict[str, Any]] = None
         
-        # 尝试恢复之前的 session
-        if cookie_file:
+        # 自动恢复入口可以读取历史会话；用户主动登录必须从干净会话开始，
+        # 避免旧 WebVPN Cookie 将新登录导向错误页面。
+        if cookie_file and restore_session:
             self._load_cookies()
 
     def login(self, target: str = "https://jwxt.neu.edu.cn") -> bool:
@@ -671,20 +673,14 @@ class NEUAuthClient:
         self.active_mode = "webvpn"
         self._webvpn_sms_flow = None
         try:
-            page = self._session.get(
-                WEBVPN_ENTRY_URL,
-                timeout=self.timeout,
-                verify=self.verify_ssl,
-                allow_redirects=True,
-            )
-            page.raise_for_status()
+            page, session_is_valid = self._open_webvpn_password_page()
             logger.info(
                 "WebVPN password login page: status=%s final=%s",
                 page.status_code,
                 self._safe_url_metadata(page.url),
             )
             if not self._is_webvpn_login_url(page.url):
-                if self._webvpn_health_check():
+                if session_is_valid:
                     self._logged_in = True
                     self._save_cookies()
                     return {"status": "authenticated", "username": self.username or None}
@@ -731,6 +727,28 @@ class NEUAuthClient:
             raise WebVPNLoginError("WebVPN 登录请求超时，请检查网络或改用微信扫码快速登录") from error
         except requests.RequestException as error:
             raise WebVPNLoginError(f"WebVPN 请求失败: {error}") from error
+
+    def _open_webvpn_password_page(self) -> tuple[requests.Response, bool]:
+        """Open the WebVPN CAS page, retrying once with a clean cookie jar."""
+        for attempt in range(2):
+            page = self._session.get(
+                WEBVPN_ENTRY_URL,
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+                allow_redirects=True,
+            )
+            page.raise_for_status()
+            if self._is_webvpn_login_url(page.url):
+                return page, False
+            if self._webvpn_health_check():
+                return page, True
+            if attempt == 0:
+                logger.info(
+                    "WebVPN entry reached an unexpected page; clearing session cookies and retrying once: %s",
+                    self._safe_url_metadata(page.url),
+                )
+                self._session.cookies.clear()
+        return page, False
 
     def send_webvpn_sms_code(self, flow_id: str) -> Dict[str, Any]:
         """Ask the official proxied CAS endpoint to send the SMS code."""

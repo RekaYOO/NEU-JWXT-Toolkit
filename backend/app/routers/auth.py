@@ -48,6 +48,7 @@ async def login(request: LoginRequest):
             request.password,
             cookie_file=COOKIE_FILE,
             network_mode=request.network_mode,
+            restore_session=False,
         )
         success = client.login()
 
@@ -119,6 +120,7 @@ async def start_webvpn_qr_login(request: WebVPNQRStartRequest):
             username=request.username or "",
             cookie_file=COOKIE_FILE,
             network_mode="webvpn",
+            restore_session=False,
         )
         flow = client.start_webvpn_qr_login()
         set_auth_client(client)
@@ -168,7 +170,11 @@ async def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
     """Start real WebVPN password login and return an SMS challenge when required."""
     try:
         client = NEUAuthClient(
-            request.username, request.password, cookie_file=COOKIE_FILE, network_mode="webvpn"
+            request.username,
+            request.password,
+            cookie_file=COOKIE_FILE,
+            network_mode="webvpn",
+            restore_session=False,
         )
         result = client.start_webvpn_password_login()
         if result["status"] == "authenticated":
