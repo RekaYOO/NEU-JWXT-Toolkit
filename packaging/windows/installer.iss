@@ -4,6 +4,9 @@
 #ifndef SourceDir
   #define SourceDir "..\..\dist\NEU-JWXT-Toolkit"
 #endif
+#ifndef ChineseMessagesFile
+  #error ChineseMessagesFile must be supplied by the release workflow
+#endif
 
 [Setup]
 AppId={{5EE2B318-8D15-49A5-A2AE-52D9A6613742}
@@ -25,7 +28,7 @@ CloseApplications=yes
 RestartApplications=no
 
 [Languages]
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesesimp"; MessagesFile: "{#ChineseMessagesFile}"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked

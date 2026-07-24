@@ -97,9 +97,22 @@ jobs:
       - name: Build Inno Setup installer
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           choco install innosetup -y --no-progress
           $version = (Get-Content VERSION -Raw).Trim()
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=$pwd\dist\NEU-JWXT-Toolkit" "packaging\windows\installer.iss"
+          $translation = Join-Path $env:RUNNER_TEMP "ChineseSimplified.isl"
+          $translationUrl = "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/6da09d23e14443d4cf8f07b1c5fd821bfe459788/ChineseSimplified.isl"
+          Invoke-WebRequest -Uri $translationUrl -OutFile $translation
+          $expectedHash = "869e43e7c7b8d20c7e4397c8e98f7d1b7cf0528803acdf019ad350143ec85469"
+          $actualHash = (Get-FileHash -Algorithm SHA256 $translation).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw "Unexpected SHA-256 for ChineseSimplified.isl: $actualHash"
+          }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            "/DMyAppVersion=$version" `
+            "/DSourceDir=$pwd\dist\NEU-JWXT-Toolkit" `
+            "/DChineseMessagesFile=$translation" `
+            "packaging\windows\installer.iss"
       - uses: actions/upload-artifact@v4
         with:
           name: windows-release
