@@ -1,8 +1,10 @@
 .evaluation-page {
+  min-width: 0;
   padding: 0;
 }
 
 .evaluation-page .ant-card-head-title {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -14,11 +16,10 @@
 }
 
 .evaluation-page .ant-table-small .ant-table-thead > tr > th {
-  background-color: var(--color-surface-muted);
   font-weight: 600;
+  background-color: var(--color-surface-muted);
 }
 
-/* 安全提示高亮 */
 .evaluation-page .ant-alert-with-action {
   flex-wrap: wrap;
 }
@@ -27,32 +28,405 @@
   margin-top: 8px;
 }
 
-/* 评分等级标签 */
+.evaluation-strategy,
+.evaluation-batch-actions {
+  margin-bottom: 16px;
+}
+
+.evaluation-strategy-select {
+  width: 220px;
+}
+
+.mobile-evaluation-list,
+.mobile-indicator-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mobile-task-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 14px;
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line-soft);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.mobile-task-card.is-selected {
+  background: #eff6ff;
+  border-color: var(--color-brand);
+}
+
+.mobile-task-card:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.mobile-task-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mobile-task-main strong {
+  overflow-wrap: anywhere;
+}
+
+.mobile-task-main small {
+  color: var(--color-muted);
+}
+
+.mobile-task-counts {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.mobile-task-counts .ant-tag {
+  margin-inline-end: 0;
+}
+
+.mobile-evaluation-course {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line-soft);
+  border-radius: var(--radius-md);
+}
+
+.mobile-evaluation-course.is-completed {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.mobile-evaluation-course.is-selected {
+  background: #eff6ff;
+  border-color: var(--color-brand);
+}
+
+.mobile-evaluation-course-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mobile-evaluation-course-main strong,
+.mobile-evaluation-course-main span,
+.mobile-evaluation-course-main small {
+  overflow-wrap: anywhere;
+}
+
+.mobile-evaluation-course-main span,
+.mobile-evaluation-course-main small {
+  color: var(--color-muted);
+}
+
+.mobile-evaluation-course-action {
+  min-width: 74px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.mobile-evaluation-course-action .ant-tag {
+  margin: 0;
+  text-align: center;
+}
+
+.mobile-empty {
+  padding: 28px 12px;
+  color: var(--color-muted);
+  text-align: center;
+}
+
+.mobile-indicator-card {
+  padding: 12px;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-line-soft);
+  border-radius: var(--radius-md);
+}
+
+.mobile-indicator-card > strong {
+  display: block;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.mobile-indicator-meta,
+.mobile-indicator-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.mobile-indicator-meta {
+  margin-bottom: 8px;
+  color: var(--color-muted);
+}
+
+.mobile-indicator-meta .ant-tag {
+  margin: 0;
+}
+
+.mobile-indicator-result {
+  justify-content: space-between;
+  color: var(--color-muted);
+}
+
+.evaluation-progress-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .score-badge {
+  min-width: 28px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 28px;
-  height: 24px;
-  border-radius: var(--radius-sm);
   font-size: 12px;
   font-weight: 600;
+  border-radius: var(--radius-sm);
 }
 
 .score-badge.high {
-  background: #f6ffed;
   color: #52c41a;
+  background: #f6ffed;
   border: 1px solid #b7eb8f;
 }
 
 .score-badge.mid {
-  background: #fff7e6;
   color: #fa8c16;
+  background: #fff7e6;
   border: 1px solid #ffd591;
 }
 
 .score-badge.low {
-  background: #fff1f0;
   color: #ff4d4f;
+  background: #fff1f0;
   border: 1px solid #ffa39e;
+}
+
+@media (max-width: 768px) {
+  .evaluation-page {
+    overflow: hidden;
+  }
+
+  .evaluation-page .ant-card-head {
+    min-height: 48px;
+    padding: 0 14px;
+  }
+
+  .evaluation-page .ant-card-head-wrapper {
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .evaluation-page .ant-card-head-title {
+    padding: 12px 0;
+    overflow: hidden;
+  }
+
+  .evaluation-page .ant-card-extra {
+    flex: 0 0 auto;
+    padding: 8px 0;
+  }
+
+  .evaluation-page .ant-card-body {
+    padding: 14px;
+  }
+
+  .evaluation-notice.ant-alert {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    column-gap: 12px;
+  }
+
+  .evaluation-notice .ant-alert-icon {
+    grid-column: 1;
+    grid-row: 1;
+    margin-inline-end: 0;
+  }
+
+  .evaluation-notice .ant-alert-content {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .evaluation-notice .ant-alert-description {
+    overflow-wrap: anywhere;
+  }
+
+  .evaluation-notice .ant-alert-action {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    margin-top: 12px;
+    margin-inline-start: 0;
+  }
+
+  .evaluation-notice .ant-alert-action button {
+    width: 100%;
+  }
+
+  .evaluation-strategy {
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .evaluation-strategy-select {
+    width: 100%;
+  }
+
+  .evaluation-strategy .ant-divider {
+    display: none;
+  }
+
+  .evaluation-strategy > .ant-space-item:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .evaluation-batch-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .evaluation-batch-actions > .ant-space-item,
+  .evaluation-batch-actions button {
+    width: 100%;
+  }
+
+  .evaluation-batch-actions > .ant-space-item:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .evaluation-tasks-card .ant-card-body,
+  .evaluation-courses-card .ant-card-body {
+    padding: 10px;
+  }
+
+  .evaluation-courses-card .ant-card-head-title .ant-space {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .evaluation-courses-card .ant-card-head-title .ant-space-item:last-child {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .evaluation-courses-card .ant-card-head-title span {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .evaluation-fill-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .evaluation-fill-actions > .ant-space-item,
+  .evaluation-fill-actions button {
+    width: 100%;
+  }
+
+  .evaluation-score-options {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .evaluation-score-options .ant-radio-button-wrapper {
+    width: 100%;
+    height: 38px;
+    padding-inline: 6px;
+    line-height: 36px;
+    text-align: center;
+    border: 1px solid var(--color-line-soft);
+    border-radius: var(--radius-sm);
+  }
+
+  .evaluation-score-options .ant-radio-button-wrapper::before {
+    display: none;
+  }
+
+  .evaluation-modal .ant-modal {
+    max-width: calc(100vw - 16px);
+    margin: 8px auto;
+    padding-bottom: 0;
+  }
+
+  .evaluation-modal .ant-modal-content {
+    max-height: calc(100dvh - 16px);
+    padding: 16px 14px;
+    overflow: hidden;
+  }
+
+  .evaluation-modal .ant-modal-header {
+    margin-bottom: 12px;
+  }
+
+  .evaluation-modal .ant-modal-body {
+    overflow-x: hidden !important;
+  }
+
+  .evaluation-modal .ant-modal-footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .evaluation-modal .ant-modal-footer button {
+    width: 100%;
+    margin-inline-start: 0 !important;
+  }
+
+  .evaluation-modal .ant-descriptions-view {
+    overflow: hidden;
+  }
+
+  .evaluation-modal .ant-descriptions-item-label,
+  .evaluation-modal .ant-descriptions-item-content {
+    overflow-wrap: anywhere;
+  }
+
+  .evaluation-progress-item {
+    flex-wrap: wrap;
+  }
+
+  .evaluation-progress-item > :last-child {
+    flex-basis: 100%;
+    padding-left: 24px;
+  }
 }

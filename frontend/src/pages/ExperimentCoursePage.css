@@ -3,15 +3,23 @@
   padding: 0;
 }
 
-.page-header {
+.experiment-course-page .page-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 16px;
   margin-bottom: 16px;
 }
 
-.page-header h4 {
+.experiment-course-page .page-header h4 {
   margin: 0;
+}
+
+.experiment-page-heading {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
 }
 
 /* 统计卡片 */
@@ -107,6 +115,7 @@
 }
 
 .project-info {
+  min-width: 0;
   flex: 1;
 }
 
@@ -116,6 +125,11 @@
   gap: 8px;
   font-weight: 500;
   margin-bottom: 4px;
+}
+
+.project-name > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .project-code {
@@ -201,20 +215,143 @@
 
 /* 响应式设计 */
 @media (max-width: 768px) {
+  .experiment-course-page .page-header {
+    gap: 10px;
+  }
+
+  .experiment-page-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
   .experiment-course-page .stats-row {
-    grid-template-columns: repeat(2, 1fr);
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .experiment-course-page .stats-row::-webkit-scrollbar {
+    display: none;
+  }
+
+  .experiment-course-page .stat-card {
+    flex: 1 0 78px;
+    min-width: 78px;
+  }
+
+  .courses-card .ant-card-body {
+    padding: 0;
+  }
+
+  .mobile-course-collapse {
+    background: transparent;
+    border: 0;
+  }
+
+  .mobile-course-collapse > .ant-collapse-item {
+    border: 0;
+    border-bottom: 1px solid var(--color-line-soft);
+  }
+
+  .mobile-course-collapse > .ant-collapse-item:last-child {
+    border-bottom: 0;
+  }
+
+  .mobile-course-collapse .ant-collapse-header {
+    align-items: center !important;
+    padding: 14px 12px !important;
+  }
+
+  .mobile-course-collapse .ant-collapse-content {
+    border-top-color: var(--color-line-soft);
+  }
+
+  .mobile-course-collapse .ant-collapse-content-box {
+    padding: 0 !important;
+  }
+
+  .mobile-course-summary {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .mobile-course-title {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .mobile-course-title strong {
+    overflow: hidden;
+    color: var(--color-ink);
+    font-size: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-course-title span {
+    color: var(--color-muted);
+    font-size: 11px;
+  }
+
+  .mobile-course-summary .ant-tag {
+    flex: 0 0 auto;
+    margin-inline-end: 0;
+  }
+
+  .projects-container {
+    padding: 10px;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .projects-header {
+    margin-bottom: 8px;
+  }
+
+  .projects-list {
+    gap: 8px;
+  }
+
+  .experiment-course-page .stats-row {
+    margin-bottom: 12px;
   }
 
   .project-item {
     flex-direction: column;
     align-items: flex-start;
-    gap: 12px;
+    gap: 10px;
+    padding: 12px;
   }
 
   .project-status {
     width: 100%;
+  }
+
+  .project-status .ant-space,
+  .project-status .ant-space-item,
+  .project-status button {
+    width: 100%;
+  }
+
+  .project-status .ant-space {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 72px;
+  }
+
+  .project-status .ant-tag {
+    min-height: 30px;
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .round-header {
@@ -222,16 +359,25 @@
     align-items: flex-start;
     gap: 8px;
   }
+
+  .round-capacity {
+    flex-wrap: wrap;
+  }
+
+  .round-action,
+  .round-action button {
+    width: 100%;
+  }
+
+  .round-card .ant-descriptions-item-label,
+  .round-card .ant-descriptions-item-content {
+    padding-bottom: 6px;
+  }
 }
 
 @media (max-width: 576px) {
   .experiment-course-page {
     padding: 0;
-  }
-
-  .experiment-course-page .stats-row {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 8px;
   }
 
   .experiment-course-page .stat-card .ant-card-body {

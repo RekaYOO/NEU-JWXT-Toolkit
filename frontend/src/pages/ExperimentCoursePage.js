@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Card, Table, Tag, Button, message, Spin, Modal, Descriptions,
-  Badge, Space, Tooltip, Popconfirm, Typography, Empty, Alert
+  Space, Popconfirm, Typography, Empty, Alert, Grid, Collapse
 } from 'antd';
 import {
   ExperimentOutlined, CheckCircleOutlined, ClockCircleOutlined,
@@ -12,6 +12,7 @@ import { getExperimentCourses, getExperimentRounds, selectExperimentRound, desel
 import './ExperimentCoursePage.css';
 
 const { Title, Text } = Typography;
+const { useBreakpoint } = Grid;
 
 // 状态标签
 const StatusTag = ({ isSelected, isComplete, mustDoCount, selectedCount }) => {
@@ -34,6 +35,8 @@ const ExperimentCoursePage = () => {
   const [roundsLoading, setRoundsLoading] = useState(false);
   const [roundsModalVisible, setRoundsModalVisible] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const screens = useBreakpoint();
+  const isMobile = !screens.md;
 
   // 加载课程列表
   const loadCourses = async () => {
@@ -174,7 +177,6 @@ const ExperimentCoursePage = () => {
       render: (_, record) => (
         <StatusTag
           isComplete={record.is_complete}
-          isComplete={record.is_complete}
           mustDoCount={record.must_do_count}
           selectedCount={record.selected_count}
         />
@@ -253,10 +255,12 @@ const ExperimentCoursePage = () => {
     <div className="experiment-course-page">
       {/* 页面标题 */}
       <div className="page-header">
-        <Title level={4}>
-          <ExperimentOutlined /> 实验选课
-        </Title>
-        <Text type="secondary">{term} 学期</Text>
+        <div className="experiment-page-heading">
+          <Title level={4}>
+            <ExperimentOutlined /> 实验选课
+          </Title>
+          <Text type="secondary">{term} 学期</Text>
+        </div>
         <Button icon={<ReloadOutlined />} onClick={loadCourses} size="small">
           刷新
         </Button>
@@ -285,7 +289,9 @@ const ExperimentCoursePage = () => {
       {/* 提示信息 */}
       <Alert
         message="使用说明"
-        description="点击课程展开查看实验项目，已选项目可以退课，未选项目点击选课按钮选择实验班。红色标签为必做项目。"
+        description={isMobile
+          ? '展开课程即可选班或退课，红色标签表示必做项目。'
+          : '点击课程展开查看实验项目，已选项目可以退课，未选项目点击选课按钮选择实验班。红色标签为必做项目。'}
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
@@ -294,14 +300,39 @@ const ExperimentCoursePage = () => {
       {/* 课程列表 */}
       <Card className="courses-card">
         {courses.length > 0 ? (
-          <Table
-            columns={courseColumns}
-            dataSource={courses}
-            rowKey="task_id"
-            expandable={{ expandedRowRender }}
-            pagination={false}
-            size="middle"
-          />
+          isMobile ? (
+            <Collapse
+              className="mobile-course-collapse"
+              accordion
+              expandIconPosition="end"
+              items={courses.map(course => ({
+                key: course.task_id,
+                label: (
+                  <div className="mobile-course-summary">
+                    <div className="mobile-course-title">
+                      <strong>{course.course_name}</strong>
+                      <span>{course.course_no} · {course.credit} 学分</span>
+                    </div>
+                    <StatusTag
+                      isComplete={course.is_complete}
+                      mustDoCount={course.must_do_count}
+                      selectedCount={course.selected_count}
+                    />
+                  </div>
+                ),
+                children: expandedRowRender(course),
+              }))}
+            />
+          ) : (
+            <Table
+              columns={courseColumns}
+              dataSource={courses}
+              rowKey="task_id"
+              expandable={{ expandedRowRender }}
+              pagination={false}
+              size="middle"
+            />
+          )
         ) : (
           <Empty description="暂无实验课程" />
         )}
@@ -313,7 +344,8 @@ const ExperimentCoursePage = () => {
         open={roundsModalVisible}
         onCancel={() => setRoundsModalVisible(false)}
         footer={null}
-        width={800}
+        width={isMobile ? 'calc(100vw - 16px)' : 800}
+        styles={{ body: { maxHeight: isMobile ? 'calc(100dvh - 120px)' : 600, overflowY: 'auto' } }}
       >
         {roundsLoading ? (
           <div className="modal-loading">
@@ -341,7 +373,7 @@ const ExperimentCoursePage = () => {
                     {round.conflict && <Tag color="warning" size="small">冲突</Tag>}
                   </div>
                 </div>
-                <Descriptions size="small" column={2}>
+                <Descriptions size="small" column={isMobile ? 1 : 2}>
                   <Descriptions.Item label="教师">{round.teacher}</Descriptions.Item>
                   <Descriptions.Item label="时间">
                     <CalendarOutlined /> {round.week} {round.day} {round.time}

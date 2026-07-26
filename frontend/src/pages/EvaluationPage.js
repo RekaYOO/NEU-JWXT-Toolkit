@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Card, Table, Button, Tag, Space, Modal, Descriptions, Spin,
   message, Alert, Tooltip, Progress, Select, Typography, Divider,
-  Switch, Popconfirm, Badge, Radio, Input, List, Form,
+  Switch, Popconfirm, Badge, Radio, Input, List, Form, Grid, Checkbox,
 } from 'antd';
 import {
   StarOutlined, EyeOutlined, ThunderboltOutlined,
@@ -19,6 +19,7 @@ import './EvaluationPage.css';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
+const { useBreakpoint } = Grid;
 
 // dfdj 评分等级映射
 const SCORE_MAP = { 6: 100, 5: 90, 4: 80, 3: 70, 2: 60, 1: 50 };
@@ -72,6 +73,8 @@ const EvaluationPage = () => {
   const [progressResults, setProgressResults] = useState([]);
   const [progressCourseName, setProgressCourseName] = useState('');
   const abortBatchRef = useRef(false);
+  const screens = useBreakpoint();
+  const isMobile = !screens.md;
 
   // ── 加载任务列表（一级） ────────────────────────────────────────────────
   const loadTasks = useCallback(async () => {
@@ -648,10 +651,96 @@ const EvaluationPage = () => {
   const pendingCourses = courses.filter(c => !c.is_evaluated);
   const completedCourses = courses.filter(c => c.is_evaluated);
 
+  const mobileTaskList = (
+    <div className="mobile-evaluation-list">
+      {tasks.length > 0 ? tasks.map(task => (
+        <button
+          type="button"
+          key={task.task_id}
+          className={`mobile-task-card${selectedTask?.task_id === task.task_id ? ' is-selected' : ''}`}
+          onClick={() => handleSelectTask(task)}
+        >
+          <span className="mobile-task-main">
+            <strong>{task.task_name}</strong>
+            <small>共 {task.total_count} 门课程</small>
+          </span>
+          <span className="mobile-task-counts">
+            <Tag color={task.pending_count > 0 ? 'warning' : 'default'}>
+              待评 {task.pending_count}
+            </Tag>
+            <Tag color="success">已评 {task.evaluated_count}</Tag>
+          </span>
+        </button>
+      )) : <div className="mobile-empty">暂无评教任务</div>}
+    </div>
+  );
+
+  const mobileCourseList = (items, pending) => (
+    <div className="mobile-evaluation-list">
+      {items.map(course => {
+        const selected = selectedXspjIds.includes(course.xspjid);
+        return (
+          <div
+            key={course.xspjid}
+            className={`mobile-evaluation-course ${pending ? 'is-pending' : 'is-completed'}${selected ? ' is-selected' : ''}`}
+          >
+            {pending && (
+              <Checkbox
+                checked={selected}
+                aria-label={`选择 ${course.course_name}`}
+                onChange={(event) => {
+                  setSelectedXspjIds(previous => event.target.checked
+                    ? [...new Set([...previous, course.xspjid])]
+                    : previous.filter(key => key !== course.xspjid));
+                }}
+              />
+            )}
+            <div className="mobile-evaluation-course-main">
+              <strong>{course.course_name}</strong>
+              <span>{course.teacher_name || '教师待定'}</span>
+              <small>{course.department || course.course_type_name || '开课单位未知'}</small>
+            </div>
+            <div className="mobile-evaluation-course-action">
+              {pending ? (
+                <>
+                  <Tag color="warning">未评</Tag>
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<EditOutlined />}
+                    onClick={() => handleOpenEvaluate(course)}
+                  >
+                    评价
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Tag color="success">
+                    {course.avg_score !== undefined && course.avg_score !== null
+                      ? `已评 · ${course.avg_score}`
+                      : '已评'}
+                  </Tag>
+                  <Button
+                    size="small"
+                    icon={<FileTextOutlined />}
+                    onClick={() => handleViewDetail(course)}
+                  >
+                    详情
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
   return (
     <div className="evaluation-page">
       {/* 顶部须知提示 */}
       <Alert
+        className="evaluation-notice"
         message="评教须知"
         description="由于教务系统存在更改接口等可能性，为了防止出现异常，当前自动评价脚本基于“2025-2026学年春季学期学生评教”完成和测试，请确保评教学期匹配后再进行操作。"
         type="warning"
@@ -671,8 +760,9 @@ const EvaluationPage = () => {
 
       {/* 控制面板 */}
       <Card
+        className="evaluation-control-card"
         title={
-          <Space>
+          <Space className="evaluation-card-extra">
             <StarOutlined />
             <span>教学质量评价</span>
           </Space>
@@ -687,12 +777,12 @@ const EvaluationPage = () => {
         style={{ marginBottom: 16 }}
       >
         {/* 策略选择 */}
-        <Space wrap style={{ marginBottom: 16 }}>
+        <Space wrap className="evaluation-strategy">
           <Text strong>评分策略：</Text>
           <Select
             value={globalStrategy}
             onChange={setGlobalStrategy}
-            style={{ width: 200 }}
+            className="evaluation-strategy-select"
             options={[
               { value: 'highest', label: '最高分（首题5其余6）' },
               { value: 'lowest', label: '最低分（首题2其余1）' },
@@ -711,7 +801,7 @@ const EvaluationPage = () => {
 
         {/* 批量操作 */}
         {pendingCourses.length > 0 && (
-          <Space style={{ marginBottom: 16 }}>
+          <Space className="evaluation-batch-actions" wrap>
             <Button
               type="primary"
               icon={<ThunderboltOutlined />}
@@ -741,6 +831,7 @@ const EvaluationPage = () => {
 
       {/* 一级：评教任务列表 */}
       <Card
+        className="evaluation-tasks-card"
         title={
           <Space>
             <UnorderedListOutlined />
@@ -749,21 +840,26 @@ const EvaluationPage = () => {
         }
         style={{ marginBottom: 16 }}
       >
-        <Table
-          dataSource={tasks}
-          columns={taskColumns}
-          rowKey="task_id"
-          loading={tasksLoading}
-          size="small"
-          pagination={false}
-          rowClassName={(record) => selectedTask?.task_id === record.task_id ? 'ant-table-row-selected' : ''}
-          locale={{ emptyText: '暂无评教任务' }}
-        />
+        <Spin spinning={tasksLoading}>
+          {isMobile ? mobileTaskList : (
+            <Table
+              dataSource={tasks}
+              columns={taskColumns}
+              rowKey="task_id"
+              loading={tasksLoading}
+              size="small"
+              pagination={false}
+              rowClassName={(record) => selectedTask?.task_id === record.task_id ? 'ant-table-row-selected' : ''}
+              locale={{ emptyText: '暂无评教任务' }}
+            />
+          )}
+        </Spin>
       </Card>
 
       {/* 二级：课程列表（选中任务后展示） */}
       {selectedTask && (
         <Card
+          className="evaluation-courses-card"
           title={
             <Space>
               <LeftOutlined style={{ cursor: 'pointer' }} onClick={() => { setSelectedTask(null); setCourses([]); }} />
@@ -780,18 +876,20 @@ const EvaluationPage = () => {
                 <Title level={5} style={{ marginBottom: 8 }}>
                   待评教课程 ({pendingCourses.length})
                 </Title>
-                <Table
-                  dataSource={pendingCourses}
-                  columns={pendingColumns}
-                  rowKey="xspjid"
-                  size="small"
-                  pagination={false}
-                  rowSelection={{
-                    selectedRowKeys: selectedXspjIds,
-                    onChange: (keys) => setSelectedXspjIds(keys),
-                  }}
-                  locale={{ emptyText: '暂无待评教课程' }}
-                />
+                {isMobile ? mobileCourseList(pendingCourses, true) : (
+                  <Table
+                    dataSource={pendingCourses}
+                    columns={pendingColumns}
+                    rowKey="xspjid"
+                    size="small"
+                    pagination={false}
+                    rowSelection={{
+                      selectedRowKeys: selectedXspjIds,
+                      onChange: (keys) => setSelectedXspjIds(keys),
+                    }}
+                    locale={{ emptyText: '暂无待评教课程' }}
+                  />
+                )}
               </div>
             )}
 
@@ -801,14 +899,16 @@ const EvaluationPage = () => {
                 <Title level={5} style={{ marginBottom: 8 }}>
                   已评教课程 ({completedCourses.length})
                 </Title>
-                <Table
-                  dataSource={completedCourses}
-                  columns={completedColumns}
-                  rowKey="xspjid"
-                  size="small"
-                  pagination={false}
-                  locale={{ emptyText: '暂无已评教课程' }}
-                />
+                {isMobile ? mobileCourseList(completedCourses, false) : (
+                  <Table
+                    dataSource={completedCourses}
+                    columns={completedColumns}
+                    rowKey="xspjid"
+                    size="small"
+                    pagination={false}
+                    locale={{ emptyText: '暂无已评教课程' }}
+                  />
+                )}
               </div>
             )}
 
@@ -826,7 +926,9 @@ const EvaluationPage = () => {
         title="评教详情"
         open={detailModalVisible}
         onCancel={() => { setDetailModalVisible(false); setCurrentDetail(null); }}
-        width={900}
+        rootClassName="evaluation-modal"
+        width={isMobile ? 'calc(100vw - 16px)' : 900}
+        styles={{ body: { maxHeight: isMobile ? 'calc(100dvh - 112px)' : '75vh', overflowY: 'auto' } }}
         footer={null}
       >
         {detailLoading ? (
@@ -835,7 +937,7 @@ const EvaluationPage = () => {
           </div>
         ) : currentDetail ? (
           <div>
-            <Descriptions bordered size="small" column={2} style={{ marginBottom: 16 }}>
+            <Descriptions bordered size="small" column={isMobile ? 1 : 2} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="指标库名称">{currentDetail.libname || '-'}</Descriptions.Item>
               <Descriptions.Item label="课程">{currentDetail.course_name}</Descriptions.Item>
               <Descriptions.Item label="教师">{currentDetail.teacher_name}</Descriptions.Item>
@@ -861,14 +963,37 @@ const EvaluationPage = () => {
               />
             )}
 
-            <Table
-              dataSource={currentDetail.indicators || []}
-              columns={detailIndicatorColumns}
-              rowKey="zbid"
-              size="small"
-              pagination={false}
-              scroll={{ y: 400 }}
-            />
+            {isMobile ? (
+              <div className="mobile-indicator-list">
+                {(currentDetail.indicators || []).map(indicator => (
+                  <div key={indicator.zbid} className="mobile-indicator-card">
+                    <strong>{indicator.zbmc}</strong>
+                    <div className="mobile-indicator-meta">
+                      <Tag>{indicator.evaltype === 1 ? '选择' : '文本'}</Tag>
+                      {indicator.sfbt === 1 && <Tag color="error">必填</Tag>}
+                      {indicator.weight > 0 && <span>权重 {indicator.weight}%</span>}
+                    </div>
+                    <div className="mobile-indicator-result">
+                      <span>等级：{Array.isArray(indicator.dfdj)
+                        ? indicator.dfdj.map(value => SCORE_LABELS[value] || value).join('、')
+                        : SCORE_LABELS[indicator.dfdj] || indicator.dfdj || '-'}</span>
+                      <span>分数：{Array.isArray(indicator.score)
+                        ? indicator.score.join('、')
+                        : indicator.score ?? '-'}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Table
+                dataSource={currentDetail.indicators || []}
+                columns={detailIndicatorColumns}
+                rowKey="zbid"
+                size="small"
+                pagination={false}
+                scroll={{ y: 400 }}
+              />
+            )}
           </div>
         ) : (
           <Text type="secondary">无数据</Text>
@@ -885,9 +1010,11 @@ const EvaluationPage = () => {
         }
         open={evaluateModalVisible}
         onCancel={() => setEvaluateModalVisible(false)}
-        width={800}
+        rootClassName="evaluation-modal"
+        width={isMobile ? 'calc(100vw - 16px)' : 800}
         confirmLoading={evaluateSubmitting}
         okText="提交评教"
+        cancelText="取消"
         onOk={handleSubmitEvaluate}
         styles={{ body: { maxHeight: '70vh', overflow: 'auto' } }}
       >
@@ -897,7 +1024,7 @@ const EvaluationPage = () => {
           </div>
         ) : evaluateCourse ? (
           <div>
-            <Descriptions bordered size="small" column={2} style={{ marginBottom: 16 }}>
+            <Descriptions bordered size="small" column={isMobile ? 1 : 2} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="课程">{evaluateCourse.course_name}</Descriptions.Item>
               <Descriptions.Item label="教师">{evaluateCourse.teacher_name}</Descriptions.Item>
               <Descriptions.Item label="开课单位">{evaluateCourse.department || '-'}</Descriptions.Item>
@@ -919,7 +1046,7 @@ const EvaluationPage = () => {
               style={{ marginBottom: 16 }}
             />
 
-            <Space style={{ marginBottom: 16 }}>
+            <Space className="evaluation-fill-actions" wrap>
               <Button size="small" onClick={() => handleApplyStrategy('highest')}>
                 最高分填充
               </Button>
@@ -949,6 +1076,7 @@ const EvaluationPage = () => {
 
                   {ind.evaltype === 1 ? (
                     <Radio.Group
+                      className="evaluation-score-options"
                       value={
                         Array.isArray(ind._customDfdj)
                           ? ind._customDfdj[0]
@@ -963,13 +1091,11 @@ const EvaluationPage = () => {
                         }
                       }}
                     >
-                      <Space wrap>
-                        {SCORE_OPTIONS.map(opt => (
-                          <Radio.Button key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </Radio.Button>
-                        ))}
-                      </Space>
+                      {SCORE_OPTIONS.map(opt => (
+                        <Radio.Button key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </Radio.Button>
+                      ))}
                     </Radio.Group>
                   ) : (
                     <TextArea
@@ -993,6 +1119,7 @@ const EvaluationPage = () => {
         title="批量评教进度"
         open={progressModalVisible}
         onCancel={handleCloseProgress}
+        rootClassName="evaluation-modal"
         footer={
           <Space>
             {batchRunning && (
@@ -1007,7 +1134,8 @@ const EvaluationPage = () => {
         }
         closable={!batchRunning}
         maskClosable={!batchRunning}
-        width={600}
+        width={isMobile ? 'calc(100vw - 16px)' : 600}
+        styles={{ body: { maxHeight: isMobile ? 'calc(100dvh - 180px)' : 500, overflowY: 'auto' } }}
       >
         <div style={{ marginBottom: 16 }}>
           <Progress
@@ -1030,7 +1158,7 @@ const EvaluationPage = () => {
           dataSource={progressResults}
           renderItem={(item) => (
             <List.Item>
-              <Space>
+              <div className="evaluation-progress-item">
                 {item.success
                   ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
                   : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
@@ -1041,7 +1169,7 @@ const EvaluationPage = () => {
                   <Tag color="blue">均分 {item.avg_score}</Tag>
                 )}
                 <Text type={item.success ? 'secondary' : 'danger'}>{item.message}</Text>
-              </Space>
+              </div>
             </List.Item>
           )}
           style={{ maxHeight: 300, overflow: 'auto' }}
