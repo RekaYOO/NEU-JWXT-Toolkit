@@ -90,6 +90,27 @@ def test_config_never_returns_password_and_blank_preserves_it(tmp_path):
     assert reloaded.get_config()["interval_minutes"] == 30
 
 
+def test_default_interval_is_thirty_minutes(tmp_path):
+    service, _, _ = build_service(tmp_path)
+
+    assert service.get_config()["interval_minutes"] == 30
+
+
+def test_tracking_switch_applies_immediately_without_changing_config(tmp_path):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config(interval_minutes=45))
+
+    enabled = service.set_enabled(True)
+    assert enabled["enabled"] is True
+    assert enabled["interval_minutes"] == 45
+    assert service.get_status()["stage"] == "scheduled"
+
+    disabled = service.set_enabled(False)
+    assert disabled["enabled"] is False
+    assert disabled["interval_minutes"] == 45
+    assert service.get_status()["stage"] == "disabled"
+
+
 def test_manual_check_creates_snapshot_then_notifies_changes(tmp_path, monkeypatch):
     service, academic, storage = build_service(tmp_path)
     service.update_config(mail_config())

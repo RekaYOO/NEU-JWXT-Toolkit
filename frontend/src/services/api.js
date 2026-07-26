@@ -196,6 +196,11 @@ export const updateGradeTrackingConfig = async (config) => {
   return response.data;
 };
 
+export const setGradeTrackingEnabled = async (enabled) => {
+  const response = await api.patch('/api/grade-tracking/enabled', { enabled });
+  return response.data;
+};
+
 export const getGradeTrackingStatus = async () => {
   const response = await api.get('/api/grade-tracking/status');
   return response.data;

@@ -23,7 +23,7 @@ from backend.core.runtime.config import secure_file
 CHINA_TZ = timezone(timedelta(hours=8))
 DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": False,
-    "interval_minutes": 15,
+    "interval_minutes": 30,
     "start_hour": 9,
     "end_hour": 21,
     "notify_initial": True,
@@ -91,7 +91,7 @@ class GradeTrackingService:
         self._config = {**DEFAULT_CONFIG, **self._read_json(self.config_path, {})}
         self._config["interval_minutes"] = max(
             5,
-            int(self._config.get("interval_minutes", 15)),
+            int(self._config.get("interval_minutes", 30)),
         )
         self._state = {**DEFAULT_STATE, **self._read_json(self.state_path, {})}
         self._outbox = list(self._read_json(self.outbox_path, {"messages": []}).get("messages", []))
@@ -189,6 +189,10 @@ class GradeTrackingService:
             self._invalidate_recovery_link()
         self._wake.set()
         return self.get_config()
+
+    def set_enabled(self, enabled: bool) -> dict[str, Any]:
+        """Persist and apply the tracking switch without changing form fields."""
+        return self.update_config({"enabled": bool(enabled)})
 
     @staticmethod
     def _validate_config(config: dict[str, Any], require_complete: bool) -> None:

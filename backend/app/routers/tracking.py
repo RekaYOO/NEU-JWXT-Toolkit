@@ -3,7 +3,10 @@
 from fastapi import APIRouter, HTTPException
 
 from backend.app.dependencies import _grade_tracker
-from backend.app.schemas.tracking import GradeTrackingConfigUpdate
+from backend.app.schemas.tracking import (
+    GradeTrackingConfigUpdate,
+    GradeTrackingEnabledUpdate,
+)
 
 
 router = APIRouter()
@@ -28,6 +31,17 @@ def update_tracking_config(payload: GradeTrackingConfigUpdate):
             "config": _grade_tracker.update_config(
                 payload.model_dump(exclude_none=True)
             ),
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.patch("/enabled")
+def update_tracking_enabled(payload: GradeTrackingEnabledUpdate):
+    try:
+        return {
+            "success": True,
+            "config": _grade_tracker.set_enabled(payload.enabled),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

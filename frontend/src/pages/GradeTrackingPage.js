@@ -27,6 +27,7 @@ import {
   checkGradesNow,
   getGradeTrackingConfig,
   getGradeTrackingStatus,
+  setGradeTrackingEnabled,
   testGradeTrackingEmail,
   updateGradeTrackingConfig,
 } from '../services/api';
@@ -69,6 +70,7 @@ const GradeTrackingPage = () => {
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [toggling, setToggling] = useState(false);
   const [checking, setChecking] = useState(false);
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState({ stage: 'disabled', enabled: false });
@@ -76,7 +78,9 @@ const GradeTrackingPage = () => {
 
   const loadStatus = useCallback(async () => {
     try {
-      setStatus(await getGradeTrackingStatus());
+      const currentStatus = await getGradeTrackingStatus();
+      setStatus(currentStatus);
+      setEnabled(Boolean(currentStatus.enabled));
     } catch (error) {
       // 页面初始化会单独提示；轮询失败时保持上一次可用状态。
     }
@@ -126,13 +130,30 @@ const GradeTrackingPage = () => {
       setEnabled(configuredEnabled);
       form.setFieldsValue({ ...fields, smtp_password: undefined });
       await loadStatus();
-      message.success(values.enabled ? '配置已保存，成绩追踪已启用' : '配置已保存');
+      message.success('配置已保存');
     } catch (error) {
       if (!error.errorFields) {
         message.error(errorText(error, '保存配置失败'));
       }
     } finally {
       setSaving(false);
+    }
+  };
+
+  const toggleTracking = async (nextEnabled) => {
+    setToggling(true);
+    try {
+      const result = await setGradeTrackingEnabled(nextEnabled);
+      setEnabled(Boolean(result.config.enabled));
+      await loadStatus();
+      message.success(nextEnabled ? '成绩追踪已开启' : '成绩追踪已关闭');
+    } catch (error) {
+      message.error(errorText(
+        error,
+        nextEnabled ? '开启失败，请先保存完整配置' : '关闭成绩追踪失败'
+      ));
+    } finally {
+      setToggling(false);
     }
   };
 
@@ -186,7 +207,9 @@ const GradeTrackingPage = () => {
           checked={Boolean(enabled)}
           checkedChildren="已开启"
           unCheckedChildren="未开启"
-          onChange={setEnabled}
+          loading={toggling}
+          disabled={saving}
+          onChange={toggleTracking}
         />
       </section>
 
@@ -200,7 +223,13 @@ const GradeTrackingPage = () => {
             <Button icon={<ReloadOutlined />} loading={checking} onClick={checkNow}>
               立即检查
             </Button>
-            <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={saveConfig}>
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              loading={saving}
+              disabled={toggling}
+              onClick={saveConfig}
+            >
               保存配置
             </Button>
           </Space>
@@ -232,7 +261,7 @@ const GradeTrackingPage = () => {
         requiredMark={false}
         initialValues={{
           enabled: false,
-          interval_minutes: 15,
+          interval_minutes: 30,
           start_hour: 9,
           end_hour: 21,
           notify_initial: true,

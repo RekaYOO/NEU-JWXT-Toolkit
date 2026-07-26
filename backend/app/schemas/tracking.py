@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 class GradeTrackingConfigUpdate(BaseModel):
     enabled: bool = False
-    interval_minutes: int = Field(default=15, ge=5, le=1440)
+    interval_minutes: int = Field(default=30, ge=5, le=1440)
     start_hour: int = Field(default=9, ge=0, le=23)
     end_hour: int = Field(default=21, ge=1, le=24)
     notify_initial: bool = True
@@ -20,3 +20,7 @@ class GradeTrackingConfigUpdate(BaseModel):
     clear_smtp_password: bool = False
     from_email: str = Field(default="", max_length=255)
     to_email: str = Field(default="", max_length=255)
+
+
+class GradeTrackingEnabledUpdate(BaseModel):
+    enabled: bool
