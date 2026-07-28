@@ -105,6 +105,29 @@ def test_default_interval_is_thirty_minutes(tmp_path):
     assert service.get_config()["interval_minutes"] == 30
 
 
+def test_invalid_legacy_tracking_files_do_not_break_startup(tmp_path):
+    (tmp_path / "grade_tracking_config.json").write_text(
+        '{"interval_minutes":"invalid"}',
+        encoding="utf-8",
+    )
+    (tmp_path / "grade_tracking_state.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "grade_tracking_outbox.json").write_text(
+        '{"messages":"invalid"}',
+        encoding="utf-8",
+    )
+
+    service = GradeTrackingService(
+        data_dir=tmp_path,
+        auth_provider=lambda: None,
+        score_storage=FakeStorage(),
+        logger=logging.getLogger("grade-tracking-legacy-data-test"),
+    )
+
+    assert service.get_config()["interval_minutes"] == 30
+    assert service.get_status()["pending_notifications"] == 0
+    assert service.get_status()["stage"] == "disabled"
+
+
 def test_tracking_refreshes_shared_report_cache_only_when_scores_change(tmp_path):
     academic = FakeAcademic()
     auth = SimpleNamespace(username="20250001", academic=academic)

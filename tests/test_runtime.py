@@ -2,6 +2,10 @@ import importlib
 import json
 import os
 import asyncio
+import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -113,3 +117,77 @@ def test_shutdown_route_is_desktop_only():
     assert result == {"success": True}
     timer_class.assert_called_once()
     timer.start.assert_called_once_with()
+
+
+def test_config_healthcheck_uses_exact_port_and_ignores_http_proxy(
+    monkeypatch,
+    tmp_path,
+):
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/api/health":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"status":"ok"}')
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    config_path = tmp_path / "compact-config.json"
+    config_path.write_text(
+        json.dumps(
+            {"profile": "server", "host": "127.0.0.1", "port": server.server_port},
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment.update({
+        "HTTP_PROXY": "http://127.0.0.1:1",
+        "HTTPS_PROXY": "http://127.0.0.1:1",
+        "NO_PROXY": "",
+    })
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "launchers/server.py",
+                "healthcheck",
+                "--config",
+                str(config_path),
+                "--print-url",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr
+    assert f":{server.server_port}/api/health" in result.stdout
+
+
+def test_linux_upgrade_script_has_transactional_diagnostics():
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "packaging"
+        / "linux"
+        / "install.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'healthcheck \\\n    --config "${CONFIG_FILE}"' in script
+    assert "seq 1 120" in script
+    assert "journalctl -u" in script
+    assert "SERVICE_BACKUP=" in script

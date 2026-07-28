@@ -164,6 +164,11 @@ jobs:
             sleep 0.125
           done
           curl --fail http://127.0.0.1:18765/api/health
+          HTTP_PROXY=http://127.0.0.1:1 \
+            HTTPS_PROXY=http://127.0.0.1:1 \
+            NO_PROXY="" \
+            dist/neu-jwxt-server/neu-jwxt-server healthcheck \
+            --config "$RUNNER_TEMP/neu-config/config.json"
           curl --fail --silent http://127.0.0.1:18765/ | grep -q 'id="root"'
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18765/api/status)" = "401"
           kill "$SERVER_PID"

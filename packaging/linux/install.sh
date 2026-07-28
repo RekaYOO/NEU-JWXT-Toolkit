@@ -38,6 +38,7 @@ install -d -m 0755 "${APP_ROOT}" "${CONFIG_DIR}"
 install -d -o neu-jwxt -g neu-jwxt -m 0700 "${DATA_DIR}"
 
 BACKUP_DIR="${APP_ROOT}/app.previous"
+SERVICE_BACKUP="${SERVICE_FILE}.previous"
 if [[ -d "${APP_ROOT}/app" ]]; then
   systemctl stop "${APP_NAME}.service" 2>/dev/null || true
   rm -rf "${BACKUP_DIR}"
@@ -58,39 +59,55 @@ fi
 chown neu-jwxt:neu-jwxt "${CONFIG_FILE}"
 chmod 0600 "${CONFIG_FILE}"
 
+rm -f "${SERVICE_BACKUP}"
+if [[ -f "${SERVICE_FILE}" ]]; then
+  cp -a "${SERVICE_FILE}" "${SERVICE_BACKUP}"
+fi
 install -m 0644 "${PACKAGE_ROOT}/neu-jwxt-toolkit.service" "${SERVICE_FILE}"
 systemctl daemon-reload
 systemctl enable "${APP_NAME}.service" >/dev/null
-systemctl restart "${APP_NAME}.service"
-
-PORT="$(sed -nE 's/^[[:space:]]*"port"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "${CONFIG_FILE}" | head -n1)"
-PORT="${PORT:-8000}"
+systemctl restart "${APP_NAME}.service" || true
 
 HEALTHY=0
-for _ in $(seq 1 40); do
+for _ in $(seq 1 120); do
   if "${APP_ROOT}/app/neu-jwxt-server" healthcheck \
-    --url "http://127.0.0.1:${PORT}/api/health"; then
+    --config "${CONFIG_FILE}"; then
     HEALTHY=1
     break
   fi
-  sleep 0.25
+  sleep 0.5
 done
 
 if [[ "${HEALTHY}" -ne 1 ]]; then
-  echo "新版本健康检查失败。" >&2
+  echo "新版本健康检查失败。以下是新服务的诊断信息：" >&2
+  systemctl status "${APP_NAME}.service" --no-pager -l >&2 || true
+  journalctl -u "${APP_NAME}.service" -n 100 --no-pager >&2 || true
   systemctl stop "${APP_NAME}.service" || true
+  RESTORED=0
   if [[ -d "${BACKUP_DIR}" ]]; then
     rm -rf "${APP_ROOT}/app"
     mv "${BACKUP_DIR}" "${APP_ROOT}/app"
-    systemctl start "${APP_NAME}.service"
-    echo "已恢复上一版本。" >&2
+    RESTORED=1
+  fi
+  if [[ -f "${SERVICE_BACKUP}" ]]; then
+    mv "${SERVICE_BACKUP}" "${SERVICE_FILE}"
+    systemctl daemon-reload
+  fi
+  if [[ "${RESTORED}" -eq 1 ]]; then
+    systemctl start "${APP_NAME}.service" || true
+    echo "已恢复上一版本的程序和 systemd 服务文件。" >&2
+  else
+    echo "首次安装未成功，服务保持停止；请根据上方日志排查。" >&2
   fi
   exit 1
 fi
 
 rm -rf "${BACKUP_DIR}"
+rm -f "${SERVICE_BACKUP}"
+HEALTH_URL="$("${APP_ROOT}/app/neu-jwxt-server" healthcheck \
+  --config "${CONFIG_FILE}" --print-url)"
 echo
 echo "NEU 教务工具箱已安装并启动。"
-echo "本地检查地址: http://127.0.0.1:${PORT}"
+echo "本地检查地址: ${HEALTH_URL}"
 echo "Caddy 示例: ${APP_ROOT}/examples/Caddyfile"
 echo "Nginx 示例: ${APP_ROOT}/examples/nginx.conf"

@@ -91,18 +91,25 @@ class GradeTrackingService:
         self._recovery_client: Any | None = None
         self._recovery_flow: dict[str, Any] | None = None
         self._config = {**DEFAULT_CONFIG, **self._read_json(self.config_path, {})}
-        self._config["interval_minutes"] = max(
-            5,
-            int(self._config.get("interval_minutes", 30)),
-        )
+        try:
+            interval = int(self._config.get("interval_minutes", 30))
+        except (TypeError, ValueError):
+            interval = int(DEFAULT_CONFIG["interval_minutes"])
+        self._config["interval_minutes"] = min(1440, max(5, interval))
         self._state = {**DEFAULT_STATE, **self._read_json(self.state_path, {})}
-        self._outbox = list(self._read_json(self.outbox_path, {"messages": []}).get("messages", []))
+        messages = self._read_json(
+            self.outbox_path,
+            {"messages": []},
+        ).get("messages", [])
+        self._outbox = list(messages) if isinstance(messages, list) else []
 
     @staticmethod
     def _read_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
         try:
             if path.exists():
-                return json.loads(path.read_text(encoding="utf-8"))
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(value, dict):
+                    return value
         except (OSError, ValueError, TypeError):
             pass
         return fallback.copy()
