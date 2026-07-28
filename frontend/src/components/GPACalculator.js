@@ -20,6 +20,7 @@ import {
   deleteGPASimulationFile
 } from '../services/api';
 import { compareAcademicTerms } from '../utils/termSort';
+import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
 import './GPACalculator.css';
 
 const { Text } = Typography;
@@ -467,22 +468,6 @@ const GPACalculator = forwardRef(({
       return null;
     };
     return traverse(categories);
-  };
-
-  // 判断类别是否是选修类
-  const isElectiveCategory = (node) => {
-    if (!node.path_array || node.path_array.length === 0) return false;
-    const pathStr = node.path_array.join(' > ');
-    if (node.name === '选修') return true;
-    if (pathStr.includes('通识选修')) return true;
-    return false;
-  };
-
-  // 判断类别是否是必修类
-  const isRequiredCategory = (node) => {
-    if (!node.path_array || node.path_array.length === 0) return false;
-    if (node.name === '必修' && !node.path_array.join(' > ').includes('通识')) return true;
-    return false;
   };
 
   // 获取显示名称（如果是"选修"或"必修"，则往上取一层）

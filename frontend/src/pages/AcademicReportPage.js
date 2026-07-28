@@ -16,6 +16,7 @@ import {
 import { getAcademicReport, getAcademicReportSummary, refreshAcademicReport, cancelRequest } from '../services/api';
 import { columnSettings } from '../utils/settings';
 import { compareAcademicTerms } from '../utils/termSort';
+import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
 import dayjs from 'dayjs';
 import './AcademicReportPage.css';
 
@@ -166,6 +167,12 @@ const buildTreeData = (categories, expandedKeys = []) => {
       
       // 计算课程数量
       const courseCount = countCourses(node);
+      // 要求为 0 的实际课程类别也必须显示比例，例如“选修 0.00/0.00”。
+      // 仅隐藏没有自身课程的纯分组节点，避免用户误以为学分数据漏载。
+      const showCreditRatio =
+        requiredCredits > 0 ||
+        node.is_leaf ||
+        (node.courses?.length || 0) > 0;
       
       const title = (
         <div className="tree-node-title">
@@ -173,7 +180,7 @@ const buildTreeData = (categories, expandedKeys = []) => {
             {node.name}
           </span>
           <span className="node-credits">
-            {requiredCredits > 0 && (
+            {showCreditRatio && (
               <>
                 <span className="credit-text earned">{totalEarned.toFixed(2)}</span>
                 <span className="credit-separator">/</span>
@@ -211,30 +218,6 @@ const buildTreeData = (categories, expandedKeys = []) => {
   return traverse(categories);
 };
 
-// 判断类别是否是选修类（直接选修或包含选修子类别）
-const isElectiveCategory = (node) => {
-  if (!node.path_array || node.path_array.length === 0) return false;
-  const pathStr = node.path_array.join(' > ');
-  // 直接属于选修类
-  if (node.name === '选修') return true;
-  // 路径中包含选修
-  if (pathStr.includes('选修')) return true;
-  return false;
-};
-
-// 判断类别是否是必修类
-const isRequiredCategory = (node) => {
-  if (!node.path_array || node.path_array.length === 0) return false;
-  const pathStr = node.path_array.join(' > ');
-  // 直接属于必修类
-  if (node.name === '必修') return true;
-  // 路径中包含必修
-  if (pathStr.includes('必修')) return true;
-  // 实践类及其子类也算作必修
-  if (node.name === '实践类' || pathStr.includes('实践类')) return true;
-  return false;
-};
-
 // 获取显示名称（如果是"选修"或"必修"，则往上取一层）
 const getCategoryDisplayName = (node) => {
   // 如果当前不是"选修"或"必修"，直接返回当前名称
@@ -249,6 +232,20 @@ const getCategoryDisplayName = (node) => {
   }
   
   return node.name;
+};
+
+const getRuleDeficitText = (category) => {
+  const deficits = [];
+  if ((category.remaining_credits || 0) > 0) {
+    deficits.push(`${category.remaining_credits} 学分`);
+  }
+  if ((category.missing_course_count || 0) > 0) {
+    deficits.push(`${category.missing_course_count} 门课程`);
+  }
+  if ((category.missing_group_count || 0) > 0) {
+    deficits.push(`${category.missing_group_count} 个类别`);
+  }
+  return deficits.length > 0 ? `还差 ${deficits.join('、')}` : '培养规则尚未满足';
 };
 
 // 找到所有需要统计的类别（叶节点或要求学分>0的节点）
@@ -279,8 +276,14 @@ const findLeafCategories = (categories, filterFn) => {
         
         // 如果没有子节点，或者子节点都学分为0，则统计当前节点
         // 只要有差额（remaining_credits > 0）就显示，不管是否标记为已完成
-        if (!node.children || node.children.length === 0 || childrenAllZero) {
-          if (node.remaining_credits > 0) {
+        const hasCountRuleDeficit =
+          (node.missing_course_count || 0) > 0 ||
+          (node.missing_group_count || 0) > 0;
+        const shouldShowParentRule =
+          (node.remaining_credits || 0) === 0 && hasCountRuleDeficit;
+
+        if (!node.children || node.children.length === 0 || childrenAllZero || shouldShowParentRule) {
+          if (node.remaining_credits > 0 || hasCountRuleDeficit || node.is_completed === false) {
             result.push({
               wid: node.wid,
               name: getCategoryDisplayName(node),
@@ -290,6 +293,8 @@ const findLeafCategories = (categories, filterFn) => {
               required_credits: node.required_credits,
               earned_credits: node.earned_credits,
               remaining_credits: node.remaining_credits,
+              missing_course_count: node.missing_course_count || 0,
+              missing_group_count: node.missing_group_count || 0,
               is_completed: node.is_completed
             });
           }
@@ -1012,7 +1017,9 @@ const AcademicReportPage = () => {
               <Alert
                 message={
                   <span>
-                    必修课还差 <Text strong style={{ color: '#f5222d' }}>{requiredStats.totalRemaining}</Text> 学分
+                    {requiredStats.totalRemaining > 0 ? (
+                      <>必修课还差 <Text strong style={{ color: '#f5222d' }}>{requiredStats.totalRemaining}</Text> 学分</>
+                    ) : '必修培养规则尚未满足'}
                   </span>
                 }
                 description={
@@ -1045,7 +1052,7 @@ const AcademicReportPage = () => {
                       >
                         <span className="name">{cat.name}</span>
                         <span className="credits" style={{ color: '#f5222d' }}>
-                          差 {cat.remaining_credits} 学分
+                          {getRuleDeficitText(cat)}
                         </span>
                       </div>
                     ))}
@@ -1062,7 +1069,9 @@ const AcademicReportPage = () => {
               <Alert
                 message={
                   <span>
-                    选修课还差 <Text strong style={{ color: '#faad14' }}>{electiveStats.totalRemaining}</Text> 学分
+                    {electiveStats.totalRemaining > 0 ? (
+                      <>选修课还差 <Text strong style={{ color: '#faad14' }}>{electiveStats.totalRemaining}</Text> 学分</>
+                    ) : '选修培养规则尚未满足'}
                   </span>
                 }
                 description={
@@ -1095,7 +1104,7 @@ const AcademicReportPage = () => {
                       >
                         <span className="name">{cat.name}</span>
                         <span className="credits" style={{ color: '#f5222d' }}>
-                          差 {cat.remaining_credits} 学分
+                          {getRuleDeficitText(cat)}
                         </span>
                       </div>
                     ))}

@@ -39,11 +39,18 @@ class CategoryNodeModel(BaseModel):
     wid: str
     name: str
     category_code: str
+    source_id: str = ""
+    course_group_id: str = ""
+    course_group_wid: str = ""
+    requirement_type: str = "unknown"
     depth: int
     path: str
     path_array: List[str]
     is_leaf: bool
+    has_children: bool = False
     required_credits: float
+    declared_required_credits: float = 0
+    requirement_adjustment: float = 0
     passed_credits: float
     selected_credits: float
     planned_credits: float
@@ -51,6 +58,14 @@ class CategoryNodeModel(BaseModel):
     remaining_credits: float
     completion_rate: float
     is_completed: bool
+    pass_required: bool = False
+    course_count_required: int = 0
+    course_count_taken: int = 0
+    group_count_required: int = 0
+    group_count_taken: int = 0
+    missing_course_count: int = 0
+    missing_group_count: int = 0
+    credits_group_judgement: float = 0
     courses: List[CourseModel]
     children: List[Any]  # 递归类型，使用Any
 

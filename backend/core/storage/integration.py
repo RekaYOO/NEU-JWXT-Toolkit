@@ -253,6 +253,7 @@ class AcademicReportStorage:
     """
     
     REPORT_FILENAME = "academic_report.json"
+    REPORT_SCHEMA_VERSION = 2
     
     def __init__(self, storage: Optional[Storage] = None):
         self.storage = storage or Storage()
@@ -269,6 +270,7 @@ class AcademicReportStorage:
             保存的文件路径
         """
         data = {
+            "schema_version": self.REPORT_SCHEMA_VERSION,
             "report": report_data,
             "username": username,
             "saved_at": datetime.now().isoformat(),
@@ -288,6 +290,7 @@ class AcademicReportStorage:
                 "report": data.get("report"),
                 "username": data.get("username"),
                 "saved_at": data.get("saved_at"),
+                "schema_version": data.get("schema_version", 0),
             }
         return None
     
@@ -332,10 +335,16 @@ class AcademicReportStorage:
         """
         need_refresh = force_refresh
         last_update = None
+        local_data = self.load_report()
         
         if not need_refresh:
             last_update = self.get_last_update_time()
-            if last_update is None:
+            cache_is_current = bool(
+                local_data
+                and local_data.get("schema_version") == self.REPORT_SCHEMA_VERSION
+                and local_data.get("username") == auth.username
+            )
+            if last_update is None or not cache_is_current:
                 # 本地没有数据，需要刷新
                 need_refresh = True
             else:
@@ -368,7 +377,6 @@ class AcademicReportStorage:
                 }
             except Exception as e:
                 # 远程获取失败，尝试使用本地数据
-                local_data = self.load_report()
                 if local_data and local_data.get("report"):
                     return {
                         "report": local_data["report"],
@@ -380,7 +388,6 @@ class AcademicReportStorage:
                 raise
         
         # 使用本地数据
-        local_data = self.load_report()
         if local_data and local_data.get("report"):
             return {
                 "report": local_data["report"],
@@ -541,21 +548,54 @@ class AcademicReportStorage:
                 total_selected = 0
                 total_earned = 0
             # 实际类别（有子节点且required>0）不限制，显示实际学分
+
+            reported_passed = getattr(cat, 'reported_passed', None)
+            is_completed = (
+                reported_passed
+                if reported_passed is not None
+                else total_earned >= cat.required_credits
+            )
+            missing_course_count = max(
+                0,
+                getattr(cat, 'course_count_required', 0)
+                - getattr(cat, 'course_count_taken', 0),
+            )
+            missing_group_count = max(
+                0,
+                getattr(cat, 'group_count_required', 0)
+                - getattr(cat, 'group_count_taken', 0),
+            )
             
-            # 生成唯一ID（使用稳定的ID，基于路径）
+            # 优先使用教务系统提供的稳定节点 ID；旧响应没有 ID 时才按路径生成。
             import hashlib
-            wid = hashlib.md5(current_path.encode()).hexdigest()[:8]
+            wid = (
+                getattr(cat, 'course_group_wid', '')
+                or getattr(cat, 'source_id', '')
+                or hashlib.md5(current_path.encode()).hexdigest()[:8]
+            )
             
             return {
                 "wid": wid,
                 "name": cat.name,
-                "category_code": "",
+                "category_code": getattr(cat, 'category_code', ''),
+                "source_id": getattr(cat, 'source_id', ''),
+                "course_group_id": getattr(cat, 'course_group_id', ''),
+                "course_group_wid": getattr(cat, 'course_group_wid', ''),
+                "requirement_type": getattr(cat, 'requirement_type', 'unknown'),
                 "depth": depth,
                 "path": current_path,
                 "path_array": path_array,
                 "is_leaf": is_leaf,
                 "has_children": len(cat.children) > 0,
                 "required_credits": round(total_required, 2),
+                "declared_required_credits": round(
+                    getattr(cat, 'declared_required_credits', total_required),
+                    2,
+                ),
+                "requirement_adjustment": round(
+                    getattr(cat, 'requirement_adjustment', 0),
+                    2,
+                ),
                 # 学分统计
                 "passed_credits": round(total_passed, 2),
                 "selected_credits": round(total_selected, 2),
@@ -564,7 +604,17 @@ class AcademicReportStorage:
                 "remaining_credits": round(max(0, total_required - total_earned), 2),
                 # 完成度
                 "completion_rate": round(total_earned / cat.required_credits * 100, 2) if cat.required_credits > 0 else 100,
-                "is_completed": total_earned >= cat.required_credits,
+                # passed 是教务系统综合学分、课程数和子组数规则后的权威状态。
+                "is_completed": is_completed,
+                # 保留接口规则，避免把不同年级的规则硬编码在前端。
+                "pass_required": getattr(cat, 'pass_required', False),
+                "course_count_required": getattr(cat, 'course_count_required', 0),
+                "course_count_taken": getattr(cat, 'course_count_taken', 0),
+                "group_count_required": getattr(cat, 'group_count_required', 0),
+                "group_count_taken": getattr(cat, 'group_count_taken', 0),
+                "missing_course_count": missing_course_count,
+                "missing_group_count": missing_group_count,
+                "credits_group_judgement": getattr(cat, 'credits_group_judgement', 0),
                 # 课程列表 - 包含完整类别路径
                 "courses": [
                     {

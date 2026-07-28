@@ -54,11 +54,25 @@ class CourseInfo:
 class CategoryInfo:
     """类别信息（通识类、学科基础类等）"""
     name: str = ""                           # 类别名称 (courseCategoryName)
+    category_code: str = ""                  # 类别代码 (courseCategory)
+    source_id: str = ""                      # 接口节点 ID
+    course_group_id: str = ""                # 课程组 ID
+    course_group_wid: str = ""               # 课程组稳定 ID
+    requirement_type: str = "unknown"        # required/elective/mixed/unknown
     required_credits: float = 0.0            # 要求学分 (creditsRequired)
+    declared_required_credits: float = 0.0   # 接口原始要求学分
+    requirement_adjustment: float = 0.0      # 父级规则分配的弹性学分
     earned_credits: float = 0.0              # 已获得学分 (creditsEarned)
     taken_credits: float = 0.0               # 已选学分 (creditsTaken)
     selection_credits: float = 0.0           # 待选学分 (creditsSelection)
-    is_passed: bool = False                  # 是否满足要求 (passRequired)
+    is_passed: bool = False                  # 是否满足要求 (passed)
+    reported_passed: Optional[bool] = None   # 接口是否明确给出综合完成状态
+    pass_required: bool = False              # 课程组是否要求通过 (passRequired)
+    course_count_required: int = 0           # 要求课程数
+    course_count_taken: int = 0              # 已修课程数
+    group_count_required: int = 0            # 要求子组数
+    group_count_taken: int = 0               # 已满足子组数
+    credits_group_judgement: float = 0.0      # 课程组学分判定值
     children: List[Any] = field(default_factory=list)  # 子类别
     courses: List[CourseInfo] = field(default_factory=list)  # 课程列表
     
@@ -112,6 +126,14 @@ class AcademicReportAPI:
     """
     
     API_URL = "https://jwxt.neu.edu.cn/jwapp/sys/byshapp/api/grbg/queryXyzhbx.do"
+
+    # 学业监测页的默认查询上下文。培养方案代码 PYFADM 属于账号相关
+    # 的变量，不能在这里硬编码；服务端会按当前登录学生选择默认方案。
+    DEFAULT_QUERY_DATA = {
+        "fromPage": "grxyjcbg",
+        "SCLX": "04",
+        "XDLX": "01",
+    }
     
     HEADERS = {
         "Accept": "application/json, text/plain, */*",
@@ -129,15 +151,26 @@ class AcademicReportAPI:
         """
         self._client = auth_client
     
-    def get_report(self) -> Optional[AcademicReport]:
+    def get_report(self, program_code: Optional[str] = None) -> Optional[AcademicReport]:
         """
         获取学业监测报告
+
+        Args:
+            program_code: 可选培养方案代码（PYFADM）。不传时由教务系统
+                根据当前登录学生选择默认方案。
         
         Returns:
             AcademicReport 对象，失败返回 None
         """
         try:
-            resp = self._client.post(self.API_URL, data={}, headers=self.HEADERS)
+            query_data = self.DEFAULT_QUERY_DATA.copy()
+            if program_code:
+                query_data["PYFADM"] = str(program_code)
+            resp = self._client.post(
+                self.API_URL,
+                data=query_data,
+                headers=self.HEADERS,
+            )
             data = resp.json()
             
             if data.get("code") != "0":
@@ -158,7 +191,13 @@ class AcademicReportAPI:
         # 解析培养方案信息
         fanbx = data.get("fanbx", {})
         report.program_code = fanbx.get("educationalProgramCode", "")
-        report.program_name = fanbx.get("educationalProgramName", "")
+        # 2024 级及以前通常使用 educationalProgramName；2025 级方案
+        # 将显示名称放在 fanbx.name（例如“2025 机器人工程”）。
+        report.program_name = (
+            fanbx.get("educationalProgramName")
+            or fanbx.get("name")
+            or ""
+        )
         
         # 注意：fanbx 本身可能没有总学分字段，需要从子类别计算
         report.total_required = float(fanbx.get("creditsRequired") or 0)
@@ -168,20 +207,23 @@ class AcademicReportAPI:
         
         # 解析学生信息（从第一个课程数据中获取）
         children = fanbx.get("children", [])
-        if children and len(children) > 0:
-            def find_first_course(node):
-                if "data" in node and node["data"] and len(node["data"]) > 0:
-                    return node["data"][0]
-                for child in node.get("children", []) or []:
-                    result = find_first_course(child)
-                    if result:
-                        return result
-                return None
-            
-            first_course = find_first_course(children[0])
+        if children:
+            first_course = self._find_first_course(children)
             if first_course:
-                report.student_id = first_course.get("XH", "")
-                report.student_name = first_course.get("XM", "")
+                report.student_id = (
+                    first_course.get("XH")
+                    or first_course.get("studentId")
+                    or ""
+                )
+                report.student_name = (
+                    first_course.get("XM")
+                    or first_course.get("studentName")
+                    or ""
+                )
+        if not report.student_id:
+            report.student_id = str(getattr(self._client, "username", "") or "")
+        if report.student_id[:4].isdigit():
+            report.grade = report.student_id[:4]
         
         # 解析类别
         report.categories = self._parse_categories(children)
@@ -195,10 +237,30 @@ class AcademicReportAPI:
             report.total_taken = sum(cat.taken_credits for cat in report.categories)
         
         # 解析方案外课程
-        outside_courses_data = fanbx.get("outsideProgramCourses", [])
+        # 旧版把方案外课程放在 fanbx.outsideProgramCourses；2025 级响应
+        # 改为 queryXyzhbx.fawbx（新字段）及 fawbxMap（旧式字段映射）。
+        outside_courses_data = fanbx.get("outsideProgramCourses") or []
+        if not outside_courses_data:
+            outside_courses_data = data.get("fawbx") or data.get("fawbxMap") or []
         report.outside_courses = self._parse_outside_courses(outside_courses_data)
         
         return report
+
+    def _find_first_course(self, nodes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """在任意深度的类别树中查找第一条课程记录。"""
+        for node in nodes:
+            legacy_courses = node.get("data") or []
+            if legacy_courses:
+                return legacy_courses[0]
+
+            checked_courses = node.get("checkCourseVOS") or []
+            if checked_courses:
+                return checked_courses[0]
+
+            first_course = self._find_first_course(node.get("children") or [])
+            if first_course:
+                return first_course
+        return None
     
     def _parse_categories(self, categories_data: List[Dict], parent_nature_hint: str = "") -> List[CategoryInfo]:
         """解析类别列表"""
@@ -223,27 +285,46 @@ class AcademicReportAPI:
             cat.name = name_field
         else:
             cat.name = category_name_field or name_field or "未命名"
-        
+
+        cat.category_code = str(cat_data.get("courseCategory") or "")
+        cat.source_id = str(cat_data.get("id") or "")
+        cat.course_group_id = str(cat_data.get("courseGroupId") or "")
+        cat.course_group_wid = str(cat_data.get("courseGroupWid") or "")
         cat.required_credits = float(cat_data.get("creditsRequired") or 0)
+        cat.declared_required_credits = cat.required_credits
         cat.earned_credits = float(cat_data.get("creditsEarned") or 0)
         cat.taken_credits = float(cat_data.get("creditsTaken") or 0)
         cat.selection_credits = float(cat_data.get("creditsSelection") or 0)
-        cat.is_passed = cat_data.get("passRequired", False)
-        
-        # 判断课程性质：检查当前节点名称是否包含"必修"/"选修"
-        nature_hint = parent_nature_hint
-        if "必修" in cat.name:
-            nature_hint = "必修"
-        elif "选修" in cat.name:
-            nature_hint = "选修"
-        # 特殊处理：通识选修类下的课程默认为选修
-        elif "通识选修" in cat.name:
-            nature_hint = "选修"
+        reported_passed = cat_data.get("passed")
+        cat.reported_passed = (
+            reported_passed if isinstance(reported_passed, bool) else None
+        )
+        cat.is_passed = bool(reported_passed)
+        cat.pass_required = bool(cat_data.get("passRequired", False))
+        cat.course_count_required = int(cat_data.get("courseCountRequired") or 0)
+        cat.course_count_taken = int(cat_data.get("courseCountTaken") or 0)
+        cat.group_count_required = int(cat_data.get("groupCountRequired") or 0)
+        cat.group_count_taken = int(cat_data.get("groupCountTaken") or 0)
+        cat.credits_group_judgement = float(
+            cat_data.get("creditsCourseGroupJudgement") or 0
+        )
+
+        # 课程性质代码比展示名称稳定；没有课程的规则节点再继承父级语义，
+        # 最后才使用中文名称作为旧响应兼容回退。
+        cat.requirement_type = self._infer_requirement_type(
+            cat_data,
+            parent_nature_hint,
+        )
+        nature_hint = {
+            "required": "必修",
+            "elective": "选修",
+        }.get(cat.requirement_type, parent_nature_hint)
         
         # 解析子类别，传递 nature_hint
         children = cat_data.get("children") or []
         if children:
             cat.children = self._parse_categories(children, nature_hint)
+            self._apply_flexible_elective_requirement(cat)
         
         # 解析课程列表（从 checkCourseVOS 字段，这是关键！）
         courses_data = cat_data.get("checkCourseVOS") or []
@@ -251,6 +332,88 @@ class AcademicReportAPI:
             cat.courses = self._parse_courses_from_check(courses_data, cat.name, nature_hint)
         
         return cat
+
+    @staticmethod
+    def _apply_flexible_elective_requirement(cat: CategoryInfo) -> None:
+        """
+        将选修父组未分配到直接子组的要求学分分配给唯一弹性子组。
+
+        部分培养方案中，父组要求学分大于直接子组声明要求之和。例如
+        通识选修要求 13，普通子类合计 7，而带内部子组的科学素养类
+        仅声明 4。剩余 2 学分实际仍需由该弹性子组承担，因此其有效
+        上限应为 13 - 7 = 6。
+        """
+        if cat.requirement_type != "elective" or not cat.children:
+            return
+
+        declared_total = sum(
+            child.declared_required_credits for child in cat.children
+        )
+        unallocated = cat.required_credits - declared_total
+        if unallocated <= 1e-9:
+            return
+
+        flexible_children = [
+            child
+            for child in cat.children
+            if child.children and child.declared_required_credits > 0
+        ]
+        if len(flexible_children) != 1:
+            return
+
+        flexible_child = flexible_children[0]
+        other_declared = sum(
+            child.declared_required_credits
+            for child in cat.children
+            if child is not flexible_child
+        )
+        effective_required = max(
+            flexible_child.declared_required_credits,
+            cat.required_credits - other_declared,
+        )
+        flexible_child.required_credits = effective_required
+        flexible_child.requirement_adjustment = (
+            effective_required - flexible_child.declared_required_credits
+        )
+
+    def _infer_requirement_type(
+        self,
+        cat_data: Dict[str, Any],
+        parent_nature_hint: str = "",
+    ) -> str:
+        """根据课程代码、继承规则和显示名推断类别的修读类型。"""
+        nature_codes = set()
+        for course in cat_data.get("checkCourseVOS") or []:
+            if course.get("courseNature"):
+                nature_codes.add(str(course["courseNature"]))
+        for course in cat_data.get("data") or []:
+            if course.get("KCXZDM"):
+                nature_codes.add(str(course["KCXZDM"]))
+
+        mapped_types = set()
+        if "01" in nature_codes:
+            mapped_types.add("required")
+        if "02" in nature_codes:
+            mapped_types.add("elective")
+        if len(mapped_types) == 1:
+            return next(iter(mapped_types))
+        if len(mapped_types) > 1:
+            return "mixed"
+
+        name = str(
+            cat_data.get("name")
+            or cat_data.get("courseCategoryName")
+            or ""
+        )
+        if "选修" in name:
+            return "elective"
+        if "必修" in name:
+            return "required"
+        if parent_nature_hint == "选修":
+            return "elective"
+        if parent_nature_hint == "必修":
+            return "required"
+        return "unknown"
     
     def _parse_courses(self, courses_data: List[Dict], category_name: str = "", subcategory_name: str = "") -> List[CourseInfo]:
         """解析课程列表（从 data 字段）"""
@@ -380,9 +543,16 @@ class AcademicReportAPI:
         return course
     
     def _parse_outside_courses(self, courses_data: List[Dict]) -> List[CourseInfo]:
-        """解析方案外课程"""
+        """解析方案外课程，兼容旧式字段和 2025 级 fawbx 字段。"""
         courses = []
         for course_data in courses_data:
+            if course_data.get("courseName") is not None or course_data.get("courseId") is not None:
+                course = self._parse_course_from_check(course_data)
+                if course:
+                    course.course_category = "方案外课程"
+                    courses.append(course)
+                continue
+
             course = CourseInfo()
             course.raw_data = course_data
             
