@@ -17,9 +17,11 @@ neu_academic - 东北大学教务系统成绩获取与计算包
 
 from .api import AcademicAPI, CourseScore, TermScores
 from .report import AcademicReportAPI, AcademicReport, CategoryInfo, CourseInfo
+from .research_training import ResearchTrainingAPI, ResearchTrainingError
 
 __version__ = "1.0.0"
 __all__ = [
     "AcademicAPI", "CourseScore", "TermScores",
-    "AcademicReportAPI", "AcademicReport", "CategoryInfo", "CourseInfo"
+    "AcademicReportAPI", "AcademicReport", "CategoryInfo", "CourseInfo",
+    "ResearchTrainingAPI", "ResearchTrainingError",
 ]

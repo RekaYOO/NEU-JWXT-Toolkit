@@ -10,6 +10,7 @@ import EvaluationPage from './pages/EvaluationPage';
 import ExamPage from './pages/ExamPage';
 import GradeTrackingPage from './pages/GradeTrackingPage';
 import GradeTrackingRecoveryPage from './pages/GradeTrackingRecoveryPage';
+import ResearchTrainingPage from './pages/ResearchTrainingPage';
 import LogsPage from './pages/LogsPage';
 import AccessLoginPage from './pages/AccessLoginPage';
 import { checkStatus, getAccessStatus, getHealth } from './services/api';
@@ -223,6 +224,7 @@ function App() {
               <Route path="grade-tracking" element={<GradeTrackingPage />} />
               <Route path="academic-report" element={<AcademicReportPage />} />
               <Route path="experiment-courses" element={<ExperimentCoursePage />} />
+              <Route path="research-training" element={<ResearchTrainingPage />} />
               <Route path="evaluation" element={<EvaluationPage />} />
               <Route path="exams" element={<ExamPage />} />
               <Route path="logs" element={<LogsPage />} />

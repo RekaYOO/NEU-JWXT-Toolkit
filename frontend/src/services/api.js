@@ -405,6 +405,35 @@ export const deselectExperimentRound = async (data) => {
   return response.data;
 };
 
+// ── 科研训练 API ─────────────────────────────────────────────────────────────
+
+export const getResearchTraining = async (params = {}) => {
+  const response = await api.get('/api/research-training', { params });
+  return response.data;
+};
+
+export const getResearchTopic = async (topicId) => {
+  const response = await api.get(`/api/research-training/topics/${topicId}`);
+  return response.data;
+};
+
+export const getConfirmedResearchTopics = async () => {
+  const response = await api.get('/api/research-training/confirmed');
+  return response.data;
+};
+
+export const enrollResearchTopic = async (data) => {
+  const response = await api.post('/api/research-training/enroll', data);
+  return response.data;
+};
+
+export const cancelResearchEnrollment = async (topicId) => {
+  const response = await api.post('/api/research-training/cancel', {
+    topic_id: topicId,
+  });
+  return response.data;
+};
+
 // ── 用户头像 API ─────────────────────────────────────────────────────────────
 
 /**

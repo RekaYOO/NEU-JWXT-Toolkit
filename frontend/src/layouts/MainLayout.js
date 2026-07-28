@@ -15,6 +15,7 @@ import {
   MenuOutlined,
   PoweroffOutlined,
   BellOutlined,
+  ReadOutlined,
 } from '@ant-design/icons';
 import { logout, getUserAvatar, shutdownRuntime } from '../services/api';
 import './MainLayout.css';
@@ -29,6 +30,7 @@ const menuItems = [
   { key: '/grade-tracking', icon: <BellOutlined />, label: '成绩追踪' },
   { key: '/academic-report', icon: <ScheduleOutlined />, label: '培养计划' },
   { key: '/experiment-courses', icon: <ExperimentOutlined />, label: '实验选课' },
+  { key: '/research-training', icon: <ReadOutlined />, label: '科研训练' },
   { key: '/evaluation', icon: <StarOutlined />, label: '自动评教' },
   { key: '/exams', icon: <CalendarOutlined />, label: '我的考试' },
   { key: '/logs', icon: <FileTextOutlined />, label: '系统日志' },
