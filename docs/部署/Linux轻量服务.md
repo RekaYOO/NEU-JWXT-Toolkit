@@ -5,7 +5,7 @@ Linux 发行版面向“同一位用户、一个 NEU 账号、多个设备”的
 ## 安装
 
 ```bash
-tar -xzf NEU-JWXT-Toolkit-1.3.5-linux-amd64.tar.gz
+tar -xzf NEU-JWXT-Toolkit-<版本>-linux-amd64.tar.gz
 cd neu-jwxt-toolkit
 sudo ./install.sh
 ```

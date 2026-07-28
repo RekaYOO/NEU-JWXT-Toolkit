@@ -4,7 +4,7 @@ Windows 发行版用于单台电脑上的本机使用。它不需要 Python、No
 
 ## 安装版
 
-1. 从 GitHub Releases 下载 `NEU-JWXT-Toolkit-1.3.5-windows-x64-setup.exe`。
+1. 从 GitHub Releases 下载 `NEU-JWXT-Toolkit-<版本>-windows-x64-setup.exe`。
 2. 运行安装器。程序默认安装到当前用户的 `%LOCALAPPDATA%\Programs\NEU-JWXT-Toolkit`。
 3. 从开始菜单启动“NEU 教务工具箱”。安装时可选择创建桌面快捷方式。
 4. 程序会选择一个空闲的本机端口，健康检查通过后自动打开默认浏览器。
@@ -13,7 +13,7 @@ Windows 发行版用于单台电脑上的本机使用。它不需要 Python、No
 
 ## 便携版
 
-下载 `NEU-JWXT-Toolkit-1.3.5-windows-x64-portable.zip`，完整解压后运行 `NEU-JWXT-Toolkit.exe`。不要只从压缩包内直接运行单个 EXE；同目录的 `_internal` 文件也是运行所必需的。
+下载 `NEU-JWXT-Toolkit-<版本>-windows-x64-portable.zip`，完整解压后运行 `NEU-JWXT-Toolkit.exe`。不要只从压缩包内直接运行单个 EXE；同目录的 `_internal` 文件也是运行所必需的。
 
 “便携”只表示程序无需安装。出于升级安全和避免误删，用户数据仍统一保存到：
 
