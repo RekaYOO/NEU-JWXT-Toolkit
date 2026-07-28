@@ -853,8 +853,6 @@ const AcademicReportPage = () => {
       {headerPortalTarget && createPortal(
         <div
           className={`credit-summary-float ${summaryExpanded ? 'expanded' : ''}`}
-          onMouseEnter={() => setSummaryExpanded(true)}
-          onMouseLeave={() => setSummaryExpanded(false)}
         >
           <button
             type="button"

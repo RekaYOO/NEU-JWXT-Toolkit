@@ -369,7 +369,7 @@ const GradeTrackingPage = () => {
               <Form.Item
                 name="site_url"
                 label="重新登录地址（可选）"
-                extra="填写时发送随机的一次性登录页面，打开页面后才生成二维码；留空时直接发送五分钟有效的 NEU Pass 认证链接。"
+                extra="填写时发送随机的一次性登录页面，打开页面后才生成二维码；留空时直接发送五分钟有效的微信扫码认证链接。"
               >
                 <Input placeholder="https://jwxt.example.com" />
               </Form.Item>

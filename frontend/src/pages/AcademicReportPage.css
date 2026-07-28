@@ -65,7 +65,6 @@
   font-weight: 650;
 }
 
-.credit-summary-float:hover .float-hint,
 .credit-summary-float.expanded .float-hint {
   color: var(--color-brand);
   background: #eff6ff;
@@ -92,9 +91,20 @@
   border: 1px solid var(--color-line);
 }
 
-.credit-summary-float:hover .float-content,
 .credit-summary-float.expanded .float-content {
   display: block;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .credit-summary-float:hover .float-hint {
+    color: var(--color-brand);
+    background: #eff6ff;
+    border-color: #bfdbfe;
+  }
+
+  .credit-summary-float:hover .float-content {
+    display: block;
+  }
 }
 
 /* 主内容区域 */

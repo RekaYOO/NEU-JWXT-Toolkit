@@ -201,6 +201,8 @@ def test_missing_site_url_sends_five_minute_qr_and_resumes_check(tmp_path, monke
     assert len(storage.saved) == 1
     assert result["stage"] == "monitoring"
     assert "五分钟" in sent[0][0]
+    assert "微信扫码" in sent[0][1]
+    assert "NEU Pass" not in sent[0][1]
     assert "qyQrLogin?uuid=test" in sent[0][1]
     assert "等待下一个成绩检查间隔" in sent[0][1]
 
@@ -291,10 +293,16 @@ def test_configured_site_uses_one_time_page_before_starting_qr(tmp_path, monkeyp
     )
     assert match
     token = match.group(1)
+    assert "微信扫码二维码" in sent[0][1]
+    assert "NEU Pass" not in sent[0][1]
 
     flow = service.start_recovery_login(token)
     assert starts == [True]
     assert flow["qr_content"].endswith("uuid=recovery")
+
+    refreshed_flow = service.start_recovery_login(token)
+    assert starts == [True, True]
+    assert refreshed_flow["qr_content"].endswith("uuid=recovery")
 
     authenticated = service.poll_recovery_login(token)
     assert authenticated["status"] == "authenticated"

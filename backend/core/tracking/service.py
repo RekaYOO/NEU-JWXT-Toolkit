@@ -428,7 +428,7 @@ class GradeTrackingService:
         self._queue_email(
             "[NEU 成绩追踪] 请打开一次性链接恢复登录",
             "成绩追踪无法访问教务系统。\n\n"
-            "请打开下面的一次性登录页面；访问页面后才会生成 NEU Pass 二维码并开始五分钟轮询：\n"
+            "请打开下面的一次性登录页面；访问页面后才会生成微信扫码二维码并开始五分钟轮询：\n"
             f"{recovery_url}\n\n"
             "网页链接会在成功建立教务会话后失效。单次二维码五分钟后失效，"
             "届时可在同一网页链接中重新生成。请勿转发此链接。",
@@ -442,10 +442,17 @@ class GradeTrackingService:
                 if not self._recovery_token_is_valid(token):
                     raise ValueError("一次性登录链接不存在或已失效")
             if self._recovery_client and self._recovery_flow:
-                return {
-                    "status": "pending",
-                    **self._recovery_flow,
-                }
+                try:
+                    self._recovery_client.cancel_webvpn_qr_login(
+                        self._recovery_flow.get("flow_id")
+                    )
+                except Exception:
+                    self.logger.debug(
+                        "[成绩追踪] 重新生成二维码时取消旧会话失败",
+                        exc_info=True,
+                    )
+                self._recovery_client = None
+                self._recovery_flow = None
             if not self.qr_login_starter:
                 raise RuntimeError("当前运行环境不支持二维码恢复")
             client, flow = self.qr_login_starter()
@@ -454,7 +461,7 @@ class GradeTrackingService:
             with self._lock:
                 self._state.update(
                     stage="waiting_qr",
-                    message="一次性登录页面已打开，五分钟内等待 NEU Pass 确认",
+                    message="一次性登录页面已打开，五分钟内等待微信扫码确认",
                 )
                 self._save_state()
             return {"status": "pending", **flow}
@@ -541,7 +548,7 @@ class GradeTrackingService:
                 config,
                 "[NEU 成绩追踪] 请在五分钟内确认登录",
                 "成绩追踪无法访问教务系统。\n\n"
-                "请在五分钟内使用装有 NEU Pass 的手机打开下面的统一认证链接并确认登录：\n"
+                "请在五分钟内使用微信扫码并确认登录：\n"
                 f"{qr_link}\n\n"
                 "该链接对应本次一次性二维码，五分钟后自动失效。"
                 "如果未能及时完成，请等待下一个成绩检查间隔，届时会收到新的登录邮件。",
@@ -549,7 +556,7 @@ class GradeTrackingService:
             with self._lock:
                 self._state.update(
                     stage="waiting_qr",
-                    message="登录邮件已发送，五分钟内等待 NEU Pass 确认",
+                    message="登录邮件已发送，五分钟内等待微信扫码确认",
                     last_notification_at=_iso(),
                 )
                 self._save_state()
@@ -574,7 +581,7 @@ class GradeTrackingService:
                 with self._lock:
                     self._state.update(
                         stage="checking",
-                        message="NEU Pass 登录已确认，继续本轮成绩检查",
+                        message="微信扫码登录已确认，继续本轮成绩检查",
                         last_error=None,
                     )
                     self._save_state()

@@ -15,9 +15,10 @@ import './GradeTrackingRecoveryPage.css';
 const GradeTrackingRecoveryPage = ({ token }) => {
   const [stage, setStage] = useState('starting');
   const [qrContent, setQrContent] = useState('');
-  const [message, setMessage] = useState('正在创建 NEU Pass 二维码');
+  const [message, setMessage] = useState('正在创建微信扫码二维码');
   const [secondsLeft, setSecondsLeft] = useState(300);
   const pollTimer = useRef(null);
+  const secondsLeftRef = useRef(300);
 
   const stopPolling = useCallback(() => {
     if (pollTimer.current) {
@@ -36,7 +37,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
       } else if (result.status === 'expired') {
         stopPolling();
         setStage('expired');
-        setMessage('本次二维码已超过五分钟，请重新生成');
+        setMessage('本次二维码已失效，请重新生成');
       } else if (result.status === 'error') {
         stopPolling();
         setStage('error');
@@ -56,13 +57,15 @@ const GradeTrackingRecoveryPage = ({ token }) => {
   const start = useCallback(async () => {
     stopPolling();
     setStage('starting');
-    setMessage('正在创建 NEU Pass 二维码');
+    setMessage('正在创建微信扫码二维码');
     try {
       const result = await startGradeTrackingRecovery(token);
       setQrContent(result.qr_content);
-      setSecondsLeft(result.expires_in || 300);
+      const expiresIn = Math.max(1, Number(result.expires_in) || 300);
+      secondsLeftRef.current = expiresIn;
+      setSecondsLeft(expiresIn);
       setStage('pending');
-      setMessage('请使用微信或 NEU Pass 扫码并确认登录');
+      setMessage('请使用微信扫码并确认登录');
       pollTimer.current = window.setInterval(poll, result.poll_interval * 1000 || 3000);
     } catch (error) {
       setStage(error.response?.status === 404 ? 'invalid' : 'error');
@@ -81,10 +84,23 @@ const GradeTrackingRecoveryPage = ({ token }) => {
   useEffect(() => {
     if (stage !== 'pending') return undefined;
     const countdown = window.setInterval(() => {
-      setSecondsLeft((value) => Math.max(0, value - 1));
+      const nextValue = Math.max(0, secondsLeftRef.current - 1);
+      secondsLeftRef.current = nextValue;
+      setSecondsLeft(nextValue);
+      if (nextValue === 0) {
+        stopPolling();
+        setStage('expired');
+        setMessage('本次二维码已失效，请重新生成');
+      }
     }, 1000);
     return () => window.clearInterval(countdown);
-  }, [stage]);
+  }, [stage, stopPolling]);
+
+  const formatCountdown = (value) => {
+    const minutes = Math.floor(value / 60);
+    const seconds = value % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  };
 
   return (
     <main className="tracking-recovery-page">
@@ -109,7 +125,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
             </div>
             <div className="tracking-recovery-countdown">
               <ClockCircleOutlined />
-              本次二维码剩余约 {Math.ceil(secondsLeft / 60)} 分钟
+              本次二维码剩余 <strong>{formatCountdown(secondsLeft)}</strong>
             </div>
             <Alert type="info" showIcon message={message} />
           </>
@@ -143,7 +159,8 @@ const GradeTrackingRecoveryPage = ({ token }) => {
         )}
 
         <p className="tracking-recovery-footnote">
-          一次性网页链接仅在登录成功后失效；每个 NEU Pass 二维码有效五分钟。
+          一次性网页链接仅在登录成功后失效；每次打开页面都会生成新的微信扫码二维码，
+          有效期为五分钟。
           请勿转发当前页面地址。
         </p>
       </Card>

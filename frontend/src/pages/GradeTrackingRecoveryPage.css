@@ -55,6 +55,11 @@
   font-size: 13px;
 }
 
+.tracking-recovery-countdown strong {
+  color: #1e293b;
+  font-variant-numeric: tabular-nums;
+}
+
 .tracking-recovery-result.is-success > .anticon {
   color: #16a34a;
   font-size: 48px;
