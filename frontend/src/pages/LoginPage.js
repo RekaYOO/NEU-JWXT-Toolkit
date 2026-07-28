@@ -1,13 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { Form, Input, Button, Checkbox, message, Spin, Radio, QRCode, Alert, Modal } from 'antd';
-import { UserOutlined, LockOutlined, QrcodeOutlined, SafetyCertificateOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import {
+  UserOutlined, LockOutlined, QrcodeOutlined, SafetyCertificateOutlined,
+  ArrowLeftOutlined, DatabaseOutlined
+} from '@ant-design/icons';
 import {
   login, checkStatus, startWebVPNQRLogin, getWebVPNQRStatus, cancelWebVPNQRLogin,
   startWebVPNPasswordLogin, sendWebVPNSMSCode, verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
+  getOfflineStatus,
 } from '../services/api';
 import './LoginPage.css';
 
-const LoginPage = ({ onLoginSuccess }) => {
+const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
   const [networkMode, setNetworkMode] = useState('direct');
@@ -19,11 +23,21 @@ const LoginPage = ({ onLoginSuccess }) => {
   const [smsCode, setSmsCode] = useState('');
   const [smsLoading, setSmsLoading] = useState(false);
   const [smsSent, setSmsSent] = useState(false);
+  const [offlineStatus, setOfflineStatus] = useState(null);
+  const [offlineLoading, setOfflineLoading] = useState(false);
   const [form] = Form.useForm();
 
   // 检查登录状态
   useEffect(() => {
     const checkLoginStatus = async () => {
+      try {
+        const localStatus = await getOfflineStatus();
+        setOfflineStatus(localStatus);
+      } catch (error) {
+        setOfflineStatus({ available: false, has_scores: false, has_report: false });
+      } finally {
+        setChecking(false);
+      }
       try {
         const status = await checkStatus();
         // 已登录则直接进入
@@ -32,8 +46,6 @@ const LoginPage = ({ onLoginSuccess }) => {
         }
       } catch (error) {
         console.log('检查登录状态失败', error);
-      } finally {
-        setChecking(false);
       }
     };
     checkLoginStatus();
@@ -220,6 +232,23 @@ const LoginPage = ({ onLoginSuccess }) => {
     }
   };
 
+  const beginOfflineMode = async () => {
+    setOfflineLoading(true);
+    try {
+      const status = await getOfflineStatus();
+      setOfflineStatus(status);
+      if (!status.available) {
+        message.warning('本地还没有可离线查看的数据，请先在线登录并完成一次数据同步');
+        return;
+      }
+      onOfflineSuccess(status);
+    } catch (error) {
+      message.error('无法读取本地离线数据');
+    } finally {
+      setOfflineLoading(false);
+    }
+  };
+
   if (checking) {
     return (
       <div className="login-page">
@@ -343,6 +372,25 @@ const LoginPage = ({ onLoginSuccess }) => {
               </Button>
             )}
           </section>
+          {loginView === 'password' && (
+            <section className="offline-section" aria-labelledby="offline-title">
+              <div>
+                <p className="panel-kicker">特殊状态</p>
+                <h3 id="offline-title">只读离线使用</h3>
+                <p>
+                  不连接教务系统，仅查看当前设备已保存的成绩和培养计划。
+                </p>
+              </div>
+              <Button
+                icon={<DatabaseOutlined />}
+                loading={offlineLoading}
+                disabled={offlineStatus && !offlineStatus.available}
+                onClick={beginOfflineMode}
+              >
+                {offlineStatus?.available ? '进入离线模式' : '暂无本地数据'}
+              </Button>
+            </section>
+          )}
         </section>
       </main>
       <Modal

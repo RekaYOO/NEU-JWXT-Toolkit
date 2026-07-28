@@ -52,11 +52,22 @@
 }
 
 .credit-summary-float .summary-detail b {
+  position: relative;
   margin-left: 2px;
   padding-left: 9px;
   color: #b45309;
-  border-left: 1px solid var(--color-line);
   font-weight: 700;
+}
+
+.credit-summary-float .summary-detail b::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 1px;
+  height: 18px;
+  background: var(--color-line);
+  content: "";
+  transform: translateY(-50%);
 }
 
 .credit-summary-float .summary-compact {
@@ -128,6 +139,26 @@
 /* 学分总览卡片 - 移除旧样式 */
 .credit-summary-card {
   display: none; /* 隐藏旧卡片，使用悬挂式 */
+}
+
+.academic-course-search {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-line-soft);
+  border-radius: var(--radius-md);
+}
+
+.academic-course-search .ant-input-affix-wrapper {
+  width: min(520px, 100%);
+}
+
+.academic-course-search .ant-typography {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .credit-progress {
@@ -527,6 +558,16 @@
   .courses-table-card .ant-card-extra .ant-btn {
     flex: 1;
     min-width: 0;
+  }
+
+  .academic-course-search {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .academic-course-search .ant-input-affix-wrapper {
+    width: 100%;
   }
   
   .credit-summary-card .ant-statistic-title {

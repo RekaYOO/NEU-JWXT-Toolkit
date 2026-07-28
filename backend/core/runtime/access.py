@@ -5,10 +5,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
+import threading
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass
 from typing import Deque
 
 from fastapi import Request
@@ -22,11 +23,16 @@ COOKIE_NAME = "neu_jwxt_access"
 COOKIE_TTL_SECONDS = 7 * 24 * 60 * 60
 MAX_FAILURES = 5
 FAILURE_WINDOW_SECONDS = 5 * 60
+MAX_TRACKED_SOURCES = 4096
+MAX_PASSWORD_LENGTH = 256
+MAX_COOKIE_LENGTH = 2048
 
 
 def hash_access_password(password: str, salt: bytes | None = None) -> dict[str, str]:
     if len(password) < 8:
         raise ValueError("访问密码至少需要 8 个字符")
+    if len(password) > MAX_PASSWORD_LENGTH:
+        raise ValueError(f"访问密码不能超过 {MAX_PASSWORD_LENGTH} 个字符")
     salt = salt or __import__("secrets").token_bytes(16)
     derived = hashlib.scrypt(
         password.encode("utf-8"),
@@ -43,6 +49,8 @@ def hash_access_password(password: str, salt: bytes | None = None) -> dict[str, 
 
 
 def verify_access_password(password: str, salt_text: str, hash_text: str) -> bool:
+    if not password or len(password) > MAX_PASSWORD_LENGTH:
+        return False
     try:
         salt = base64.urlsafe_b64decode(salt_text.encode("ascii"))
         expected = base64.urlsafe_b64decode(hash_text.encode("ascii"))
@@ -78,7 +86,12 @@ def issue_access_cookie(secret: str, now: int | None = None) -> str:
 
 
 def validate_access_cookie(token: str, secret: str, now: int | None = None) -> bool:
-    if not token or not secret or "." not in token:
+    if (
+        not token
+        or len(token) > MAX_COOKIE_LENGTH
+        or not secret
+        or "." not in token
+    ):
         return False
     try:
         payload_text, signature_text = token.split(".", 1)
@@ -107,35 +120,58 @@ def request_uses_https(request: Request, config: RuntimeConfig) -> bool:
 def request_source(request: Request, config: RuntimeConfig) -> str:
     peer = request.client.host if request.client else "unknown"
     if peer in config.trusted_proxies:
-        forwarded = request.headers.get("x-forwarded-for", "")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-    return peer
+        forwarded = [
+            item.strip()
+            for item in request.headers.get("x-forwarded-for", "").split(",")
+            if item.strip()
+        ]
+        # 从最靠近本服务的一端反向查找第一个非可信代理地址，避免客户端
+        # 预置 X-Forwarded-For 左侧内容绕过限流。
+        for candidate in reversed(forwarded):
+            try:
+                normalized = str(ipaddress.ip_address(candidate))
+            except ValueError:
+                continue
+            if normalized not in config.trusted_proxies:
+                return normalized
+    try:
+        return str(ipaddress.ip_address(peer))
+    except ValueError:
+        return str(peer)[:64] or "unknown"
 
 
-@dataclass
 class LoginRateLimiter:
-    failures: dict[str, Deque[float]]
-
     def __init__(self) -> None:
-        self.failures = defaultdict(deque)
+        self.failures: dict[str, Deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
 
-    def _prune(self, source: str, now: float) -> Deque[float]:
+    def _prune_unlocked(self, source: str, now: float) -> Deque[float]:
         values = self.failures[source]
         while values and now - values[0] > FAILURE_WINDOW_SECONDS:
             values.popleft()
+        if not values:
+            self.failures.pop(source, None)
+            return deque()
         return values
 
     def is_blocked(self, source: str, now: float | None = None) -> bool:
         current = now or time.time()
-        return len(self._prune(source, current)) >= MAX_FAILURES
+        with self._lock:
+            return len(self._prune_unlocked(source, current)) >= MAX_FAILURES
 
     def register_failure(self, source: str, now: float | None = None) -> None:
         current = now or time.time()
-        self._prune(source, current).append(current)
+        with self._lock:
+            if source not in self.failures and len(self.failures) >= MAX_TRACKED_SOURCES:
+                for tracked_source in list(self.failures):
+                    self._prune_unlocked(tracked_source, current)
+                while len(self.failures) >= MAX_TRACKED_SOURCES:
+                    self.failures.pop(next(iter(self.failures)))
+            self.failures[source].append(current)
 
     def clear(self, source: str) -> None:
-        self.failures.pop(source, None)
+        with self._lock:
+            self.failures.pop(source, None)
 
 
 PUBLIC_API_PATHS = {
@@ -164,13 +200,24 @@ class AccessGatewayMiddleware(BaseHTTPMiddleware):
             or not request.url.path.startswith("/api/")
             or is_public_api_path(request.url.path)
         ):
-            return await call_next(request)
+            response = await call_next(request)
+        else:
+            token = request.cookies.get(COOKIE_NAME, "")
+            if validate_access_cookie(token, self.config.session_secret):
+                response = await call_next(request)
+            else:
+                response = JSONResponse(
+                    status_code=401,
+                    content={"detail": "需要先验证服务器访问密码", "code": "ACCESS_REQUIRED"},
+                )
 
-        token = request.cookies.get(COOKIE_NAME, "")
-        if validate_access_cookie(token, self.config.session_secret):
-            return await call_next(request)
-
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "需要先验证服务器访问密码", "code": "ACCESS_REQUIRED"},
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=()",
         )
+        if request.url.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response

@@ -9,7 +9,10 @@ import {
   CheckCircleOutlined, CalculatorOutlined, ExclamationCircleOutlined
 } from '@ant-design/icons';
 import GPACalculator from '../components/GPACalculator';
-import { getScores, refreshScores, getAcademicReport, refreshAcademicReport, cancelRequest } from '../services/api';
+import {
+  getScores, getOfflineScores, refreshScores, getAcademicReport,
+  refreshAcademicReport, cancelRequest
+} from '../services/api';
 import { columnSettings } from '../utils/settings';
 import { compareAcademicTerms } from '../utils/termSort';
 import dayjs from 'dayjs';
@@ -77,6 +80,34 @@ const getScoreNumericValue = (record, key) => {
     return getNumericValue(record.score_value || record.score);
   }
   return getNumericValue(record[key]);
+};
+
+const parseRangeFilter = (value) => {
+  if (!value) return {};
+  try {
+    const range = JSON.parse(value);
+    return range && typeof range === 'object' ? range : {};
+  } catch {
+    return {};
+  }
+};
+
+const setRangeFilterValue = (setSelectedKeys, range) => {
+  const hasMin = range.min !== undefined && range.min !== null && range.min !== '';
+  const hasMax = range.max !== undefined && range.max !== null && range.max !== '';
+  setSelectedKeys(hasMin || hasMax ? [JSON.stringify({
+    min: hasMin ? range.min : null,
+    max: hasMax ? range.max : null,
+  })] : []);
+};
+
+const matchesNumericRange = (filterValue, recordValue) => {
+  const { min, max } = parseRangeFilter(filterValue);
+  const value = Number(recordValue);
+  if (!Number.isFinite(value)) return false;
+  if (min !== undefined && min !== null && value < Number(min)) return false;
+  if (max !== undefined && max !== null && value > Number(max)) return false;
+  return true;
 };
 
 const calculateImpactScores = (scores) => {
@@ -150,7 +181,7 @@ const isScoresEqual = (localScores, remoteScores) => {
   return true;
 };
 
-const ScoresPage = () => {
+const ScoresPage = ({ offlineMode = false }) => {
   const screens = useBreakpoint();
   const isMobile = !screens.md;
   const [allScores, setAllScores] = useState([]);
@@ -179,6 +210,9 @@ const ScoresPage = () => {
   });
   const [mobileView, setMobileView] = useState('latest');
   const [mobilePage, setMobilePage] = useState(1);
+  const [hasActiveFilters, setHasActiveFilters] = useState(false);
+  const [gpaHelpHovered, setGpaHelpHovered] = useState(false);
+  const [gpaHelpPinned, setGpaHelpPinned] = useState(false);
 
   // GPA计算器
   const [isSimulating, setIsSimulating] = useState(false);
@@ -198,7 +232,7 @@ const ScoresPage = () => {
   const loadData = async () => {
     try {
       // 调用后端API，优先读取本地data目录
-      const data = await getScores(false);
+      const data = offlineMode ? await getOfflineScores() : await getScores(false);
       
       const scoresWithId = calculateImpactScores(data.scores.map((s, index) => ({
         ...s,
@@ -215,7 +249,7 @@ const ScoresPage = () => {
       setDataLoaded(true);
       
       // 如果本地数据不是最新的，异步检查更新
-      if (data.source === 'local' && !data.is_fresh) {
+      if (!offlineMode && data.source === 'local' && !data.is_fresh) {
         setTimeout(() => checkForUpdates(scoresWithId), 1000);
       }
     } catch (error) {
@@ -354,6 +388,15 @@ const ScoresPage = () => {
 
   // 表格变化处理
   const handleTableChange = (newPagination, newFilters, newSorter) => {
+    const filtersActive = Object.values(newFilters).some(
+      values => Array.isArray(values) && values.length > 0
+    );
+    setHasActiveFilters(filtersActive);
+    if (!filtersActive) {
+      setGpaHelpHovered(false);
+      setGpaHelpPinned(false);
+    }
+
     setPagination({
       ...pagination,
       current: newPagination.current,
@@ -366,13 +409,10 @@ const ScoresPage = () => {
         if (IMPACT_COLUMN_KEYS.includes(key)) {
           filtered = filtered.filter(item => newFilters[key].some(value => matchesImpactFilter(item[key], value)));
         } else if (NUMERIC_COLUMN_KEYS.includes(key)) {
-          const [min, max] = newFilters[key];
-          const minVal = min === undefined || min === null || min === '' ? 0 : parseFloat(min);
-          const maxVal = max === undefined || max === null || max === '' ? 999 : parseFloat(max);
-          filtered = filtered.filter(item => {
-            const recordVal = getScoreNumericValue(item, key);
-            return recordVal >= minVal && recordVal <= maxVal;
-          });
+          const rangeValue = newFilters[key][0];
+          filtered = filtered.filter(item => (
+            matchesNumericRange(rangeValue, getScoreNumericValue(item, key))
+          ));
         } else {
           filtered = filtered.filter(item => newFilters[key].includes(item[key]));
         }
@@ -436,26 +476,48 @@ const ScoresPage = () => {
         }
 
         if (NUMERIC_COLUMN_KEYS.includes(col.key)) {
-          column.filterDropdown = ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
-            <div style={{ padding: 8 }}>
-              <Space direction="vertical">
-                <InputNumber placeholder="最小值" value={selectedKeys?.[0]} onChange={(v) => setSelectedKeys([v, selectedKeys?.[1]])} style={{ width: 120 }} />
-                <InputNumber placeholder="最大值" value={selectedKeys?.[1]} onChange={(v) => setSelectedKeys([selectedKeys?.[0], v])} style={{ width: 120 }} />
-                <Space>
-                  <Button type="primary" size="small" onClick={confirm}>确定</Button>
-                  <Button size="small" onClick={clearFilters}>重置</Button>
+          column.filterDropdown = ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => {
+            const range = parseRangeFilter(selectedKeys?.[0]);
+            return (
+              <div style={{ padding: 8 }}>
+                <Space direction="vertical">
+                  <InputNumber
+                    placeholder="最小值"
+                    value={range.min}
+                    onChange={(value) => setRangeFilterValue(
+                      setSelectedKeys,
+                      { ...range, min: value }
+                    )}
+                    style={{ width: 120 }}
+                  />
+                  <InputNumber
+                    placeholder="最大值"
+                    value={range.max}
+                    onChange={(value) => setRangeFilterValue(
+                      setSelectedKeys,
+                      { ...range, max: value }
+                    )}
+                    style={{ width: 120 }}
+                  />
+                  <Space>
+                    <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        clearFilters?.();
+                        confirm();
+                      }}
+                    >
+                      重置
+                    </Button>
+                  </Space>
                 </Space>
-              </Space>
-            </div>
-          );
-          column.onFilter = (value, record) => {
-            if (!value || value.length < 2) return true;
-            const [min, max] = value;
-            const minVal = parseFloat(min) || 0;
-            const maxVal = parseFloat(max) || 999;
-            const recordVal = getScoreNumericValue(record, col.key);
-            return recordVal >= minVal && recordVal <= maxVal;
+              </div>
+            );
           };
+          column.onFilter = (value, record) => (
+            matchesNumericRange(value, getScoreNumericValue(record, col.key))
+          );
         }
 
         if (IMPACT_COLUMN_KEYS.includes(col.key)) {
@@ -537,34 +599,57 @@ const ScoresPage = () => {
 
   // 刷新按钮
   const refreshButtonText = useMemo(() => {
+    if (offlineMode) return '只读离线数据';
     const lastUpdate = dataInfo.last_update ? dayjs(dataInfo.last_update) : null;
     if (dataInfo.source === 'remote' || dataInfo.is_fresh) return '已是最新';
     if (lastUpdate) return `本地数据 · ${lastUpdate.format('MM-DD')}`;
     return '刷新';
-  }, [dataInfo]);
+  }, [dataInfo, offlineMode]);
 
   const refreshButtonIcon = useMemo(() => {
+    if (offlineMode) return <DatabaseOutlined />;
     if (dataInfo.source === 'remote' || dataInfo.is_fresh) return <CheckCircleOutlined />;
     return <ReloadOutlined />;
-  }, [dataInfo]);
+  }, [dataInfo, offlineMode]);
 
   // 统计
   const stats = useMemo(() => {
-    if (!allScores.length) return { totalCourses: 0, avgGpa: 0, passedCount: 0, failedCount: 0, totalCredits: 0 };
+    if (!allScores.length) return { totalCourses: 0, passedCount: 0, failedCount: 0, totalCredits: 0 };
     
     const totalCredits = allScores.reduce((sum, s) => sum + (s.credit || 0), 0);
-    const weightedGpa = totalCredits > 0 
-      ? allScores.reduce((sum, s) => sum + (s.gpa || 0) * (s.credit || 0), 0) / totalCredits 
-      : 0;
     
     return {
       totalCourses: allScores.length,
-      avgGpa: weightedGpa,
       passedCount: allScores.filter(s => s.is_passed).length,
       failedCount: allScores.filter(s => !s.is_passed).length,
       totalCredits: totalCredits,
     };
   }, [allScores]);
+
+  const filteredGpaSummary = useMemo(() => {
+    const gpaCourses = displayScores
+      .map(score => {
+        const gpa = Number.parseFloat(score.gpa);
+        const credit = Number.parseFloat(score.credit);
+        if (!Number.isFinite(gpa) || !Number.isFinite(credit) || credit <= 0) return null;
+        return {
+          gpa,
+          credit,
+        };
+      })
+      .filter(Boolean);
+
+    const totalCredits = gpaCourses.reduce((sum, course) => sum + course.credit, 0);
+    const weightedTotal = gpaCourses.reduce(
+      (sum, course) => sum + course.gpa * course.credit,
+      0
+    );
+
+    return {
+      average: totalCredits > 0 ? weightedTotal / totalCredits : null,
+      count: gpaCourses.length,
+    };
+  }, [displayScores]);
 
   const latestTerm = useMemo(() => {
     const terms = [...new Set(displayScores.map(score => score.term_display || score.term).filter(Boolean))];
@@ -636,7 +721,54 @@ const ScoresPage = () => {
         </Col>
           <Col xs={12} sm={12} md={6}>
           <Card>
-            <Statistic title="平均绩点" value={stats.avgGpa} precision={3} prefix={<TrophyOutlined />} valueStyle={{ color: 'var(--color-brand)' }} />
+            <Statistic
+              title="平均绩点"
+              value={filteredGpaSummary.average ?? '--'}
+              precision={filteredGpaSummary.average === null ? undefined : 3}
+              prefix={<TrophyOutlined />}
+              formatter={(value) => (
+                <Tooltip
+                  open={hasActiveFilters && (gpaHelpHovered || gpaHelpPinned)}
+                  title={`此平均绩点由当前筛选栏目下的 ${filteredGpaSummary.count} 门课程按“绩点 × 学分”加权计算。`}
+                >
+                  <span
+                    className={hasActiveFilters ? 'filtered-gpa-value' : undefined}
+                    tabIndex={hasActiveFilters ? 0 : undefined}
+                    role={hasActiveFilters ? 'button' : undefined}
+                    aria-label={hasActiveFilters
+                      ? '查看当前筛选课程的平均绩点计算说明'
+                      : undefined}
+                    aria-pressed={hasActiveFilters ? gpaHelpPinned : undefined}
+                    onMouseEnter={() => hasActiveFilters && setGpaHelpHovered(true)}
+                    onMouseLeave={() => setGpaHelpHovered(false)}
+                    onFocus={() => hasActiveFilters && setGpaHelpHovered(true)}
+                    onBlur={() => {
+                      setGpaHelpHovered(false);
+                      setGpaHelpPinned(false);
+                    }}
+                    onClick={() => {
+                      if (hasActiveFilters) {
+                        setGpaHelpPinned((pinned) => !pinned);
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (
+                        hasActiveFilters
+                        && (event.key === 'Enter' || event.key === ' ')
+                      ) {
+                        event.preventDefault();
+                        setGpaHelpPinned((pinned) => !pinned);
+                      }
+                    }}
+                  >
+                    {filteredGpaSummary.average === null
+                      ? '--'
+                      : Number(value).toFixed(3)}
+                  </span>
+                </Tooltip>
+              )}
+              valueStyle={{ color: 'var(--color-brand)' }}
+            />
           </Card>
         </Col>
           <Col xs={12} sm={12} md={6}>
@@ -656,6 +788,7 @@ const ScoresPage = () => {
         ref={gpaCalculatorRef}
         realScores={allScores}
         onSimulatingChange={handleSimulatingChange}
+        offlineMode={offlineMode}
       />
 
       {/* 成绩表格 */}
@@ -685,12 +818,17 @@ const ScoresPage = () => {
                   GPA模拟
                 </Button>
               </Tooltip>
-              <Tooltip title={dataInfo.last_update ? `最后更新: ${dayjs(dataInfo.last_update).format('YYYY-MM-DD HH:mm')}` : '点击刷新云端数据'}>
+              <Tooltip title={offlineMode
+                ? '离线模式不会连接教务系统'
+                : (dataInfo.last_update
+                  ? `最后更新: ${dayjs(dataInfo.last_update).format('YYYY-MM-DD HH:mm')}`
+                  : '点击刷新云端数据')}>
                 <Button
                   type={dataInfo.source === 'remote' || dataInfo.is_fresh ? 'default' : 'primary'}
                   icon={refreshButtonIcon}
                   loading={refreshing}
                   onClick={handleRefresh}
+                  disabled={offlineMode}
                 >
                   {refreshButtonText}
                 </Button>

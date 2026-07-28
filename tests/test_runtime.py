@@ -31,6 +31,8 @@ def test_password_hash_round_trip():
         password_data["salt"],
         password_data["hash"],
     )
+    with pytest.raises(ValueError, match="不能超过"):
+        hash_access_password("x" * 257)
 
 
 def test_signed_cookie_rejects_tampering_and_expiry():
@@ -42,6 +44,7 @@ def test_signed_cookie_rejects_tampering_and_expiry():
         "test-secret",
         now=1_000 + COOKIE_TTL_SECONDS + 1,
     )
+    assert not validate_access_cookie("x" * 2049, "test-secret", now=1_001)
 
 
 def test_rate_limiter_blocks_fifth_failure():
@@ -73,7 +76,7 @@ def test_server_config_is_loaded(monkeypatch, tmp_path):
                 "host": "127.0.0.1",
                 "port": 19001,
                 "access_password": password_data,
-                "session_secret": "session-secret",
+                "session_secret": "session-secret-at-least-32-characters",
                 "trusted_proxies": ["127.0.0.1"],
             }
         ),

@@ -6,13 +6,14 @@ import os
 import threading
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.core.runtime import get_runtime_config
 from backend.core.runtime.access import (
     COOKIE_NAME,
     COOKIE_TTL_SECONDS,
     LoginRateLimiter,
+    MAX_PASSWORD_LENGTH,
     issue_access_cookie,
     request_source,
     request_uses_https,
@@ -27,7 +28,15 @@ rate_limiter = LoginRateLimiter()
 
 
 class AccessLoginRequest(BaseModel):
-    password: str
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
+def _access_gateway_configured() -> bool:
+    return bool(
+        config.access_password_salt
+        and config.access_password_hash
+        and len(config.session_secret) >= 32
+    )
 
 
 @router.get("/api/health")
@@ -43,11 +52,7 @@ async def health():
 async def access_status(request: Request):
     if not config.access_gateway_enabled:
         return {"required": False, "authenticated": True, "configured": True}
-    configured = bool(
-        config.access_password_salt
-        and config.access_password_hash
-        and config.session_secret
-    )
+    configured = _access_gateway_configured()
     token = request.cookies.get(COOKIE_NAME, "")
     return {
         "required": True,
@@ -61,11 +66,7 @@ async def access_status(request: Request):
 async def access_login(payload: AccessLoginRequest, request: Request, response: Response):
     if not config.access_gateway_enabled:
         return {"success": True}
-    if not (
-        config.access_password_salt
-        and config.access_password_hash
-        and config.session_secret
-    ):
+    if not _access_gateway_configured():
         raise HTTPException(status_code=503, detail="服务器访问密码尚未配置")
 
     source = request_source(request, config)

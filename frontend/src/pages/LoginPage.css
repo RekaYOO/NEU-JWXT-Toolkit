@@ -163,6 +163,37 @@
   transition: margin 320ms ease, padding 320ms ease, border-color 180ms ease;
 }
 
+.offline-section {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #dde5e9;
+}
+
+.offline-section > div {
+  min-width: 0;
+}
+
+.offline-section h3 {
+  margin: 4px 0;
+  color: #273842;
+  font-size: 15px;
+}
+
+.offline-section p:last-child {
+  margin: 0;
+  color: #71818b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.offline-section .ant-btn {
+  flex-shrink: 0;
+}
+
 .login-shell.is-qr-active .webvpn-section {
   margin-top: 0;
   padding-top: 2px;
@@ -300,6 +331,12 @@
     margin-top: 0;
     padding-top: 0;
     border-top: 0;
+  }
+
+  .offline-section {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
   }
 
 }

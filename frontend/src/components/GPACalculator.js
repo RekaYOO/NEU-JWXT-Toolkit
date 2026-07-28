@@ -14,6 +14,7 @@ import {
 } from '@ant-design/icons';
 import { 
   getAcademicReport,
+  getOfflineAcademicReport,
   exportGPASimulation,
   listGPASimulationFiles,
   getGPASimulationFile,
@@ -101,6 +102,7 @@ const GPACalculator = forwardRef(({
   realScores = [],
   onCoursesChange = null,
   onSimulatingChange = null,
+  offlineMode = false,
 }, ref) => {
   // ===== 状态管理 =====
   const [courses, setCourses] = useState([]);
@@ -612,7 +614,9 @@ const GPACalculator = forwardRef(({
   const loadAcademicPlan = async () => {
     setPlanLoading(true);
     try {
-      const data = await getAcademicReport(false);
+      const data = offlineMode
+        ? await getOfflineAcademicReport()
+        : await getAcademicReport(false);
       if (data?.categories) {
         // 保存嵌套分类结构
         setPlanCategories(data.categories);

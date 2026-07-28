@@ -184,6 +184,21 @@ export const refreshScores = async () => {
   return response.data;
 };
 
+export const getOfflineStatus = async () => {
+  const response = await api.get('/api/offline/status');
+  return response.data;
+};
+
+export const getOfflineScores = async () => {
+  const response = await api.get('/api/offline/scores');
+  return response.data;
+};
+
+export const getOfflineAcademicReport = async () => {
+  const response = await api.get('/api/offline/academic-report');
+  return response.data;
+};
+
 // ── 成绩追踪 API ─────────────────────────────────────────────────────────────
 
 export const getGradeTrackingConfig = async () => {

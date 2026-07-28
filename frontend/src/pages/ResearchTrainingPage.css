@@ -122,15 +122,40 @@
   }
 
   .research-rule-grid {
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    margin-inline: -4px;
-    padding: 0 4px 4px;
+    overflow: visible;
+    margin-inline: -5px;
   }
 
   .research-rule-grid > .ant-col {
-    flex: 0 0 150px;
-    max-width: 150px;
+    flex: 0 0 50%;
+    max-width: 50%;
+    padding-inline: 5px !important;
+  }
+
+  .research-rule-grid .ant-card {
+    height: 100%;
+  }
+
+  .research-rule-grid .ant-card-body {
+    min-height: 88px;
+    padding: 12px;
+  }
+
+  .research-rule-grid .ant-statistic-title {
+    min-height: 34px;
+    margin-bottom: 3px;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .research-rule-grid .ant-statistic-content {
+    font-size: 19px;
+    line-height: 1.25;
+    white-space: normal;
+  }
+
+  .research-rule-grid .ant-statistic-content-prefix {
+    margin-inline-end: 5px;
   }
 
   .research-filter-grid,

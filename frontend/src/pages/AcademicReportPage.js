@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   Table, Card, Statistic, Row, Col, Button, Tag, message, Alert,
   Tooltip, Dropdown, Checkbox, Space, InputNumber, Typography, Progress,
-  Tree, Badge, Empty, Divider, Switch, Drawer, Pagination, Grid, Segmented
+  Tree, Badge, Empty, Divider, Switch, Drawer, Pagination, Grid, Segmented, Input
 } from 'antd';
 import {
   ReloadOutlined, BookOutlined, CheckCircleOutlined, TrophyOutlined,
@@ -11,9 +11,11 @@ import {
   SafetyOutlined, ClockCircleOutlined, CheckOutlined, DownOutlined,
   RightOutlined, FolderOutlined, FileOutlined, PercentageOutlined,
   ExclamationCircleOutlined, FilterOutlined, DownCircleOutlined, UpCircleOutlined,
-  CheckSquareOutlined
+  CheckSquareOutlined, SearchOutlined
 } from '@ant-design/icons';
-import { getAcademicReport, getAcademicReportSummary, refreshAcademicReport, cancelRequest } from '../services/api';
+import {
+  getAcademicReport, getOfflineAcademicReport, refreshAcademicReport, cancelRequest
+} from '../services/api';
 import { columnSettings } from '../utils/settings';
 import { compareAcademicTerms } from '../utils/termSort';
 import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
@@ -334,7 +336,7 @@ const calcRequiredRemainingCredits = (categories) => {
   return leafCategories.reduce((sum, cat) => sum + (cat.remaining_credits || 0), 0);
 };
 
-const AcademicReportPage = () => {
+const AcademicReportPage = ({ offlineMode = false }) => {
   const screens = useBreakpoint();
   const isMobile = !screens.md;
   // 数据状态
@@ -382,11 +384,15 @@ const AcademicReportPage = () => {
   });
   const [mobilePlanView, setMobilePlanView] = useState('pending');
   const [mobilePage, setMobilePage] = useState(1);
+  const [courseSearchOpen, setCourseSearchOpen] = useState(false);
+  const [courseSearch, setCourseSearch] = useState('');
 
   // 加载数据
   const loadData = async () => {
     try {
-      const reportData = await getAcademicReport(false);
+      const reportData = offlineMode
+        ? await getOfflineAcademicReport()
+        : await getAcademicReport(false);
       
       setReport(reportData);
       setCategories(reportData.categories || []);
@@ -441,6 +447,7 @@ const AcademicReportPage = () => {
 
   // 刷新数据
   const handleRefresh = async () => {
+    if (offlineMode) return;
     setRefreshing(true);
     message.loading('正在刷新...', 0);
     
@@ -502,8 +509,17 @@ const AcademicReportPage = () => {
 
   // 筛选课程
   const filteredCourses = useMemo(() => {
-    return [...displayCourses];
-  }, [displayCourses]);
+    const query = courseSearch.trim().toLocaleLowerCase('zh-CN');
+    if (!query) return [...displayCourses];
+
+    return displayCourses.filter(course => [
+      course.course_name,
+      course.course_code,
+      course.course_nature,
+      course.term_code,
+      formatTermCode(course.term_code),
+    ].some(value => String(value || '').toLocaleLowerCase('zh-CN').includes(query)));
+  }, [displayCourses, courseSearch]);
 
   // 生成筛选选项
   const getFilterOptions = (key) => {
@@ -698,6 +714,7 @@ const AcademicReportPage = () => {
 
   // 刷新按钮文本
   const refreshButtonText = useMemo(() => {
+    if (offlineMode) return '只读离线数据';
     const lastUpdate = dataInfo.last_update ? dayjs(dataInfo.last_update) : null;
     if (dataInfo.source === 'remote' || dataInfo.is_fresh) {
       return '已是最新';
@@ -706,7 +723,7 @@ const AcademicReportPage = () => {
       return `本地数据 · ${lastUpdate.format('MM-DD')}`;
     }
     return '刷新';
-  }, [dataInfo]);
+  }, [dataInfo, offlineMode]);
 
   // 学分统计
   const creditSummary = report?.credit_summary || {};
@@ -1154,6 +1171,20 @@ const AcademicReportPage = () => {
             }
             extra={
               <Space>
+                <Button
+                  type={courseSearchOpen ? 'primary' : 'default'}
+                  icon={<SearchOutlined />}
+                  onClick={() => {
+                    if (courseSearchOpen) {
+                      setCourseSearch('');
+                      setPagination(previous => ({ ...previous, current: 1 }));
+                      setMobilePage(1);
+                    }
+                    setCourseSearchOpen(open => !open);
+                  }}
+                >
+                  搜索
+                </Button>
                 {isMobile && (
                   <Button icon={<FolderOutlined />} onClick={() => setMobileCategoryOpen(true)}>
                     选择类别
@@ -1171,11 +1202,16 @@ const AcademicReportPage = () => {
                   </Button>
                 </Dropdown>}
                 
-                <Tooltip title={dataInfo.last_update ? `最后保存: ${dayjs(dataInfo.last_update).format('YYYY-MM-DD HH:mm:ss')}` : '点击刷新云端数据'}>
+                <Tooltip title={offlineMode
+                  ? '离线模式不会连接教务系统'
+                  : (dataInfo.last_update
+                    ? `最后保存: ${dayjs(dataInfo.last_update).format('YYYY-MM-DD HH:mm:ss')}`
+                    : '点击刷新云端数据')}>
                   <Button
-                    icon={<ReloadOutlined />}
+                    icon={offlineMode ? <DatabaseOutlined /> : <ReloadOutlined />}
                     loading={refreshing}
                     onClick={handleRefresh}
+                    disabled={offlineMode}
                   >
                     {refreshButtonText}
                   </Button>
@@ -1183,6 +1219,25 @@ const AcademicReportPage = () => {
               </Space>
             }
           >
+            {courseSearchOpen && (
+              <div className="academic-course-search">
+                <Input
+                  allowClear
+                  autoFocus
+                  prefix={<SearchOutlined />}
+                  placeholder="搜索课程名称、代码、性质或学期"
+                  value={courseSearch}
+                  onChange={event => {
+                    setCourseSearch(event.target.value);
+                    setPagination(previous => ({ ...previous, current: 1 }));
+                    setMobilePage(1);
+                  }}
+                />
+                <Text type="secondary">
+                  找到 {filteredCourses.length} 门课程
+                </Text>
+              </div>
+            )}
             {/* 统计信息 */}
             <div className="course-stats-bar" style={{ marginBottom: 16, flexShrink: 0 }}>
               {isMobile ? (

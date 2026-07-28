@@ -38,8 +38,14 @@ const menuItems = [
 
 const pageTitles = Object.fromEntries(menuItems.map(({ key, label }) => [key, label]));
 
-const MainLayout = ({ userInfo, onLogout, runtimeProfile = 'development' }) => {
-  const [collapsed, setCollapsed] = useState(false);
+const MainLayout = ({
+  userInfo,
+  onLogout,
+  runtimeProfile = 'development',
+  offlineMode = false,
+  offlineCapabilities = {},
+}) => {
+  const [collapsed, setCollapsed] = useState(true);
   const [avatarUrl, setAvatarUrl] = useState(null);
   const [isRefreshingAvatar, setIsRefreshingAvatar] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -48,6 +54,12 @@ const MainLayout = ({ userInfo, onLogout, runtimeProfile = 'development' }) => {
   const location = useLocation();
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
+  const visibleMenuItems = offlineMode
+    ? menuItems.filter(item => (
+      (item.key === '/scores' && offlineCapabilities.has_scores)
+      || (item.key === '/academic-report' && offlineCapabilities.has_report)
+    ))
+    : menuItems;
 
   // 加载用户头像（仅使用缓存，不自动下载）
   useEffect(() => {
@@ -100,6 +112,11 @@ const MainLayout = ({ userInfo, onLogout, runtimeProfile = 'development' }) => {
   };
 
   const handleLogout = async () => {
+    if (offlineMode) {
+      onLogout();
+      navigate('/login');
+      return;
+    }
     try {
       const result = await logout();
       if (!result.success) {
@@ -122,7 +139,7 @@ const MainLayout = ({ userInfo, onLogout, runtimeProfile = 'development' }) => {
     {
       key: 'logout',
       icon: <LogoutOutlined />,
-      label: '退出登录',
+      label: offlineMode ? '退出离线模式' : '退出登录',
       onClick: handleLogout,
     },
     ...(runtimeProfile === 'desktop' ? [{
@@ -192,7 +209,7 @@ const MainLayout = ({ userInfo, onLogout, runtimeProfile = 'development' }) => {
       theme="dark"
       mode="inline"
       selectedKeys={[location.pathname]}
-      items={menuItems}
+      items={visibleMenuItems}
       onClick={onMenuClick}
       aria-label="主要导航"
     />
@@ -231,12 +248,19 @@ const MainLayout = ({ userInfo, onLogout, runtimeProfile = 'development' }) => {
           width={240}
           collapsedWidth={80}
           className="main-sider"
+          onMouseEnter={() => setCollapsed(false)}
+          onMouseMove={() => setCollapsed(false)}
+          onPointerEnter={() => setCollapsed(false)}
+          onMouseLeave={() => setCollapsed(true)}
+          onPointerLeave={() => setCollapsed(true)}
         >
           {brand(collapsed)}
           <nav className="main-nav">{navigation}</nav>
           {!collapsed && (
             <div className="sider-footer">
-              {runtimeProfile === 'server'
+              {offlineMode
+                ? '只读离线模式 · 不连接教务系统'
+                : runtimeProfile === 'server'
                 ? '私有服务 · 仅限本人设备访问'
                 : '本地运行 · 数据仅存于当前设备'}
             </div>
@@ -256,7 +280,14 @@ const MainLayout = ({ userInfo, onLogout, runtimeProfile = 'development' }) => {
         <nav className="main-nav">{navigation}</nav>
       </Drawer>
 
-      <Layout>
+      <Layout
+        onMouseEnter={() => {
+          if (!isMobile) setCollapsed(true);
+        }}
+        onMouseMove={() => {
+          if (!isMobile) setCollapsed(true);
+        }}
+      >
         <Header className={`main-header ${location.pathname === '/academic-report' ? 'has-center-slot' : ''}`}>
           <div className="header-leading">
             {isMobile ? navigationToggle : (

@@ -33,6 +33,15 @@ class FakeStorage:
         self.saved.append((list(scores), metadata))
 
 
+class FakeReportStorage:
+    def __init__(self):
+        self.refreshed = []
+
+    def refresh_report(self, auth):
+        self.refreshed.append(auth.username)
+        return {"success": True}
+
+
 class FakeAcademic:
     def __init__(self):
         self.scores = [make_score()]
@@ -94,6 +103,52 @@ def test_default_interval_is_thirty_minutes(tmp_path):
     service, _, _ = build_service(tmp_path)
 
     assert service.get_config()["interval_minutes"] == 30
+
+
+def test_tracking_refreshes_shared_report_cache_only_when_scores_change(tmp_path):
+    academic = FakeAcademic()
+    auth = SimpleNamespace(username="20250001", academic=academic)
+    report_storage = FakeReportStorage()
+    service = GradeTrackingService(
+        data_dir=tmp_path,
+        auth_provider=lambda: auth,
+        score_storage=FakeStorage(),
+        report_storage=report_storage,
+        logger=logging.getLogger("grade-tracking-report-sync-test"),
+    )
+    service._flush_outbox = lambda: None
+
+    service.check_now()
+    service.check_now()
+    academic.scores = [make_score(score="93", gpa=4.3)]
+    academic.gpa = 4.3
+    service.check_now()
+
+    assert report_storage.refreshed == ["20250001", "20250001"]
+
+
+def test_report_refresh_exception_does_not_break_score_sync(tmp_path):
+    academic = FakeAcademic()
+    auth = SimpleNamespace(username="20250001", academic=academic)
+
+    class FailingReportStorage:
+        def refresh_report(self, _auth):
+            raise RuntimeError("temporary report failure")
+
+    storage = FakeStorage()
+    service = GradeTrackingService(
+        data_dir=tmp_path,
+        auth_provider=lambda: auth,
+        score_storage=storage,
+        report_storage=FailingReportStorage(),
+        logger=logging.getLogger("grade-tracking-report-failure-test"),
+    )
+    service._flush_outbox = lambda: None
+
+    result = service.check_now()
+
+    assert result["stage"] == "monitoring"
+    assert len(storage.saved) == 1
 
 
 def test_tracking_switch_applies_immediately_without_changing_config(tmp_path):

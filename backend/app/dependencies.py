@@ -127,6 +127,7 @@ _grade_tracker = GradeTrackingService(
     data_dir=_storage.config.data_dir,
     auth_provider=get_auth_client,
     score_storage=_storage,
+    report_storage=_report_storage,
     logger=_api_logger,
     qr_login_starter=_start_tracking_qr_login,
     auth_setter=set_auth_client,

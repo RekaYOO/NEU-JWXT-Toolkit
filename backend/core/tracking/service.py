@@ -64,6 +64,7 @@ class GradeTrackingService:
         auth_provider: Callable[[], Any],
         score_storage: Any,
         logger: Any,
+        report_storage: Any | None = None,
         qr_login_starter: Callable[[], tuple[Any, dict[str, Any]]] | None = None,
         auth_setter: Callable[[Any], None] | None = None,
         login_flow_pending: Callable[[], bool] | None = None,
@@ -76,6 +77,7 @@ class GradeTrackingService:
         self.outbox_path = root / "grade_tracking_outbox.json"
         self.auth_provider = auth_provider
         self.score_storage = score_storage
+        self.report_storage = report_storage
         self.logger = logger
         self.qr_login_starter = qr_login_starter
         self.auth_setter = auth_setter
@@ -330,6 +332,20 @@ class GradeTrackingService:
                 "source": "grade_tracking",
             }
             self.score_storage.save_scores(scores, metadata=metadata)
+            if self.report_storage and (not previous or additions or changes):
+                try:
+                    report_result = self.report_storage.refresh_report(auth)
+                except Exception as exc:
+                    self.logger.warning(
+                        "[成绩追踪] 成绩已同步，但培养计划刷新失败：%s",
+                        exc,
+                    )
+                else:
+                    if not report_result.get("success"):
+                        self.logger.warning(
+                            "[成绩追踪] 成绩已同步，但培养计划刷新失败：%s",
+                            report_result.get("message", "未知错误"),
+                        )
 
             notification = None
             if not previous and config.get("notify_initial"):

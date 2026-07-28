@@ -13,10 +13,11 @@ import GradeTrackingRecoveryPage from './pages/GradeTrackingRecoveryPage';
 import ResearchTrainingPage from './pages/ResearchTrainingPage';
 import LogsPage from './pages/LogsPage';
 import AccessLoginPage from './pages/AccessLoginPage';
-import { checkStatus, getAccessStatus, getHealth } from './services/api';
+import { checkStatus, getAccessStatus, getHealth, getOfflineStatus } from './services/api';
 import './App.css';
 
 const { Content } = Layout;
+const OFFLINE_SESSION_KEY = 'neu_offline_mode';
 
 const appTheme = {
   token: {
@@ -87,15 +88,44 @@ function App() {
     authenticated: true,
   });
   const [runtimeProfile, setRuntimeProfile] = useState('development');
+  const [offlineMode, setOfflineMode] = useState(
+    () => sessionStorage.getItem(OFFLINE_SESSION_KEY) === '1'
+  );
+  const [offlineCapabilities, setOfflineCapabilities] = useState({
+    has_scores: false,
+    has_report: false,
+  });
 
   const loadApplicationState = async () => {
     const [access, health] = await Promise.all([getAccessStatus(), getHealth()]);
     setAccessState(access);
     setRuntimeProfile(health.profile || 'development');
     if (!access.required || access.authenticated) {
-      const status = await checkStatus();
-      setIsLoggedIn(status.is_logged_in);
-      setUserInfo(status.current_user);
+      if (sessionStorage.getItem(OFFLINE_SESSION_KEY) === '1') {
+        let offline = null;
+        try {
+          offline = await getOfflineStatus();
+        } catch (error) {
+          console.warn('恢复离线模式失败，将检查在线登录状态', error);
+        }
+        if (offline?.available) {
+          setOfflineMode(true);
+          setOfflineCapabilities(offline);
+          setIsLoggedIn(true);
+          setUserInfo(offline.username || '离线用户');
+          return access;
+        }
+        sessionStorage.removeItem(OFFLINE_SESSION_KEY);
+        setOfflineMode(false);
+        setOfflineCapabilities({ has_scores: false, has_report: false });
+        const status = await checkStatus();
+        setIsLoggedIn(status.is_logged_in);
+        setUserInfo(status.current_user);
+      } else {
+        const status = await checkStatus();
+        setIsLoggedIn(status.is_logged_in);
+        setUserInfo(status.current_user);
+      }
     }
     return access;
   };
@@ -147,16 +177,36 @@ function App() {
   }, []);
 
   const handleLoginSuccess = (username) => {
+    sessionStorage.removeItem(OFFLINE_SESSION_KEY);
+    setOfflineMode(false);
+    setOfflineCapabilities({ has_scores: false, has_report: false });
     setIsLoggedIn(true);
     setUserInfo(username);
     message.success('登录成功');
   };
 
   const handleLogout = () => {
+    const wasOffline = offlineMode;
+    sessionStorage.removeItem(OFFLINE_SESSION_KEY);
+    setOfflineMode(false);
+    setOfflineCapabilities({ has_scores: false, has_report: false });
     setIsLoggedIn(false);
     setUserInfo(null);
-    message.success('已登出');
+    message.success(wasOffline ? '已退出离线模式' : '已登出');
   };
+
+  const handleOfflineSuccess = (status) => {
+    sessionStorage.setItem(OFFLINE_SESSION_KEY, '1');
+    setOfflineMode(true);
+    setOfflineCapabilities(status);
+    setIsLoggedIn(true);
+    setUserInfo(status.username || '离线用户');
+    message.success('已进入只读离线模式');
+  };
+
+  const offlineDefaultPath = offlineCapabilities.has_scores
+    ? '/scores'
+    : '/academic-report';
 
   if (isLoading) {
     return (
@@ -204,7 +254,10 @@ function App() {
               element={
                 isLoggedIn ? 
                   <Navigate to="/" /> : 
-                  <LoginPage onLoginSuccess={handleLoginSuccess} />
+                  <LoginPage
+                    onLoginSuccess={handleLoginSuccess}
+                    onOfflineSuccess={handleOfflineSuccess}
+                  />
               } 
             />
             <Route 
@@ -215,19 +268,31 @@ function App() {
                     userInfo={userInfo}
                     onLogout={handleLogout}
                     runtimeProfile={runtimeProfile}
+                    offlineMode={offlineMode}
+                    offlineCapabilities={offlineCapabilities}
                   /> :
                   <Navigate to="/login" />
               }
             >
-              <Route index element={<Navigate to="/scores" />} />
-              <Route path="scores" element={<ScoresPage />} />
-              <Route path="grade-tracking" element={<GradeTrackingPage />} />
-              <Route path="academic-report" element={<AcademicReportPage />} />
-              <Route path="experiment-courses" element={<ExperimentCoursePage />} />
-              <Route path="research-training" element={<ResearchTrainingPage />} />
-              <Route path="evaluation" element={<EvaluationPage />} />
-              <Route path="exams" element={<ExamPage />} />
-              <Route path="logs" element={<LogsPage />} />
+              <Route index element={<Navigate to={offlineMode ? offlineDefaultPath : '/scores'} />} />
+              <Route
+                path="scores"
+                element={!offlineMode || offlineCapabilities.has_scores
+                  ? <ScoresPage offlineMode={offlineMode} />
+                  : <Navigate to={offlineDefaultPath} />}
+              />
+              <Route path="grade-tracking" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <GradeTrackingPage />} />
+              <Route
+                path="academic-report"
+                element={!offlineMode || offlineCapabilities.has_report
+                  ? <AcademicReportPage offlineMode={offlineMode} />
+                  : <Navigate to={offlineDefaultPath} />}
+              />
+              <Route path="experiment-courses" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <ExperimentCoursePage />} />
+              <Route path="research-training" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <ResearchTrainingPage />} />
+              <Route path="evaluation" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <EvaluationPage />} />
+              <Route path="exams" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <ExamPage />} />
+              <Route path="logs" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <LogsPage />} />
             </Route>
             </Routes>
           </Content>

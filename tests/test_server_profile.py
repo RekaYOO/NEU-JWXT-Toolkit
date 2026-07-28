@@ -29,7 +29,7 @@ def test_server_access_gateway_and_static_frontend(tmp_path):
                 "host": "127.0.0.1",
                 "port": port,
                 "access_password": hash_access_password("server-test-password"),
-                "session_secret": "server-test-session-secret",
+                "session_secret": "server-test-session-secret-at-least-32-bytes",
                 "trusted_proxies": ["127.0.0.1"],
             }
         ),
@@ -80,6 +80,9 @@ def test_server_access_gateway_and_static_frontend(tmp_path):
         protected = requests.get(f"{base_url}/api/status")
         assert protected.status_code == 401
         assert protected.json()["code"] == "ACCESS_REQUIRED"
+        offline = requests.get(f"{base_url}/api/offline/status")
+        assert offline.status_code == 401
+        assert offline.json()["code"] == "ACCESS_REQUIRED"
 
         session = requests.Session()
         login = session.post(
