@@ -146,8 +146,6 @@ def get_runtime_config() -> RuntimeConfig:
     )
 
     secure_directory(data_dir)
-    if profile == "server" and config_file.exists():
-        secure_file(config_file)
     return RuntimeConfig(
         profile=profile,
         version=_read_version(),

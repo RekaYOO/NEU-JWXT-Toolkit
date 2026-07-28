@@ -70,6 +70,9 @@ sudo ./install.sh --upgrade
 - `/var/lib/neu-jwxt-toolkit` 中的 NEU 会话、凭据、成绩、培养计划、追踪配置和日志；
 - 系统中实际启用的 Caddy/Nginx 配置、域名和证书。
 
+配置文件由安装脚本在服务启动前设置为 `neu-jwxt:neu-jwxt` 和 `0600`。运行中的服务只
+读取该文件，不会在 systemd 的只读 `/etc` 沙箱内尝试修改权限。
+
 升级只替换 `/opt/neu-jwxt-toolkit/app`，并更新包内示例和 systemd 服务文件。新程序
 启动后会按照现有配置中的真实监听地址和端口检查 `/api/health`，最长等待约 60 秒。
 检查不通过时，脚本会先输出 `systemctl status` 和最近的服务日志，再自动恢复上一版

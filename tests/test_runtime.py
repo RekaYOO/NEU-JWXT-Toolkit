@@ -98,6 +98,42 @@ def test_server_config_is_loaded(monkeypatch, tmp_path):
     assert config.access_password_hash == password_data["hash"]
 
 
+def test_server_runtime_does_not_mutate_read_only_config(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "profile": "server",
+                "host": "127.0.0.1",
+                "port": 19002,
+                "access_password": hash_access_password("server-password"),
+                "session_secret": "session-secret-at-least-32-characters",
+                "trusted_proxies": ["127.0.0.1"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("NEU_JWXT_PROFILE", "server")
+    monkeypatch.setenv("NEU_JWXT_CONFIG", str(config_path))
+    monkeypatch.setenv("NEU_JWXT_DATA_DIR", str(data_dir))
+
+    original_chmod = Path.chmod
+
+    def reject_config_chmod(path, mode, *, follow_symlinks=True):
+        if path == config_path:
+            raise OSError(30, "Read-only file system", str(path))
+        return original_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", reject_config_chmod)
+
+    from backend.core.runtime.config import get_runtime_config
+
+    config = get_runtime_config()
+    assert config.port == 19002
+    assert config.config_file == config_path
+
+
 def test_shutdown_route_is_desktop_only():
     from backend.app.routers import runtime
 
@@ -180,14 +216,21 @@ def test_config_healthcheck_uses_exact_port_and_ignores_http_proxy(
 
 
 def test_linux_upgrade_script_has_transactional_diagnostics():
-    script = (
-        Path(__file__).resolve().parents[1]
-        / "packaging"
-        / "linux"
-        / "install.sh"
-    ).read_text(encoding="utf-8")
+    packaging_dir = (
+        Path(__file__).resolve().parents[1] / "packaging" / "linux"
+    )
+    script = (packaging_dir / "install.sh").read_text(encoding="utf-8")
+    service = (packaging_dir / "neu-jwxt-toolkit.service").read_text(
+        encoding="utf-8"
+    )
 
     assert 'healthcheck \\\n    --config "${CONFIG_FILE}"' in script
     assert "seq 1 120" in script
     assert "journalctl -u" in script
     assert "SERVICE_BACKUP=" in script
+    assert script.index('chmod 0600 "${CONFIG_FILE}"') < script.index(
+        'systemctl restart "${APP_NAME}.service"'
+    )
+    assert "ProtectSystem=strict" in service
+    assert "ReadWritePaths=/var/lib/neu-jwxt-toolkit" in service
+    assert "ReadWritePaths=/etc/neu-jwxt-toolkit" not in service
