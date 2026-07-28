@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';  // 默认使用相对路径，支持同源部署
+const OFFLINE_SESSION_KEY = 'neu_offline_mode';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -16,7 +17,12 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       if (error.response?.data?.code === 'ACCESS_REQUIRED') {
         window.dispatchEvent(new CustomEvent('neu-access-required'));
-      } else if (!error.config?.url?.startsWith('/api/access/')) {
+      } else if (
+        sessionStorage.getItem(OFFLINE_SESSION_KEY) !== '1'
+        && error.config?.url !== '/api/status'
+        && !error.config?.url?.startsWith('/api/access/')
+        && !error.config?.url?.startsWith('/api/offline/')
+      ) {
         window.dispatchEvent(new CustomEvent('neu-auth-required'));
       }
     }

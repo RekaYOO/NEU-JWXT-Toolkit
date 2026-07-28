@@ -168,13 +168,14 @@ function App() {
 
   useEffect(() => {
     const requireAuthentication = () => {
+      if (offlineMode) return;
       setIsLoggedIn(false);
       setUserInfo(null);
       message.info('登录已失效，请重新完成 WebVPN 认证');
     };
     window.addEventListener('neu-auth-required', requireAuthentication);
     return () => window.removeEventListener('neu-auth-required', requireAuthentication);
-  }, []);
+  }, [offlineMode]);
 
   const handleLoginSuccess = (username) => {
     sessionStorage.removeItem(OFFLINE_SESSION_KEY);

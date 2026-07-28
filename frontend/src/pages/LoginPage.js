@@ -194,6 +194,11 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   };
 
   const onFinish = async (values) => {
+    if (networkMode === 'offline') {
+      await beginOfflineMode();
+      return;
+    }
+
     setLoading(true);
     const slowRequestKey = 'direct-login-slow';
     const slowTimer = networkMode === 'direct' ? setTimeout(() => {
@@ -238,11 +243,13 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       const status = await getOfflineStatus();
       setOfflineStatus(status);
       if (!status.available) {
+        setNetworkMode('direct');
         message.warning('本地还没有可离线查看的数据，请先在线登录并完成一次数据同步');
         return;
       }
       onOfflineSuccess(status);
     } catch (error) {
+      setNetworkMode('direct');
       message.error('无法读取本地离线数据');
     } finally {
       setOfflineLoading(false);
@@ -276,7 +283,11 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
           <header className="login-panel-header">
             <p className="panel-kicker">账户认证</p>
             <h2 id="login-title">登录教务服务</h2>
-            <p>校外网络可通过 WebVPN 安全访问。</p>
+            <p>
+              {networkMode === 'offline'
+                ? '使用当前设备已保存的数据，不连接教务系统。'
+                : '校外网络可通过 WebVPN 安全访问。'}
+            </p>
           </header>
 
         <div className="login-credentials-wrap" aria-hidden={loginView === 'qr'}>
@@ -287,30 +298,9 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
             onFinish={onFinish}
             autoComplete="off"
           >
-          <Form.Item
-            name="username"
-            rules={[{ required: true, message: '请输入学号' }]}
-          >
-            <Input
-              prefix={<UserOutlined />}
-              placeholder="学号"
-              size="large"
-            />
-          </Form.Item>
-
-          <Form.Item
-            name="password"
-            rules={[{ required: true, message: '请输入密码' }]}
-          >
-            <Input.Password
-              prefix={<LockOutlined />}
-              placeholder="密码"
-              size="large"
-            />
-          </Form.Item>
-
           <Form.Item label="访问方式">
             <Radio.Group
+              className="access-mode-group"
               value={networkMode}
               onChange={(event) => setNetworkMode(event.target.value)}
               optionType="button"
@@ -319,27 +309,62 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
             >
               <Radio.Button value="direct">校内直连</Radio.Button>
               <Radio.Button value="webvpn">WebVPN</Radio.Button>
+              {offlineStatus?.available && (
+                <Radio.Button value="offline">离线查看</Radio.Button>
+              )}
             </Radio.Group>
           </Form.Item>
 
-          <Form.Item name="remember" valuePropName="checked">
-            <Checkbox>记住密码（本地保存）</Checkbox>
-          </Form.Item>
+          {networkMode === 'offline' ? (
+            <div className="offline-mode-note">
+              <DatabaseOutlined />
+              <span>只读查看本地成绩和培养计划</span>
+            </div>
+          ) : (
+            <>
+              <Form.Item
+                name="username"
+                rules={[{ required: true, message: '请输入学号' }]}
+              >
+                <Input
+                  prefix={<UserOutlined />}
+                  placeholder="学号"
+                  size="large"
+                />
+              </Form.Item>
+
+              <Form.Item
+                name="password"
+                rules={[{ required: true, message: '请输入密码' }]}
+              >
+                <Input.Password
+                  prefix={<LockOutlined />}
+                  placeholder="密码"
+                  size="large"
+                />
+              </Form.Item>
+
+              <Form.Item name="remember" valuePropName="checked">
+                <Checkbox>记住密码（本地保存）</Checkbox>
+              </Form.Item>
+            </>
+          )}
 
           <Form.Item>
             <Button
               type="primary"
               htmlType="submit"
-              loading={loading}
+              loading={networkMode === 'offline' ? offlineLoading : loading}
               size="large"
               block
             >
-              登录
+              {networkMode === 'offline' ? '进入离线模式' : '登录'}
             </Button>
           </Form.Item>
           </Form>
         </div>
 
+          {networkMode !== 'offline' && (
           <section className="webvpn-section" aria-labelledby="webvpn-title">
             <div className="webvpn-section-heading">
               <div>
@@ -372,24 +397,6 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
               </Button>
             )}
           </section>
-          {loginView === 'password' && (
-            <section className="offline-section" aria-labelledby="offline-title">
-              <div>
-                <p className="panel-kicker">特殊状态</p>
-                <h3 id="offline-title">只读离线使用</h3>
-                <p>
-                  不连接教务系统，仅查看当前设备已保存的成绩和培养计划。
-                </p>
-              </div>
-              <Button
-                icon={<DatabaseOutlined />}
-                loading={offlineLoading}
-                disabled={offlineStatus && !offlineStatus.available}
-                onClick={beginOfflineMode}
-              >
-                {offlineStatus?.available ? '进入离线模式' : '暂无本地数据'}
-              </Button>
-            </section>
           )}
         </section>
       </main>

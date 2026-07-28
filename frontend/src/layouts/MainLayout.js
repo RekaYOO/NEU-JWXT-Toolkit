@@ -77,10 +77,10 @@ const MainLayout = ({
       }
     };
 
-    if (userInfo) {
+    if (userInfo && !offlineMode) {
       loadAvatar();
     }
-  }, [userInfo]);
+  }, [userInfo, offlineMode]);
 
   useEffect(() => () => {
     if (avatarUrl && avatarUrl.startsWith('blob:')) {
@@ -90,7 +90,7 @@ const MainLayout = ({
 
   // 刷新头像（点击头像时调用）
   const refreshAvatar = async () => {
-    if (isRefreshingAvatar) return;
+    if (offlineMode || isRefreshingAvatar) return;
     
     setIsRefreshingAvatar(true);
     try {
@@ -313,8 +313,8 @@ const MainLayout = ({
                 <Avatar 
                   src={avatarUrl} 
                   icon={!avatarUrl && <UserOutlined />}
-                  onClick={refreshAvatar}
-                  title="点击刷新头像"
+                  onClick={offlineMode ? undefined : refreshAvatar}
+                  title={offlineMode ? '离线模式不加载头像' : '点击刷新头像'}
                 />
                 {!isMobile && <span className="username">{userInfo || '用户'}</span>}
               </Button>

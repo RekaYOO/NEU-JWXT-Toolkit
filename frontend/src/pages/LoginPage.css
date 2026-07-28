@@ -135,6 +135,35 @@
   text-align: center;
 }
 
+.access-mode-group {
+  display: flex;
+  width: 100%;
+}
+
+.login-panel .access-mode-group .ant-radio-button-wrapper {
+  min-width: 0;
+  flex: 1;
+  padding-inline: 10px;
+}
+
+.offline-mode-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid #d9e4ec;
+  border-radius: 5px;
+  color: #526a79;
+  background: #f7fafc;
+  font-size: 13px;
+}
+
+.offline-mode-note .anticon {
+  color: var(--color-brand);
+}
+
 .login-panel .ant-btn-primary {
   height: 44px;
   border-radius: 5px;
@@ -161,37 +190,6 @@
   padding-top: 18px;
   border-top: 1px solid #dde5e9;
   transition: margin 320ms ease, padding 320ms ease, border-color 180ms ease;
-}
-
-.offline-section {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid #dde5e9;
-}
-
-.offline-section > div {
-  min-width: 0;
-}
-
-.offline-section h3 {
-  margin: 4px 0;
-  color: #273842;
-  font-size: 15px;
-}
-
-.offline-section p:last-child {
-  margin: 0;
-  color: #71818b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.offline-section .ant-btn {
-  flex-shrink: 0;
 }
 
 .login-shell.is-qr-active .webvpn-section {
@@ -333,10 +331,9 @@
     border-top: 0;
   }
 
-  .offline-section {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 10px;
+  .login-panel .access-mode-group .ant-radio-button-wrapper {
+    padding-inline: 8px;
+    font-size: 13px;
   }
 
 }
