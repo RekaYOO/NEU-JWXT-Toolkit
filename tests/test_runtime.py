@@ -231,6 +231,23 @@ def test_linux_upgrade_script_has_transactional_diagnostics():
     assert script.index('chmod 0600 "${CONFIG_FILE}"') < script.index(
         'systemctl restart "${APP_NAME}.service"'
     )
+    assert "trap on_install_error ERR" in script
+    assert "rollback_install" in script
+    assert '配置与数据未改动' in script
     assert "ProtectSystem=strict" in service
     assert "ReadWritePaths=/var/lib/neu-jwxt-toolkit" in service
     assert "ReadWritePaths=/etc/neu-jwxt-toolkit" not in service
+
+
+def test_windows_upgrade_cleans_only_frozen_program_internals():
+    installer = (
+        Path(__file__).resolve().parents[1]
+        / "packaging"
+        / "windows"
+        / "installer.iss"
+    ).read_text(encoding="utf-8")
+
+    assert "[InstallDelete]" in installer
+    assert 'Name: "{app}\\_internal"' in installer
+    assert "%LOCALAPPDATA%\\NEU-JWXT-Toolkit\\data" in installer
+    assert "cache.db" not in installer

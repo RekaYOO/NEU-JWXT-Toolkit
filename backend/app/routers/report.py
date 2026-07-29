@@ -1,58 +1,88 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 
-from backend.app.dependencies import _report_storage, _storage
+from backend.app.dependencies import _storage
 from backend.app.schemas import AcademicReportResponse
 from backend.core.auth import NEUAuthClient
-from backend.app.dependencies import require_auth
+from backend.app.dependencies import (
+    require_cached_auth_identity,
+    require_serialized_auth,
+)
+from backend.app.cache_support import read_cache, submit_refresh, wait_for_job
 
 router = APIRouter()
 
 
+def _academic_report_response(entry, is_stale: bool, source: str = "local") -> AcademicReportResponse:
+    report = entry.payload
+
+    return AcademicReportResponse(
+        student_name=report.get("student_name", ""),
+        student_id=report.get("student_id", ""),
+        grade=report.get("grade", ""),
+        college=report.get("college", ""),
+        major=report.get("major", ""),
+        class_name=report.get("class_name", ""),
+        expected_graduation=report.get("expected_graduation", ""),
+        program_code=report.get("program_code", ""),
+        program_name=report.get("program_name", ""),
+        calculated_time=report.get("calculated_time", ""),
+        credit_summary=report.get("credit_summary", {
+            "total_required": 0,
+            "total_passed": 0,
+            "total_selected": 0,
+            "total_earned": 0,
+            "total_remaining": 0,
+            "completion_rate": 0,
+        }),
+        categories=report.get("categories", []),
+        outside_courses=report.get("outside_courses", []),
+        source=source,
+        is_fresh=not is_stale,
+        last_update=entry.saved_at.isoformat(),
+        cache=entry.metadata(is_stale=is_stale),
+    )
+
+
+@router.get("/academic-report/cache", response_model=AcademicReportResponse)
+def get_cached_academic_report(
+    auth: NEUAuthClient = Depends(require_cached_auth_identity)
+):
+    """Read the current account's report cache without contacting NEU."""
+    entry, stale = read_cache(auth.username, "academic-report")
+    if entry is None:
+        raise HTTPException(status_code=404, detail="当前账号没有可用的本地培养计划缓存")
+    return _academic_report_response(entry, stale)
+
+
 @router.get("/academic-report", response_model=AcademicReportResponse)
-async def get_academic_report(
+def get_academic_report(
     refresh: bool = Query(False, description="强制刷新数据"),
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_cached_auth_identity)
 ):
     """
     获取学业监测报告（培养计划）- 智能合并本地和远程数据
 
     - 默认优先使用本地缓存
-    - 仅当成绩更新或 refresh=true 时拉取云端
+    - 超过 5 分钟、成绩 revision 变化或 refresh=true 时提交统一后台刷新
     """
     try:
-        result = _report_storage.get_report_smart(auth, force_refresh=refresh)
-        report = result["report"]
-
-        # 格式化 last_update 为 ISO 字符串
-        last_update = result.get("last_update")
-        if last_update and hasattr(last_update, 'isoformat'):
-            last_update = last_update.isoformat()
-
-        return AcademicReportResponse(
-            student_name=report.get("student_name", ""),
-            student_id=report.get("student_id", ""),
-            grade=report.get("grade", ""),
-            college=report.get("college", ""),
-            major=report.get("major", ""),
-            class_name=report.get("class_name", ""),
-            expected_graduation=report.get("expected_graduation", ""),
-            program_code=report.get("program_code", ""),
-            program_name=report.get("program_name", ""),
-            calculated_time=report.get("calculated_time", ""),
-            credit_summary=report.get("credit_summary", {
-                "total_required": 0,
-                "total_passed": 0,
-                "total_selected": 0,
-                "total_earned": 0,
-                "total_remaining": 0,
-                "completion_rate": 0,
-            }),
-            categories=report.get("categories", []),
-            outside_courses=report.get("outside_courses", []),
-            source=result.get("source", "remote"),
-            is_fresh=result.get("is_fresh", True),
-            last_update=last_update
-        )
+        entry, stale = read_cache(auth.username, "academic-report")
+        submission = None
+        if refresh or stale:
+            submission = submit_refresh(
+                auth.username,
+                "academic-report",
+                force=refresh,
+                reason="manual" if refresh else "page_swr",
+            )
+        if entry is None or refresh:
+            wait_for_job(submission.job_id if submission else None)
+            entry, stale = read_cache(auth.username, "academic-report")
+        if entry is None:
+            raise HTTPException(status_code=503, detail="暂时无法获取培养计划且没有本地缓存")
+        return _academic_report_response(entry, stale)
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         print(f"获取培养计划错误: {e}")
@@ -61,37 +91,55 @@ async def get_academic_report(
 
 
 @router.post("/academic-report/refresh")
-async def refresh_academic_report(auth: NEUAuthClient = Depends(require_auth)):
+def refresh_academic_report(
+    auth: NEUAuthClient = Depends(require_cached_auth_identity)
+):
     """手动刷新培养计划数据"""
-    result = _report_storage.refresh_report(auth)
-
-    if result["success"]:
-        return result
-    else:
-        raise HTTPException(status_code=500, detail=result["message"])
+    submission = submit_refresh(
+        auth.username, "academic-report", force=True, reason="manual"
+    )
+    job = wait_for_job(submission.job_id)
+    if job and job.status.value == "completed":
+        return {
+            "success": True,
+            "job_id": job.job_id,
+            "revision": job.revision,
+            "changed": job.changed,
+            "diff": dict(job.changes),
+        }
+    raise HTTPException(
+        status_code=503,
+        detail=f"刷新失败: {getattr(job, 'error_kind', None) or 'unknown'}",
+    )
 
 
 @router.get("/academic-report/summary")
-async def get_academic_report_summary(
+def get_academic_report_summary(
     refresh: bool = Query(False, description="强制刷新数据"),
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_cached_auth_identity)
 ):
     """
     获取培养计划摘要信息（用于概览页面）
     """
     try:
-        result = _report_storage.get_report_smart(auth, force_refresh=refresh)
-        report = result["report"]
+        entry, stale = read_cache(auth.username, "academic-report")
+        submission = None
+        if refresh or stale:
+            submission = submit_refresh(
+                auth.username,
+                "academic-report",
+                force=refresh,
+                reason="manual" if refresh else "page_swr",
+            )
+        if entry is None or refresh:
+            wait_for_job(submission.job_id if submission else None)
+            entry, stale = read_cache(auth.username, "academic-report")
+        report = entry.payload if entry else None
 
         if report is None:
             raise HTTPException(status_code=500, detail="获取培养计划失败")
 
         credit_summary = report.get("credit_summary", {})
-
-        # 格式化 last_update 为 ISO 字符串
-        last_update = result.get("last_update")
-        if last_update and hasattr(last_update, 'isoformat'):
-            last_update = last_update.isoformat()
 
         # 递归收集所有类别节点（包括子节点）
         def collect_categories(categories):
@@ -138,16 +186,21 @@ async def get_academic_report_summary(
             },
             "category_summary": collect_categories(report.get("categories", [])),
             "calculated_time": report.get("calculated_time", ""),
-            "source": result.get("source", "remote"),
-            "is_fresh": result.get("is_fresh", True),
-            "last_update": last_update,
+            "source": "local",
+            "is_fresh": not stale,
+            "last_update": entry.saved_at.isoformat(),
+            "cache": entry.metadata(is_stale=stale),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取培养计划摘要失败: {str(e)}")
 
 
 @router.get("/academic-report/export")
-async def export_academic_report(auth: NEUAuthClient = Depends(require_auth)):
+def export_academic_report(
+    auth: NEUAuthClient = Depends(require_serialized_auth)
+):
     """
     导出培养计划为 CSV
     """

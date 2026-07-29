@@ -88,6 +88,24 @@ const MainLayout = ({
     }
   }, [avatarUrl]);
 
+  useEffect(() => {
+    if (offlineMode) return undefined;
+    const onCacheEvent = async (event) => {
+      const update = event.detail || {};
+      if (update.resource !== 'avatar' || update.changed !== true) return;
+      try {
+        const avatarBlob = await getUserAvatar(false);
+        if (avatarBlob && avatarBlob.size > 0) {
+          setAvatarUrl(URL.createObjectURL(avatarBlob));
+        }
+      } catch (error) {
+        // SWR keeps the previous avatar when a background refresh fails.
+      }
+    };
+    window.addEventListener('neu-cache-event', onCacheEvent);
+    return () => window.removeEventListener('neu-cache-event', onCacheEvent);
+  }, [offlineMode]);
+
   // 刷新头像（点击头像时调用）
   const refreshAvatar = async () => {
     if (offlineMode || isRefreshingAvatar) return;

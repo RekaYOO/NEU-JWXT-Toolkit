@@ -9,10 +9,7 @@ import {
   CheckCircleOutlined, CalculatorOutlined, ExclamationCircleOutlined
 } from '@ant-design/icons';
 import GPACalculator from '../components/GPACalculator';
-import {
-  getScores, getOfflineScores, refreshScores, getAcademicReport,
-  refreshAcademicReport, cancelRequest
-} from '../services/api';
+import { useCachedResource } from '../resources/ResourceStore';
 import { columnSettings } from '../utils/settings';
 import { compareAcademicTerms } from '../utils/termSort';
 import dayjs from 'dayjs';
@@ -165,22 +162,6 @@ const compareNullableNumbers = (a, b, order) => {
   return order === 'ascend' ? aNumber - bNumber : bNumber - aNumber;
 };
 
-// 比对两组成绩数据是否相同
-const isScoresEqual = (localScores, remoteScores) => {
-  if (!localScores || !remoteScores) return false;
-  if (localScores.length !== remoteScores.length) return false;
-  
-  const localMap = new Map(localScores.map(s => [`${s.code}-${s.term}`, s]));
-  
-  for (const remote of remoteScores) {
-    const key = `${remote.code}-${remote.term}`;
-    const local = localMap.get(key);
-    if (!local) return false;
-    if (local.score !== remote.score || local.gpa !== remote.gpa) return false;
-  }
-  return true;
-};
-
 const ScoresPage = ({ offlineMode = false }) => {
   const screens = useBreakpoint();
   const isMobile = !screens.md;
@@ -217,127 +198,70 @@ const ScoresPage = ({ offlineMode = false }) => {
   // GPA计算器
   const [isSimulating, setIsSimulating] = useState(false);
   const gpaCalculatorRef = useRef(null);
+  const dismissedRevisionRef = useRef('');
+  const scoreResource = useCachedResource('scores');
 
-  // ===== 加载策略：优先从后端data目录读取 =====
-  useEffect(() => {
-    loadData();
-    
-    // 组件卸载时取消未完成的请求
-    return () => {
-      cancelRequest('scores');
-    };
+  const applyScorePayload = useCallback((data) => {
+    if (!data?.scores) return;
+    const scoresWithId = calculateImpactScores(data.scores.map((score, index) => ({
+      ...score,
+      _id: `${score.code}-${score.term}-${index}`,
+    })));
+    setAllScores(scoresWithId);
+    setDisplayScores(scoresWithId);
+    setDataInfo({
+      source: data.source || 'local',
+      is_fresh: data.cache ? !data.cache.is_stale : data.is_fresh,
+      last_update: data.cache?.saved_at || data.last_update,
+    });
+    setDataLoaded(true);
   }, []);
 
-  // 加载数据（优先后端本地data目录）
-  const loadData = async () => {
-    try {
-      // 调用后端API，优先读取本地data目录
-      const data = offlineMode ? await getOfflineScores() : await getScores(false);
-      
-      const scoresWithId = calculateImpactScores(data.scores.map((s, index) => ({
-        ...s,
-        _id: `${s.code}-${s.term}-${index}`
-      })));
-      
-      setAllScores(scoresWithId);
-      setDisplayScores(scoresWithId);
-      setDataInfo({
-        source: data.source,
-        is_fresh: data.is_fresh,
-        last_update: data.last_update,
-      });
-      setDataLoaded(true);
-      
-      // 如果本地数据不是最新的，异步检查更新
-      if (!offlineMode && data.source === 'local' && !data.is_fresh) {
-        setTimeout(() => checkForUpdates(scoresWithId), 1000);
-      }
-    } catch (error) {
-      // 如果是请求取消，不显示错误
-      if (error.name === 'CanceledError' || error.name === 'AbortError') {
-        console.log('[Scores] 请求已取消');
-        return;
-      }
-      message.error('获取成绩失败: ' + error.message);
+  useEffect(() => {
+    if (scoreResource.data) applyScorePayload(scoreResource.data);
+  }, [applyScorePayload, scoreResource.data]);
+
+  useEffect(() => {
+    if (scoreResource.error) {
+      message.error(`获取成绩失败: ${scoreResource.error.message}`);
       setDataLoaded(true);
     }
-  };
+  }, [scoreResource.error]);
 
-  // 检查云端更新
-  const checkForUpdates = async (currentScores) => {
-    try {
-      // 获取云端数据
-      const remoteData = await getScores(true);
-      
-      if (remoteData.source === 'remote') {
-        // 比对数据是否相同
-        const isSame = isScoresEqual(currentScores, remoteData.scores);
-        
-        if (isSame) {
-          // 数据相同，静默更新时间戳，不弹窗提示
-          setDataInfo(prev => ({
-            ...prev,
-            is_fresh: true,
-            last_update: remoteData.last_update
-          }));
-          // 不显示提示，避免干扰
-        } else {
-          // 数据不同，弹窗提示
-          setPendingUpdateData(remoteData);
-          setUpdateModalVisible(true);
-        }
-      }
-    } catch (e) {
-      console.log('检查更新失败:', e);
+  useEffect(() => {
+    if (!scoreResource.data && scoreResource.syncError) {
+      message.error(`获取成绩失败: ${scoreResource.syncError}`);
+      setDataLoaded(true);
     }
-  };
+  }, [scoreResource.data, scoreResource.syncError]);
 
-  // 获取并更新远程数据
-  const fetchAndUpdateRemoteData = async () => {
-    try {
-      // 同时刷新成绩和培养计划
-      await Promise.all([
-        refreshScores(),
-        refreshAcademicReport()
-      ]);
-      
-      const data = await getScores(true);
-      const scoresWithId = calculateImpactScores(data.scores.map((s, index) => ({
-        ...s,
-        _id: `${s.code}-${s.term}-${index}`
-      })));
-      
-      setAllScores(scoresWithId);
-      setDisplayScores(scoresWithId);
-      setDataInfo({
-        source: 'remote',
-        is_fresh: true,
-        last_update: data.last_update,
-      });
-      
-      return true;
-    } catch (e) {
-      message.error('获取数据失败: ' + e.message);
-      return false;
-    }
-  };
+  useEffect(() => {
+    if (
+      !scoreResource.updateAvailable
+      || updateModalVisible
+      || dismissedRevisionRef.current === scoreResource.availableRevision
+    ) return;
+    setPendingUpdateData(scoreResource.availableData);
+    setUpdateModalVisible(true);
+  }, [
+    scoreResource.availableData,
+    scoreResource.updateAvailable,
+    updateModalVisible,
+  ]);
 
   // 确认更新
   const handleConfirmUpdate = async () => {
     setUpdateModalVisible(false);
-    message.loading('正在更新数据...', 0);
-    
-    const success = await fetchAndUpdateRemoteData();
-    
-    message.destroy();
-    if (success) {
-      message.success('成绩和培养计划已更新');
-    }
+    scoreResource.applyAvailable();
+    if (pendingUpdateData) applyScorePayload(pendingUpdateData);
+    dismissedRevisionRef.current = '';
+    message.success('已显示最新成绩');
     setPendingUpdateData(null);
   };
 
   // 取消更新
   const handleCancelUpdate = () => {
+    dismissedRevisionRef.current = scoreResource.availableRevision;
     setUpdateModalVisible(false);
     setPendingUpdateData(null);
   };
@@ -348,12 +272,11 @@ const ScoresPage = ({ offlineMode = false }) => {
     message.loading('正在刷新数据...', 0);
     
     try {
-      const success = await fetchAndUpdateRemoteData();
-      
+      await scoreResource.refresh();
+      const latest = await scoreResource.reloadAndApply();
       message.destroy();
-      if (success) {
-        message.success('数据已刷新');
-      }
+      if (latest) applyScorePayload(latest);
+      message.success('数据已刷新');
     } catch (error) {
       message.destroy();
       message.error('刷新失败: ' + error.message);
@@ -787,6 +710,7 @@ const ScoresPage = ({ offlineMode = false }) => {
       <GPACalculator
         ref={gpaCalculatorRef}
         realScores={allScores}
+        scoresRevision={scoreResource.displayedRevision}
         onSimulatingChange={handleSimulatingChange}
         offlineMode={offlineMode}
       />

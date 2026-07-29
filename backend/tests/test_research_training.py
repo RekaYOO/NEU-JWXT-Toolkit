@@ -158,3 +158,72 @@ def test_enrollment_and_cancellation_use_official_payloads():
     rules = json.loads(cancel_call[1]["querySetting"])
     assert rules[0]["name"] == "WID"
     assert rules[0]["value"] == "topic-1"
+
+
+class PaginatedResearchClient(FakeResearchClient):
+    def post(self, url, data, headers):
+        if url.endswith("/ktbmcxlb.do"):
+            page = int(data["pageNumber"])
+            rows = {
+                1: [
+                    {"WID": "topic-1", "PCWID": "batch-1", "YJTM": "课题 1"},
+                    {"WID": "topic-2", "PCWID": "batch-1", "YJTM": "课题 2"},
+                ],
+                2: [
+                    {"WID": "topic-3", "PCWID": "batch-1", "YJTM": "课题 3"},
+                ],
+            }.get(page, [])
+            return FakeResponse({
+                "code": "0",
+                "datas": {
+                    "ktbmcxlb": {
+                        "rows": rows,
+                        "totalSize": 3,
+                        "pageNumber": page,
+                        "pageSize": 2,
+                    }
+                },
+            })
+        return super().post(url, data, headers)
+
+
+def test_all_research_topics_are_loaded_across_pages():
+    api = ResearchTrainingAPI(PaginatedResearchClient())
+
+    topics = api.get_all_topics("batch-1", page_size=2)
+
+    assert [topic["topic_id"] for topic in topics] == [
+        "topic-1",
+        "topic-2",
+        "topic-3",
+    ]
+
+
+class IncompletePaginationClient(FakeResearchClient):
+    def post(self, url, data, headers):
+        if url.endswith("/ktbmcxlb.do"):
+            page = int(data["pageNumber"])
+            rows = (
+                [{"WID": "topic-1", "PCWID": "batch-1", "YJTM": "课题 1"}]
+                if page == 1
+                else []
+            )
+            return FakeResponse({
+                "code": "0",
+                "datas": {
+                    "ktbmcxlb": {
+                        "rows": rows,
+                        "totalSize": 2,
+                        "pageNumber": page,
+                        "pageSize": 1,
+                    }
+                },
+            })
+        return super().post(url, data, headers)
+
+
+def test_incomplete_pagination_does_not_return_a_partial_snapshot():
+    api = ResearchTrainingAPI(IncompletePaginationClient())
+
+    with pytest.raises(ResearchTrainingError, match="分页提前结束"):
+        api.get_all_topics("batch-1", page_size=1)

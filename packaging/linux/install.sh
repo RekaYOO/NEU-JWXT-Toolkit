@@ -39,11 +39,46 @@ install -d -o neu-jwxt -g neu-jwxt -m 0700 "${DATA_DIR}"
 
 BACKUP_DIR="${APP_ROOT}/app.previous"
 SERVICE_BACKUP="${SERVICE_FILE}.previous"
+HAD_PREVIOUS=0
+
+rollback_install() {
+  local reason="${1:-安装或升级失败}"
+  set +e
+  echo "${reason}，正在恢复上一状态。" >&2
+  systemctl stop "${APP_NAME}.service" >/dev/null 2>&1 || true
+  rm -rf "${APP_ROOT}/app"
+  if [[ -d "${BACKUP_DIR}" ]]; then
+    mv "${BACKUP_DIR}" "${APP_ROOT}/app"
+  fi
+  if [[ -f "${SERVICE_BACKUP}" ]]; then
+    mv "${SERVICE_BACKUP}" "${SERVICE_FILE}"
+  elif [[ "${HAD_PREVIOUS}" -eq 0 ]]; then
+    rm -f "${SERVICE_FILE}"
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  if [[ "${HAD_PREVIOUS}" -eq 1 && -d "${APP_ROOT}/app" ]]; then
+    systemctl start "${APP_NAME}.service" >/dev/null 2>&1 || true
+    echo "已恢复上一版本的程序和 systemd 服务文件；配置与数据未改动。" >&2
+  else
+    echo "首次安装未成功，服务保持停止；配置与数据未删除。" >&2
+  fi
+}
+
+on_install_error() {
+  local status=$?
+  trap - ERR
+  rollback_install "安装脚本在替换程序时出错"
+  exit "${status}"
+}
+
 if [[ -d "${APP_ROOT}/app" ]]; then
+  HAD_PREVIOUS=1
   systemctl stop "${APP_NAME}.service" 2>/dev/null || true
   rm -rf "${BACKUP_DIR}"
   mv "${APP_ROOT}/app" "${BACKUP_DIR}"
 fi
+
+trap on_install_error ERR
 
 cp -a "${PACKAGE_ROOT}/app" "${APP_ROOT}/app"
 chown -R root:root "${APP_ROOT}/app"
@@ -82,26 +117,12 @@ if [[ "${HEALTHY}" -ne 1 ]]; then
   echo "新版本健康检查失败。以下是新服务的诊断信息：" >&2
   systemctl status "${APP_NAME}.service" --no-pager -l >&2 || true
   journalctl -u "${APP_NAME}.service" -n 100 --no-pager >&2 || true
-  systemctl stop "${APP_NAME}.service" || true
-  RESTORED=0
-  if [[ -d "${BACKUP_DIR}" ]]; then
-    rm -rf "${APP_ROOT}/app"
-    mv "${BACKUP_DIR}" "${APP_ROOT}/app"
-    RESTORED=1
-  fi
-  if [[ -f "${SERVICE_BACKUP}" ]]; then
-    mv "${SERVICE_BACKUP}" "${SERVICE_FILE}"
-    systemctl daemon-reload
-  fi
-  if [[ "${RESTORED}" -eq 1 ]]; then
-    systemctl start "${APP_NAME}.service" || true
-    echo "已恢复上一版本的程序和 systemd 服务文件。" >&2
-  else
-    echo "首次安装未成功，服务保持停止；请根据上方日志排查。" >&2
-  fi
+  trap - ERR
+  rollback_install "新版本健康检查失败"
   exit 1
 fi
 
+trap - ERR
 rm -rf "${BACKUP_DIR}"
 rm -f "${SERVICE_BACKUP}"
 HEALTH_URL="$("${APP_ROOT}/app/neu-jwxt-server" healthcheck \

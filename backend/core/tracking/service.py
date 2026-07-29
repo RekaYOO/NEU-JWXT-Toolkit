@@ -10,6 +10,7 @@ import ssl
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from email.header import Header
 from email.mime.text import MIMEText
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from backend.core.runtime.config import secure_file
+from backend.core.cache.resources import SCORE_FIELDS, diff_scores, score_key
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -68,6 +70,8 @@ class GradeTrackingService:
         qr_login_starter: Callable[[], tuple[Any, dict[str, Any]]] | None = None,
         auth_setter: Callable[[Any], None] | None = None,
         login_flow_pending: Callable[[], bool] | None = None,
+        score_refresher: Callable[[str, bool], dict[str, Any]] | None = None,
+        remote_guard: Callable[[], Any] | None = None,
     ) -> None:
         root = Path(data_dir)
         root.mkdir(parents=True, exist_ok=True)
@@ -82,6 +86,8 @@ class GradeTrackingService:
         self.qr_login_starter = qr_login_starter
         self.auth_setter = auth_setter
         self.login_flow_pending = login_flow_pending
+        self.score_refresher = score_refresher
+        self.remote_guard = remote_guard or nullcontext
         self._lock = threading.RLock()
         self._check_lock = threading.Lock()
         self._recovery_lock = threading.RLock()
@@ -141,9 +147,10 @@ class GradeTrackingService:
         self._wake.set()
         with self._recovery_lock:
             if self._recovery_client and self._recovery_flow:
-                self._recovery_client.cancel_webvpn_qr_login(
-                    self._recovery_flow.get("flow_id")
-                )
+                with self.remote_guard():
+                    self._recovery_client.cancel_webvpn_qr_login(
+                        self._recovery_flow.get("flow_id")
+                    )
             self._recovery_client = None
             self._recovery_flow = None
         thread = self._thread
@@ -244,10 +251,80 @@ class GradeTrackingService:
     def check_now(self) -> dict[str, Any]:
         return self._run_check(manual=True)
 
+    def pause_for_logout(self, *, clear_personal_state: bool = False) -> None:
+        """Pause execution while preserving the user's enabled intent/config."""
+        with self._lock:
+            self._state.update(
+                stage="paused_logout",
+                message="教务登录已退出，重新登录后将自动恢复成绩追踪",
+                next_check_at=None,
+                last_error=None,
+            )
+            if clear_personal_state:
+                for path in (self.snapshot_path, self.state_path, self.outbox_path):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                self._outbox = []
+                self._state = {
+                    **DEFAULT_STATE,
+                    "stage": "paused_logout",
+                    "message": "教务登录已退出，重新登录后将自动恢复成绩追踪",
+                }
+            self._save_state()
+        self._invalidate_recovery_link()
+        self._wake.set()
+
+    def resume_after_login(self, account_id: str) -> None:
+        with self._lock:
+            previous_account = str(self._state.get("account_id") or "")
+            has_unscoped_personal_state = bool(
+                not previous_account
+                and (
+                    self.snapshot_path.exists()
+                    or self._outbox
+                    or self._state.get("last_seen_revision")
+                    or self._state.get("last_notified_revision")
+                )
+            )
+            if has_unscoped_personal_state or (
+                previous_account and previous_account != str(account_id)
+            ):
+                try:
+                    self.snapshot_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self._outbox = []
+                self._write_json(self.outbox_path, {"messages": []})
+                self._state = {
+                    **DEFAULT_STATE,
+                    "account_id": str(account_id),
+                }
+            else:
+                self._state["account_id"] = str(account_id)
+            if not self._config.get("enabled"):
+                self._save_state()
+                return
+            self._state.update(
+                stage="scheduled",
+                message="登录已恢复，等待检查成绩",
+                next_check_at=_iso(),
+                last_error=None,
+            )
+            self._save_state()
+        self._wake.set()
+
     def _scheduler(self) -> None:
         while not self._stop.is_set():
             try:
-                self._flush_outbox()
+                with self._lock:
+                    may_notify = bool(
+                        self._config.get("enabled")
+                        and self._within_window(_now())
+                    )
+                if may_notify:
+                    self._flush_outbox()
                 if self._should_run():
                     self._run_check(manual=False)
             except Exception as error:
@@ -323,55 +400,28 @@ class GradeTrackingService:
                     return self.get_status()
             else:
                 self._invalidate_recovery_link()
+            self.resume_after_login(str(auth.username))
 
-            scores = auth.academic.get_scores()
-            overall_gpa = auth.academic.get_overall_gpa()
-            snapshot = self._build_snapshot(scores, overall_gpa)
-            previous = self._read_json(self.snapshot_path, {})
-            additions, changes = self._compare(previous, snapshot)
-
-            self._write_json(self.snapshot_path, snapshot)
-            metadata = {
-                "fetch_time": _iso(),
-                "username": auth.username,
-                "total_courses": len(scores),
-                "overall_gpa": overall_gpa,
-                "source": "grade_tracking",
-            }
-            self.score_storage.save_scores(scores, metadata=metadata)
-            if self.report_storage and (not previous or additions or changes):
-                try:
-                    report_result = self.report_storage.refresh_report(auth)
-                except Exception as exc:
-                    self.logger.warning(
-                        "[成绩追踪] 成绩已同步，但培养计划刷新失败：%s",
-                        exc,
-                    )
-                else:
-                    if not report_result.get("success"):
-                        self.logger.warning(
-                            "[成绩追踪] 成绩已同步，但培养计划刷新失败：%s",
-                            report_result.get("message", "未知错误"),
-                        )
-
-            notification = None
-            if not previous and config.get("notify_initial"):
-                notification = (
-                    "[NEU 成绩追踪] 首次成绩同步完成",
-                    self._initial_email(snapshot),
-                    f"initial:{snapshot['hash']}",
-                )
-            elif additions or changes:
-                notification = (
-                    "[NEU 成绩追踪] 检测到成绩更新",
-                    self._change_email(previous, snapshot, additions, changes),
-                    f"update:{snapshot['hash']}",
-                )
-            if notification:
-                self._queue_email(*notification)
-                self._flush_outbox()
+            if not self.score_refresher:
+                raise RuntimeError("成绩追踪尚未接入统一成绩资源")
+            result = self.score_refresher(str(auth.username), manual)
+            payload = result.get("payload") or {}
+            revision = str(result.get("revision") or "")
+            scores = payload.get("scores") or []
+            overall_gpa = payload.get("overall_gpa")
+            notification_result = self.handle_scores_revision(
+                str(auth.username),
+                revision,
+                payload,
+                reason="tracking",
+            )
 
             with self._lock:
+                effective_change_count = notification_result.get("change_count")
+                if not effective_change_count:
+                    effective_change_count = int(
+                        self._state.get("last_change_count") or 0
+                    )
                 self._state.update(
                     stage="monitoring",
                     message="成绩检查完成，追踪正在运行",
@@ -382,13 +432,15 @@ class GradeTrackingService:
                     last_error=None,
                     course_count=len(scores),
                     overall_gpa=overall_gpa,
-                    last_change_count=0 if not previous else len(additions) + len(changes),
+                    last_change_count=effective_change_count,
                 )
                 self._save_state()
             return {
                 **self.get_status(),
-                "additions": additions,
-                "changes": changes,
+                "revision": revision,
+                "additions": notification_result.get("additions", []),
+                "changes": notification_result.get("changes", []),
+                "removals": notification_result.get("removals", []),
             }
         except Exception as error:
             self.logger.exception("[成绩追踪] 检查失败")
@@ -466,9 +518,10 @@ class GradeTrackingService:
                     raise ValueError("一次性登录链接不存在或已失效")
             if self._recovery_client and self._recovery_flow:
                 try:
-                    self._recovery_client.cancel_webvpn_qr_login(
-                        self._recovery_flow.get("flow_id")
-                    )
+                    with self.remote_guard():
+                        self._recovery_client.cancel_webvpn_qr_login(
+                            self._recovery_flow.get("flow_id")
+                        )
                 except Exception:
                     self.logger.debug(
                         "[成绩追踪] 重新生成二维码时取消旧会话失败",
@@ -478,7 +531,8 @@ class GradeTrackingService:
                 self._recovery_flow = None
             if not self.qr_login_starter:
                 raise RuntimeError("当前运行环境不支持二维码恢复")
-            client, flow = self.qr_login_starter()
+            with self.remote_guard():
+                client, flow = self.qr_login_starter()
             self._recovery_client = client
             self._recovery_flow = flow
             with self._lock:
@@ -497,9 +551,12 @@ class GradeTrackingService:
             if not self._recovery_client or not self._recovery_flow:
                 return {"status": "not_started"}
             try:
-                result = self._recovery_client.poll_webvpn_qr_login(
-                    self._recovery_flow["flow_id"]
-                )
+                with self.remote_guard():
+                    result = self._recovery_client.poll_webvpn_qr_login(
+                        self._recovery_flow["flow_id"]
+                    )
+                    if result.get("status") == "authenticated" and self.auth_setter:
+                        self.auth_setter(self._recovery_client)
             except Exception as error:
                 self.logger.warning(
                     "[成绩追踪] 网页恢复二维码轮询失败：%s",
@@ -509,8 +566,6 @@ class GradeTrackingService:
             status = result.get("status")
             if status == "authenticated":
                 client = self._recovery_client
-                if self.auth_setter:
-                    self.auth_setter(client)
                 self._recovery_client = None
                 self._recovery_flow = None
                 self._invalidate_recovery_link(cancel_flow=False)
@@ -547,9 +602,10 @@ class GradeTrackingService:
     def _invalidate_recovery_link(self, cancel_flow: bool = True) -> None:
         with self._recovery_lock:
             if cancel_flow and self._recovery_client and self._recovery_flow:
-                self._recovery_client.cancel_webvpn_qr_login(
-                    self._recovery_flow.get("flow_id")
-                )
+                with self.remote_guard():
+                    self._recovery_client.cancel_webvpn_qr_login(
+                        self._recovery_flow.get("flow_id")
+                    )
             self._recovery_client = None
             self._recovery_flow = None
             with self._lock:
@@ -564,7 +620,8 @@ class GradeTrackingService:
             return None
         try:
             self._validate_config(config, require_complete=True)
-            client, flow = self.qr_login_starter()
+            with self.remote_guard():
+                client, flow = self.qr_login_starter()
             qr_link = str(flow["qr_content"])
             expires_in = min(int(flow.get("expires_in", 300)), 300)
             self._send_email(
@@ -591,7 +648,10 @@ class GradeTrackingService:
         deadline = time.time() + expires_in
         while time.time() < deadline and not self._stop.is_set():
             try:
-                result = client.poll_webvpn_qr_login(flow["flow_id"])
+                with self.remote_guard():
+                    result = client.poll_webvpn_qr_login(flow["flow_id"])
+                    if result.get("status") == "authenticated" and self.auth_setter:
+                        self.auth_setter(client)
             except Exception as error:
                 self.logger.warning("[成绩追踪] 二维码状态轮询失败：%s", type(error).__name__)
                 if self._stop.wait(3):
@@ -599,8 +659,6 @@ class GradeTrackingService:
                 continue
             status = result.get("status")
             if status == "authenticated":
-                if self.auth_setter:
-                    self.auth_setter(client)
                 with self._lock:
                     self._state.update(
                         stage="checking",
@@ -614,7 +672,8 @@ class GradeTrackingService:
             if self._stop.wait(3):
                 break
 
-        client.cancel_webvpn_qr_login(flow.get("flow_id"))
+        with self.remote_guard():
+            client.cancel_webvpn_qr_login(flow.get("flow_id"))
         with self._lock:
             self._state.update(
                 stage="waiting_login",
@@ -625,26 +684,20 @@ class GradeTrackingService:
 
     @staticmethod
     def _course_key(item: dict[str, Any]) -> str:
-        return "|".join(
-            (
-                str(item.get("term", "")),
-                str(item.get("code", "")),
-                str(item.get("exam_status", "") or "初修"),
-            )
-        )
+        return score_key(item)
 
-    def _build_snapshot(self, scores: list[Any], overall_gpa: Any) -> dict[str, Any]:
+    def _build_snapshot(
+        self,
+        scores: list[Any],
+        overall_gpa: Any,
+        revision: str = "",
+    ) -> dict[str, Any]:
         courses = []
         for score in scores:
+            source = score if isinstance(score, dict) else vars(score)
             item = {
-                "code": score.code,
-                "name": score.name,
-                "score": score.score,
-                "gpa": score.gpa,
-                "credit": score.credit,
-                "term": score.term,
-                "term_display": score.term_display,
-                "exam_status": score.exam_status,
+                key: source.get(key)
+                for key in SCORE_FIELDS
             }
             item["key"] = self._course_key(item)
             courses.append(item)
@@ -657,24 +710,137 @@ class GradeTrackingService:
         digest = hashlib.sha256(
             json.dumps(content, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
-        return {"updated_at": _iso(), "hash": digest, **content}
+        return {
+            "updated_at": _iso(),
+            "hash": revision or digest,
+            "revision": revision or digest,
+            **content,
+        }
 
     @staticmethod
     def _compare(
         previous: dict[str, Any],
         current: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        old = {item["key"]: item for item in previous.get("courses", [])}
-        new = {item["key"]: item for item in current.get("courses", [])}
-        additions = [new[key] for key in sorted(new.keys() - old.keys())]
-        changes = []
-        for key in sorted(new.keys() & old.keys()):
-            if any(
-                str(old[key].get(field, "")) != str(new[key].get(field, ""))
-                for field in ("score", "gpa", "credit", "name")
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        bool,
+    ]:
+        result = diff_scores(
+            {
+                "scores": previous.get("courses", []),
+                "overall_gpa": previous.get("overall_gpa"),
+            },
+            {
+                "scores": current.get("courses", []),
+                "overall_gpa": current.get("overall_gpa"),
+            },
+        )
+        return (
+            list(result["added"]),
+            list(result["changed"]),
+            list(result["removed"]),
+            bool(result["overall_gpa_changed"]),
+        )
+
+    def handle_scores_revision(
+        self,
+        account_id: str,
+        revision: str,
+        payload: dict[str, Any],
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Consume one committed score revision from any producer."""
+        if not revision:
+            return {"change_count": 0}
+        with self._lock:
+            if not self._config.get("enabled"):
+                return {"change_count": 0}
+            if str(self._state.get("account_id") or "") != str(account_id):
+                return {"change_count": 0}
+            if not self._within_window(_now()):
+                self._state["pending_revision"] = revision
+                self._save_state()
+                return {"change_count": 0}
+            if self._state.get("last_seen_revision") == revision:
+                return {"change_count": 0}
+            config = self._config.copy()
+        snapshot = self._build_snapshot(
+            list(payload.get("scores") or []),
+            payload.get("overall_gpa"),
+            revision,
+        )
+        previous = self._read_json(self.snapshot_path, {})
+        additions, changes, removals, overall_gpa_changed = self._compare(
+            previous, snapshot
+        )
+        self._write_json(self.snapshot_path, snapshot)
+
+        should_notify = bool(config.get("enabled"))
+        notification = None
+        if (
+            should_notify
+            and not previous
+            and config.get("notify_initial")
+        ):
+            notification = (
+                "[NEU 成绩追踪] 首次成绩同步完成",
+                self._initial_email(snapshot),
+                f"revision:{revision}",
+            )
+        elif should_notify and previous and (
+            additions or changes or removals or overall_gpa_changed
+        ):
+            notification = (
+                "[NEU 成绩追踪] 检测到成绩更新",
+                self._change_email(
+                    previous,
+                    snapshot,
+                    additions,
+                    changes,
+                    removals,
+                    overall_gpa_changed,
+                ),
+                f"revision:{revision}",
+            )
+
+        with self._lock:
+            self._state["last_seen_revision"] = revision
+            self._state.pop("pending_revision", None)
+            if (
+                notification
+                and self._state.get("last_notified_revision") != revision
             ):
-                changes.append({"before": old[key], "after": new[key]})
-        return additions, changes
+                self._queue_email(*notification)
+                self._state["last_notified_revision"] = revision
+            self._state["last_revision_reason"] = reason
+            self._state["last_change_count"] = (
+                len(additions)
+                + len(changes)
+                + len(removals)
+                + int(overall_gpa_changed)
+                if previous else 0
+            )
+            self._save_state()
+        if notification:
+            # SMTP belongs to the tracking scheduler, never a cache worker.
+            self._wake.set()
+        return {
+            "additions": additions,
+            "changes": changes,
+            "removals": removals,
+            "overall_gpa_changed": overall_gpa_changed,
+            "change_count": (
+                len(additions)
+                + len(changes)
+                + len(removals)
+                + int(overall_gpa_changed)
+                if previous
+                else 0
+            ),
+        }
 
     @staticmethod
     def _format_course(item: dict[str, Any]) -> str:
@@ -699,19 +865,50 @@ class GradeTrackingService:
         current: dict[str, Any],
         additions: list[dict[str, Any]],
         changes: list[dict[str, Any]],
+        removals: list[dict[str, Any]],
+        overall_gpa_changed: bool,
     ) -> str:
         new_rows = "\n".join(f"- {self._format_course(item)}" for item in additions) or "无"
-        changed_rows = "\n".join(
-            f"- {item['after']['name']}：{item['before'].get('score') or '未出分'} → "
-            f"{item['after'].get('score') or '未出分'}"
-            for item in changes
+        field_labels = {
+            "name": "课程名称",
+            "score": "成绩",
+            "gpa": "绩点",
+            "credit": "学分",
+            "term": "学期",
+            "term_display": "学期名称",
+            "course_type": "课程类型",
+            "course_category": "课程类别",
+            "general_category": "通识类别",
+            "exam_type": "考核方式",
+            "exam_status": "考试状态",
+            "course_nature": "课程性质",
+            "is_passed": "是否通过",
+        }
+        changed_lines = []
+        for item in changes:
+            before = item["before"]
+            after = item["after"]
+            details = [
+                f"{field_labels[field]}：{before.get(field)!s} → {after.get(field)!s}"
+                for field in SCORE_FIELDS
+                if field != "code" and before.get(field) != after.get(field)
+            ]
+            changed_lines.append(
+                f"- {after.get('name') or before.get('name') or after.get('code')}："
+                + "；".join(details)
+            )
+        changed_rows = "\n".join(changed_lines) or "无"
+        removed_rows = "\n".join(
+            f"- {self._format_course(item)}" for item in removals
         ) or "无"
         return (
             "检测到成绩变化。\n\n"
             f"原总 GPA：{previous.get('overall_gpa', '未知')}\n"
             f"新总 GPA：{current.get('overall_gpa', '未知')}\n\n"
+            f"总 GPA 是否变化：{'是' if overall_gpa_changed else '否'}\n\n"
             f"新增课程：\n{new_rows}\n\n"
             f"成绩修正：\n{changed_rows}\n\n"
+            f"移除课程：\n{removed_rows}\n\n"
             f"检查时间：{current['updated_at']}"
         )
 

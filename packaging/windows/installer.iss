@@ -33,6 +33,12 @@ Name: "chinesesimp"; MessagesFile: "{#ChineseMessagesFile}"
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked
 
+[InstallDelete]
+; 用户数据位于独立的 %LOCALAPPDATA%\NEU-JWXT-Toolkit\data。
+; 升级前只清理冻结程序内部目录，避免旧版 Python 模块残留并被新版误加载。
+Type: filesandordirs; Name: "{app}\_internal"
+Type: files; Name: "{app}\NEU-JWXT-Toolkit.exe"
+
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 

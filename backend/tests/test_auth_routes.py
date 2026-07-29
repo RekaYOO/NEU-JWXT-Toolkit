@@ -1,4 +1,3 @@
-import asyncio
 import unittest
 from unittest.mock import Mock, patch
 
@@ -17,8 +16,8 @@ class AuthRouteTests(unittest.TestCase):
         client.login.side_effect = WebVPNRequiredError("校内服务不可直连")
 
         with patch.object(auth, "NEUAuthClient", return_value=client) as client_class:
-            response = asyncio.run(
-                auth.login(LoginRequest(username="20250001", password="not-used", network_mode="direct"))
+            response = auth.login(
+                LoginRequest(username="20250001", password="not-used", network_mode="direct")
             )
 
         self.assertFalse(response.success)
@@ -43,8 +42,8 @@ class AuthRouteTests(unittest.TestCase):
             patch.object(auth, "NEUAuthClient", return_value=qr_client) as client_class,
             patch.object(auth, "set_auth_client"),
         ):
-            response = asyncio.run(
-                auth.start_webvpn_qr_login(WebVPNQRStartRequest(username="20250001"))
+            response = auth.start_webvpn_qr_login(
+                WebVPNQRStartRequest(username="20250001")
             )
 
         self.assertTrue(response["success"])
@@ -64,15 +63,13 @@ class AuthRouteTests(unittest.TestCase):
             patch.object(auth, "NEUAuthClient", return_value=password_client) as client_class,
             patch.object(auth, "_save_webvpn_password_login"),
         ):
-            response = asyncio.run(
-                auth.start_webvpn_password_login(
+            response = auth.start_webvpn_password_login(
                     WebVPNPasswordStartRequest(
                         username="20250001",
                         password="not-used",
                         remember=False,
                     )
                 )
-            )
 
         self.assertTrue(response["success"])
         client_class.assert_called_once_with(
@@ -90,12 +87,12 @@ class AuthRouteTests(unittest.TestCase):
 
         with (
             patch.object(auth, "peek_auth_client", return_value=client),
-            patch.object(auth, "set_auth_client") as set_client,
+            patch.object(auth, "logout_auth_client") as logout_client,
             patch.object(auth, "_auto_login") as auto_login,
             patch.object(auth, "_storage") as storage,
         ):
             storage.clear_all_data.return_value = clear_result
-            response = asyncio.run(auth.logout(clear_data=True))
+            response = auth.logout(clear_data=True)
 
         self.assertTrue(response["success"])
         self.assertTrue(response["data_cleared"])
@@ -103,7 +100,7 @@ class AuthRouteTests(unittest.TestCase):
         client.cancel_webvpn_qr_login.assert_called_once_with()
         client.clear_cookies.assert_called_once_with()
         client.session.cookies.clear.assert_called_once_with()
-        set_client.assert_called_once_with(None)
+        logout_client.assert_called_once_with(clear_cache=True)
         auto_login.clear_login.assert_called_once_with()
 
 

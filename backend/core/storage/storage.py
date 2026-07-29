@@ -404,6 +404,10 @@ class Storage:
             "config.json",
             "credentials.json",
             "grade_tracking_config.json",
+            "cache.db",
+            "cache.db-wal",
+            "cache.db-shm",
+            "research_training_favorites.json",
         } if preserve_config else set()
         
         deleted = []

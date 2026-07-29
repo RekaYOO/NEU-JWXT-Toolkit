@@ -1,11 +1,14 @@
 import logging
 import re
+import hashlib
+import json
 from types import SimpleNamespace
 
 from backend.core.academic.api import CourseScore
 from backend.core.tracking import GradeTrackingService
 from backend.core.runtime.access import is_public_api_path
 from backend.core.log.access_logger import redact_sensitive_path
+from backend.core.cache.resources import canonicalize_scores, score_to_dict
 
 
 def make_score(score="88", gpa=3.8):
@@ -54,6 +57,19 @@ class FakeAcademic:
         return self.gpa
 
 
+def score_refresher_for(academic):
+    def refresh(_account, _manual):
+        payload = canonicalize_scores({
+            "scores": [score_to_dict(score) for score in academic.scores],
+            "overall_gpa": academic.gpa,
+        })
+        digest = hashlib.sha256(json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        return {"revision": f"v1:{digest}", "payload": payload}
+    return refresh
+
+
 def build_service(tmp_path):
     academic = FakeAcademic()
     auth = SimpleNamespace(username="20250001", academic=academic)
@@ -63,6 +79,7 @@ def build_service(tmp_path):
         auth_provider=lambda: auth,
         score_storage=storage,
         logger=logging.getLogger("grade-tracking-test"),
+        score_refresher=score_refresher_for(academic),
     )
     return service, academic, storage
 
@@ -77,6 +94,8 @@ def mail_config(**overrides):
         "smtp_password": "secret",
         "from_email": "sender@example.com",
         "to_email": "receiver@example.com",
+        "start_hour": 0,
+        "end_hour": 24,
         **overrides,
     }
 
@@ -138,6 +157,7 @@ def test_tracking_refreshes_shared_report_cache_only_when_scores_change(tmp_path
         score_storage=FakeStorage(),
         report_storage=report_storage,
         logger=logging.getLogger("grade-tracking-report-sync-test"),
+        score_refresher=score_refresher_for(academic),
     )
     service._flush_outbox = lambda: None
 
@@ -147,7 +167,7 @@ def test_tracking_refreshes_shared_report_cache_only_when_scores_change(tmp_path
     academic.gpa = 4.3
     service.check_now()
 
-    assert report_storage.refreshed == ["20250001", "20250001"]
+    assert report_storage.refreshed == []
 
 
 def test_report_refresh_exception_does_not_break_score_sync(tmp_path):
@@ -165,13 +185,14 @@ def test_report_refresh_exception_does_not_break_score_sync(tmp_path):
         score_storage=storage,
         report_storage=FailingReportStorage(),
         logger=logging.getLogger("grade-tracking-report-failure-test"),
+        score_refresher=score_refresher_for(academic),
     )
     service._flush_outbox = lambda: None
 
     result = service.check_now()
 
     assert result["stage"] == "monitoring"
-    assert len(storage.saved) == 1
+    assert len(storage.saved) == 0
 
 
 def test_tracking_switch_applies_immediately_without_changing_config(tmp_path):
@@ -189,9 +210,64 @@ def test_tracking_switch_applies_immediately_without_changing_config(tmp_path):
     assert service.get_status()["stage"] == "disabled"
 
 
+def test_account_switch_discards_personal_baseline_and_outbox(tmp_path):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config(enabled=True, notify_initial=True))
+    service.resume_after_login("account-a")
+    payload_a = canonicalize_scores({
+        "scores": [score_to_dict(make_score(score="88", gpa=3.8))],
+        "overall_gpa": 3.8,
+    })
+    service.handle_scores_revision(
+        "account-a", "v1:account-a", payload_a, reason="tracking"
+    )
+    assert service._outbox
+    assert service.snapshot_path.exists()
+
+    service.pause_for_logout(clear_personal_state=False)
+    service.resume_after_login("account-b")
+
+    assert service.get_config()["enabled"] is True
+    assert service._outbox == []
+    assert not service.snapshot_path.exists()
+    payload_b = canonicalize_scores({
+        "scores": [score_to_dict(make_score(score="95", gpa=4.5))],
+        "overall_gpa": 4.5,
+    })
+    result = service.handle_scores_revision(
+        "account-b", "v1:account-b", payload_b, reason="login_bootstrap"
+    )
+    assert result["change_count"] == 0
+    assert len(service._outbox) == 1
+    assert "首次成绩同步" in service._outbox[0]["subject"]
+
+
+def test_unscoped_legacy_tracking_state_is_not_claimed_by_new_account(tmp_path):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config(enabled=True, notify_initial=True))
+    service._write_json(
+        service.snapshot_path,
+        service._build_snapshot(
+            [score_to_dict(make_score())], 3.8, "legacy-revision"
+        ),
+    )
+    service._state.update(
+        account_id="",
+        last_seen_revision="legacy-revision",
+        last_notified_revision="legacy-revision",
+    )
+    service._save_state()
+
+    service.resume_after_login("account-b")
+
+    assert not service.snapshot_path.exists()
+    assert service.get_status()["account_id"] == "account-b"
+    assert service.get_status().get("last_seen_revision") is None
+
+
 def test_manual_check_creates_snapshot_then_notifies_changes(tmp_path, monkeypatch):
     service, academic, storage = build_service(tmp_path)
-    service.update_config(mail_config())
+    service.update_config(mail_config(enabled=True))
     sent = []
     monkeypatch.setattr(
         service,
@@ -200,6 +276,7 @@ def test_manual_check_creates_snapshot_then_notifies_changes(tmp_path, monkeypat
     )
 
     first = service.check_now()
+    service._flush_outbox()
     assert first["last_change_count"] == 0
     assert len(sent) == 1
     assert "首次" in sent[0][0]
@@ -207,13 +284,63 @@ def test_manual_check_creates_snapshot_then_notifies_changes(tmp_path, monkeypat
     academic.scores = [make_score(score="92", gpa=4.2)]
     academic.gpa = 4.2
     second = service.check_now()
+    service._flush_outbox()
 
-    assert second["last_change_count"] == 1
+    assert second["last_change_count"] == 2
     assert len(second["changes"]) == 1
     assert second["changes"][0]["before"]["score"] == "88"
     assert second["changes"][0]["after"]["score"] == "92"
     assert len(sent) == 2
-    assert len(storage.saved) == 2
+    assert len(storage.saved) == 0
+
+
+def test_tracking_notifies_overall_gpa_only_change(tmp_path):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config(enabled=True, notify_initial=False))
+    service.resume_after_login("20250001")
+    base = canonicalize_scores({
+        "scores": [score_to_dict(make_score())],
+        "overall_gpa": 3.8,
+    })
+    service.handle_scores_revision(
+        "20250001", "v1:base", base, reason="tracking"
+    )
+    updated = {**base, "overall_gpa": 3.9}
+
+    result = service.handle_scores_revision(
+        "20250001", "v1:gpa-only", updated, reason="page_swr"
+    )
+
+    assert result["overall_gpa_changed"] is True
+    assert result["change_count"] == 1
+    assert len(service._outbox) == 1
+    assert "总 GPA 是否变化：是" in service._outbox[0]["body"]
+
+
+def test_tracking_notifies_non_score_course_field_change(tmp_path):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config(enabled=True, notify_initial=False))
+    service.resume_after_login("20250001")
+    base_score = score_to_dict(make_score())
+    base = canonicalize_scores({
+        "scores": [base_score],
+        "overall_gpa": 3.8,
+    })
+    service.handle_scores_revision(
+        "20250001", "v1:base", base, reason="tracking"
+    )
+    changed = canonicalize_scores({
+        "scores": [{**base_score, "exam_status": "重修"}],
+        "overall_gpa": 3.8,
+    })
+
+    result = service.handle_scores_revision(
+        "20250001", "v1:status", changed, reason="page_swr"
+    )
+
+    assert result["change_count"] == 1
+    assert len(service._outbox) == 1
+    assert "考试状态" in service._outbox[0]["body"]
 
 
 def test_login_required_does_not_fetch_scores(tmp_path, monkeypatch):
@@ -265,6 +392,7 @@ def test_missing_site_url_sends_five_minute_qr_and_resumes_check(tmp_path, monke
             },
         ),
         auth_setter=accepted.append,
+        score_refresher=score_refresher_for(academic),
     )
     service.update_config(mail_config(site_url=""))
     monkeypatch.setattr(
@@ -274,9 +402,10 @@ def test_missing_site_url_sends_five_minute_qr_and_resumes_check(tmp_path, monke
     )
 
     result = service.check_now()
+    service._flush_outbox()
 
     assert len(accepted) == 1
-    assert len(storage.saved) == 1
+    assert len(storage.saved) == 0
     assert result["stage"] == "monitoring"
     assert "五分钟" in sent[0][0]
     assert "微信扫码" in sent[0][1]

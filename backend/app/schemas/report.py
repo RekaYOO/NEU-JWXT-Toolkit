@@ -88,3 +88,4 @@ class AcademicReportResponse(BaseModel):
     source: str = "remote"
     is_fresh: bool = True
     last_update: Optional[str] = None  # 本地保存时间 ISO 格式
+    cache: Optional[Dict[str, Any]] = None

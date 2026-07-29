@@ -1,5 +1,9 @@
 import os
 import json
+import tempfile
+import hashlib
+import shutil
+from pathlib import Path
 from typing import List
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends
@@ -7,15 +11,49 @@ from fastapi import APIRouter, HTTPException, Depends
 from backend.app.dependencies import _storage, _api_logger, get_gpa_simulation_dir
 from backend.app.schemas import GPASimulationExportRequest, GPASimulationFile
 from backend.core.auth import NEUAuthClient
-from backend.app.dependencies import require_auth
+from backend.app.dependencies import require_cached_auth_identity
+from backend.core.runtime.config import secure_file
 
 router = APIRouter()
 
 
+def _account_directory(username: str) -> Path:
+    account_key = hashlib.sha256(str(username).encode("utf-8")).hexdigest()[:24]
+    directory = Path(get_gpa_simulation_dir()) / "gpa_simulations" / account_key
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _migrate_owned_legacy_files(username: str) -> None:
+    """Copy trusted legacy documents without modifying their original files."""
+    legacy_root = Path(get_gpa_simulation_dir())
+    destination = _account_directory(username)
+    for source in legacy_root.glob("*.json"):
+        try:
+            data = json.loads(source.read_text(encoding="utf-8"))
+            if data.get("export_info", {}).get("exported_by") != username:
+                continue
+            target = destination / source.name
+            if not target.exists():
+                shutil.copy2(source, target)
+                secure_file(target)
+        except (OSError, ValueError, TypeError):
+            continue
+
+
+def _read_owned_file(filepath: str, username: str) -> dict:
+    with open(filepath, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    owner = data.get("export_info", {}).get("exported_by")
+    if owner != username:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    return data
+
+
 @router.post("/gpa-simulation/export")
-async def export_gpa_simulation(
+def export_gpa_simulation(
     request: GPASimulationExportRequest,
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_cached_auth_identity)
 ):
     """
     导出GPA模拟数据到data目录
@@ -28,7 +66,8 @@ async def export_gpa_simulation(
         if not safe_filename.endswith('.json'):
             safe_filename += '.json'
 
-        filepath = os.path.join(get_gpa_simulation_dir(), safe_filename)
+        directory = _account_directory(auth.username)
+        filepath = str(directory / safe_filename)
 
         # 添加导出元数据
         export_data = {
@@ -36,12 +75,22 @@ async def export_gpa_simulation(
             "export_info": {
                 "exported_by": auth.username,
                 "exported_at": datetime.now().isoformat(),
-                "version": "1.0"
+                "version": "2.0"
             }
         }
 
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(export_data, f, ensure_ascii=False, indent=2)
+        fd, temporary_name = tempfile.mkstemp(prefix=".gpa-", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            secure_file(Path(temporary_name))
+            os.replace(temporary_name, filepath)
+            secure_file(Path(filepath))
+        finally:
+            if os.path.exists(temporary_name):
+                os.unlink(temporary_name)
 
         _api_logger.info(f"[GPA-Sim] 导出成功: {safe_filename}, user={auth.username}")
         return {
@@ -55,26 +104,29 @@ async def export_gpa_simulation(
 
 
 @router.get("/gpa-simulation/files", response_model=List[GPASimulationFile])
-async def list_gpa_simulation_files(auth: NEUAuthClient = Depends(require_auth)):
+def list_gpa_simulation_files(auth: NEUAuthClient = Depends(require_cached_auth_identity)):
     """
     列出所有GPA模拟文件
 
     从 data/gpa_simulations/ 目录读取
     """
     try:
+        _migrate_owned_legacy_files(auth.username)
+        directory = _account_directory(auth.username)
         files = []
-        for filename in os.listdir(get_gpa_simulation_dir()):
+        for filename in os.listdir(directory):
             if filename.endswith('.json'):
-                filepath = os.path.join(get_gpa_simulation_dir(), filename)
+                filepath = str(directory / filename)
                 stat = os.stat(filepath)
 
                 # 尝试读取统计信息
                 stats = None
                 try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        stats = data.get('stats')
-                except:
+                    data = _read_owned_file(filepath, auth.username)
+                    stats = data.get('stats')
+                except HTTPException:
+                    continue
+                except (OSError, ValueError, TypeError):
                     pass
 
                 files.append({
@@ -93,24 +145,22 @@ async def list_gpa_simulation_files(auth: NEUAuthClient = Depends(require_auth))
 
 
 @router.get("/gpa-simulation/file/{filename}")
-async def get_gpa_simulation_file(
+def get_gpa_simulation_file(
     filename: str,
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_cached_auth_identity)
 ):
     """
     获取指定GPA模拟文件内容
     """
     try:
         safe_filename = os.path.basename(filename)
-        filepath = os.path.join(get_gpa_simulation_dir(), safe_filename)
+        _migrate_owned_legacy_files(auth.username)
+        filepath = str(_account_directory(auth.username) / safe_filename)
 
         if not os.path.exists(filepath):
             raise HTTPException(status_code=404, detail="文件不存在")
 
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-
-        return data
+        return _read_owned_file(filepath, auth.username)
     except HTTPException:
         raise
     except Exception as e:
@@ -119,20 +169,22 @@ async def get_gpa_simulation_file(
 
 
 @router.delete("/gpa-simulation/file/{filename}")
-async def delete_gpa_simulation_file(
+def delete_gpa_simulation_file(
     filename: str,
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_cached_auth_identity)
 ):
     """
     删除指定GPA模拟文件
     """
     try:
         safe_filename = os.path.basename(filename)
-        filepath = os.path.join(get_gpa_simulation_dir(), safe_filename)
+        _migrate_owned_legacy_files(auth.username)
+        filepath = str(_account_directory(auth.username) / safe_filename)
 
         if not os.path.exists(filepath):
             raise HTTPException(status_code=404, detail="文件不存在")
 
+        _read_owned_file(filepath, auth.username)
         os.remove(filepath)
         _api_logger.info(f"[GPA-Sim] 删除文件: {safe_filename}, user={auth.username}")
         return {"success": True, "message": "文件已删除"}

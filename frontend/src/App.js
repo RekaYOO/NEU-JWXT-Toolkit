@@ -14,6 +14,7 @@ import ResearchTrainingPage from './pages/ResearchTrainingPage';
 import LogsPage from './pages/LogsPage';
 import AccessLoginPage from './pages/AccessLoginPage';
 import { checkStatus, getAccessStatus, getHealth, getOfflineStatus } from './services/api';
+import { ResourceProvider } from './resources/ResourceStore';
 import './App.css';
 
 const { Content } = Layout;
@@ -246,10 +247,15 @@ function App() {
 
   return (
     <ConfigProvider theme={appTheme}>
-      <Router>
-        <Layout className="app-layout">
-          <Content className="app-content">
-            <Routes>
+      <ResourceProvider
+        key={`${isLoggedIn ? String(userInfo || 'authenticated') : 'anonymous'}:${offlineMode ? 'offline' : 'online'}`}
+        identity={isLoggedIn ? String(userInfo || 'authenticated') : ''}
+        offlineMode={offlineMode}
+      >
+        <Router>
+          <Layout className="app-layout">
+            <Content className="app-content">
+              <Routes>
             <Route 
               path="/login" 
               element={
@@ -295,10 +301,11 @@ function App() {
               <Route path="exams" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <ExamPage />} />
               <Route path="logs" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <LogsPage />} />
             </Route>
-            </Routes>
-          </Content>
-        </Layout>
-      </Router>
+              </Routes>
+            </Content>
+          </Layout>
+        </Router>
+      </ResourceProvider>
     </ConfigProvider>
   );
 }

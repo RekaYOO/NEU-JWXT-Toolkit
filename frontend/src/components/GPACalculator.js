@@ -13,7 +13,7 @@ import {
   FileTextOutlined, FolderOutlined, FileOutlined, FilterOutlined
 } from '@ant-design/icons';
 import { 
-  getAcademicReport,
+  getCachedAcademicReport,
   getOfflineAcademicReport,
   exportGPASimulation,
   listGPASimulationFiles,
@@ -88,6 +88,39 @@ const getCourseSource = (record) => {
   return '模拟';
 };
 
+const stableCourseKey = (course) => [
+  course?.code || '',
+  course?.term_code || course?.originalData?.term || course?.term || '',
+].join('\u001f');
+
+const simulationCourseFromScore = (score) => ({
+  key: `real_${stableCourseKey(score)}`,
+  name: score.name,
+  code: score.code,
+  credit: parseFloat(score.credit) || 0,
+  score: score.score,
+  gpa: parseFloat(score.gpa) || 0,
+  term: score.term_display || score.term,
+  term_code: score.term,
+  courseType: score.course_type,
+  isReal: true,
+  isCustom: false,
+  originalData: { ...score },
+});
+
+const comparableCourse = (course) => ({
+  name: course?.name || '',
+  code: course?.code || '',
+  credit: Number(course?.credit || 0),
+  score: String(course?.score ?? ''),
+  gpa: Number(course?.gpa || 0),
+  term: course?.term_code || course?.originalData?.term || course?.term || '',
+});
+
+const sameCourseContent = (left, right) => (
+  JSON.stringify(comparableCourse(left)) === JSON.stringify(comparableCourse(right))
+);
+
 /**
  * GPA计算器组件 - 嵌入式版本（纯本地存储）
  * 
@@ -100,6 +133,7 @@ const getCourseSource = (record) => {
 
 const GPACalculator = forwardRef(({
   realScores = [],
+  scoresRevision = '',
   onCoursesChange = null,
   onSimulatingChange = null,
   offlineMode = false,
@@ -135,6 +169,10 @@ const GPACalculator = forwardRef(({
   // 冲突检测
   const [conflictModalVisible, setConflictModalVisible] = useState(false);
   const [conflicts, setConflicts] = useState([]);
+  const [baseScoresRevision, setBaseScoresRevision] = useState('');
+  const [baseReportRevision, setBaseReportRevision] = useState('');
+  const [baseRealScores, setBaseRealScores] = useState([]);
+  const [pendingScoresBaseline, setPendingScoresBaseline] = useState(null);
 
   // 保存文件Modal
   const [saveModalVisible, setSaveModalVisible] = useState(false);
@@ -169,20 +207,11 @@ const GPACalculator = forwardRef(({
       
       // 直接使用真实成绩初始化
       if (realScores.length > 0) {
-        const initialized = realScores.map((s, idx) => ({
-          key: `real_${s.code}_${idx}`,
-          name: s.name,
-          code: s.code,
-          credit: parseFloat(s.credit) || 0,
-          score: s.score,
-          gpa: parseFloat(s.gpa) || 0,
-          term: s.term_display || s.term,
-          courseType: s.course_type,
-          isReal: true,
-          isCustom: false,
-          originalData: { ...s },
-        }));
+        const initialized = realScores.map(simulationCourseFromScore);
         setCourses(initialized);
+        setBaseRealScores(JSON.parse(JSON.stringify(realScores)));
+        setBaseScoresRevision(scoresRevision || '');
+        setBaseReportRevision('');
         // 保存到历史但不标记为未保存
         const newHistory = [JSON.parse(JSON.stringify(initialized))];
         setHistory(newHistory);
@@ -210,23 +239,87 @@ const GPACalculator = forwardRef(({
   // 初始化
   useEffect(() => {
     if (realScores.length > 0 && courses.length === 0) {
-      const initialized = realScores.map((s, idx) => ({
-        key: `real_${s.code}_${idx}`,
-        name: s.name,
-        code: s.code,
-        credit: parseFloat(s.credit) || 0,
-        score: s.score,
-        gpa: parseFloat(s.gpa) || 0,
-        term: s.term_display || s.term,
-        courseType: s.course_type,
-        isReal: true,
-        isCustom: false,
-        originalData: { ...s },
-      }));
+      const initialized = realScores.map(simulationCourseFromScore);
       setCourses(initialized);
+      setBaseRealScores(JSON.parse(JSON.stringify(realScores)));
+      setBaseScoresRevision(scoresRevision || '');
       saveToHistory(initialized, false);
     }
   }, [realScores]);
+
+  useEffect(() => {
+    if (
+      !isSimulating
+      || !scoresRevision
+      || !baseScoresRevision
+      || scoresRevision === baseScoresRevision
+    ) return;
+    const base = new Map(baseRealScores.map(score => [
+      stableCourseKey(score), simulationCourseFromScore(score),
+    ]));
+    const latest = new Map(realScores.map(score => [
+      stableCourseKey(score), simulationCourseFromScore(score),
+    ]));
+    const current = new Map(courses
+      .filter(course => course.originalData)
+      .map(course => [stableCourseKey(course), course]));
+    const next = [...courses];
+    const reconciliation = [];
+
+    base.forEach((baseCourse, key) => {
+      const simulated = current.get(key);
+      const real = latest.get(key);
+      if (!simulated) return;
+      const userChanged = !sameCourseContent(simulated, baseCourse);
+      const realChanged = !real || !sameCourseContent(real, baseCourse);
+      if (!userChanged && real) {
+        const index = next.findIndex(item => stableCourseKey(item) === key);
+        if (index >= 0) next[index] = real;
+      } else if (!real) {
+        const index = next.findIndex(item => stableCourseKey(item) === key);
+        if (index >= 0) next[index] = {
+          ...next[index], realRemoved: true, isReal: false,
+        };
+      } else if (userChanged && realChanged) {
+        reconciliation.push({
+          key,
+          code: simulated.code,
+          name: simulated.name,
+          imported: simulated,
+          real,
+          choice: 'simulated',
+        });
+      }
+    });
+    latest.forEach((real, key) => {
+      if (!base.has(key)) {
+        reconciliation.push({
+          key,
+          code: real.code,
+          name: real.name,
+          imported: null,
+          real,
+          choice: 'skip',
+          isNew: true,
+        });
+      }
+    });
+    setCourses(next);
+    if (reconciliation.length) {
+      setConflicts(reconciliation);
+      setPendingScoresBaseline({
+        revision: scoresRevision,
+        scores: JSON.parse(JSON.stringify(realScores)),
+      });
+      setConflictModalVisible(true);
+    } else {
+      setBaseScoresRevision(scoresRevision);
+      setBaseRealScores(JSON.parse(JSON.stringify(realScores)));
+      saveToHistory(next);
+      message.info('真实成绩已更新，未修改的课程已自动协调');
+    }
+  // Reconcile only when the authoritative revision/baseline changes.
+  }, [scoresRevision, baseScoresRevision]);
 
   // ===== 历史记录 =====
   const saveToHistory = (newCourses, markUnsaved = true) => {
@@ -616,8 +709,36 @@ const GPACalculator = forwardRef(({
     try {
       const data = offlineMode
         ? await getOfflineAcademicReport()
-        : await getAcademicReport(false);
+        : await getCachedAcademicReport();
+      const reportRevision = data?.cache?.revision || '';
+      const reportScoresRevision = data?.cache?.dependency_revisions?.scores || '';
+      if (
+        baseScoresRevision
+        && reportScoresRevision
+        && baseScoresRevision !== reportScoresRevision
+      ) {
+        message.warning('培养计划基于另一版真实成绩，请先完成成绩协调');
+        return;
+      }
+      if (
+        baseReportRevision
+        && reportRevision
+        && baseReportRevision !== reportRevision
+      ) {
+        const accepted = await new Promise(resolve => {
+          Modal.confirm({
+            title: '培养计划已有更新',
+            content: '当前成绩基线一致。是否将模拟方案的培养计划基线升级到最新版？',
+            okText: '接受新版',
+            cancelText: '暂不导入',
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false),
+          });
+        });
+        if (!accepted) return;
+      }
       if (data?.categories) {
+        if (reportRevision) setBaseReportRevision(reportRevision);
         // 保存嵌套分类结构
         setPlanCategories(data.categories);
         // 同时保存扁平化的课程列表
@@ -769,8 +890,11 @@ const GPACalculator = forwardRef(({
     }
 
     const data = {
-      version: '1.0',
+      version: '2.0',
       exportTime: new Date().toISOString(),
+      base_scores_revision: baseScoresRevision,
+      base_report_revision: baseReportRevision,
+      base_real_scores: baseRealScores,
       stats,
       courses: courses.map(c => ({
         name: c.name,
@@ -869,6 +993,13 @@ const GPACalculator = forwardRef(({
         isReal: c.isReal !== undefined ? c.isReal : false,
         originalData: c.originalData || null,
       }));
+      setBaseScoresRevision(data.base_scores_revision || scoresRevision || '');
+      setBaseReportRevision(data.base_report_revision || '');
+      setBaseRealScores(
+        Array.isArray(data.base_real_scores)
+          ? data.base_real_scores
+          : JSON.parse(JSON.stringify(realScores)),
+      );
 
       // 检查同名课程冲突（按名称匹配）
       const conflicts = [];
@@ -981,34 +1112,47 @@ const GPACalculator = forwardRef(({
   // ===== 保存到浏览器本地 =====
   const saveSimulation = () => {
     localStorage.setItem('neu_toolbox:gpa_simulation', JSON.stringify({
+      version: '2.0',
       timestamp: new Date().toISOString(),
       stats,
       courses,
+      base_scores_revision: baseScoresRevision,
+      base_report_revision: baseReportRevision,
+      base_real_scores: baseRealScores,
     }));
     setHasUnsavedChanges(false);
     message.success('已保存到浏览器');
   };
 
   // ===== 冲突解决 =====
-  const resolveConflicts = (useReal) => {
-    if (useReal) {
-      const realMap = new Map(realScores.map(s => [s.code, s]));
-      const newCourses = courses.map(c => {
-        const real = realMap.get(c.code);
-        if (real && conflicts.some(conf => conf.code === c.code)) {
-          return {
-            ...c,
-            score: real.score,
-            gpa: parseFloat(real.gpa) || 0,
-            isReal: true,
-            originalData: { ...real },
-          };
-        }
-        return c;
+  const resolveConflicts = (bulkChoice = null) => {
+    const resolved = conflicts.map(conflict => ({
+      ...conflict,
+      choice: bulkChoice || conflict.choice,
+    }));
+    {
+      const conflictMap = new Map(resolved.map(conflict => [
+        conflict.key, conflict,
+      ]));
+      const newCourses = courses.map(course => {
+        const conflict = conflictMap.get(stableCourseKey(course));
+        return conflict?.choice === 'latest' ? conflict.real : course;
       });
+      resolved
+        .filter(conflict => (
+          conflict.isNew
+          && conflict.real
+          && conflict.choice === 'latest'
+        ))
+        .forEach(conflict => newCourses.push(conflict.real));
       setCourses(newCourses);
       saveToHistory(newCourses);
-      message.success('已更新为最新成绩');
+      message.success('已按选择协调真实成绩与模拟方案');
+    }
+    if (pendingScoresBaseline) {
+      setBaseScoresRevision(pendingScoresBaseline.revision);
+      setBaseRealScores(pendingScoresBaseline.scores);
+      setPendingScoresBaseline(null);
     }
     setConflictModalVisible(false);
   };
@@ -1076,6 +1220,7 @@ const GPACalculator = forwardRef(({
               {record.fromPlan && <Badge status="processing" style={{ marginRight: 4 }} />}
               {record.isCustom && <Badge status="warning" style={{ marginRight: 4 }} />}
               {text}
+              {record.realRemoved && <Tag color="default" style={{ marginLeft: 6 }}>原真实课程已不存在</Tag>}
             </div>
             {record.code && <div className="course-code">{record.code}</div>}
           </div>
@@ -1865,22 +2010,57 @@ const GPACalculator = forwardRef(({
       <Modal
         title={<Space><WarningOutlined style={{ color: '#faad14' }} /><span>检测到成绩更新</span></Space>}
         open={conflictModalVisible}
-        onCancel={() => setConflictModalVisible(false)}
+        closable={false}
+        maskClosable={false}
+        keyboard={false}
         footer={[
-          <Button key="keep" onClick={() => resolveConflicts(false)}>保留模拟成绩</Button>,
-          <Button key="update" type="primary" onClick={() => resolveConflicts(true)}>更新为真实成绩</Button>,
+          <Button key="keep" onClick={() => setConflicts(items => items.map(item => ({
+            ...item, choice: item.isNew ? 'skip' : 'simulated',
+          })))}>全部保留模拟</Button>,
+          <Button key="update" onClick={() => setConflicts(items => items.map(item => ({
+            ...item, choice: 'latest',
+          })))}>全部采用最新</Button>,
+          <Button key="confirm" type="primary" onClick={() => resolveConflicts()}>确认协调</Button>,
         ]}
       >
         <Alert message="以下课程的真实成绩与模拟成绩不同" description="您可以选择保留模拟成绩，或更新为最新的真实成绩" type="warning" showIcon style={{ marginBottom: 16 }} />
         <Table
           dataSource={conflicts}
-          rowKey="code"
+          rowKey="key"
           size="small"
           pagination={false}
           columns={[
             { title: '课程', dataIndex: 'name', key: 'name' },
-            { title: '模拟成绩', key: 'imported', render: (_, r) => `${r.imported.score} / ${r.imported.gpa}绩点` },
+            { title: '模拟成绩', key: 'imported', render: (_, r) => r.imported ? `${r.imported.score} / ${r.imported.gpa}绩点` : '新增课程' },
             { title: '真实成绩', key: 'real', render: (_, r) => <span style={{ color: '#52c41a', fontWeight: 'bold' }}>{r.real.score} / {r.real.gpa}绩点</span> },
+            {
+              title: '采用',
+              key: 'choice',
+              render: (_, row) => (
+                <Space direction="vertical" size={4}>
+                  <Button
+                    size="small"
+                    type={row.choice === 'latest' ? 'primary' : 'default'}
+                    onClick={() => setConflicts(items => items.map(item => (
+                      item.key === row.key ? { ...item, choice: 'latest' } : item
+                    )))}
+                  >
+                    最新真实
+                  </Button>
+                  <Button
+                    size="small"
+                    type={row.choice !== 'latest' ? 'primary' : 'default'}
+                    onClick={() => setConflicts(items => items.map(item => (
+                      item.key === row.key
+                        ? { ...item, choice: item.isNew ? 'skip' : 'simulated' }
+                        : item
+                    )))}
+                  >
+                    {row.isNew ? '暂不加入' : '保留模拟'}
+                  </Button>
+                </Space>
+              ),
+            },
           ]}
         />
       </Modal>

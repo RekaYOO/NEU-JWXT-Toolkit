@@ -1,18 +1,19 @@
 from typing import Dict
 from fastapi import APIRouter, HTTPException, Depends, Query
 
-from backend.app.dependencies import _api_logger
+from backend.app.dependencies import _api_logger, _cache_coordinator
 from backend.core.auth import NEUAuthClient
 from backend.core.academic.experiment import ExperimentCourseAPI
-from backend.app.dependencies import require_auth
+from backend.core.cache import mutation_policy
+from backend.app.dependencies import require_serialized_auth
 
 router = APIRouter()
 
 
 @router.get("/experiment-courses")
-async def get_experiment_courses(
+def get_experiment_courses(
     term: str = Query(None, description="学年学期代码，如 2025-2026-2"),
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
     获取实验选课课程列表
@@ -79,12 +80,12 @@ async def get_experiment_courses(
 
 
 @router.get("/experiment-courses/{task_id}/rounds")
-async def get_experiment_rounds(
+def get_experiment_rounds(
     task_id: str,
     course_no: str = Query(..., description="课程号"),
     project_code: str = Query(..., description="实验项目代码"),
     term: str = Query(..., description="学年学期代码"),
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """获取实验班列表"""
     try:
@@ -120,9 +121,9 @@ async def get_experiment_rounds(
 
 
 @router.post("/experiment-courses/select")
-async def select_experiment_course(
+def select_experiment_course(
     data: Dict[str, str],
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
     选择实验班
@@ -136,6 +137,7 @@ async def select_experiment_course(
     }
     """
     try:
+        policy = mutation_policy("experiment.select")
         api = ExperimentCourseAPI(auth)
 
         result = api.select(
@@ -144,6 +146,13 @@ async def select_experiment_course(
             data["project_code"],
             data["round_id"]
         )
+        if str(result.get("code")) == "0":
+            for resource in policy.invalidations:
+                if resource in _cache_coordinator.registry.resources():
+                    _cache_coordinator.invalidate(
+                        account_id=str(auth.username),
+                        resource=resource,
+                    )
 
         return result
     except Exception as e:
@@ -151,9 +160,9 @@ async def select_experiment_course(
 
 
 @router.post("/experiment-courses/deselect")
-async def deselect_experiment_course(
+def deselect_experiment_course(
     data: Dict[str, str],
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
     退选实验班
@@ -167,6 +176,7 @@ async def deselect_experiment_course(
     }
     """
     try:
+        policy = mutation_policy("experiment.deselect")
         api = ExperimentCourseAPI(auth)
 
         result = api.deselect(
@@ -175,6 +185,13 @@ async def deselect_experiment_course(
             data["project_code"],
             data["round_id"]
         )
+        if str(result.get("code")) == "0":
+            for resource in policy.invalidations:
+                if resource in _cache_coordinator.registry.resources():
+                    _cache_coordinator.invalidate(
+                        account_id=str(auth.username),
+                        resource=resource,
+                    )
 
         return result
     except Exception as e:

@@ -85,9 +85,7 @@ jobs:
             Stop-Process -Id $process.Id -Force
             throw "Desktop shutdown check failed"
           }
-          $forbidden = Get-ChildItem ".\dist\NEU-JWXT-Toolkit" -Recurse -File |
-            Where-Object { $_.Name -match '^(session\.json|scores.*\.csv|credentials.*|\.env.*)$' -or $_.Extension -eq '.log' }
-          if ($forbidden) { throw "Desktop bundle contains runtime data" }
+          python tools/check_release_bundle.py ".\dist\NEU-JWXT-Toolkit"
       - name: Create portable archive
         shell: pwsh
         run: |
@@ -184,6 +182,7 @@ jobs:
           cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/neu-jwxt-toolkit.service "$PACKAGE/"
           cp packaging/linux/examples/* "$PACKAGE/examples/"
           chmod +x "$PACKAGE/install.sh" "$PACKAGE/uninstall.sh" "$PACKAGE/app/neu-jwxt-server"
+          python tools/check_release_bundle.py dist/neu-jwxt-server "$PACKAGE" "$PACKAGE/app"
           tar -C release -czf "release/NEU-JWXT-Toolkit-$VERSION-linux-amd64.tar.gz" neu-jwxt-toolkit
           rm -rf "$PACKAGE"
       - uses: actions/upload-artifact@v4

@@ -2,6 +2,7 @@
 # 支持自动登录 pass.neu.edu.cn，维持 CAS 会话，供后续接口调用使用
 
 from .client import NEUAuthClient
+from .session_manager import AuthSessionManager
 
-__all__ = ["NEUAuthClient"]
+__all__ = ["AuthSessionManager", "NEUAuthClient"]
 __version__ = "1.0.0"

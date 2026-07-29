@@ -13,7 +13,14 @@ from .report import CreditSummaryModel, CourseModel, CategoryNodeModel, Academic
 from .gpa import GPASimulationExportRequest, GPASimulationFile
 from .evaluation import EvaluationSubmitRequest, EvaluationBatchRequest
 from .exam import ExamTerm, ExamItem, ExamListResponse, ExamTermsResponse
-from .research import ResearchEnrollmentRequest, ResearchCancellationRequest
+from .research import (
+    ResearchCancellationRequest,
+    ResearchCacheResponse,
+    ResearchChangeSummary,
+    ResearchEnrollmentRequest,
+    ResearchFavoriteRequest,
+    ResearchFavoriteResponse,
+)
 
 __all__ = [
     "LoginRequest", "LoginResponse", "WebVPNQRStartRequest", "WebVPNQRStatusRequest",
@@ -25,5 +32,7 @@ __all__ = [
     "EvaluationSubmitRequest", "EvaluationBatchRequest",
     "ExamTerm", "ExamItem", "ExamListResponse", "ExamTermsResponse",
     "ResearchEnrollmentRequest", "ResearchCancellationRequest",
+    "ResearchFavoriteRequest", "ResearchFavoriteResponse",
+    "ResearchCacheResponse", "ResearchChangeSummary",
 ]
 from .tracking import GradeTrackingConfigUpdate

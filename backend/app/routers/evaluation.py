@@ -5,19 +5,20 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from backend.app.dependencies import _api_logger
 from backend.app.schemas import EvaluationSubmitRequest, EvaluationBatchRequest
 from backend.core.auth import NEUAuthClient
+from backend.core.cache import mutation_policy
 from backend.core.evaluation.api import EvaluationAPI
 from backend.mock_evaluation import (
     EVAL_TEST_MODE, get_mock_tasks, get_mock_courses,
     get_mock_indicators, mock_submit, mock_batch,
 )
-from backend.app.dependencies import require_auth
+from backend.app.dependencies import require_serialized_auth
 
 router = APIRouter()
 
 
 @router.get("/evaluation/cycles")
-async def get_evaluation_cycles(
-    auth: NEUAuthClient = Depends(require_auth)
+def get_evaluation_cycles(
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
     获取所有可用学年学期
@@ -44,9 +45,9 @@ async def get_evaluation_cycles(
 
 
 @router.get("/evaluation/tasks")
-async def get_evaluation_tasks(
+def get_evaluation_tasks(
     xnxq: str = Query(None, description="学年学期，不传则使用系统默认"),
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
     获取学生评教任务列表（一级页面）
@@ -89,10 +90,10 @@ async def get_evaluation_tasks(
 
 
 @router.get("/evaluation/tasks/{task_id}/courses")
-async def get_evaluation_courses(
+def get_evaluation_courses(
     task_id: str,
     xnxq: str = Query(None, description="学年学期，不传则使用系统默认"),
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
     获取评教任务下的课程列表（二级页面）
@@ -145,10 +146,10 @@ async def get_evaluation_courses(
 
 
 @router.get("/evaluation/courses/{xspjid}/indicators")
-async def get_evaluation_indicators(
+def get_evaluation_indicators(
     xspjid: str,
     task_id: str = Query(..., description="评教任务ID"),
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
     获取课程的评教指标体系
@@ -229,15 +230,16 @@ async def get_evaluation_indicators(
 
 
 @router.post("/evaluation/submit")
-async def submit_evaluation(
+def submit_evaluation(
     request: EvaluationSubmitRequest,
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
     提交评教结果
 
     ⚠️ 评教系统不支持重试！
     """
+    policy = mutation_policy("evaluation.submit")
     if EVAL_TEST_MODE:
         return mock_submit(request)
 
@@ -278,6 +280,7 @@ async def submit_evaluation(
             **result,
             "course_name": course.course_name,
             "teacher_name": course.teacher_name,
+            "invalidations": policy.invalidations if result["success"] else (),
         }
     except HTTPException:
         raise
@@ -290,9 +293,9 @@ async def submit_evaluation(
 
 
 @router.post("/evaluation/batch")
-async def batch_evaluation(
+def batch_evaluation(
     request: EvaluationBatchRequest,
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
     批量评教
@@ -300,6 +303,7 @@ async def batch_evaluation(
     对指定任务下选中的未评课程应用相同策略进行评教。
     若未提供 xspjids，则默认提交全部待评课程。
     """
+    policy = mutation_policy("evaluation.batch")
     if EVAL_TEST_MODE:
         return mock_batch(request)
 
@@ -343,6 +347,7 @@ async def batch_evaluation(
             "total": len(results),
             "pending_count": len(pending),
             "success_count": success_count,
+            "invalidations": policy.invalidations if success_count else (),
         }
     except Exception as e:
         import traceback

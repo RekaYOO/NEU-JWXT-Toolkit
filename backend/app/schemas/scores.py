@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from datetime import datetime
 from pydantic import BaseModel, Field
 
@@ -37,6 +37,7 @@ class ScoresResponse(BaseModel):
     source: str = Field(..., description="数据来源: local/remote")
     is_fresh: bool = Field(..., description="是否最新数据")
     last_update: Optional[datetime] = None
+    cache: Optional[Dict[str, Any]] = None
     scores: List[CourseScoreModel]
 
 

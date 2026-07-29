@@ -31,6 +31,35 @@ class AcademicStorage:
             storage: Storage 实例，None则创建默认
         """
         self.storage = storage or Storage()
+
+    def get_cached_scores(self, username: str) -> Optional[Dict]:
+        """Return the current account's local scores without any network access."""
+        local_data = self.storage.load_scores_with_meta()
+        scores = local_data.get("scores") or []
+        meta = local_data.get("meta") or {}
+        last_update = self.storage.get_last_update_time()
+
+        # A normal authenticated page must never display another account's cache.
+        # Legacy cache files without an owner remain available only via offline mode.
+        if (
+            not scores
+            or not username
+            or not meta.get("username")
+            or str(meta.get("username")) != str(username)
+        ):
+            return None
+
+        age = datetime.now() - last_update if last_update else None
+        return {
+            "scores": scores,
+            "source": "local",
+            "last_update": last_update,
+            "is_fresh": bool(
+                age is not None and age <= timedelta(hours=CACHE_EXPIRY_HOURS)
+            ),
+            "overall_gpa": meta.get("overall_gpa"),
+            "meta": meta,
+        }
     
     def get_scores_smart(self, auth: NEUAuthClient, 
                          force_refresh: bool = False) -> Dict:
@@ -95,7 +124,12 @@ class AcademicStorage:
             except Exception as e:
                 # 远程获取失败，尝试使用本地数据
                 local_data = self.storage.load_scores_with_meta()
-                if local_data["scores"]:
+                local_username = (local_data.get("meta") or {}).get("username")
+                if (
+                    local_data["scores"]
+                    and local_username
+                    and str(local_username) == str(auth.username)
+                ):
                     return {
                         "scores": local_data["scores"],
                         "source": "local",
@@ -107,15 +141,12 @@ class AcademicStorage:
                 raise
         
         # 使用本地数据
-        local_data = self.storage.load_scores_with_meta()
-        return {
-            "scores": local_data["scores"],
-            "source": "local",
-            "last_update": last_update or self.storage.get_last_update_time(),
-            "is_fresh": False,
-            "overall_gpa": local_data["meta"].get("overall_gpa"),
-            "meta": local_data["meta"]
-        }
+        cached = self.get_cached_scores(auth.username)
+        if cached is not None:
+            return cached
+
+        # The cache is missing or belongs to a different account.
+        return self.get_scores_smart(auth, force_refresh=True)
     
     def refresh_scores(self, auth: NEUAuthClient) -> Dict:
         """
@@ -310,6 +341,31 @@ class AcademicReportStorage:
             return None
         mtime = os.path.getmtime(scores_path)
         return datetime.fromtimestamp(mtime)
+
+    def get_cached_report(self, username: str) -> Optional[Dict]:
+        """Return the current account's report cache without contacting NEU."""
+        local_data = self.load_report()
+        if (
+            not local_data
+            or not local_data.get("report")
+            or local_data.get("schema_version") != self.REPORT_SCHEMA_VERSION
+            or not username
+            or str(local_data.get("username") or "") != str(username)
+        ):
+            return None
+
+        last_update = self.get_last_update_time()
+        scores_update_time = self.get_scores_update_time()
+        return {
+            "report": local_data["report"],
+            "source": "local",
+            "last_update": last_update,
+            "is_fresh": not (
+                scores_update_time
+                and last_update
+                and scores_update_time > last_update
+            ),
+        }
     
     def get_report_smart(self, auth: NEUAuthClient, force_refresh: bool = False) -> Dict:
         """
@@ -377,7 +433,12 @@ class AcademicReportStorage:
                 }
             except Exception as e:
                 # 远程获取失败，尝试使用本地数据
-                if local_data and local_data.get("report"):
+                if (
+                    local_data
+                    and local_data.get("report")
+                    and local_data.get("schema_version") == self.REPORT_SCHEMA_VERSION
+                    and str(local_data.get("username") or "") == str(auth.username)
+                ):
                     return {
                         "report": local_data["report"],
                         "source": "local",

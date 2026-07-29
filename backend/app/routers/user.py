@@ -3,13 +3,15 @@ from fastapi.responses import Response
 
 from backend.app.dependencies import _storage, _api_logger
 from backend.core.auth import NEUAuthClient
-from backend.app.dependencies import require_auth
+from backend.app.dependencies import require_cached_auth_identity, require_serialized_auth
+from backend.app.cache_support import read_cache, submit_refresh, wait_for_job
+from backend.core.cache.resources import avatar_bytes
 
 router = APIRouter()
 
 
 @router.get("/user/info")
-async def get_user_info(auth: NEUAuthClient = Depends(require_auth)):
+def get_user_info(auth: NEUAuthClient = Depends(require_serialized_auth)):
     """获取当前用户信息（包含头像）"""
     try:
         user_info = auth.get_user_info()
@@ -21,9 +23,9 @@ async def get_user_info(auth: NEUAuthClient = Depends(require_auth)):
 
 
 @router.get("/user/avatar")
-async def get_user_avatar(
+def get_user_avatar(
     refresh: bool = Query(False, description="强制刷新头像"),
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_cached_auth_identity)
 ):
     """
     获取用户头像图片
@@ -31,41 +33,29 @@ async def get_user_avatar(
     支持缓存：默认使用本地缓存，refresh=true 时强制从服务器获取
     """
     try:
-        _api_logger.info(f"[Avatar] 开始获取头像, user={auth.username}, refresh={refresh}")
-
-        # 首先获取用户信息（包含头像token）
-        user_info = auth.get_user_info()
-
-        if not user_info:
-            _api_logger.warning("[Avatar] 获取用户信息失败")
-            raise HTTPException(status_code=404, detail="获取用户信息失败")
-
-        avatar_token = user_info.get('avatar_token')
-        if not avatar_token:
-            _api_logger.warning("[Avatar] 无头像token")
-            raise HTTPException(status_code=404, detail="用户未上传头像")
-
-        # 检查本地缓存
-        if not refresh:
-            cached_avatar = _storage.load_avatar()
-            if cached_avatar and _storage.is_avatar_valid(auth.username, avatar_token):
-                _api_logger.info(f"[Avatar] 使用本地缓存，大小: {len(cached_avatar)} bytes")
-                return Response(content=cached_avatar, media_type="image/png")
-
-        # 从服务器获取
-        avatar_data = auth.get_avatar(avatar_token)
-        if not avatar_data:
-            _api_logger.warning("[Avatar] 获取头像数据失败")
+        entry, stale = read_cache(auth.username, "avatar")
+        submission = None
+        if refresh or stale:
+            submission = submit_refresh(
+                auth.username,
+                "avatar",
+                force=refresh,
+                reason="manual" if refresh else "page_swr",
+            )
+        if entry is None or refresh:
+            wait_for_job(submission.job_id if submission else None, timeout=30)
+            entry, stale = read_cache(auth.username, "avatar")
+        if entry is None:
             raise HTTPException(status_code=404, detail="头像不存在")
-
-        # 保存到本地缓存
-        try:
-            _storage.save_avatar(avatar_data, auth.username, avatar_token)
-            _api_logger.info(f"[Avatar] 已缓存头像，大小: {len(avatar_data)} bytes")
-        except Exception as cache_error:
-            _api_logger.warning(f"[Avatar] 缓存头像失败: {cache_error}")
-
-        return Response(content=avatar_data, media_type="image/png")
+        data = avatar_bytes(entry.payload)
+        return Response(
+            content=data,
+            media_type="image/png",
+            headers={
+                "ETag": f'"{entry.revision}"',
+                "X-Cache-Stale": "true" if stale else "false",
+            },
+        )
     except HTTPException:
         raise
     except Exception as e:

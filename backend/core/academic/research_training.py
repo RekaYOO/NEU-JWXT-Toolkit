@@ -243,6 +243,49 @@ class ResearchTrainingAPI:
             "page_size": self._integer(container.get("pageSize"), page_size),
         }
 
+    def get_all_topics(
+        self,
+        batch_id: str,
+        *,
+        page_size: int = 50,
+        max_pages: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Fetch a complete batch snapshot while guarding against bad pagination."""
+        topics: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        expected_total: Optional[int] = None
+        for page in range(1, max_pages + 1):
+            result = self.get_topics(
+                batch_id,
+                page=page,
+                page_size=page_size,
+            )
+            rows = result.get("topics") or []
+            added = 0
+            for topic in rows:
+                topic_id = str(topic.get("topic_id") or "")
+                if not topic_id or topic_id in seen_ids:
+                    continue
+                seen_ids.add(topic_id)
+                topics.append(topic)
+                added += 1
+            total = self._integer(result.get("total"), len(topics))
+            if expected_total is None:
+                expected_total = total
+            elif total != expected_total:
+                raise ResearchTrainingError(
+                    "科研训练课题总数在分页过程中发生变化，请稍后重试"
+                )
+            if len(topics) >= expected_total:
+                return topics
+            if not rows:
+                raise ResearchTrainingError(
+                    "科研训练课题分页提前结束，已保留原有本地缓存"
+                )
+            if added == 0:
+                raise ResearchTrainingError("科研训练课题分页重复，无法生成完整缓存")
+        raise ResearchTrainingError("科研训练课题数量异常，完整缓存超过分页上限")
+
     def get_topic_detail(self, topic_id: str) -> Dict[str, Any]:
         response = self._client.post(
             self.DETAIL_URL,

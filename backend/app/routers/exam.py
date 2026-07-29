@@ -4,14 +4,14 @@ from fastapi.responses import PlainTextResponse
 
 from backend.core.auth import NEUAuthClient
 from backend.core.exam import ExamAPI
-from backend.app.dependencies import require_auth
+from backend.app.dependencies import require_serialized_auth
 from backend.app.schemas import ExamListResponse, ExamItem, ExamTermsResponse, ExamTerm
 
 router = APIRouter()
 
 
 @router.get("/exams/terms", response_model=ExamTermsResponse)
-async def get_exam_terms(auth: NEUAuthClient = Depends(require_auth)):
+def get_exam_terms(auth: NEUAuthClient = Depends(require_serialized_auth)):
     """获取考试学期列表"""
     try:
         api = ExamAPI(auth)
@@ -40,9 +40,9 @@ async def get_exam_terms(auth: NEUAuthClient = Depends(require_auth)):
 
 
 @router.get("/exams", response_model=ExamListResponse)
-async def get_exams(
+def get_exams(
     term_code: str = Query("", description="学期代码，空字符串则使用当前学期"),
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """获取考试安排列表"""
     try:
@@ -104,9 +104,9 @@ async def get_exams(
 
 
 @router.get("/exams/export-ics")
-async def export_exams_ics(
+def export_exams_ics(
     term_code: str = Query("", description="学期代码"),
-    auth: NEUAuthClient = Depends(require_auth)
+    auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """导出考试安排为 ICS 日历文件"""
     try:

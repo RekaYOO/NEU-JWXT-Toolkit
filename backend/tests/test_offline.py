@@ -1,5 +1,3 @@
-import asyncio
-
 from backend.app.routers import offline
 from backend.core.academic.api import CourseScore
 from backend.core.storage import AcademicReportStorage, Storage
@@ -50,10 +48,11 @@ def test_offline_routes_read_only_local_caches(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(offline, "_storage", storage)
     monkeypatch.setattr(offline, "_report_storage", report_storage)
+    monkeypatch.setattr(offline, "_offline_account", lambda: None)
 
-    status = asyncio.run(offline.offline_status())
-    scores = asyncio.run(offline.offline_scores())
-    report = asyncio.run(offline.offline_academic_report())
+    status = offline.offline_status()
+    scores = offline.offline_scores()
+    report = offline.offline_academic_report()
 
     assert status == {
         "available": True,

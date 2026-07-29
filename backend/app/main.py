@@ -23,8 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
 from backend.core.log.access_logger import FastAPILogMiddleware
-from backend.app.dependencies import _grade_tracker, _log_config
-from backend.app.routers import auth, scores, logs, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking
+from backend.app.dependencies import _cache_coordinator, _grade_tracker, _log_config
+from backend.app.routers import auth, cache, scores, logs, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking
 from backend.core.runtime import get_runtime_config, resource_path
 from backend.core.runtime.access import AccessGatewayMiddleware
 
@@ -33,11 +33,17 @@ runtime_config = get_runtime_config()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    _cache_coordinator.start()
     _grade_tracker.start()
     try:
         yield
     finally:
         _grade_tracker.stop()
+        _cache_coordinator.shutdown(
+            wait=True,
+            cancel_queued=True,
+            timeout=8,
+        )
 
 
 # ── FastAPI 应用 ───────────────────────────────────────────────────────────────
@@ -70,6 +76,7 @@ app.add_middleware(AccessGatewayMiddleware, config=runtime_config)
 # ── 路由挂载 ───────────────────────────────────────────────────────────────────
 
 app.include_router(auth.router)
+app.include_router(cache.router, prefix="/api")
 app.include_router(scores.router, prefix="/api")
 app.include_router(logs.router, prefix="/api")
 app.include_router(report.router, prefix="/api")
@@ -86,10 +93,12 @@ app.include_router(runtime.router)
 # ── 前端静态文件（生产/本地单端口模式）──────────────────────────────────────────
 
 _FRONTEND_BUILD_DIR = str(resource_path("frontend", "build"))
+_FRONTEND_INDEX = os.path.join(_FRONTEND_BUILD_DIR, "index.html")
+_FRONTEND_STATIC = os.path.join(_FRONTEND_BUILD_DIR, "static")
 
-if os.path.isdir(_FRONTEND_BUILD_DIR):
+if os.path.isfile(_FRONTEND_INDEX) and os.path.isdir(_FRONTEND_STATIC):
     # 挂载静态资源目录
-    app.mount("/static", StaticFiles(directory=os.path.join(_FRONTEND_BUILD_DIR, "static")), name="static")
+    app.mount("/static", StaticFiles(directory=_FRONTEND_STATIC), name="static")
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
@@ -99,7 +108,7 @@ if os.path.isdir(_FRONTEND_BUILD_DIR):
         target = os.path.join(_FRONTEND_BUILD_DIR, full_path)
         if os.path.isfile(target):
             return FileResponse(target)
-        return FileResponse(os.path.join(_FRONTEND_BUILD_DIR, "index.html"))
+        return FileResponse(_FRONTEND_INDEX)
 
 # ── 启动 ──────────────────────────────────────────────────────────────────────
 

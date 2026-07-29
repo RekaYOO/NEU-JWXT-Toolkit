@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Card, Select, Button, Tag, Empty, Spin, Alert, Statistic, Row, Col,
   Timeline, Tooltip, Badge, message
@@ -29,6 +29,7 @@ const ExamPage = () => {
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState(null);
+  const examRequestGeneration = useRef(0);
 
   // 加载学期列表
   useEffect(() => {
@@ -48,11 +49,13 @@ const ExamPage = () => {
   // 加载考试列表
   useEffect(() => {
     if (!selectedTerm) return;
+    const generation = ++examRequestGeneration.current;
     const loadExams = async () => {
       setLoading(true);
       setError(null);
       try {
         const data = await getExams(selectedTerm);
+        if (generation !== examRequestGeneration.current) return;
         setExams(data.exams || []);
         setStats({
           total: data.total || 0,
@@ -61,10 +64,13 @@ const ExamPage = () => {
           finished: data.finished || 0,
         });
       } catch (e) {
+        if (generation !== examRequestGeneration.current) return;
         setError('获取考试安排失败');
         message.error('获取考试安排失败');
       } finally {
-        setLoading(false);
+        if (generation === examRequestGeneration.current) {
+          setLoading(false);
+        }
       }
     };
     loadExams();

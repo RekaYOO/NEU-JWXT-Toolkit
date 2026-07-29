@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Table, Card, Statistic, Row, Col, Button, Tag, message, Alert,
   Tooltip, Dropdown, Checkbox, Space, InputNumber, Typography, Progress,
-  Tree, Badge, Empty, Divider, Switch, Drawer, Pagination, Grid, Segmented, Input
+  Tree, Badge, Empty, Divider, Switch, Drawer, Pagination, Grid, Segmented, Input,
+  Modal
 } from 'antd';
 import {
   ReloadOutlined, BookOutlined, CheckCircleOutlined, TrophyOutlined,
@@ -13,9 +14,7 @@ import {
   ExclamationCircleOutlined, FilterOutlined, DownCircleOutlined, UpCircleOutlined,
   CheckSquareOutlined, SearchOutlined
 } from '@ant-design/icons';
-import {
-  getAcademicReport, getOfflineAcademicReport, refreshAcademicReport, cancelRequest
-} from '../services/api';
+import { useCachedResource } from '../resources/ResourceStore';
 import { columnSettings } from '../utils/settings';
 import { compareAcademicTerms } from '../utils/termSort';
 import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
@@ -386,64 +385,95 @@ const AcademicReportPage = ({ offlineMode = false }) => {
   const [mobilePage, setMobilePage] = useState(1);
   const [courseSearchOpen, setCourseSearchOpen] = useState(false);
   const [courseSearch, setCourseSearch] = useState('');
+  const reportResource = useCachedResource('academic-report');
+  const initializedRef = useRef(false);
+  const promptedRevisionRef = useRef('');
 
-  // 加载数据
-  const loadData = async () => {
-    try {
-      const reportData = offlineMode
-        ? await getOfflineAcademicReport()
-        : await getAcademicReport(false);
-      
-      setReport(reportData);
-      setCategories(reportData.categories || []);
-      
-      const all = collectAllCourses(reportData.categories || []);
-      setAllCourses(all);
+  const applyReportPayload = useCallback((reportData, { initial = false } = {}) => {
+    if (!reportData) return;
+    const nextCategories = reportData.categories || [];
+    const all = collectAllCourses(nextCategories);
+    setReport(reportData);
+    setCategories(nextCategories);
+    setAllCourses(all);
+
+    if (!initial && selectedKeys.length) {
+      const selected = findNodeByWid(nextCategories, selectedKeys[0]);
+      setDisplayCourses(selected?.path
+        ? filterCoursesByPath(nextCategories, selected.path)
+        : all);
+    } else {
       setDisplayCourses(all);
-      
-      setDataInfo({
-        source: reportData.source,
-        is_fresh: reportData.is_fresh,
-        last_update: reportData.last_update,
-      });
-      
-      // 默认展开所有节点
+    }
+
+    setDataInfo({
+      source: reportData.source || 'local',
+      is_fresh: reportData.cache ? !reportData.cache.is_stale : reportData.is_fresh,
+      last_update: reportData.cache?.saved_at || reportData.last_update,
+    });
+
+    if (initial) {
       const collectAllKeys = (nodes) => {
         const keys = [];
-        const traverse = (list) => {
-          list.forEach(node => {
-            keys.push(node.wid);
-            if (node.children && node.children.length > 0) {
-              traverse(node.children);
-            }
-          });
-        };
+        const traverse = (list) => list.forEach(node => {
+          keys.push(node.wid);
+          if (node.children?.length) traverse(node.children);
+        });
         traverse(nodes || []);
         return keys;
       };
-      setExpandedKeys(collectAllKeys(reportData.categories));
-      
-      setDataLoaded(true);
-    } catch (error) {
-      // 如果是请求取消，不显示错误
-      if (error.name === 'CanceledError' || error.name === 'AbortError') {
-        console.log('[AcademicReport] 请求已取消');
-        return;
-      }
-      console.error('加载培养计划失败:', error);
+      setExpandedKeys(collectAllKeys(nextCategories));
+    }
+    setDataLoaded(true);
+  }, [selectedKeys]);
+
+  useEffect(() => {
+    if (!reportResource.data) return;
+    const initial = !initializedRef.current;
+    initializedRef.current = true;
+    applyReportPayload(reportResource.data, { initial });
+  }, [applyReportPayload, reportResource.data]);
+
+  useEffect(() => {
+    if (reportResource.error) {
+      console.error('加载培养计划失败:', reportResource.error);
       message.error('加载培养计划失败');
       setDataLoaded(true);
     }
-  };
+  }, [reportResource.error]);
 
   useEffect(() => {
-    loadData();
-    
-    // 组件卸载时取消未完成的请求
-    return () => {
-      cancelRequest('academicReport');
-    };
-  }, []);
+    if (!reportResource.data && reportResource.syncError) {
+      message.error(`加载培养计划失败: ${reportResource.syncError}`);
+      setDataLoaded(true);
+    }
+  }, [reportResource.data, reportResource.syncError]);
+
+  useEffect(() => {
+    if (
+      !reportResource.updateAvailable
+      || !reportResource.availableRevision
+      || promptedRevisionRef.current === reportResource.availableRevision
+    ) return undefined;
+    promptedRevisionRef.current = reportResource.availableRevision;
+    const modal = Modal.confirm({
+      title: '培养计划已有更新',
+      content: '后台已获取最新数据。是否刷新当前显示？你的搜索、分类和展开状态会尽量保留。',
+      okText: '刷新当前显示',
+      cancelText: '稍后',
+      onOk: () => {
+        reportResource.applyAvailable();
+        applyReportPayload(reportResource.availableData);
+      },
+    });
+    return () => modal.destroy();
+  }, [
+    applyReportPayload,
+    reportResource.availableData,
+    reportResource.availableRevision,
+    reportResource.updateAvailable,
+    reportResource.applyAvailable,
+  ]);
 
   // 刷新数据
   const handleRefresh = async () => {
@@ -452,8 +482,9 @@ const AcademicReportPage = ({ offlineMode = false }) => {
     message.loading('正在刷新...', 0);
     
     try {
-      await refreshAcademicReport();
-      await loadData();
+      await reportResource.refresh();
+      const latest = await reportResource.reloadAndApply();
+      if (latest) applyReportPayload(latest);
       message.destroy();
       message.success('数据已刷新');
     } catch (error) {

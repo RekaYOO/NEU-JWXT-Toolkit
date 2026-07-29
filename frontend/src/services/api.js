@@ -20,6 +20,7 @@ api.interceptors.response.use(
       } else if (
         sessionStorage.getItem(OFFLINE_SESSION_KEY) !== '1'
         && error.config?.url !== '/api/status'
+        && !error.config?.skipAuthRedirect
         && !error.config?.url?.startsWith('/api/access/')
         && !error.config?.url?.startsWith('/api/offline/')
       ) {
@@ -93,6 +94,18 @@ export const cancelRequest = (requestId) => {
     return true;
   }
   return false;
+};
+
+const runCancellable = async (requestId, request) => {
+  const config = createCancellableConfig(requestId);
+  const controller = pendingRequests.get(requestId);
+  try {
+    return await request(config);
+  } finally {
+    if (pendingRequests.get(requestId) === controller) {
+      pendingRequests.delete(requestId);
+    }
+  }
 };
 
 /**
@@ -171,10 +184,17 @@ export const logout = async () => {
  * 获取成绩 - 智能合并本地和远程
  * @param {boolean} refresh - 是否强制刷新
  */
-export const getScores = async (refresh = false) => {
-  const response = await api.get('/api/scores', {
-    params: { refresh }
-  });
+export const getScores = async (refresh = false, options = {}) => {
+  const response = await runCancellable('scores', (cancelConfig) => api.get(
+    '/api/scores',
+    { ...options, params: { refresh }, ...cancelConfig }
+  ));
+  return response.data;
+};
+
+// 只读取当前登录账号的本地缓存，不检查教务系统会话
+export const getCachedScores = async () => {
+  const response = await api.get('/api/scores/cache', { skipAuthRedirect: true });
   return response.data;
 };
 
@@ -185,8 +205,8 @@ export const getScoresByTerm = async () => {
 };
 
 // 刷新成绩
-export const refreshScores = async () => {
-  const response = await api.post('/api/scores/refresh');
+export const refreshScores = async (options = {}) => {
+  const response = await api.post('/api/scores/refresh', null, options);
   return response.data;
 };
 
@@ -347,10 +367,23 @@ export const cleanupLogs = async (keepDays = 30) => {
  * 获取学业监测报告（培养计划）- 智能合并本地和远程
  * @param {boolean} refresh - 是否强制刷新
  */
-export const getAcademicReport = async (refresh = false) => {
-  const response = await api.get('/api/academic-report', {
-    params: { refresh }
-  });
+export const getAcademicReport = async (refresh = false, options = {}) => {
+  const response = await runCancellable(
+    'academicReport',
+    (cancelConfig) => api.get(
+      '/api/academic-report',
+      { ...options, params: { refresh }, ...cancelConfig }
+    )
+  );
+  return response.data;
+};
+
+// 只读取当前登录账号的本地缓存，不检查教务系统会话
+export const getCachedAcademicReport = async () => {
+  const response = await api.get(
+    '/api/academic-report/cache',
+    { skipAuthRedirect: true },
+  );
   return response.data;
 };
 
@@ -368,8 +401,42 @@ export const getAcademicReportSummary = async (refresh = false) => {
 /**
  * 刷新培养计划数据
  */
-export const refreshAcademicReport = async () => {
-  const response = await api.post('/api/academic-report/refresh');
+export const refreshAcademicReport = async (options = {}) => {
+  const response = await api.post('/api/academic-report/refresh', null, options);
+  return response.data;
+};
+
+// ── 统一缓存协调 API ──────────────────────────────────────────────
+
+export const requestCacheRefresh = async (
+  resource,
+  { force = false, reason = 'page_swr', variant = 'default' } = {},
+) => {
+  const response = await api.post(
+    `/api/cache/refresh/${encodeURIComponent(resource)}`,
+    null,
+    {
+      params: { force, reason, variant },
+      skipAuthRedirect: reason === 'page_swr',
+    },
+  );
+  return response.data;
+};
+
+export const getCacheRefreshJob = async (jobId, options = {}) => {
+  const response = await api.get(
+    `/api/cache/jobs/${encodeURIComponent(jobId)}`,
+    { ...options, skipAuthRedirect: true },
+  );
+  return response.data;
+};
+
+export const getCacheEvents = async (after = '', options = {}) => {
+  const response = await api.get('/api/cache/events', {
+    ...options,
+    params: after ? { after } : {},
+    skipAuthRedirect: true,
+  });
   return response.data;
 };
 
@@ -430,6 +497,33 @@ export const deselectExperimentRound = async (data) => {
 
 export const getResearchTraining = async (params = {}) => {
   const response = await api.get('/api/research-training', { params });
+  return response.data;
+};
+
+export const getResearchTrainingCache = async () => {
+  const response = await api.get('/api/research-training/cache');
+  return response.data;
+};
+
+let researchRefreshPromise = null;
+
+export const refreshResearchTraining = () => {
+  if (!researchRefreshPromise) {
+    researchRefreshPromise = api.post(
+      '/api/research-training/refresh',
+      null,
+      { skipAuthRedirect: true },
+    )
+      .then((response) => response.data)
+      .finally(() => {
+        researchRefreshPromise = null;
+      });
+  }
+  return researchRefreshPromise;
+};
+
+export const setResearchTopicFavorite = async (data) => {
+  const response = await api.post('/api/research-training/favorite', data);
   return response.data;
 };
 
