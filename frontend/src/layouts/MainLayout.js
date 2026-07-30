@@ -58,6 +58,7 @@ const MainLayout = ({
     ? menuItems.filter(item => (
       (item.key === '/scores' && offlineCapabilities.has_scores)
       || (item.key === '/academic-report' && offlineCapabilities.has_report)
+      || (item.key === '/research-training' && offlineCapabilities.has_research)
     ))
     : menuItems;
 

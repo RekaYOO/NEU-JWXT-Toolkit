@@ -9,7 +9,7 @@ import {
 import {
   CheckCircleOutlined, CloseCircleOutlined, EyeOutlined, HeartFilled,
   HeartOutlined, MailOutlined, PhoneOutlined, ReadOutlined, ReloadOutlined,
-  SearchOutlined, TeamOutlined, UserOutlined
+  SearchOutlined, TeamOutlined, UserOutlined, DatabaseOutlined
 } from '@ant-design/icons';
 import {
   cancelResearchEnrollment,
@@ -35,7 +35,7 @@ const updateSummary = (result) => {
   return parts.length ? `${parts.join('，')}。` : '课题数据已有更新。';
 };
 
-const ResearchTrainingPage = () => {
+const ResearchTrainingPage = ({ offlineMode = false }) => {
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
   const [form] = Form.useForm();
@@ -151,6 +151,10 @@ const ResearchTrainingPage = () => {
   ]);
 
   const refreshNow = async ({ silentSuccess = false } = {}) => {
+    if (offlineMode) {
+      message.info('离线模式不会连接教务系统');
+      return null;
+    }
     setRefreshing(true);
     setSyncWarning('');
     try {
@@ -201,7 +205,7 @@ const ResearchTrainingPage = () => {
   );
 
   const showDetail = async (topic) => {
-    if (topic.expired) return;
+    if (topic.expired || offlineMode) return;
     setDetailLoading(true);
     setDetail({ title: topic.title });
     try {
@@ -215,6 +219,7 @@ const ResearchTrainingPage = () => {
   };
 
   const toggleFavorite = async (topic, currentlyFavorite) => {
+    if (offlineMode) return;
     const batchId = topic.favorite_batch_id || data?.batch?.batch_id;
     const requestKey = `${batchId}:${topic.topic_id}`;
     setFavoriteLoading(requestKey);
@@ -244,6 +249,7 @@ const ResearchTrainingPage = () => {
   };
 
   const openEnroll = (topic) => {
+    if (offlineMode) return;
     if (!data?.eligibility?.available) {
       message.warning(data?.eligibility?.reason || '当前资格信息不完整，暂时无法报名');
       return;
@@ -253,6 +259,7 @@ const ResearchTrainingPage = () => {
   };
 
   const submitEnrollment = async () => {
+    if (offlineMode) return;
     try {
       const values = await form.validateFields();
       setSubmitting(true);
@@ -275,6 +282,7 @@ const ResearchTrainingPage = () => {
   };
 
   const cancelEnrollment = (topic) => {
+    if (offlineMode) return;
     Modal.confirm({
       title: '确认取消报名？',
       content: `将取消“${topic.title}”的报名记录。`,
@@ -315,13 +323,16 @@ const ResearchTrainingPage = () => {
             ) : (
               <Tag color="success">可报名</Tag>
             )}
-            <Tooltip title={isFavorite ? '取消收藏' : '收藏课题'}>
+            <Tooltip title={offlineMode
+              ? '离线模式为只读，重新登录后可调整收藏'
+              : (isFavorite ? '取消收藏' : '收藏课题')}>
               <Button
                 className="research-favorite-button"
                 type="text"
                 aria-label={isFavorite ? '取消收藏课题' : '收藏课题'}
                 icon={isFavorite ? <HeartFilled /> : <HeartOutlined />}
                 loading={favoriteLoading === requestKey}
+                disabled={offlineMode}
                 onClick={() => toggleFavorite(topic, isFavorite)}
               />
             </Tooltip>
@@ -344,18 +355,24 @@ const ResearchTrainingPage = () => {
           </Text>
         )}
         <div className="research-topic-card__actions">
-          <Button icon={<EyeOutlined />} disabled={topic.expired}
+          <Button icon={<EyeOutlined />} disabled={topic.expired || offlineMode}
             onClick={() => showDetail(topic)}>
-            {topic.expired ? '课题已下架' : '查看详情'}
+            {topic.expired
+              ? '课题已下架'
+              : offlineMode ? '详情需在线查看' : '查看详情'}
           </Button>
           {!topic.expired && (topic.is_registered ? (
-            <Button danger disabled={!topic.can_cancel}
+            <Button danger disabled={offlineMode || !topic.can_cancel}
               onClick={() => cancelEnrollment(topic)}>
               取消报名
             </Button>
           ) : (
             <Button type="primary"
-              disabled={!topic.can_enroll || !data?.eligibility?.available}
+              disabled={
+                offlineMode
+                || !topic.can_enroll
+                || !data?.eligibility?.available
+              }
               onClick={() => openEnroll(topic)}>
               报名
             </Button>
@@ -377,12 +394,26 @@ const ResearchTrainingPage = () => {
           <Text type="secondary">{batch?.name || '学生科研训练课题报名与状态查询'}</Text>
           {savedAt && <Text className="research-cache-time" type="secondary">本地数据更新于 {savedAt}</Text>}
         </div>
-        <Button icon={<ReloadOutlined />} onClick={() => refreshNow()}
-          loading={refreshing}>
-          刷新
-        </Button>
+        <Tooltip title={offlineMode ? '离线模式不会连接教务系统' : ''}>
+          <Button
+            icon={offlineMode ? <DatabaseOutlined /> : <ReloadOutlined />}
+            onClick={() => refreshNow()}
+            loading={refreshing}
+            disabled={offlineMode}
+          >
+            {offlineMode ? '只读离线数据' : '刷新'}
+          </Button>
+        </Tooltip>
       </div>
 
+      {offlineMode && (
+        <Alert
+          type="info"
+          showIcon
+          message="当前显示本地缓存"
+          description="搜索和筛选仍可使用；刷新、课题详情、收藏、报名与取消报名已停用，不会连接教务系统。"
+        />
+      )}
       {error && <Alert type="error" showIcon message={error} />}
       {syncWarning && <Alert className="research-sync-alert" type="warning"
         showIcon message={syncWarning} />}

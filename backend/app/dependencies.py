@@ -167,7 +167,7 @@ _cache_registry = CacheRegistry(
             account_scope=AccountScope.ACCOUNT,
             payload_type=PayloadType.JSON,
             max_age=timedelta(minutes=5),
-            offline_readable=False,
+            offline_readable=True,
             sensitivity="private-academic",
             fetch=_fetch_research_resource,
             canonicalize=canonicalize_research_training,
@@ -300,28 +300,47 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
     2. 尝试用保存的 Cookie 恢复（免密）
     3. 尝试用保存的密码重新登录
     """
+    attempted_password_login = False
+
     # 1. 检查内存中的客户端
     active_client = _auth_sessions.peek_client()
     if active_client is not None:
-        # 尝试确保登录（内部会优先用 Cookie 刷新）
-        if active_client.ensure_login():
-            return active_client
-        # 网页二维码或短信认证尚未完成时必须保留同一个 Session，
-        # 后续状态接口仍需使用其中的 flow id、Cookie 和统一认证上下文。
+        # 二维码或短信流程必须继续使用原 Session。状态查询不能在流程尚未
+        # 完成时触发另一轮静默账密登录并覆盖 flow。
         if active_client._webvpn_qr_flow or active_client._webvpn_sms_flow:
-            return None
+            return active_client if active_client.is_logged_in else None
+
+        # 尝试确保登录（内部会优先用 Cookie 刷新）
+        attempted_password_login = bool(
+            getattr(active_client, "username", "")
+            and getattr(active_client, "password", "")
+        )
+        try:
+            if active_client.ensure_login():
+                return active_client
+        except Exception as error:
+            _api_logger.warning(
+                "[Auth] 当前会话自动恢复失败: %s",
+                type(error).__name__,
+            )
         set_auth_client(None)
 
     # 2. 先尝试恢复二维码/WebVPN Cookie 会话，不要求保存密码
     session_client = NEUAuthClient(cookie_file=COOKIE_FILE)
-    if session_client.ensure_login():
-        set_auth_client(session_client)
-        schedule_login_bootstrap(session_client)
-        return session_client
+    try:
+        if session_client.ensure_login():
+            set_auth_client(session_client)
+            schedule_login_bootstrap(session_client)
+            return session_client
+    except Exception as error:
+        _api_logger.warning(
+            "[Auth] Cookie 会话自动恢复失败: %s",
+            type(error).__name__,
+        )
 
     # 3. 尝试加载保存的凭证并创建客户端
     creds = _storage.load_credentials()
-    if creds:
+    if creds and not attempted_password_login:
         username, password = creds
         # 创建客户端时会自动尝试从 Cookie 文件恢复
         client = NEUAuthClient(
@@ -330,10 +349,16 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
             cookie_file=COOKIE_FILE
         )
         # 尝试登录（内部会优先用 Cookie 刷新票据）
-        if client.ensure_login():
-            set_auth_client(client)
-            schedule_login_bootstrap(client)
-            return client
+        try:
+            if client.ensure_login():
+                set_auth_client(client)
+                schedule_login_bootstrap(client)
+                return client
+        except Exception as error:
+            _api_logger.warning(
+                "[Auth] 已保存账号密码自动恢复失败: %s",
+                type(error).__name__,
+            )
 
     return None
 

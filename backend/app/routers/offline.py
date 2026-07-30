@@ -11,7 +11,13 @@ from backend.app.dependencies import (
     _report_storage,
     _storage,
 )
-from backend.app.schemas import AcademicReportResponse, CourseScoreModel, ScoresResponse
+from backend.app.schemas import (
+    AcademicReportResponse,
+    CourseScoreModel,
+    ResearchCacheResponse,
+    ScoresResponse,
+)
+from backend.app.routers.research import _cache_response as _research_cache_response
 from backend.app.routers.scores import _score_model
 from backend.app.cache_support import read_cache_offline
 
@@ -20,7 +26,9 @@ router = APIRouter()
 
 
 def _offline_account() -> str | None:
-    account = _cache_store.latest_account_for(("scores", "academic-report"))
+    account = _cache_store.latest_account_for(
+        ("scores", "academic-report", "research-training")
+    )
     if account:
         return account
     score_data = _storage.load_scores_with_meta()
@@ -38,12 +46,25 @@ def _offline_status() -> dict:
     if account:
         score_entry, _ = read_cache_offline(account, "scores")
         report_entry, _ = read_cache_offline(account, "academic-report")
+        research_entry, _ = read_cache_offline(account, "research-training")
         has_scores = _compatible(score_entry, "scores")
         has_report = _compatible(report_entry, "academic-report")
+        has_research = _compatible(research_entry, "research-training")
+        resources = [
+            resource
+            for resource, available in (
+                ("scores", has_scores),
+                ("academic-report", has_report),
+                ("research-training", has_research),
+            )
+            if available
+        ]
         return {
-            "available": has_scores or has_report,
+            "available": bool(resources),
             "has_scores": has_scores,
             "has_report": has_report,
+            "has_research": has_research,
+            "resources": resources,
             "username": account,
             "read_only": True,
         }
@@ -60,6 +81,15 @@ def _offline_status() -> dict:
         "available": has_scores or has_report,
         "has_scores": has_scores,
         "has_report": has_report,
+        "has_research": False,
+        "resources": [
+            resource
+            for resource, available in (
+                ("scores", has_scores),
+                ("academic-report", has_report),
+            )
+            if available
+        ],
         "username": str(username),
         "read_only": True,
     }
@@ -205,4 +235,20 @@ def offline_academic_report():
         source="offline",
         is_fresh=False,
         last_update=local.get("saved_at"),
+    )
+
+
+@router.get("/research-training", response_model=ResearchCacheResponse)
+def offline_research_training():
+    account = _offline_account()
+    entry, stale = _offline_entry("research-training")
+    if not account or not entry:
+        raise HTTPException(
+            status_code=404,
+            detail="本地没有已保存的科研训练数据",
+        )
+    return _research_cache_response(
+        account,
+        entry,
+        is_stale=bool(stale),
     )

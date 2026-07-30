@@ -7,6 +7,7 @@ import {
   getCachedAcademicReport,
   getCachedScores,
   getOfflineAcademicReport,
+  getOfflineResearchTraining,
   getOfflineScores,
   getResearchTrainingCache,
   requestCacheRefresh,
@@ -30,7 +31,8 @@ const definitions = {
   },
   'research-training': {
     online: getResearchTrainingCache,
-    offlineReadable: false,
+    offline: getOfflineResearchTraining,
+    offlineReadable: true,
   },
 };
 

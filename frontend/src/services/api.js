@@ -225,6 +225,11 @@ export const getOfflineAcademicReport = async () => {
   return response.data;
 };
 
+export const getOfflineResearchTraining = async () => {
+  const response = await api.get('/api/offline/research-training');
+  return response.data;
+};
+
 // ── 成绩追踪 API ─────────────────────────────────────────────────────────────
 
 export const getGradeTrackingConfig = async () => {

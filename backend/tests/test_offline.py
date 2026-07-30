@@ -58,6 +58,8 @@ def test_offline_routes_read_only_local_caches(monkeypatch, tmp_path):
         "available": True,
         "has_scores": True,
         "has_report": True,
+        "has_research": False,
+        "resources": ["scores", "academic-report"],
         "username": "20250001",
         "read_only": True,
     }
@@ -65,3 +67,34 @@ def test_offline_routes_read_only_local_caches(monkeypatch, tmp_path):
     assert scores.calculated_gpa == 4.0
     assert report.source == "offline"
     assert report.student_id == "20250001"
+
+
+def test_offline_research_uses_cached_snapshot(monkeypatch):
+    entry = object()
+    monkeypatch.setattr(offline, "_offline_account", lambda: "20250001")
+    monkeypatch.setattr(
+        offline,
+        "_offline_entry",
+        lambda resource: (entry, True)
+        if resource == "research-training"
+        else (None, None),
+    )
+    monkeypatch.setattr(
+        offline,
+        "_research_cache_response",
+        lambda account, cached, **kwargs: {
+            "available": True,
+            "username": account,
+            "entry": cached,
+            **kwargs,
+        },
+    )
+
+    result = offline.offline_research_training()
+
+    assert result == {
+        "available": True,
+        "username": "20250001",
+        "entry": entry,
+        "is_stale": True,
+    }

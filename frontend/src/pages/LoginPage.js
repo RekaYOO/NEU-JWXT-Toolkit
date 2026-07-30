@@ -34,7 +34,13 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
         const localStatus = await getOfflineStatus();
         setOfflineStatus(localStatus);
       } catch (error) {
-        setOfflineStatus({ available: false, has_scores: false, has_report: false });
+        setOfflineStatus({
+          available: false,
+          has_scores: false,
+          has_report: false,
+          has_research: false,
+          resources: [],
+        });
       } finally {
         setChecking(false);
       }
@@ -318,7 +324,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
           {networkMode === 'offline' ? (
             <div className="offline-mode-note">
               <DatabaseOutlined />
-              <span>只读查看本地成绩和培养计划</span>
+              <span>只读查看当前设备已有缓存的功能页</span>
             </div>
           ) : (
             <>

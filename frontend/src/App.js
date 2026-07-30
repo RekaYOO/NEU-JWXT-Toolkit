@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { ConfigProvider, Layout, Spin, message } from 'antd';
+import React, { useState, useEffect, useRef } from 'react';
+import { ConfigProvider, Layout, Modal, Spin, message } from 'antd';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import MainLayout from './layouts/MainLayout';
@@ -19,6 +19,12 @@ import './App.css';
 
 const { Content } = Layout;
 const OFFLINE_SESSION_KEY = 'neu_offline_mode';
+const EMPTY_OFFLINE_CAPABILITIES = {
+  has_scores: false,
+  has_report: false,
+  has_research: false,
+  resources: [],
+};
 
 const appTheme = {
   token: {
@@ -92,10 +98,11 @@ function App() {
   const [offlineMode, setOfflineMode] = useState(
     () => sessionStorage.getItem(OFFLINE_SESSION_KEY) === '1'
   );
-  const [offlineCapabilities, setOfflineCapabilities] = useState({
-    has_scores: false,
-    has_report: false,
-  });
+  const [offlineCapabilities, setOfflineCapabilities] = useState(
+    EMPTY_OFFLINE_CAPABILITIES
+  );
+  const authRecoveryPromptRef = useRef(false);
+  const authRecoveryModalRef = useRef(null);
 
   const loadApplicationState = async () => {
     const [access, health] = await Promise.all([getAccessStatus(), getHealth()]);
@@ -118,7 +125,7 @@ function App() {
         }
         sessionStorage.removeItem(OFFLINE_SESSION_KEY);
         setOfflineMode(false);
-        setOfflineCapabilities({ has_scores: false, has_report: false });
+        setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
         const status = await checkStatus();
         setIsLoggedIn(status.is_logged_in);
         setUserInfo(status.current_user);
@@ -159,6 +166,9 @@ function App() {
 
   useEffect(() => {
     const requireAccess = () => {
+      authRecoveryModalRef.current?.destroy();
+      authRecoveryModalRef.current = null;
+      authRecoveryPromptRef.current = false;
       setAccessState(previous => ({ ...previous, required: true, authenticated: false }));
       setIsLoggedIn(false);
       setUserInfo(null);
@@ -168,20 +178,66 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const requireAuthentication = () => {
-      if (offlineMode) return;
+    const finishAsLoggedOut = () => {
+      sessionStorage.removeItem(OFFLINE_SESSION_KEY);
+      setOfflineMode(false);
+      setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
       setIsLoggedIn(false);
       setUserInfo(null);
-      message.info('登录已失效，请重新完成 WebVPN 认证');
+    };
+
+    const requireAuthentication = async () => {
+      if (offlineMode || authRecoveryPromptRef.current) return;
+      authRecoveryPromptRef.current = true;
+
+      let localStatus = null;
+      try {
+        localStatus = await getOfflineStatus();
+      } catch (error) {
+        console.warn('读取离线能力失败', error);
+      }
+
+      if (!localStatus?.available) {
+        authRecoveryPromptRef.current = false;
+        finishAsLoggedOut();
+        message.warning('教务会话已失效，自动恢复未成功，请重新登录');
+        return;
+      }
+
+      authRecoveryModalRef.current = Modal.confirm({
+        title: '教务会话已失效',
+        content: '系统已尝试静默恢复登录但未成功。你可以进入只读离线模式继续查看本地数据，或返回登录页重新认证。',
+        okText: '进入离线模式',
+        cancelText: '重新登录',
+        onOk: () => {
+          sessionStorage.setItem(OFFLINE_SESSION_KEY, '1');
+          setOfflineMode(true);
+          setOfflineCapabilities(localStatus);
+          setIsLoggedIn(true);
+          setUserInfo(localStatus.username || '离线用户');
+          authRecoveryPromptRef.current = false;
+          authRecoveryModalRef.current = null;
+        },
+        onCancel: () => {
+          finishAsLoggedOut();
+          authRecoveryPromptRef.current = false;
+          authRecoveryModalRef.current = null;
+        },
+      });
     };
     window.addEventListener('neu-auth-required', requireAuthentication);
-    return () => window.removeEventListener('neu-auth-required', requireAuthentication);
+    return () => {
+      window.removeEventListener('neu-auth-required', requireAuthentication);
+      authRecoveryModalRef.current?.destroy();
+      authRecoveryModalRef.current = null;
+      authRecoveryPromptRef.current = false;
+    };
   }, [offlineMode]);
 
   const handleLoginSuccess = (username) => {
     sessionStorage.removeItem(OFFLINE_SESSION_KEY);
     setOfflineMode(false);
-    setOfflineCapabilities({ has_scores: false, has_report: false });
+    setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
     setIsLoggedIn(true);
     setUserInfo(username);
     message.success('登录成功');
@@ -191,7 +247,7 @@ function App() {
     const wasOffline = offlineMode;
     sessionStorage.removeItem(OFFLINE_SESSION_KEY);
     setOfflineMode(false);
-    setOfflineCapabilities({ has_scores: false, has_report: false });
+    setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
     setIsLoggedIn(false);
     setUserInfo(null);
     message.success(wasOffline ? '已退出离线模式' : '已登出');
@@ -208,7 +264,9 @@ function App() {
 
   const offlineDefaultPath = offlineCapabilities.has_scores
     ? '/scores'
-    : '/academic-report';
+    : offlineCapabilities.has_report
+      ? '/academic-report'
+      : '/research-training';
 
   if (isLoading) {
     return (
@@ -296,7 +354,12 @@ function App() {
                   : <Navigate to={offlineDefaultPath} />}
               />
               <Route path="experiment-courses" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <ExperimentCoursePage />} />
-              <Route path="research-training" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <ResearchTrainingPage />} />
+              <Route
+                path="research-training"
+                element={!offlineMode || offlineCapabilities.has_research
+                  ? <ResearchTrainingPage offlineMode={offlineMode} />
+                  : <Navigate to={offlineDefaultPath} />}
+              />
               <Route path="evaluation" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <EvaluationPage />} />
               <Route path="exams" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <ExamPage />} />
               <Route path="logs" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <LogsPage />} />

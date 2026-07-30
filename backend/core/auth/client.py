@@ -932,6 +932,29 @@ class NEUAuthClient:
                 self._save_cookies()
                 return True
             self._logged_in = False
+            if not self.username or not self.password:
+                return False
+
+            logger.info("WebVPN Cookie 失效，静默尝试使用已保存的账号密码恢复...")
+            try:
+                result = self.start_webvpn_password_login()
+            except NEULoginError as error:
+                logger.warning(
+                    "WebVPN 账号密码静默恢复失败，错误类型: %s",
+                    getattr(error, "error_type", LOGIN_ERR_UNKNOWN),
+                )
+                return False
+
+            if result.get("status") == "authenticated":
+                self._logged_in = True
+                return True
+
+            # 短信验证属于交互式认证，静默恢复不能擅自发送短信或保留一个
+            # 前端并不知道的流程。交给登录页重新发起完整认证。
+            if result.get("status") == "sms_required":
+                logger.info("WebVPN 静默恢复需要短信验证，转交登录页处理")
+                self._webvpn_sms_flow = None
+            self._logged_in = False
             return False
 
         if self._logged_in:
