@@ -343,12 +343,12 @@
     font-size: 16px;
   }
 
-  .main-header.has-center-slot .page-context {
-    display: none;
-  }
-
   .main-header.has-center-slot .header-center-slot {
     width: calc(100% - 144px);
+  }
+
+  .main-header.has-center-slot .page-context {
+    display: none;
   }
 
   .workspace-content {

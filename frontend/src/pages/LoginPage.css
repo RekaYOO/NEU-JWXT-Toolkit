@@ -1,5 +1,5 @@
 .login-page {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 32px;
@@ -16,7 +16,7 @@
 
 .login-shell {
   width: min(100%, 980px);
-  height: min(620px, calc(100vh - 64px));
+  height: min(620px, calc(100dvh - 64px));
   display: grid;
   grid-template-columns: minmax(290px, 0.9fr) minmax(390px, 1.1fr);
   border: 1px solid var(--color-line);
@@ -293,7 +293,7 @@
     width: min(100%, 520px);
     height: auto;
     min-height: 0;
-    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
     grid-template-columns: 1fr;
     border: 1px solid #d8e0e5;
     border-radius: 10px;
@@ -310,6 +310,7 @@
     flex-direction: column;
     justify-content: center;
     padding: 34px 28px;
+    overflow-y: auto;
   }
 
   .login-panel .ant-radio-button-wrapper {
@@ -336,6 +337,59 @@
     font-size: 13px;
   }
 
+  .login-sms-modal .ant-modal {
+    width: calc(100vw - 24px) !important;
+    max-width: 480px;
+    margin: 12px auto;
+    padding-bottom: 0;
+  }
+
+  .login-sms-modal .ant-modal-content {
+    max-height: calc(100dvh - 24px);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .login-sms-modal .ant-modal-body {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .login-sms-modal .ant-modal-footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .login-sms-modal .ant-modal-footer button {
+    width: 100%;
+    min-height: 42px;
+    margin-inline-start: 0;
+  }
+}
+
+@media (max-width: 359px) {
+  .login-page {
+    padding: 0;
+    background: #ffffff;
+  }
+
+  .login-shell {
+    max-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .login-panel,
+  .login-shell.is-qr-active .login-panel {
+    padding: 24px 16px;
+  }
+
+  .login-panel .access-mode-group .ant-radio-button-wrapper {
+    padding-inline: 4px;
+    font-size: 12px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

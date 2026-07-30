@@ -146,6 +146,7 @@
 @media (max-width: 767px) {
   .tracking-page {
     gap: 12px;
+    padding-bottom: calc(72px + env(safe-area-inset-bottom));
   }
 
   .tracking-hero {
@@ -177,15 +178,8 @@
     flex-direction: column;
   }
 
-  .tracking-status-main .ant-space,
-  .tracking-status-main .ant-space-item,
-  .tracking-status-main button {
-    width: 100%;
-  }
-
-  .tracking-status-main .ant-space {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+  .tracking-desktop-actions {
+    display: none;
   }
 
   .tracking-status-meta {
@@ -200,10 +194,8 @@
   .tracking-card-actions button {
     width: 100%;
   }
-}
 
-@media (max-width: 380px) {
-  .tracking-status-main .ant-space {
-    grid-template-columns: 1fr;
+  .tracking-mobile-action-bar .ant-space-compact > * {
+    flex: 1 1 50%;
   }
 }

@@ -87,6 +87,10 @@
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
+.exam-mobile-view {
+  display: none;
+}
+
 .exam-card:hover {
   border-color: #ccd7dc;
   box-shadow: 0 4px 14px rgba(23, 33, 43, 0.07);
@@ -145,7 +149,7 @@
   font-size: 12px;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .exam-page {
     padding: 0;
   }
@@ -167,7 +171,61 @@
     grid-template-columns: 1fr;
   }
 
+  .exam-mobile-view {
+    display: flex;
+    margin-bottom: 16px;
+  }
+
+  .exam-card-header {
+    gap: 8px;
+  }
+
+  .exam-course-name,
+  .exam-info-item {
+    overflow-wrap: anywhere;
+  }
+
   .exam-stats-row .ant-col {
-    margin-bottom: 8px;
+    width: auto;
+    padding-inline: 0 !important;
+    flex: none;
+    max-width: none;
+    margin-bottom: 0;
+  }
+
+  .exam-stats-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: hidden;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line-soft);
+    border-radius: var(--radius-md);
+    margin-inline: 0 !important;
+  }
+
+  .exam-stats-row .ant-card {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .exam-stats-row .ant-col:nth-child(even) .ant-card {
+    border-inline-start: 1px solid var(--color-line-soft);
+  }
+
+  .exam-stats-row .ant-col:nth-child(n + 3) .ant-card {
+    border-top: 1px solid var(--color-line-soft);
+  }
+}
+
+@media (max-width: 359px) {
+  .exam-header-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .exam-header-actions .ant-select,
+  .exam-header-actions .ant-btn {
+    width: 100% !important;
   }
 }

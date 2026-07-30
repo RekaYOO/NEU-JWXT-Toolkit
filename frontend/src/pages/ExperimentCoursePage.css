@@ -214,7 +214,35 @@
 }
 
 /* 响应式设计 */
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
+  .experiment-rounds-modal .ant-modal {
+    top: 8px;
+    width: calc(100vw - 16px) !important;
+    max-width: none;
+    margin: 0 8px;
+    padding-bottom: 8px;
+  }
+
+  .experiment-rounds-modal .ant-modal-content {
+    display: flex;
+    height: calc(100dvh - 16px);
+    flex-direction: column;
+    padding: 0;
+  }
+
+  .experiment-rounds-modal .ant-modal-header {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 16px;
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .experiment-rounds-modal .ant-modal-body {
+    min-height: 0;
+    padding: 14px;
+    overflow-y: auto;
+  }
+
   .experiment-course-page .page-header {
     gap: 10px;
   }
@@ -226,19 +254,34 @@
   }
 
   .experiment-course-page .stats-row {
-    display: flex;
-    gap: 8px;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .experiment-course-page .stats-row::-webkit-scrollbar {
-    display: none;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    overflow: hidden;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line-soft);
+    border-radius: var(--radius-md);
   }
 
   .experiment-course-page .stat-card {
-    flex: 1 0 78px;
-    min-width: 78px;
+    min-width: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .experiment-course-page .stat-card:nth-child(even) {
+    border-inline-start: 1px solid var(--color-line-soft);
+  }
+
+  .experiment-course-page .stat-card:nth-child(n + 3) {
+    border-top: 1px solid var(--color-line-soft);
+  }
+
+  .experiment-course-page .stat-card.success .stat-value,
+  .experiment-course-page .stat-card.warning .stat-value,
+  .experiment-course-page .stat-card.error .stat-value {
+    color: var(--color-ink);
   }
 
   .courses-card .ant-card-body {
@@ -260,8 +303,22 @@
   }
 
   .mobile-course-collapse .ant-collapse-header {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) 24px;
     align-items: center !important;
+    gap: 8px;
     padding: 14px 12px !important;
+  }
+
+  .mobile-course-collapse .ant-collapse-header-text {
+    min-width: 0;
+  }
+
+  .mobile-course-collapse .ant-collapse-expand-icon {
+    position: static !important;
+    width: 24px;
+    display: grid;
+    place-items: center;
   }
 
   .mobile-course-collapse .ant-collapse-content {

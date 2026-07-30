@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Card, Table, Select, DatePicker, Button, Tag, Space, 
   Statistic, Row, Col, Alert, Input, message, Spin,
-  Radio, Typography, Empty
+  Radio, Typography, Empty, Grid, Descriptions, Modal
 } from 'antd';
 import { 
   FileTextOutlined, DownloadOutlined, DeleteOutlined,
@@ -11,6 +11,12 @@ import {
 } from '@ant-design/icons';
 import { getLogSummary, getLogFiles, getLogContent, tailLog, searchLogs, cleanupLogs } from '../services/api';
 import dayjs from 'dayjs';
+import {
+  MobileDetailDrawer,
+  MobileFilterButton,
+  MobileFilterChips,
+  MobileFilterDrawer,
+} from '../components/mobile/MobileUX';
 import './LogsPage.css';
 
 const { Option } = Select;
@@ -50,6 +56,11 @@ const LogsPage = () => {
   const [selectedLevel, setSelectedLevel] = useState(null);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [viewMode, setViewMode] = useState('content'); // content / tail / search
+  const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
+  const [mobileDetail, setMobileDetail] = useState(null);
+  const [mobileDraft, setMobileDraft] = useState(null);
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.md;
 
   // 加载统计摘要
   const loadSummary = useCallback(async () => {
@@ -107,15 +118,18 @@ const LogsPage = () => {
   }, [selectedCategory, selectedDate, selectedLevel, searchKeyword, viewMode]);
 
   // 搜索日志
-  const handleSearch = async () => {
-    if (!searchKeyword.trim()) {
+  const handleSearch = async (
+    keyword = searchKeyword,
+    category = selectedCategory,
+  ) => {
+    if (!keyword.trim()) {
       message.warning('请输入搜索关键词');
       return;
     }
     
     setSearchLoading(true);
     try {
-      const data = await searchLogs(searchKeyword, selectedCategory, 7, 100);
+      const data = await searchLogs(keyword, category, 7, 100);
       // 转换为统一的格式
       const formatted = (data.results || []).map(r => ({
         timestamp: r.timestamp || `${r.date} 00:00:00`,
@@ -149,6 +163,95 @@ const LogsPage = () => {
       // 静默处理错误
       console.log('清理失败:', error);
     }
+  };
+
+  const confirmCleanup = () => {
+    Modal.confirm({
+      title: '清理旧日志？',
+      content: '将删除 30 天以前的日志文件，此操作无法撤销。',
+      okText: '确认清理',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: handleCleanup,
+    });
+  };
+
+  const openMobileFilters = () => {
+    setMobileDraft({
+      category: selectedCategory,
+      date: selectedDate,
+      level: selectedLevel,
+      keyword: searchKeyword,
+      view: viewMode === 'tail' ? 'tail' : 'content',
+    });
+    setMobileFilterOpen(true);
+  };
+
+  const applyMobileFilters = () => {
+    if (!mobileDraft) return;
+    setSelectedCategory(mobileDraft.category);
+    setSelectedDate(mobileDraft.date);
+    setSelectedLevel(mobileDraft.level);
+    setSearchKeyword(mobileDraft.keyword);
+    setMobileFilterOpen(false);
+    if (mobileDraft.keyword.trim()) {
+      handleSearch(mobileDraft.keyword, mobileDraft.category);
+    } else {
+      setViewMode(mobileDraft.view);
+    }
+  };
+
+  const resetMobileFilters = () => {
+    const reset = {
+      category: 'system',
+      date: dayjs(),
+      level: null,
+      keyword: '',
+      view: 'content',
+    };
+    setMobileDraft(reset);
+    setSelectedCategory(reset.category);
+    setSelectedDate(reset.date);
+    setSelectedLevel(reset.level);
+    setSearchKeyword('');
+    setViewMode('content');
+  };
+
+  const mobileActiveFilterCount = [
+    selectedCategory !== 'system',
+    !selectedDate?.isSame(dayjs(), 'day'),
+    Boolean(selectedLevel),
+    Boolean(searchKeyword),
+    viewMode === 'tail',
+  ].filter(Boolean).length;
+  const mobileFilterChips = [
+    selectedCategory !== 'system' && {
+      key: 'category',
+      label: `分类：${categoryOptions.find(item => item.value === selectedCategory)?.label}`,
+    },
+    !selectedDate?.isSame(dayjs(), 'day') && {
+      key: 'date',
+      label: `日期：${selectedDate?.format('YYYY-MM-DD')}`,
+    },
+    selectedLevel && { key: 'level', label: `级别：${selectedLevel}` },
+    searchKeyword && { key: 'keyword', label: `关键词：${searchKeyword}` },
+    viewMode === 'tail' && { key: 'view', label: '最新 100 行' },
+  ].filter(Boolean);
+
+  const clearMobileFilter = (key) => {
+    if (key === 'category') {
+      setSelectedCategory('system');
+      if (viewMode === 'search' && searchKeyword) {
+        handleSearch(searchKeyword, 'system');
+      }
+    }
+    if (key === 'date') setSelectedDate(dayjs());
+    if (key === 'level') setSelectedLevel(null);
+    if (key === 'keyword') {
+      setSearchKeyword('');
+      setViewMode('content');
+    }
+    if (key === 'view') setViewMode('content');
   };
 
   // 下载日志
@@ -257,7 +360,7 @@ const LogsPage = () => {
           <Space>
             <Button 
               icon={<DeleteOutlined />} 
-              onClick={handleCleanup}
+              onClick={confirmCleanup}
               size="small"
             >
               清理旧日志
@@ -274,7 +377,29 @@ const LogsPage = () => {
         }
       >
         {/* 筛选工具栏 */}
-        <Space wrap style={{ marginBottom: 16 }}>
+        {isMobile && (
+          <>
+            <div className="logs-mobile-tools">
+              <MobileFilterButton
+                activeCount={mobileActiveFilterCount}
+                onClick={openMobileFilters}
+              >
+                查看与筛选
+              </MobileFilterButton>
+              <Button
+                icon={<ReloadOutlined />}
+                onClick={() => {
+                  loadLogContent();
+                  loadSummary();
+                }}
+              >
+                刷新
+              </Button>
+            </div>
+            <MobileFilterChips items={mobileFilterChips} onClear={clearMobileFilter} />
+          </>
+        )}
+        {!isMobile && <Space wrap style={{ marginBottom: 16 }}>
           <Select
             value={selectedCategory}
             onChange={setSelectedCategory}
@@ -326,10 +451,10 @@ const LogsPage = () => {
           >
             刷新
           </Button>
-        </Space>
+        </Space>}
 
         {/* 搜索栏 */}
-        <Space style={{ marginBottom: 16, display: 'flex' }}>
+        {!isMobile && <Space style={{ marginBottom: 16, display: 'flex' }}>
           <Input
             placeholder="搜索日志关键词..."
             value={searchKeyword}
@@ -356,32 +481,57 @@ const LogsPage = () => {
               返回查看
             </Button>
           )}
-        </Space>
+        </Space>}
 
         {/* 日志内容表格 */}
-        <Table
-          columns={columns}
-          dataSource={entries}
-          rowKey={(record, index) => `${record.timestamp}-${index}`}
-          loading={loading}
-          pagination={{
-            pageSize: 50,
-            showSizeChanger: false,
-            showTotal: (total) => `共 ${total} 条`,
-          }}
-          size="small"
-          bordered
-          scroll={{ x: 'max-content', y: 500 }}
-          locale={{
-            emptyText: <Empty description="暂无日志记录" />,
-          }}
-        />
+        {isMobile ? (
+          <Spin spinning={loading}>
+            <div className="mobile-log-list">
+              {entries.map((entry, index) => (
+                <button
+                  type="button"
+                  className="mobile-log-card"
+                  key={`${entry.timestamp}-${index}`}
+                  onClick={() => setMobileDetail(entry)}
+                >
+                  <span className="mobile-log-card__head">
+                    <Tag color={levelColors[entry.level?.toUpperCase()] || 'default'}>
+                      {entry.level?.toUpperCase() || 'UNKNOWN'}
+                    </Tag>
+                    <time>{entry.timestamp || '-'}</time>
+                  </span>
+                  <strong>{entry.logger || '未知日志器'}</strong>
+                  <code>{entry.message || '-'}</code>
+                </button>
+              ))}
+              {!entries.length && !loading && <Empty description="暂无日志记录" />}
+            </div>
+          </Spin>
+        ) : (
+          <Table
+            columns={columns}
+            dataSource={entries}
+            rowKey={(record, index) => `${record.timestamp}-${index}`}
+            loading={loading}
+            pagination={{
+              pageSize: 50,
+              showSizeChanger: false,
+              showTotal: (total) => `共 ${total} 条`,
+            }}
+            size="small"
+            bordered
+            scroll={{ x: 'max-content', y: 500 }}
+            locale={{
+              emptyText: <Empty description="暂无日志记录" />,
+            }}
+          />
+        )}
 
         {/* 日志文件列表 */}
         {files.length > 0 && (
           <div style={{ marginTop: 16 }}>
             <Text type="secondary">最近日志文件：</Text>
-            <Space wrap size="small" style={{ marginTop: 8 }}>
+            <Space wrap size="small" className="recent-log-files" style={{ marginTop: 8 }}>
               {files.slice(0, 5).map(file => (
                 <Tag 
                   key={file.filename}
@@ -413,6 +563,78 @@ const LogsPage = () => {
         showIcon
         style={{ marginTop: 16 }}
       />
+      <MobileFilterDrawer
+        open={mobileFilterOpen}
+        onClose={() => setMobileFilterOpen(false)}
+        onApply={applyMobileFilters}
+        onReset={resetMobileFilters}
+        title="日志查看与筛选"
+      >
+        {mobileDraft && (
+          <>
+            <label className="mobile-field-label">日志分类</label>
+            <Select
+              value={mobileDraft.category}
+              options={categoryOptions.map(option => ({
+                label: option.label, value: option.value,
+              }))}
+              onChange={category => setMobileDraft(current => ({ ...current, category }))}
+            />
+            <label className="mobile-field-label">日期</label>
+            <DatePicker
+              value={mobileDraft.date}
+              onChange={date => setMobileDraft(current => ({ ...current, date }))}
+            />
+            <label className="mobile-field-label">日志级别</label>
+            <Select
+              allowClear
+              value={mobileDraft.level}
+              options={['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'].map(value => ({
+                label: value, value,
+              }))}
+              onChange={level => setMobileDraft(current => ({ ...current, level }))}
+            />
+            <label className="mobile-field-label">查看范围</label>
+            <Radio.Group
+              value={mobileDraft.view}
+              onChange={event => setMobileDraft(current => ({
+                ...current, view: event.target.value,
+              }))}
+              optionType="button"
+              buttonStyle="solid"
+            >
+              <Radio.Button value="content">全部内容</Radio.Button>
+              <Radio.Button value="tail">最新100行</Radio.Button>
+            </Radio.Group>
+            <label className="mobile-field-label">关键词</label>
+            <Input
+              allowClear
+              prefix={<SearchOutlined />}
+              value={mobileDraft.keyword}
+              onChange={event => setMobileDraft(current => ({
+                ...current, keyword: event.target.value,
+              }))}
+              placeholder="留空则按日期查看"
+            />
+          </>
+        )}
+      </MobileFilterDrawer>
+      <MobileDetailDrawer
+        open={Boolean(mobileDetail)}
+        onClose={() => setMobileDetail(null)}
+        title="日志详情"
+      >
+        {mobileDetail && (
+          <Descriptions column={1} bordered size="small">
+            <Descriptions.Item label="时间">{mobileDetail.timestamp || '-'}</Descriptions.Item>
+            <Descriptions.Item label="级别">{mobileDetail.level || 'UNKNOWN'}</Descriptions.Item>
+            <Descriptions.Item label="日志器">{mobileDetail.logger || '-'}</Descriptions.Item>
+            <Descriptions.Item label="消息">
+              <pre className="mobile-log-detail">{mobileDetail.message || '-'}</pre>
+            </Descriptions.Item>
+          </Descriptions>
+        )}
+      </MobileDetailDrawer>
     </div>
   );
 };

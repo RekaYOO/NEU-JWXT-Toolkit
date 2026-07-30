@@ -4,7 +4,7 @@ import {
   Table, Card, Statistic, Row, Col, Button, Tag, message, Alert,
   Tooltip, Dropdown, Checkbox, Space, InputNumber, Typography, Progress,
   Tree, Badge, Empty, Divider, Switch, Drawer, Pagination, Grid, Segmented, Input,
-  Modal
+  Modal, Descriptions
 } from 'antd';
 import {
   ReloadOutlined, BookOutlined, CheckCircleOutlined, TrophyOutlined,
@@ -19,6 +19,7 @@ import { columnSettings } from '../utils/settings';
 import { compareAcademicTerms } from '../utils/termSort';
 import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
 import dayjs from 'dayjs';
+import { MobileDetailDrawer } from '../components/mobile/MobileUX';
 import './AcademicReportPage.css';
 
 const { Title, Text } = Typography;
@@ -385,6 +386,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
   const [mobilePage, setMobilePage] = useState(1);
   const [courseSearchOpen, setCourseSearchOpen] = useState(false);
   const [courseSearch, setCourseSearch] = useState('');
+  const [mobileCourseDetail, setMobileCourseDetail] = useState(null);
   const reportResource = useCachedResource('academic-report');
   const initializedRef = useRef(false);
   const promptedRevisionRef = useRef('');
@@ -1201,7 +1203,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
               </Space>
             }
             extra={
-              <Space>
+              <Space className={isMobile ? 'academic-mobile-actions' : undefined}>
                 <Button
                   type={courseSearchOpen ? 'primary' : 'default'}
                   icon={<SearchOutlined />}
@@ -1218,7 +1220,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                 </Button>
                 {isMobile && (
                   <Button icon={<FolderOutlined />} onClick={() => setMobileCategoryOpen(true)}>
-                    选择类别
+                    类别
                   </Button>
                 )}
                 {!isMobile && <Dropdown
@@ -1242,9 +1244,9 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                     icon={offlineMode ? <DatabaseOutlined /> : <ReloadOutlined />}
                     loading={refreshing}
                     onClick={handleRefresh}
-                    disabled={offlineMode}
+                  disabled={offlineMode}
                   >
-                    {refreshButtonText}
+                    {isMobile ? (offlineMode ? '离线' : '刷新') : refreshButtonText}
                   </Button>
                 </Tooltip>
               </Space>
@@ -1343,7 +1345,19 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                 </div>
                 <div className="academic-mobile-list" aria-label="培养计划课程列表">
                   {mobileCourses.map(course => (
-                    <article className="academic-mobile-course" key={course._id}>
+                    <article
+                      className="academic-mobile-course is-interactive"
+                      key={course._id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setMobileCourseDetail(course)}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setMobileCourseDetail(course);
+                        }
+                      }}
+                    >
                       <div className="academic-mobile-course__header">
                         <div>
                           <strong>{course.course_name}</strong>
@@ -1399,6 +1413,31 @@ const AcademicReportPage = ({ offlineMode = false }) => {
           <ClockCircleOutlined /> 培养计划更新时间: {report.calculated_time || '-'}
         </Text>
       </div>
+      <MobileDetailDrawer
+        open={Boolean(mobileCourseDetail)}
+        onClose={() => setMobileCourseDetail(null)}
+        title={mobileCourseDetail?.course_name || '培养计划课程详情'}
+      >
+        {mobileCourseDetail && (
+          <Descriptions column={1} bordered size="small">
+            <Descriptions.Item label="课程代码">{mobileCourseDetail.course_code || '-'}</Descriptions.Item>
+            <Descriptions.Item label="状态">
+              <StatusTag
+                status={mobileCourseDetail.status}
+                isPassed={mobileCourseDetail.is_passed}
+                isSelected={mobileCourseDetail.is_selected}
+                isPlanned={mobileCourseDetail.is_planned}
+              />
+            </Descriptions.Item>
+            <Descriptions.Item label="成绩">{mobileCourseDetail.score ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="学分">{mobileCourseDetail.credit ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="课程性质">{mobileCourseDetail.course_nature || '-'}</Descriptions.Item>
+            <Descriptions.Item label="计划学期">{formatTermCode(mobileCourseDetail.term_code)}</Descriptions.Item>
+            <Descriptions.Item label="类别路径">{mobileCourseDetail.category_path || '-'}</Descriptions.Item>
+            <Descriptions.Item label="核心课程">{mobileCourseDetail.is_core ? '是' : '否'}</Descriptions.Item>
+          </Descriptions>
+        )}
+      </MobileDetailDrawer>
     </div>
   );
 };

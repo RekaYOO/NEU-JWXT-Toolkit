@@ -103,14 +103,38 @@
 }
 
 /* 响应式 */
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .scores-page .stats-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     margin-bottom: 12px;
-    row-gap: 10px;
+    overflow: hidden;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line-soft);
+    border-radius: var(--radius-md);
+    margin-inline: 0 !important;
   }
 
   .scores-page .stats-row .ant-col {
+    width: auto;
+    padding-inline: 0 !important;
+    flex: none;
+    max-width: none;
     margin-bottom: 0;
+  }
+
+  .scores-page .stats-row .ant-card {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .scores-page .stats-row .ant-col:nth-child(even) .ant-card {
+    border-inline-start: 1px solid var(--color-line-soft);
+  }
+
+  .scores-page .stats-row .ant-col:nth-child(n + 3) .ant-card {
+    border-top: 1px solid var(--color-line-soft);
   }
 
   .scores-page .stats-row .ant-card-body {
@@ -145,6 +169,19 @@
   .mobile-course-list {
     display: grid;
     gap: 10px;
+  }
+
+.mobile-score-tools {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .mobile-score-tools .ant-badge,
+  .mobile-score-tools .ant-badge .ant-btn {
+    width: 100%;
   }
 
   .mobile-focus-toolbar {
@@ -188,6 +225,21 @@
     border: 1px solid var(--color-line);
     border-radius: var(--radius-md);
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  }
+
+  .mobile-course-card.is-interactive {
+    cursor: pointer;
+    transition: border-color .16s ease, background .16s ease;
+  }
+
+  .mobile-course-card.is-interactive:active {
+    background: #f8fbff;
+    border-color: #93b4f8;
+  }
+
+  .mobile-course-card.is-interactive:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
   }
 
   .mobile-course-card__header {
@@ -276,6 +328,10 @@
   .mobile-list-pagination {
     margin: 18px 0 4px !important;
   }
+}
+
+.scores-page .mobile-filter-chips {
+  margin-bottom: 12px;
 }
 
 @media (max-width: 359px) {

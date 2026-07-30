@@ -18,6 +18,12 @@ import {
   setResearchTopicFavorite,
 } from '../services/api';
 import { useCachedResource } from '../resources/ResourceStore';
+import {
+  AdaptiveModal,
+  MobileFilterButton,
+  MobileFilterChips,
+  MobileFilterDrawer,
+} from '../components/mobile/MobileUX';
 import './ResearchTrainingPage.css';
 
 const { Text, Title, Paragraph } = Typography;
@@ -53,6 +59,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
   const [enrollTopic, setEnrollTopic] = useState(null);
   const [error, setError] = useState('');
   const [syncWarning, setSyncWarning] = useState('');
+  const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const dismissedRevision = useRef('');
   const updateModalRef = useRef(null);
   const resource = useCachedResource('research-training');
@@ -181,6 +188,21 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
   const resetFilters = () => {
     setDraftFilters(EMPTY_FILTERS);
     setFilters(EMPTY_FILTERS);
+    setPage(1);
+  };
+  const activeFilterCount = Object.values(filters).filter(
+    value => String(value || '').trim(),
+  ).length;
+  const activeFilterChips = [
+    filters.keyword && { key: 'keyword', label: `题目：${filters.keyword}` },
+    filters.project_name && { key: 'project_name', label: `项目：${filters.project_name}` },
+    filters.advisor_name && { key: 'advisor_name', label: `导师：${filters.advisor_name}` },
+  ].filter(Boolean);
+
+  const clearFilter = (key) => {
+    const next = { ...filters, [key]: '' };
+    setFilters(next);
+    setDraftFilters(next);
     setPage(1);
   };
 
@@ -313,21 +335,30 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
             <Title level={5}>{topic.title || '未命名课题'}</Title>
             <Text type="secondary">{topic.project_name || '未填写隶属科研项目'}</Text>
           </div>
-          <Space size={6} wrap>
-            {topic.expired ? (
-              <Tag>已过期</Tag>
-            ) : topic.is_registered ? (
-              <Tag color="processing">{topic.registration_status || '已报名'}</Tag>
-            ) : topic.is_full ? (
-              <Tag color="default">名额已满</Tag>
-            ) : (
-              <Tag color="success">可报名</Tag>
-            )}
+          <div className="research-topic-card__state">
+            <span
+              className="research-topic-state"
+              data-state={topic.expired
+                ? 'muted'
+                : topic.is_registered
+                  ? 'active'
+                  : topic.is_full
+                    ? 'muted'
+                    : 'available'}
+            >
+              {topic.expired
+                ? '已过期'
+                : topic.is_registered
+                  ? topic.registration_status || '已报名'
+                  : topic.is_full
+                    ? '名额已满'
+                    : '可报名'}
+            </span>
             <Tooltip title={offlineMode
               ? '离线模式为只读，重新登录后可调整收藏'
               : (isFavorite ? '取消收藏' : '收藏课题')}>
               <Button
-                className="research-favorite-button"
+                className={`research-favorite-button${isFavorite ? ' is-active' : ''}`}
                 type="text"
                 aria-label={isFavorite ? '取消收藏课题' : '收藏课题'}
                 icon={isFavorite ? <HeartFilled /> : <HeartOutlined />}
@@ -336,7 +367,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
                 onClick={() => toggleFavorite(topic, isFavorite)}
               />
             </Tooltip>
-          </Space>
+          </div>
         </div>
         <div className="research-topic-card__meta">
           <span><UserOutlined /> {topic.advisor_name || '导师待定'}</span>
@@ -422,7 +453,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
           message="报名资格数据缺失" description={eligibility.reason} />
       )}
 
-      {batch && (
+      {batch && !isMobile && (
         <Row gutter={[12, 12]} className="research-rule-grid">
           <Col xs={12} md={6}><Card><Statistic title="最多报名" value={batch.max_topics} suffix="项" /></Card></Col>
           <Col xs={12} md={6}><Card><Statistic title="专业排名要求" value={batch.rank_limit_percent} suffix="%" prefix="前" /></Card></Col>
@@ -437,6 +468,45 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
           <Col xs={12} md={6}><Card><Statistic title="课题总数" value={data?.total || 0} /></Card></Col>
         </Row>
       )}
+      {batch && isMobile && (
+        <section className="research-mobile-rules" aria-label="报名条件与批次信息">
+          <div className="research-mobile-rules__heading">
+            <strong>本批次报名条件</strong>
+            <span>{data?.total || 0} 个课题</span>
+          </div>
+          <dl className="research-mobile-rules__metrics">
+            <div>
+              <dt>最多报名</dt>
+              <dd>{batch.max_topics} 项</dd>
+            </div>
+            <div>
+              <dt>专业排名</dt>
+              <dd>前 {batch.rank_limit_percent}%</dd>
+            </div>
+            <div>
+              <dt>不及格成绩</dt>
+              <dd>{batch.allow_failed_courses ? '允许' : '不允许'}</dd>
+            </div>
+          </dl>
+        </section>
+      )}
+
+      {isMobile && (
+        <>
+          <div className="research-mobile-tools">
+            <MobileFilterButton
+              activeCount={activeFilterCount}
+              onClick={() => {
+                setDraftFilters(filters);
+                setMobileFilterOpen(true);
+              }}
+            >
+              搜索与筛选
+            </MobileFilterButton>
+          </div>
+          <MobileFilterChips items={activeFilterChips} onClear={clearFilter} />
+        </>
+      )}
 
       <Spin spinning={loading}>
         <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
@@ -445,7 +515,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
             label: '课题报名',
             children: (
               <>
-                <Card className="research-filter-card">
+                {!isMobile && <Card className="research-filter-card">
                   <div className="research-filter-grid">
                     <Input allowClear placeholder="研究题目或方向"
                       value={draftFilters.keyword}
@@ -471,7 +541,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
                       <Button onClick={resetFilters}>清空</Button>
                     </Space>
                   </div>
-                </Card>
+                </Card>}
                 {visibleTopics.length ? (
                   <div className="research-topic-grid">
                     {visibleTopics.map((topic) => renderTopic(topic))}
@@ -546,7 +616,8 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
         </Spin>
       </Drawer>
 
-      <Modal title="科研训练课题报名" open={Boolean(enrollTopic)}
+      <AdaptiveModal title="科研训练课题报名" open={Boolean(enrollTopic)}
+        rootClassName="research-enroll-modal"
         onCancel={() => setEnrollTopic(null)} onOk={submitEnrollment}
         okText="确认报名" cancelText="取消" confirmLoading={submitting}
         destroyOnClose>
@@ -562,14 +633,24 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
             <Form form={form} layout="vertical">
               <Form.Item name="phone" label="联系电话"
                 rules={[{ required: true, message: '请输入联系电话' }, { max: 16 }]}>
-                <Input prefix={<PhoneOutlined />} autoComplete="tel" />
+                <Input
+                  prefix={<PhoneOutlined />}
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                />
               </Form.Item>
               <Form.Item name="email" label="电子邮箱" rules={[
                 { required: true, message: '请输入电子邮箱' },
                 { type: 'email', message: '电子邮箱格式不正确' },
                 { max: 20 },
               ]}>
-                <Input prefix={<MailOutlined />} autoComplete="email" />
+                <Input
+                  prefix={<MailOutlined />}
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
+                />
               </Form.Item>
               <Form.Item name="reason" label="申请理由"
                 rules={[{ max: 300 }]}>
@@ -578,7 +659,47 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
             </Form>
           </>
         )}
-      </Modal>
+      </AdaptiveModal>
+      <MobileFilterDrawer
+        open={mobileFilterOpen}
+        onClose={() => setMobileFilterOpen(false)}
+        onApply={() => {
+          applyFilters();
+          setMobileFilterOpen(false);
+        }}
+        onReset={resetFilters}
+        title="搜索科研训练课题"
+      >
+        <Form layout="vertical">
+          <Form.Item label="研究题目或方向">
+            <Input
+              allowClear
+              value={draftFilters.keyword}
+              onChange={event => setDraftFilters(current => ({
+                ...current, keyword: event.target.value,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="科研项目名称">
+            <Input
+              allowClear
+              value={draftFilters.project_name}
+              onChange={event => setDraftFilters(current => ({
+                ...current, project_name: event.target.value,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="导师姓名">
+            <Input
+              allowClear
+              value={draftFilters.advisor_name}
+              onChange={event => setDraftFilters(current => ({
+                ...current, advisor_name: event.target.value,
+              }))}
+            />
+          </Form.Item>
+        </Form>
+      </MobileFilterDrawer>
     </div>
   );
 };

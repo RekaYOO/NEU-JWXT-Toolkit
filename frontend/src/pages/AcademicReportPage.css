@@ -138,7 +138,7 @@
 
 /* 学分总览卡片 - 移除旧样式 */
 .credit-summary-card {
-  display: none; /* 隐藏旧卡片，使用悬挂式 */
+  display: none; /* 隐藏旧卡片，使用悬浮框 */
 }
 
 .academic-course-search {
@@ -232,7 +232,7 @@
   min-height: 100%;
 }
 
-/* 美化的树形节点样式 - 参考GPA导入页面 */
+/* 美化的树形节点样式 - 参考 GPA 导入页面 */
 .academic-tree .ant-tree-treenode {
   padding: 2px 0;
 }
@@ -482,7 +482,7 @@
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .academic-report-page {
     padding: 0;
   }
@@ -556,7 +556,18 @@
   }
 
   .courses-table-card .ant-card-extra .ant-btn {
-    flex: 1;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .academic-mobile-actions {
+    width: 100%;
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px !important;
+  }
+
+  .academic-mobile-actions > .ant-space-item {
     min-width: 0;
   }
 
@@ -677,6 +688,20 @@
     margin-top: 12px;
     padding-top: 11px;
     border-top: 1px solid #edf1f5;
+  }
+
+  .academic-mobile-course.is-interactive {
+    cursor: pointer;
+  }
+
+  .academic-mobile-course.is-interactive:active {
+    background: #f8fbff;
+    border-color: #93b4f8;
+  }
+
+  .academic-mobile-course.is-interactive:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
   }
 
   .academic-mobile-course__details small,

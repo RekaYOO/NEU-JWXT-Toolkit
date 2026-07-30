@@ -3,14 +3,14 @@ import {
   Table, Card, Statistic, Row, Col, Button, Tag, message,
   Space, InputNumber, Input, Tooltip, Tabs, Popconfirm,
   Badge, Empty, Alert, Modal, Drawer, Spin, Upload, List,
-  Typography, Tree, Checkbox, Divider
+  Typography, Tree, Checkbox, Divider, Pagination, Dropdown, Grid
 } from 'antd';
 import {
   PlusOutlined, ImportOutlined, ExportOutlined,
   DeleteOutlined, EditOutlined, BookOutlined, TrophyOutlined,
   ReloadOutlined, CheckCircleOutlined, WarningOutlined, CloseOutlined,
   SaveOutlined, CloudUploadOutlined, CloudDownloadOutlined, SearchOutlined,
-  FileTextOutlined, FolderOutlined, FileOutlined, FilterOutlined
+  FileTextOutlined, FolderOutlined, FileOutlined, FilterOutlined, MoreOutlined
 } from '@ant-design/icons';
 import { 
   getCachedAcademicReport,
@@ -22,6 +22,7 @@ import {
 } from '../services/api';
 import { compareAcademicTerms } from '../utils/termSort';
 import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
+import { AdaptiveModal } from './mobile/MobileUX';
 import './GPACalculator.css';
 
 const { Text } = Typography;
@@ -138,6 +139,8 @@ const GPACalculator = forwardRef(({
   onSimulatingChange = null,
   offlineMode = false,
 }, ref) => {
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.md;
   // ===== 状态管理 =====
   const [courses, setCourses] = useState([]);
   const [editingKey, setEditingKey] = useState(null);
@@ -1430,12 +1433,30 @@ const GPACalculator = forwardRef(({
       default: return courses;
     }
   }, [courses, activeTab]);
+  const mobilePageCourses = useMemo(() => {
+    const start = (courseTablePagination.current - 1) * courseTablePagination.pageSize;
+    return filteredCourses.slice(start, start + courseTablePagination.pageSize);
+  }, [courseTablePagination.current, courseTablePagination.pageSize, filteredCourses]);
 
   if (!isSimulating) return null;
 
   return (
     <div className="gpa-calculator-embedded">
-      {/* 统计卡片 */}
+      {/* 统计摘要 */}
+      {isMobile ? (
+        <section className="gpa-mobile-summary" aria-label="GPA 模拟统计">
+          <div className="gpa-mobile-summary__primary">
+            <span>模拟加权平均绩点</span>
+            <strong>{stats.weightedGPA.toFixed(4)}</strong>
+          </div>
+          <dl>
+            <div><dt>课程</dt><dd>{stats.totalCourses} 门</dd></div>
+            <div><dt>学分</dt><dd>{stats.totalCredits.toFixed(1)}</dd></div>
+            <div><dt>有效课程</dt><dd>{stats.passedCount} 门</dd></div>
+            <div><dt>模拟课程</dt><dd>{stats.customCount} 门</dd></div>
+          </dl>
+        </section>
+      ) : (
       <Row gutter={[16, 16]} className="gpa-stats-row">
         <Col xs={12} sm={8} md={4}>
           <Card size="small" className="stat-card">
@@ -1463,27 +1484,95 @@ const GPACalculator = forwardRef(({
           </Card>
         </Col>
       </Row>
+      )}
 
       {/* 工具栏 */}
       <div className="gpa-toolbar">
-        <Space wrap>
-          <Button type="primary" icon={<PlusOutlined />} onClick={addCustomCourse}>添加课程</Button>
-          <Button icon={<ImportOutlined />} onClick={handleOpenImportDrawer}>从计划导入</Button>
-          <Button icon={<CloudDownloadOutlined />} onClick={handleOpenFileModal}>从文件导入</Button>
-          <Button icon={<CloudUploadOutlined />} onClick={handleOpenSaveModal} disabled={!courses.length}>保存</Button>
-          <Button icon={<ReloadOutlined />} onClick={undo} disabled={historyIndex <= 0}>撤销</Button>
-          {hasUnsavedChanges && <Badge status="processing" text="未保存" />}
-        </Space>
-        
-        <Space>
-          <Button onClick={() => setIsSimulating(false)}>退出模拟</Button>
-        </Space>
+        {isMobile ? (
+          <>
+            <div className="gpa-mobile-toolbar-actions">
+              <Button type="primary" icon={<PlusOutlined />} onClick={addCustomCourse}>
+                添加
+              </Button>
+              <Dropdown
+                trigger={['click']}
+                menu={{
+                  items: [
+                    {
+                      key: 'plan',
+                      icon: <ImportOutlined />,
+                      label: '从培养计划导入',
+                      onClick: handleOpenImportDrawer,
+                    },
+                    {
+                      key: 'file',
+                      icon: <CloudDownloadOutlined />,
+                      label: '从文件导入',
+                      onClick: handleOpenFileModal,
+                    },
+                  ],
+                }}
+              >
+                <Button icon={<ImportOutlined />}>导入</Button>
+              </Dropdown>
+              <Dropdown
+                trigger={['click']}
+                menu={{
+                  items: [
+                    {
+                      key: 'save',
+                      icon: <CloudUploadOutlined />,
+                      label: '保存模拟',
+                      disabled: !courses.length,
+                      onClick: handleOpenSaveModal,
+                    },
+                    {
+                      key: 'undo',
+                      icon: <ReloadOutlined />,
+                      label: '撤销上一步',
+                      disabled: historyIndex <= 0,
+                      onClick: undo,
+                    },
+                    { type: 'divider' },
+                    {
+                      key: 'exit',
+                      label: '退出模拟',
+                      onClick: () => setIsSimulating(false),
+                    },
+                  ],
+                }}
+              >
+                <Button icon={<MoreOutlined />}>更多</Button>
+              </Dropdown>
+            </div>
+            {hasUnsavedChanges && (
+              <Badge className="gpa-unsaved-badge" status="processing" text="有未保存修改" />
+            )}
+          </>
+        ) : (
+          <>
+            <Space wrap>
+              <Button type="primary" icon={<PlusOutlined />} onClick={addCustomCourse}>添加课程</Button>
+              <Button icon={<ImportOutlined />} onClick={handleOpenImportDrawer}>从计划导入</Button>
+              <Button icon={<CloudDownloadOutlined />} onClick={handleOpenFileModal}>从文件导入</Button>
+              <Button icon={<CloudUploadOutlined />} onClick={handleOpenSaveModal} disabled={!courses.length}>保存</Button>
+              <Button icon={<ReloadOutlined />} onClick={undo} disabled={historyIndex <= 0}>撤销</Button>
+              {hasUnsavedChanges && <Badge status="processing" text="未保存" />}
+            </Space>
+            <Space>
+              <Button onClick={() => setIsSimulating(false)}>退出模拟</Button>
+            </Space>
+          </>
+        )}
       </div>
 
       {/* 标签页 */}
       <Tabs
         activeKey={activeTab}
-        onChange={setActiveTab}
+        onChange={(key) => {
+          setActiveTab(key);
+          setCourseTablePagination((previous) => ({ ...previous, current: 1 }));
+        }}
         size="small"
         className="gpa-tabs"
         items={[
@@ -1511,6 +1600,134 @@ const GPACalculator = forwardRef(({
         className="gpa-table"
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无课程，请添加或导入" /> }}
       />
+      <div className="gpa-mobile-course-list">
+        {mobilePageCourses.map(course => (
+          <Card size="small" className="gpa-mobile-course" key={course.key}>
+            {editingKey === course.key && course.isCustom ? (
+              <div className="gpa-mobile-edit-grid">
+                <Input
+                  value={editForm.name}
+                  onChange={event => setEditForm({ ...editForm, name: event.target.value })}
+                  placeholder="课程名称"
+                />
+                <Input
+                  value={editForm.code}
+                  onChange={event => setEditForm({ ...editForm, code: event.target.value })}
+                  placeholder="课程代码"
+                />
+                <InputNumber
+                  value={editForm.credit}
+                  onChange={credit => setEditForm({ ...editForm, credit })}
+                  min={0}
+                  max={20}
+                  step={0.5}
+                  addonAfter="学分"
+                />
+                <Input
+                  value={editForm.score}
+                  onChange={event => setEditForm({ ...editForm, score: event.target.value })}
+                  placeholder="成绩"
+                />
+                <InputNumber
+                  value={editForm.gpa}
+                  onChange={gpa => setEditForm({ ...editForm, gpa })}
+                  min={0}
+                  max={5}
+                  step={0.1}
+                  addonAfter="绩点"
+                />
+                <Space.Compact block>
+                  <Button block onClick={cancelEdit}>取消</Button>
+                  <Button block type="primary" onClick={() => saveEdit(course.key)}>保存</Button>
+                </Space.Compact>
+              </div>
+            ) : (
+              <>
+                <div className="gpa-mobile-course__header">
+                  <div>
+                    <strong>{course.name || '未命名课程'}</strong>
+                    <span>{course.code || course.term || '未填写课程代码'}</span>
+                  </div>
+                  <Tag color={course.isReal ? 'success' : course.fromPlan ? 'processing' : 'warning'}>
+                    {getCourseSource(course)}
+                  </Tag>
+                </div>
+                <div className="gpa-mobile-course__inputs">
+                  <label>
+                    <span>学分</span>
+                    <InputNumber
+                      defaultValue={course.credit}
+                      onChange={value => handleInputChange(course.key, 'credit', value)}
+                      onBlur={() => handleInputBlur(
+                        course.key,
+                        'credit',
+                        editingValuesRef.current[course.key + 'credit'] ?? course.credit,
+                      )}
+                      min={0}
+                      max={20}
+                      step={0.5}
+                    />
+                  </label>
+                  <label>
+                    <span>成绩</span>
+                    <Input
+                      defaultValue={course.score}
+                      onChange={event => handleInputChange(course.key, 'score', event.target.value)}
+                      onBlur={event => handleInputBlur(course.key, 'score', event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>绩点</span>
+                    <InputNumber
+                      defaultValue={course.gpa || null}
+                      onChange={value => handleInputChange(course.key, 'gpa', value)}
+                      onBlur={() => handleInputBlur(
+                        course.key,
+                        'gpa',
+                        editingValuesRef.current[course.key + 'gpa'] ?? course.gpa,
+                      )}
+                      min={0}
+                      max={5}
+                      step={0.1}
+                    />
+                  </label>
+                </div>
+                <div className="gpa-mobile-course__footer">
+                  <span>{course.term || '未安排学期'}</span>
+                  <Space>
+                    {course.isCustom && (
+                      <Button icon={<EditOutlined />} onClick={() => startEdit(course)}>
+                        编辑
+                      </Button>
+                    )}
+                    <Popconfirm
+                      title="确认删除？"
+                      onConfirm={() => deleteCourse(course.key)}
+                      okText="删除"
+                      cancelText="取消"
+                    >
+                      <Button danger icon={<DeleteOutlined />}>删除</Button>
+                    </Popconfirm>
+                  </Space>
+                </div>
+              </>
+            )}
+          </Card>
+        ))}
+        {!mobilePageCourses.length && (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无课程，请添加或导入" />
+        )}
+        <Pagination
+          simple
+          current={courseTablePagination.current}
+          pageSize={courseTablePagination.pageSize}
+          total={filteredCourses.length}
+          onChange={current => setCourseTablePagination(previous => ({
+            ...previous,
+            current,
+          }))}
+        />
+      </div>
 
       {/* 提示信息 */}
       <Alert
@@ -1523,6 +1740,7 @@ const GPACalculator = forwardRef(({
 
       {/* 培养计划导入抽屉 - 新版树形导航设计 */}
       <Drawer
+        rootClassName="gpa-import-drawer"
         title={
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span>从培养计划导入课程</span>
@@ -1706,6 +1924,7 @@ const GPACalculator = forwardRef(({
               
               {/* 课程表格 */}
               <Table
+                className="plan-import-table"
                 rowSelection={{ 
                   selectedRowKeys: selectedPlanCourses, 
                   onChange: setSelectedPlanCourses 
@@ -1821,6 +2040,42 @@ const GPACalculator = forwardRef(({
                 }}
                 locale={{ emptyText: <Empty description="没有可导入的课程" /> }}
               />
+              <div className="plan-import-mobile-list">
+                {getPlannedCourses.map((course) => {
+                  const selected = selectedPlanCourses.includes(course.key);
+                  const status = ['已选课', '已选'].includes(course.status) ? '已选课' : '未修读';
+                  return (
+                    <label
+                      className={`plan-import-mobile-course${selected ? ' is-selected' : ''}`}
+                      key={course.key}
+                    >
+                      <Checkbox
+                        checked={selected}
+                        onChange={(event) => {
+                          setSelectedPlanCourses((previous) => (
+                            event.target.checked
+                              ? [...new Set([...previous, course.key])]
+                              : previous.filter((key) => key !== course.key)
+                          ));
+                        }}
+                      />
+                      <span className="plan-import-mobile-course__content">
+                        <strong>{course.name || '未命名课程'}</strong>
+                        <span>{course.code || '无课程代码'}</span>
+                        <span className="plan-import-mobile-course__meta">
+                          <Tag color={course.courseType === '必修' ? 'blue' : 'green'}>
+                            {course.courseType || '性质未知'}
+                          </Tag>
+                          <Tag>{status}</Tag>
+                          <span>{course.credit} 学分</span>
+                          <span>{course.term || '未安排学期'}</span>
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+                {!getPlannedCourses.length && <Empty description="没有可导入的课程" />}
+              </div>
             </div>
           </div>
         )}
@@ -1828,6 +2083,7 @@ const GPACalculator = forwardRef(({
 
       {/* 服务器文件导入弹窗 */}
       <Modal
+        rootClassName="gpa-mobile-modal gpa-file-modal"
         title="从服务器导入GPA模拟文件"
         open={importFileModalVisible}
         onCancel={() => setImportFileModalVisible(false)}
@@ -1872,7 +2128,8 @@ const GPACalculator = forwardRef(({
       </Modal>
 
       {/* 保存文件弹窗 */}
-      <Modal
+      <AdaptiveModal
+        rootClassName="gpa-mobile-modal"
         title="保存GPA模拟"
         open={saveModalVisible}
         onOk={handleConfirmSave}
@@ -1890,10 +2147,11 @@ const GPACalculator = forwardRef(({
           onPressEnter={handleConfirmSave}
           autoFocus
         />
-      </Modal>
+      </AdaptiveModal>
 
       {/* 重命名文件弹窗 */}
-      <Modal
+      <AdaptiveModal
+        rootClassName="gpa-mobile-modal"
         title="重命名文件"
         open={renameModalVisible}
         onOk={handleConfirmRename}
@@ -1911,10 +2169,11 @@ const GPACalculator = forwardRef(({
           onPressEnter={handleConfirmRename}
           autoFocus
         />
-      </Modal>
+      </AdaptiveModal>
 
       {/* 导入冲突选择弹窗 */}
       <Modal
+        rootClassName="gpa-mobile-modal gpa-conflict-modal"
         title={<Space><WarningOutlined style={{ color: '#faad14' }} /><span>检测到同名课程数据不同</span></Space>}
         open={importConflictModalVisible}
         onOk={confirmImportConflicts}
@@ -1935,6 +2194,7 @@ const GPACalculator = forwardRef(({
           style={{ marginBottom: 16 }} 
         />
         <Table
+          className="gpa-conflict-table"
           dataSource={importConflicts}
           rowKey="key"
           size="small"
@@ -2004,11 +2264,37 @@ const GPACalculator = forwardRef(({
             },
           ]}
         />
+        <div className="gpa-conflict-mobile-list">
+          {importConflicts.map((item) => (
+            <Card size="small" key={item.key} className="gpa-conflict-mobile-card">
+              <strong>{item.name}</strong>
+              <div className="gpa-conflict-choice-grid">
+                <button
+                  type="button"
+                  className={item.choice === 'imported' ? 'is-selected' : ''}
+                  onClick={() => handleConflictChoiceChange(item.key, 'imported')}
+                >
+                  <b>使用导入数据</b>
+                  <span>成绩 {item.imported.score || '-'} · 绩点 {item.imported.gpa} · {item.imported.credit} 学分</span>
+                </button>
+                <button
+                  type="button"
+                  className={item.choice === 'existing' ? 'is-selected' : ''}
+                  onClick={() => handleConflictChoiceChange(item.key, 'existing')}
+                >
+                  <b>保留现有数据</b>
+                  <span>成绩 {item.existing.score || '-'} · 绩点 {item.existing.gpa} · {item.existing.credit} 学分</span>
+                </button>
+              </div>
+            </Card>
+          ))}
+        </div>
       </Modal>
 
       {/* 冲突检测弹窗 */}
       <Modal
         title={<Space><WarningOutlined style={{ color: '#faad14' }} /><span>检测到成绩更新</span></Space>}
+        rootClassName="gpa-mobile-modal gpa-conflict-modal"
         open={conflictModalVisible}
         closable={false}
         maskClosable={false}
@@ -2025,6 +2311,7 @@ const GPACalculator = forwardRef(({
       >
         <Alert message="以下课程的真实成绩与模拟成绩不同" description="您可以选择保留模拟成绩，或更新为最新的真实成绩" type="warning" showIcon style={{ marginBottom: 16 }} />
         <Table
+          className="gpa-conflict-table"
           dataSource={conflicts}
           rowKey="key"
           size="small"
@@ -2063,6 +2350,39 @@ const GPACalculator = forwardRef(({
             },
           ]}
         />
+        <div className="gpa-conflict-mobile-list">
+          {conflicts.map((item) => (
+            <Card size="small" key={item.key} className="gpa-conflict-mobile-card">
+              <strong>{item.name}</strong>
+              <div className="gpa-conflict-choice-grid">
+                <button
+                  type="button"
+                  className={item.choice === 'latest' ? 'is-selected' : ''}
+                  onClick={() => setConflicts((items) => items.map((entry) => (
+                    entry.key === item.key ? { ...entry, choice: 'latest' } : entry
+                  )))}
+                >
+                  <b>采用最新真实成绩</b>
+                  <span>{item.real.score} · {item.real.gpa} 绩点</span>
+                </button>
+                <button
+                  type="button"
+                  className={item.choice !== 'latest' ? 'is-selected' : ''}
+                  onClick={() => setConflicts((items) => items.map((entry) => (
+                    entry.key === item.key
+                      ? { ...entry, choice: item.isNew ? 'skip' : 'simulated' }
+                      : entry
+                  )))}
+                >
+                  <b>{item.isNew ? '暂不加入' : '保留模拟成绩'}</b>
+                  <span>{item.imported
+                    ? `${item.imported.score} · ${item.imported.gpa} 绩点`
+                    : '不加入当前模拟'}</span>
+                </button>
+              </div>
+            </Card>
+          ))}
+        </div>
       </Modal>
     </div>
   );

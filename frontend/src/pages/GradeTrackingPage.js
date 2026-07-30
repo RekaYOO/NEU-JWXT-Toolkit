@@ -31,6 +31,7 @@ import {
   testGradeTrackingEmail,
   updateGradeTrackingConfig,
 } from '../services/api';
+import { MobileActionBar } from '../components/mobile/MobileUX';
 import './GradeTrackingPage.css';
 
 const STAGES = {
@@ -219,7 +220,7 @@ const GradeTrackingPage = () => {
             <Tag color={stage.color}>{stage.label}</Tag>
             <strong>{status.message || '追踪状态尚未更新'}</strong>
           </div>
-          <Space wrap>
+          <Space wrap className="tracking-desktop-actions">
             <Button icon={<ReloadOutlined />} loading={checking} onClick={checkNow}>
               立即检查
             </Button>
@@ -371,7 +372,13 @@ const GradeTrackingPage = () => {
                 label="重新登录地址（可选）"
                 extra="填写时发送随机的一次性登录页面，打开页面后才生成二维码；留空时直接发送五分钟有效的微信扫码认证链接。"
               >
-                <Input placeholder="https://jwxt.example.com" />
+                <Input
+                  type="url"
+                  inputMode="url"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  placeholder="https://jwxt.example.com"
+                />
               </Form.Item>
             </Col>
           </Row>
@@ -390,6 +397,21 @@ const GradeTrackingPage = () => {
         message="追踪依赖本程序持续运行"
         description="Windows 请保持本地服务运行；Linux 服务会由 systemd 常驻。教务会话失效后，需要回到工具箱重新登录。"
       />
+
+      <MobileActionBar className="tracking-mobile-action-bar">
+        <Button icon={<ReloadOutlined />} loading={checking} onClick={checkNow}>
+          立即检查
+        </Button>
+        <Button
+          type="primary"
+          icon={<SaveOutlined />}
+          loading={saving}
+          disabled={toggling}
+          onClick={saveConfig}
+        >
+          保存配置
+        </Button>
+      </MobileActionBar>
     </div>
   );
 };

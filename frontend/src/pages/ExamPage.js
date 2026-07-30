@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Card, Select, Button, Tag, Empty, Spin, Alert, Statistic, Row, Col,
-  Timeline, Tooltip, Badge, message
+  Timeline, Tooltip, Badge, message, Grid, Segmented
 } from 'antd';
 import {
   CalendarOutlined, ExportOutlined, ClockCircleOutlined,
@@ -29,7 +29,10 @@ const ExamPage = () => {
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState(null);
+  const [mobileView, setMobileView] = useState('upcoming');
   const examRequestGeneration = useRef(0);
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.md;
 
   // 加载学期列表
   useEffect(() => {
@@ -96,7 +99,10 @@ const ExamPage = () => {
     }
   };
 
-  const groupedExams = exams.reduce((acc, exam) => {
+  const visibleExams = isMobile && mobileView === 'upcoming'
+    ? exams.filter(exam => exam.exam_status !== 2)
+    : exams;
+  const groupedExams = visibleExams.reduce((acc, exam) => {
     const status = exam.exam_status;
     if (!acc[status]) acc[status] = [];
     acc[status].push(exam);
@@ -232,9 +238,22 @@ const ExamPage = () => {
         </Col>
       </Row>
 
+      {isMobile && (
+        <Segmented
+          className="exam-mobile-view"
+          block
+          value={mobileView}
+          options={[
+            { label: `待考与进行中 ${stats.upcoming + stats.ongoing}`, value: 'upcoming' },
+            { label: `全部 ${stats.total}`, value: 'all' },
+          ]}
+          onChange={setMobileView}
+        />
+      )}
+
       <Spin spinning={loading} tip="加载中...">
-        {exams.length === 0 && !loading && !error ? (
-          <Empty description="该学期暂无考试安排" />
+        {visibleExams.length === 0 && !loading && !error ? (
+          <Empty description={mobileView === 'upcoming' ? '当前没有待考或进行中的考试' : '该学期暂无考试安排'} />
         ) : (
           <div className="exam-timeline">
             {/* 待考 */}

@@ -1,0 +1,108 @@
+.mobile-sheet .ant-drawer-content,
+.mobile-detail-drawer .ant-drawer-content {
+  border-radius: 0;
+}
+
+.mobile-sheet-root .ant-drawer-content-wrapper {
+  height: auto !important;
+}
+
+.mobile-sheet .ant-drawer-content {
+  height: auto;
+  max-height: inherit;
+}
+
+.mobile-sheet .ant-drawer-header,
+.mobile-detail-drawer .ant-drawer-header {
+  min-height: 56px;
+  padding: 12px 16px;
+}
+
+.mobile-sheet .ant-drawer-body,
+.mobile-detail-drawer .ant-drawer-body {
+  min-width: 0;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.mobile-sheet .ant-drawer-body {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scroll-padding-block: 16px;
+}
+
+.mobile-sheet__body {
+  display: grid;
+  gap: 16px;
+}
+
+.mobile-sheet__body .ant-form-item:last-child {
+  margin-bottom: 0;
+}
+
+.adaptive-modal .ant-modal-content {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.adaptive-modal .ant-modal-header,
+.adaptive-modal .ant-modal-footer {
+  flex: 0 0 auto;
+}
+
+.adaptive-modal .ant-modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 16px;
+}
+
+.mobile-sheet__footer {
+  display: grid;
+  grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr);
+  gap: 10px;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.mobile-sheet__footer .ant-btn {
+  min-height: 42px;
+}
+
+.mobile-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mobile-filter-chips .ant-tag {
+  max-width: 100%;
+  height: auto;
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.mobile-action-bar {
+  position: fixed;
+  z-index: 90;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
+  border-top: 1px solid var(--color-line);
+  box-shadow: 0 -6px 20px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(10px);
+}
+
+.mobile-action-bar .ant-btn {
+  min-height: 44px;
+}
+
+@media (min-width: 768px) {
+  .mobile-action-bar {
+    display: none;
+  }
+}

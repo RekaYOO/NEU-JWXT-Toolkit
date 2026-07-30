@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   Table, Card, Statistic, Row, Col, Button, Tag, message, Alert,
-  Tooltip, Dropdown, Checkbox, Space, InputNumber, Modal, Pagination, Grid, Segmented, Empty
+  Tooltip, Dropdown, Checkbox, Space, InputNumber, Modal, Pagination, Grid,
+  Segmented, Empty, Select, Form, Descriptions
 } from 'antd';
 import { 
   ReloadOutlined, TrophyOutlined, BookOutlined, SafetyOutlined,
@@ -12,6 +13,12 @@ import GPACalculator from '../components/GPACalculator';
 import { useCachedResource } from '../resources/ResourceStore';
 import { columnSettings } from '../utils/settings';
 import { compareAcademicTerms } from '../utils/termSort';
+import {
+  MobileDetailDrawer,
+  MobileFilterButton,
+  MobileFilterChips,
+  MobileFilterDrawer,
+} from '../components/mobile/MobileUX';
 import dayjs from 'dayjs';
 import './ScoresPage.css';
 
@@ -44,11 +51,24 @@ const IMPACT_COLUMN_HELP = {
   exclude_delta: '保留这门课相对剔除它的贡献量，正数表示拉高 GPA',
 };
 
-const IMPACT_FILTERS = [
-  { text: '正向', value: 'positive' },
-  { text: '负向', value: 'negative' },
-  { text: '无影响', value: 'zero' },
-];
+const EMPTY_MOBILE_FILTERS = {
+  terms: [],
+  courseTypes: [],
+  courseCategories: [],
+  examTypes: [],
+  passed: 'all',
+  scoreMin: null,
+  scoreMax: null,
+  gpaMin: null,
+  gpaMax: null,
+  creditMin: null,
+  creditMax: null,
+  meanImpactMin: null,
+  meanImpactMax: null,
+  excludeImpactMin: null,
+  excludeImpactMax: null,
+  sort: 'term_desc',
+};
 
 const normalizeColumnConfig = (config) => {
   const defaults = getDefaultColumns();
@@ -147,8 +167,6 @@ const getImpactSign = (value) => {
   return 'zero';
 };
 
-const matchesImpactFilter = (value, filterValue) => getImpactSign(value) === filterValue;
-
 const compareNullableNumbers = (a, b, order) => {
   const aNumber = Number(a);
   const bNumber = Number(b);
@@ -194,6 +212,10 @@ const ScoresPage = ({ offlineMode = false }) => {
   const [hasActiveFilters, setHasActiveFilters] = useState(false);
   const [gpaHelpHovered, setGpaHelpHovered] = useState(false);
   const [gpaHelpPinned, setGpaHelpPinned] = useState(false);
+  const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
+  const [mobileFilters, setMobileFilters] = useState(EMPTY_MOBILE_FILTERS);
+  const [mobileFilterDraft, setMobileFilterDraft] = useState(EMPTY_MOBILE_FILTERS);
+  const [mobileDetail, setMobileDetail] = useState(null);
 
   // GPA计算器
   const [isSimulating, setIsSimulating] = useState(false);
@@ -311,72 +333,63 @@ const ScoresPage = ({ offlineMode = false }) => {
 
   // 表格变化处理
   const handleTableChange = (newPagination, newFilters, newSorter) => {
-    const filtersActive = Object.values(newFilters).some(
-      values => Array.isArray(values) && values.length > 0
-    );
-    setHasActiveFilters(filtersActive);
-    if (!filtersActive) {
-      setGpaHelpHovered(false);
-      setGpaHelpPinned(false);
-    }
-
     setPagination({
       ...pagination,
       current: newPagination.current,
       pageSize: newPagination.pageSize,
     });
 
-    let filtered = [...allScores];
-    Object.keys(newFilters).forEach(key => {
-      if (newFilters[key] && newFilters[key].length > 0) {
-        if (IMPACT_COLUMN_KEYS.includes(key)) {
-          filtered = filtered.filter(item => newFilters[key].some(value => matchesImpactFilter(item[key], value)));
-        } else if (NUMERIC_COLUMN_KEYS.includes(key)) {
-          const rangeValue = newFilters[key][0];
-          filtered = filtered.filter(item => (
-            matchesNumericRange(rangeValue, getScoreNumericValue(item, key))
-          ));
-        } else {
-          filtered = filtered.filter(item => newFilters[key].includes(item[key]));
-        }
-      }
-    });
-
-    if (newSorter && newSorter.field && newSorter.order) {
-      const { field, order } = newSorter;
-      filtered.sort((a, b) => {
-        let aVal, bVal;
-        if (field === 'score') {
-          aVal = a.score_value || parseFloat(a.score) || 0;
-          bVal = b.score_value || parseFloat(b.score) || 0;
-        } else {
-          aVal = a[field];
-          bVal = b[field];
-        }
-        
-        if (NUMERIC_COLUMN_KEYS.includes(field)) {
-          aVal = parseFloat(aVal) || 0;
-          bVal = parseFloat(bVal) || 0;
-          return order === 'ascend' ? aVal - bVal : bVal - aVal;
-        }
-
-        if (IMPACT_COLUMN_KEYS.includes(field)) {
-          return compareNullableNumbers(aVal, bVal, order);
-        }
-
-        if (field === 'term' || field === 'term_display') {
-          const cmp = compareAcademicTerms(aVal, bVal);
-          return order === 'ascend' ? cmp : -cmp;
-        }
-        
-        aVal = String(aVal || '');
-        bVal = String(bVal || '');
-        const cmp = aVal.localeCompare(bVal, 'zh-CN');
-        return order === 'ascend' ? cmp : -cmp;
-      });
-    }
-
-    setDisplayScores(filtered);
+    const hasFilter = (key) => Object.prototype.hasOwnProperty.call(newFilters, key);
+    const readList = (key, fallback) => (hasFilter(key) ? (newFilters[key] || []) : fallback);
+    const readRange = (key, boundary, fallback) => (
+      hasFilter(key)
+        ? (parseRangeFilter(newFilters[key]?.[0])?.[boundary] ?? null)
+        : fallback
+    );
+    const sortField = newSorter?.field === 'term_display' ? 'term' : newSorter?.field;
+    const sortDirection = newSorter?.order === 'ascend' ? 'asc' : 'desc';
+    const nextFilters = {
+      ...mobileFilters,
+      terms: readList('term_display', mobileFilters.terms),
+      courseTypes: readList('course_type', mobileFilters.courseTypes),
+      courseCategories: readList('course_category', mobileFilters.courseCategories),
+      examTypes: readList('exam_type', mobileFilters.examTypes),
+      passed: hasFilter('is_passed')
+        ? (newFilters.is_passed?.length
+          ? (newFilters.is_passed[0] ? 'passed' : 'failed')
+          : 'all')
+        : mobileFilters.passed,
+      scoreMin: readRange('score', 'min', mobileFilters.scoreMin),
+      scoreMax: readRange('score', 'max', mobileFilters.scoreMax),
+      gpaMin: readRange('gpa', 'min', mobileFilters.gpaMin),
+      gpaMax: readRange('gpa', 'max', mobileFilters.gpaMax),
+      creditMin: readRange('credit', 'min', mobileFilters.creditMin),
+      creditMax: readRange('credit', 'max', mobileFilters.creditMax),
+      meanImpactMin: readRange(
+        'mean_adjust_delta',
+        'min',
+        mobileFilters.meanImpactMin,
+      ),
+      meanImpactMax: readRange(
+        'mean_adjust_delta',
+        'max',
+        mobileFilters.meanImpactMax,
+      ),
+      excludeImpactMin: readRange(
+        'exclude_delta',
+        'min',
+        mobileFilters.excludeImpactMin,
+      ),
+      excludeImpactMax: readRange(
+        'exclude_delta',
+        'max',
+        mobileFilters.excludeImpactMax,
+      ),
+      sort: sortField && newSorter?.order ? `${sortField}_${sortDirection}` : 'term_desc',
+    };
+    setMobileFilters(nextFilters);
+    setMobileFilterDraft(nextFilters);
+    applyMobileFilters(nextFilters);
   };
 
   // 表格列
@@ -391,6 +404,44 @@ const ScoresPage = ({ offlineMode = false }) => {
           width: col.width,
           sorter: true,
         };
+        const filterValues = {
+          term_display: mobileFilters.terms,
+          course_type: mobileFilters.courseTypes,
+          course_category: mobileFilters.courseCategories,
+          exam_type: mobileFilters.examTypes,
+          is_passed: mobileFilters.passed === 'all'
+            ? []
+            : [mobileFilters.passed === 'passed'],
+          score: (() => {
+            const { scoreMin: min, scoreMax: max } = mobileFilters;
+            return min !== null || max !== null ? [JSON.stringify({ min, max })] : [];
+          })(),
+          gpa: (() => {
+            const { gpaMin: min, gpaMax: max } = mobileFilters;
+            return min !== null || max !== null ? [JSON.stringify({ min, max })] : [];
+          })(),
+          credit: (() => {
+            const { creditMin: min, creditMax: max } = mobileFilters;
+            return min !== null || max !== null ? [JSON.stringify({ min, max })] : [];
+          })(),
+          mean_adjust_delta: (() => {
+            const { meanImpactMin: min, meanImpactMax: max } = mobileFilters;
+            return min !== null || max !== null ? [JSON.stringify({ min, max })] : [];
+          })(),
+          exclude_delta: (() => {
+            const { excludeImpactMin: min, excludeImpactMax: max } = mobileFilters;
+            return min !== null || max !== null ? [JSON.stringify({ min, max })] : [];
+          })(),
+        };
+        if (Object.prototype.hasOwnProperty.call(filterValues, col.key)) {
+          column.filteredValue = filterValues[col.key];
+        }
+
+        const sortMatch = mobileFilters.sort.match(/^(.*)_(asc|desc)$/);
+        const activeSortKey = sortMatch?.[1] === 'term' ? 'term_display' : sortMatch?.[1];
+        if (activeSortKey === col.key) {
+          column.sortOrder = sortMatch[2] === 'asc' ? 'ascend' : 'descend';
+        }
 
         if (!NUMERIC_COLUMN_KEYS.includes(col.key) && !IMPACT_COLUMN_KEYS.includes(col.key)) {
           column.filters = getFilterOptions(col.key);
@@ -444,8 +495,46 @@ const ScoresPage = ({ offlineMode = false }) => {
         }
 
         if (IMPACT_COLUMN_KEYS.includes(col.key)) {
-          column.filters = IMPACT_FILTERS;
-          column.onFilter = (value, record) => matchesImpactFilter(record[col.key], value);
+          column.filterDropdown = ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => {
+            const range = parseRangeFilter(selectedKeys?.[0]);
+            return (
+              <div style={{ padding: 8 }}>
+                <Space direction="vertical">
+                  <InputNumber
+                    placeholder="最小值"
+                    value={range.min}
+                    onChange={(value) => setRangeFilterValue(
+                      setSelectedKeys,
+                      { ...range, min: value }
+                    )}
+                    style={{ width: 120 }}
+                  />
+                  <InputNumber
+                    placeholder="最大值"
+                    value={range.max}
+                    onChange={(value) => setRangeFilterValue(
+                      setSelectedKeys,
+                      { ...range, max: value }
+                    )}
+                    style={{ width: 120 }}
+                  />
+                  <Space>
+                    <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        clearFilters?.();
+                        confirm();
+                      }}
+                    >
+                      重置
+                    </Button>
+                  </Space>
+                </Space>
+              </div>
+            );
+          };
+          column.onFilter = (value, record) => matchesNumericRange(value, record[col.key]);
           column.render = (value) => {
             const sign = getImpactSign(value);
             const className = sign ? `impact-delta impact-${sign}` : 'impact-delta';
@@ -497,7 +586,7 @@ const ScoresPage = ({ offlineMode = false }) => {
 
         return column;
       });
-  }, [columnConfig, allScores]);
+  }, [columnConfig, allScores, mobileFilters]);
 
   // 列选择菜单
   const columnMenuItems = [
@@ -597,6 +686,183 @@ const ScoresPage = ({ offlineMode = false }) => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const mobileFilterCount = useMemo(() => {
+    const filters = mobileFilters;
+    return [
+      filters.terms.length > 0,
+      filters.courseTypes.length > 0,
+      filters.courseCategories.length > 0,
+      filters.examTypes.length > 0,
+      filters.passed !== 'all',
+      filters.scoreMin !== null || filters.scoreMax !== null,
+      filters.gpaMin !== null || filters.gpaMax !== null,
+      filters.creditMin !== null || filters.creditMax !== null,
+      filters.meanImpactMin !== null || filters.meanImpactMax !== null,
+      filters.excludeImpactMin !== null || filters.excludeImpactMax !== null,
+      filters.sort !== 'term_desc',
+    ].filter(Boolean).length;
+  }, [mobileFilters]);
+
+  const applyMobileFilters = useCallback((nextFilters) => {
+    let filtered = [...allScores];
+    const includes = (selected, value) => !selected.length || selected.includes(value);
+    const inRange = (value, min, max) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return min === null && max === null;
+      return (min === null || numeric >= Number(min))
+        && (max === null || numeric <= Number(max));
+    };
+    filtered = filtered.filter(score => (
+      includes(nextFilters.terms, score.term_display || score.term)
+      && includes(nextFilters.courseTypes, score.course_type)
+      && includes(nextFilters.courseCategories, score.course_category)
+      && includes(nextFilters.examTypes, score.exam_type)
+      && (nextFilters.passed === 'all'
+        || score.is_passed === (nextFilters.passed === 'passed'))
+      && inRange(score.score_value ?? score.score, nextFilters.scoreMin, nextFilters.scoreMax)
+      && inRange(score.gpa, nextFilters.gpaMin, nextFilters.gpaMax)
+      && inRange(score.credit, nextFilters.creditMin, nextFilters.creditMax)
+      && inRange(
+        score.mean_adjust_delta,
+        nextFilters.meanImpactMin,
+        nextFilters.meanImpactMax,
+      )
+      && inRange(
+        score.exclude_delta,
+        nextFilters.excludeImpactMin,
+        nextFilters.excludeImpactMax,
+      )
+    ));
+
+    const direction = nextFilters.sort.endsWith('_asc') ? 1 : -1;
+    const field = nextFilters.sort.replace(/_(asc|desc)$/, '');
+    filtered.sort((left, right) => {
+      if (field === 'term') {
+        return compareAcademicTerms(
+          left.term_display || left.term,
+          right.term_display || right.term,
+        ) * (nextFilters.sort === 'term_desc' ? 1 : -1);
+      }
+      if (field === 'score' || NUMERIC_COLUMN_KEYS.includes(field)) {
+        const leftValue = getScoreNumericValue(left, field);
+        const rightValue = getScoreNumericValue(right, field);
+        return (leftValue - rightValue) * direction;
+      }
+      if (IMPACT_COLUMN_KEYS.includes(field)) {
+        return compareNullableNumbers(
+          left[field],
+          right[field],
+          direction === 1 ? 'ascend' : 'descend',
+        );
+      }
+      if (field === 'is_passed') {
+        return (Number(left.is_passed) - Number(right.is_passed)) * direction;
+      }
+      return String(left[field] || '').localeCompare(String(right[field] || ''), 'zh-CN') * direction;
+    });
+    const active = [
+      nextFilters.terms.length,
+      nextFilters.courseTypes.length,
+      nextFilters.courseCategories.length,
+      nextFilters.examTypes.length,
+      nextFilters.passed !== 'all',
+      nextFilters.scoreMin !== null || nextFilters.scoreMax !== null,
+      nextFilters.gpaMin !== null || nextFilters.gpaMax !== null,
+      nextFilters.creditMin !== null || nextFilters.creditMax !== null,
+      nextFilters.meanImpactMin !== null || nextFilters.meanImpactMax !== null,
+      nextFilters.excludeImpactMin !== null || nextFilters.excludeImpactMax !== null,
+      nextFilters.sort !== 'term_desc',
+    ].some(Boolean);
+    setDisplayScores(filtered);
+    setHasActiveFilters(active);
+    setMobilePage(1);
+  }, [allScores]);
+
+  useEffect(() => {
+    if (isMobile && allScores.length > 0) {
+      applyMobileFilters(mobileFilters);
+    }
+  }, [allScores, applyMobileFilters, isMobile, mobileFilters]);
+
+  const mobileFilterTags = useMemo(() => {
+    const tags = [];
+    const list = (key, label, values) => {
+      if (values.length) tags.push({ key, label: `${label}：${values.join('、')}` });
+    };
+    list('terms', '学期', mobileFilters.terms);
+    list('courseTypes', '性质', mobileFilters.courseTypes);
+    list('courseCategories', '类别', mobileFilters.courseCategories);
+    list('examTypes', '考核', mobileFilters.examTypes);
+    if (mobileFilters.passed !== 'all') {
+      tags.push({
+        key: 'passed',
+        label: mobileFilters.passed === 'passed' ? '仅通过' : '仅未通过',
+      });
+    }
+    [
+      ['scoreRange', '成绩', mobileFilters.scoreMin, mobileFilters.scoreMax],
+      ['gpaRange', '绩点', mobileFilters.gpaMin, mobileFilters.gpaMax],
+      ['creditRange', '学分', mobileFilters.creditMin, mobileFilters.creditMax],
+    ].forEach(([key, label, min, max]) => {
+      if (min !== null || max !== null) {
+        tags.push({ key, label: `${label}：${min ?? '不限'} – ${max ?? '不限'}` });
+      }
+    });
+    [
+      ['meanImpactRange', '均分贡献', mobileFilters.meanImpactMin, mobileFilters.meanImpactMax],
+      ['excludeImpactRange', '保留贡献', mobileFilters.excludeImpactMin, mobileFilters.excludeImpactMax],
+    ].forEach(([key, label, min, max]) => {
+      if (min !== null || max !== null) {
+        tags.push({ key, label: `${label}：${min ?? '不限'} – ${max ?? '不限'}` });
+      }
+    });
+    if (mobileFilters.sort !== 'term_desc') {
+      const labels = {
+        term_asc: '学期从旧到新',
+        score_desc: '成绩从高到低',
+        score_asc: '成绩从低到高',
+        gpa_desc: '绩点从高到低',
+        gpa_asc: '绩点从低到高',
+        credit_desc: '学分从高到低',
+        credit_asc: '学分从低到高',
+        mean_adjust_delta_desc: '均分贡献从高到低',
+        mean_adjust_delta_asc: '均分贡献从低到高',
+        exclude_delta_desc: '保留贡献从高到低',
+        exclude_delta_asc: '保留贡献从低到高',
+      };
+      tags.push({ key: 'sort', label: `排序：${labels[mobileFilters.sort] || '自定义列排序'}` });
+    }
+    return tags;
+  }, [mobileFilters]);
+
+  const clearMobileFilterTag = (key) => {
+    const patches = {
+      scoreRange: { scoreMin: null, scoreMax: null },
+      gpaRange: { gpaMin: null, gpaMax: null },
+      creditRange: { creditMin: null, creditMax: null },
+      meanImpactRange: { meanImpactMin: null, meanImpactMax: null },
+      excludeImpactRange: { excludeImpactMin: null, excludeImpactMax: null },
+    };
+    const patch = patches[key] || { [key]: EMPTY_MOBILE_FILTERS[key] };
+    const next = { ...mobileFilters, ...patch };
+    setMobileFilters(next);
+    setMobileFilterDraft(next);
+    applyMobileFilters(next);
+  };
+
+  const commitMobileFilters = () => {
+    setMobileFilters(mobileFilterDraft);
+    applyMobileFilters(mobileFilterDraft);
+    setMobileFilterOpen(false);
+  };
+
+  const resetMobileFilters = () => {
+    const reset = { ...EMPTY_MOBILE_FILTERS };
+    setMobileFilterDraft(reset);
+    setMobileFilters(reset);
+    applyMobileFilters(reset);
+  };
+
   // GPA模拟
   const startSimulation = () => {
     setIsSimulating(true);
@@ -636,7 +902,7 @@ const ScoresPage = ({ offlineMode = false }) => {
   return (
     <div className="scores-page">
       {/* 统计卡片 */}
-      <Row gutter={16} className="stats-row">
+      {!isSimulating && <Row gutter={16} className="stats-row">
           <Col xs={12} sm={12} md={6}>
           <Card>
             <Statistic title="课程总数" value={stats.totalCourses} prefix={<BookOutlined />} />
@@ -704,7 +970,7 @@ const ScoresPage = ({ offlineMode = false }) => {
             <Statistic title="总学分" value={stats.totalCredits} precision={1} />
           </Card>
         </Col>
-      </Row>
+      </Row>}
 
       {/* GPA模拟计算器 */}
       <GPACalculator
@@ -754,7 +1020,7 @@ const ScoresPage = ({ offlineMode = false }) => {
                   onClick={handleRefresh}
                   disabled={offlineMode}
                 >
-                  {refreshButtonText}
+                  {isMobile ? (offlineMode ? '离线数据' : '刷新') : refreshButtonText}
                 </Button>
               </Tooltip>
             </Space>
@@ -781,9 +1047,41 @@ const ScoresPage = ({ offlineMode = false }) => {
                   }}
                 />
               </div>
+              <div className="mobile-score-tools">
+                <MobileFilterButton
+                  activeCount={mobileFilterCount}
+                  onClick={() => {
+                    setMobileFilterDraft(mobileFilters);
+                    setMobileFilterOpen(true);
+                  }}
+                >
+                  筛选与排序
+                </MobileFilterButton>
+                {mobileFilterCount > 0 && (
+                  <Button type="link" onClick={resetMobileFilters}>清除全部</Button>
+                )}
+              </div>
+              {mobileFilterTags.length > 0 && (
+                <MobileFilterChips
+                  items={mobileFilterTags}
+                  onClear={clearMobileFilterTag}
+                />
+              )}
               <div className="mobile-course-list" aria-label="成绩明细">
                 {mobileScores.map(course => (
-                  <article className="mobile-course-card" key={course._id}>
+                  <article
+                    className="mobile-course-card is-interactive"
+                    key={course._id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setMobileDetail(course)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setMobileDetail(course);
+                      }
+                    }}
+                  >
                     <div className="mobile-course-card__header">
                       <div className="mobile-course-card__identity">
                         <strong>{course.name}</strong>
@@ -828,6 +1126,167 @@ const ScoresPage = ({ offlineMode = false }) => {
           )}
         </Card>
       )}
+
+      <MobileFilterDrawer
+        open={mobileFilterOpen}
+        onClose={() => setMobileFilterOpen(false)}
+        onApply={commitMobileFilters}
+        onReset={resetMobileFilters}
+        title="成绩筛选与排序"
+      >
+        <Form layout="vertical">
+          <Form.Item label="学期">
+            <Select
+              mode="multiple"
+              allowClear
+              value={mobileFilterDraft.terms}
+              options={[...new Set(allScores
+                .map(score => score.term_display || score.term)
+                .filter(Boolean))]
+                .sort(compareAcademicTerms)
+                .map(term => ({ label: term, value: term }))}
+              onChange={terms => setMobileFilterDraft(current => ({ ...current, terms }))}
+            />
+          </Form.Item>
+          <Form.Item label="课程性质">
+            <Select
+              mode="multiple"
+              allowClear
+              value={mobileFilterDraft.courseTypes}
+              options={getFilterOptions('course_type').map(option => ({
+                label: option.text, value: option.value,
+              }))}
+              onChange={courseTypes => setMobileFilterDraft(current => ({ ...current, courseTypes }))}
+            />
+          </Form.Item>
+          <Form.Item label="课程类别">
+            <Select
+              mode="multiple"
+              allowClear
+              value={mobileFilterDraft.courseCategories}
+              options={getFilterOptions('course_category').map(option => ({
+                label: option.text, value: option.value,
+              }))}
+              onChange={courseCategories => setMobileFilterDraft(current => ({ ...current, courseCategories }))}
+            />
+          </Form.Item>
+          <Form.Item label="考核方式">
+            <Select
+              mode="multiple"
+              allowClear
+              value={mobileFilterDraft.examTypes}
+              options={getFilterOptions('exam_type').map(option => ({
+                label: option.text, value: option.value,
+              }))}
+              onChange={examTypes => setMobileFilterDraft(current => ({ ...current, examTypes }))}
+            />
+          </Form.Item>
+          <Form.Item label="通过状态">
+            <Segmented
+              block
+              value={mobileFilterDraft.passed}
+              options={[
+                { label: '全部', value: 'all' },
+                { label: '通过', value: 'passed' },
+                { label: '未通过', value: 'failed' },
+              ]}
+              onChange={passed => setMobileFilterDraft(current => ({ ...current, passed }))}
+            />
+          </Form.Item>
+          {[
+            ['成绩', 'scoreMin', 'scoreMax'],
+            ['绩点', 'gpaMin', 'gpaMax'],
+            ['学分', 'creditMin', 'creditMax'],
+          ].map(([label, minKey, maxKey]) => (
+            <Form.Item label={`${label}范围`} key={label}>
+              <Space.Compact block>
+                <InputNumber
+                  placeholder="最小值"
+                  value={mobileFilterDraft[minKey]}
+                  onChange={value => setMobileFilterDraft(current => ({ ...current, [minKey]: value }))}
+                  style={{ width: '50%' }}
+                />
+                <InputNumber
+                  placeholder="最大值"
+                  value={mobileFilterDraft[maxKey]}
+                  onChange={value => setMobileFilterDraft(current => ({ ...current, [maxKey]: value }))}
+                  style={{ width: '50%' }}
+                />
+              </Space.Compact>
+            </Form.Item>
+          ))}
+          {[
+            ['均分贡献', 'meanImpactMin', 'meanImpactMax'],
+            ['保留贡献', 'excludeImpactMin', 'excludeImpactMax'],
+          ].map(([label, minKey, maxKey]) => (
+            <Form.Item label={`${label}范围`} key={label}>
+              <Space.Compact block>
+                <InputNumber
+                  placeholder="最小值"
+                  value={mobileFilterDraft[minKey]}
+                  onChange={value => setMobileFilterDraft(current => ({
+                    ...current,
+                    [minKey]: value,
+                  }))}
+                  style={{ width: '50%' }}
+                />
+                <InputNumber
+                  placeholder="最大值"
+                  value={mobileFilterDraft[maxKey]}
+                  onChange={value => setMobileFilterDraft(current => ({
+                    ...current,
+                    [maxKey]: value,
+                  }))}
+                  style={{ width: '50%' }}
+                />
+              </Space.Compact>
+            </Form.Item>
+          ))}
+          <Form.Item label="排序">
+            <Select
+              value={mobileFilterDraft.sort}
+              options={[
+                { label: '学期从新到旧', value: 'term_desc' },
+                { label: '学期从旧到新', value: 'term_asc' },
+                { label: '成绩从高到低', value: 'score_desc' },
+                { label: '成绩从低到高', value: 'score_asc' },
+                { label: '绩点从高到低', value: 'gpa_desc' },
+                { label: '绩点从低到高', value: 'gpa_asc' },
+                { label: '学分从高到低', value: 'credit_desc' },
+                { label: '学分从低到高', value: 'credit_asc' },
+                { label: '均分贡献从高到低', value: 'mean_adjust_delta_desc' },
+                { label: '均分贡献从低到高', value: 'mean_adjust_delta_asc' },
+                { label: '保留贡献从高到低', value: 'exclude_delta_desc' },
+                { label: '保留贡献从低到高', value: 'exclude_delta_asc' },
+              ]}
+              onChange={sort => setMobileFilterDraft(current => ({ ...current, sort }))}
+            />
+          </Form.Item>
+        </Form>
+      </MobileFilterDrawer>
+
+      <MobileDetailDrawer
+        open={Boolean(mobileDetail)}
+        onClose={() => setMobileDetail(null)}
+        title={mobileDetail?.name || '课程详情'}
+      >
+        {mobileDetail && (
+          <Descriptions column={1} bordered size="small">
+            <Descriptions.Item label="课程代码">{mobileDetail.code || '-'}</Descriptions.Item>
+            <Descriptions.Item label="成绩">{mobileDetail.score ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="绩点">{mobileDetail.gpa ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="学分">{mobileDetail.credit ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="学期">{mobileDetail.term_display || mobileDetail.term || '-'}</Descriptions.Item>
+            <Descriptions.Item label="课程性质">{mobileDetail.course_type || '-'}</Descriptions.Item>
+            <Descriptions.Item label="课程类别">{mobileDetail.course_category || '-'}</Descriptions.Item>
+            <Descriptions.Item label="通识类别">{mobileDetail.general_category || '-'}</Descriptions.Item>
+            <Descriptions.Item label="考核方式">{mobileDetail.exam_type || '-'}</Descriptions.Item>
+            <Descriptions.Item label="考试状态">{mobileDetail.exam_status || '-'}</Descriptions.Item>
+            <Descriptions.Item label="均分贡献">{formatSignedDelta(mobileDetail.mean_adjust_delta)}</Descriptions.Item>
+            <Descriptions.Item label="保留贡献">{formatSignedDelta(mobileDetail.exclude_delta)}</Descriptions.Item>
+          </Descriptions>
+        )}
+      </MobileDetailDrawer>
 
       {/* 更新提示弹窗 */}
       <Modal

@@ -15,6 +15,7 @@ import {
   getEvaluationTasks, getEvaluationCourses, getEvaluationIndicators,
   submitEvaluation, batchEvaluation,
 } from '../services/api';
+import { MobileActionBar } from '../components/mobile/MobileUX';
 import './EvaluationPage.css';
 
 const { Text, Title } = Typography;
@@ -58,6 +59,7 @@ const EvaluationPage = () => {
 
   // 须知确认
   const [acknowledged, setAcknowledged] = useState(false);
+  const [noticeExpanded, setNoticeExpanded] = useState(true);
 
   // 单独评价弹窗
   const [evaluateModalVisible, setEvaluateModalVisible] = useState(false);
@@ -233,39 +235,47 @@ const EvaluationPage = () => {
       return;
     }
 
-    // 实际提交
-    setEvaluateSubmitting(true);
-    try {
-      // 构建 custom_scores 和 text_results
-      const customScores = {};
-      const textResults = {};
-      for (const ind of evaluateIndicators) {
-        if (ind.evaltype === 1 && ind._customDfdj !== undefined && ind._customDfdj !== null) {
-          customScores[ind.zbid] = ind._customDfdj;
-        } else if (ind.evaltype !== 1 && ind._customResult) {
-          textResults[ind.zbid] = ind._customResult;
-        }
+    const customScores = {};
+    const textResults = {};
+    for (const ind of evaluateIndicators) {
+      if (ind.evaltype === 1 && ind._customDfdj !== undefined && ind._customDfdj !== null) {
+        customScores[ind.zbid] = ind._customDfdj;
+      } else if (ind.evaltype !== 1 && ind._customResult) {
+        textResults[ind.zbid] = ind._customResult;
       }
-
-      const result = await submitEvaluation(
-        selectedTask.task_id,
-        evaluateCourse.xspjid,
-        'custom',
-        customScores,
-        textResults
-      );
-      if (result.success) {
-        message.success(`${evaluateCourse.course_name} 评教提交成功`);
-        setEvaluateModalVisible(false);
-        if (selectedTask) handleSelectTask(selectedTask);
-      } else {
-        message.error(`提交失败: ${result.message}`);
-      }
-    } catch (error) {
-      message.error('提交异常');
-    } finally {
-      setEvaluateSubmitting(false);
     }
+
+    Modal.confirm({
+      title: '确认提交本课程评价',
+      content: `即将向教务系统提交“${evaluateCourse.course_name}”的评价。提交后通常无法修改，请再次确认当前评分和文本内容。`,
+      okText: '确认真实提交',
+      okType: 'danger',
+      cancelText: '返回检查',
+      onOk: async () => {
+        setEvaluateSubmitting(true);
+        try {
+          const result = await submitEvaluation(
+            selectedTask.task_id,
+            evaluateCourse.xspjid,
+            'custom',
+            customScores,
+            textResults
+          );
+          if (result.success) {
+            message.success(`${evaluateCourse.course_name} 评教提交成功`);
+            setEvaluateModalVisible(false);
+            if (selectedTask) handleSelectTask(selectedTask);
+          } else {
+            throw new Error(result.message || '提交失败');
+          }
+        } catch (error) {
+          message.error(error?.message ? `提交失败: ${error.message}` : '提交异常');
+          throw error;
+        } finally {
+          setEvaluateSubmitting(false);
+        }
+      },
+    });
   };
 
   // ── 批量评教 ────────────────────────────────────────────────────────────
@@ -742,18 +752,26 @@ const EvaluationPage = () => {
       <Alert
         className="evaluation-notice"
         message="评教须知"
-        description="由于教务系统存在更改接口等可能性，为了防止出现异常，当前自动评价脚本基于“2025-2026学年春季学期学生评教”完成和测试，请确保评教学期匹配后再进行操作。"
+        description={noticeExpanded
+          ? '由于教务系统存在更改接口等可能性，为了防止出现异常，当前自动评价脚本基于“2025-2026学年春季学期学生评教”完成和测试，请确保评教学期匹配后再进行操作。'
+          : '已确认评教须知。提交前仍会保留预览和确认步骤。'}
         type="warning"
         showIcon
         style={{ marginBottom: 16 }}
         action={
           <Button
-            type="primary"
+            type={acknowledged ? 'default' : 'primary'}
             size="small"
-            onClick={() => setAcknowledged(true)}
-            disabled={acknowledged}
+            onClick={() => {
+              if (!acknowledged) {
+                setAcknowledged(true);
+                setNoticeExpanded(false);
+              } else {
+                setNoticeExpanded((value) => !value);
+              }
+            }}
           >
-            {acknowledged ? '已知晓' : '已知晓'}
+            {acknowledged ? (noticeExpanded ? '收起说明' : '重新查看') : '已知晓'}
           </Button>
         }
       />
@@ -862,7 +880,13 @@ const EvaluationPage = () => {
           className="evaluation-courses-card"
           title={
             <Space>
-              <LeftOutlined style={{ cursor: 'pointer' }} onClick={() => { setSelectedTask(null); setCourses([]); }} />
+              <Button
+                type="text"
+                className="evaluation-back-button"
+                icon={<LeftOutlined />}
+                aria-label="返回评教任务列表"
+                onClick={() => { setSelectedTask(null); setCourses([]); }}
+              />
               <ExclamationCircleOutlined style={{ fontSize: 18 }} />
               <span>{selectedTask.task_name} - 课程列表</span>
             </Space>
@@ -920,6 +944,36 @@ const EvaluationPage = () => {
           </Spin>
         </Card>
       )}
+
+      <MobileActionBar
+        visible={
+          isMobile
+          && Boolean(selectedTask)
+          && pendingCourses.length > 0
+          && !evaluateModalVisible
+          && !progressModalVisible
+        }
+        className="evaluation-mobile-action-bar"
+      >
+        <Button
+          onClick={() => {
+            const allSelected = selectedXspjIds.length === pendingCourses.length;
+            setSelectedXspjIds(allSelected ? [] : pendingCourses.map((course) => course.xspjid));
+          }}
+        >
+          {selectedXspjIds.length === pendingCourses.length ? '清除选择' : '全选待评'}
+        </Button>
+        <Button
+          type="primary"
+          danger
+          icon={<SafetyCertificateOutlined />}
+          onClick={handleBatchEvaluate}
+          loading={batchRunning}
+          disabled={selectedXspjIds.length === 0}
+        >
+          提交所选 ({selectedXspjIds.length})
+        </Button>
+      </MobileActionBar>
 
       {/* ── 详情弹窗（已评课程） ──────────────────────────────────────────── */}
       <Modal

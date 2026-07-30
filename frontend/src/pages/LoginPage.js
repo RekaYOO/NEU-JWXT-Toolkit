@@ -336,6 +336,9 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
                   prefix={<UserOutlined />}
                   placeholder="学号"
                   size="large"
+                  inputMode="numeric"
+                  autoComplete="username"
+                  enterKeyHint="next"
                 />
               </Form.Item>
 
@@ -407,6 +410,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
         </section>
       </main>
       <Modal
+        rootClassName="login-sms-modal"
         open={Boolean(smsFlow)}
         title="短信二次认证"
         okText="验证并登录"

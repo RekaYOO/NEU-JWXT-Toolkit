@@ -225,7 +225,7 @@
   border: 1px solid #ffa39e;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .evaluation-page {
     overflow: hidden;
   }
@@ -310,10 +310,7 @@
   }
 
   .evaluation-batch-actions {
-    width: 100%;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
+    display: none;
   }
 
   .evaluation-batch-actions > .ant-space-item,
@@ -323,6 +320,25 @@
 
   .evaluation-batch-actions > .ant-space-item:last-child {
     grid-column: 1 / -1;
+  }
+
+  .evaluation-page:has(.evaluation-mobile-action-bar) {
+    padding-bottom: calc(72px + env(safe-area-inset-bottom));
+  }
+
+  .evaluation-mobile-action-bar .ant-space-compact > *:first-child {
+    flex: 0 0 38%;
+  }
+
+  .evaluation-mobile-action-bar .ant-space-compact > *:last-child {
+    flex: 1 1 auto;
+  }
+
+  .evaluation-back-button {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    margin-inline-start: -8px;
   }
 
   .evaluation-tasks-card .ant-card-body,

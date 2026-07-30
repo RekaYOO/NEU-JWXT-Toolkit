@@ -341,6 +341,7 @@ const ExperimentCoursePage = () => {
       {/* 实验班选择弹窗 */}
       <Modal
         title="选择实验班"
+        rootClassName="experiment-rounds-modal"
         open={roundsModalVisible}
         onCancel={() => setRoundsModalVisible(false)}
         footer={null}
