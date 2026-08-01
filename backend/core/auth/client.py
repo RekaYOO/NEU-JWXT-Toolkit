@@ -82,7 +82,12 @@ def retry_on_error(max_retries: int = MAX_RETRIES, delay: float = RETRY_DELAY):
                     return func(*args, **kwargs)
                 except requests.RequestException as e:
                     last_exception = e
-                    logger.warning(f"请求失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    logger.warning(
+                        "请求失败 (尝试 %s/%s): %s",
+                        attempt + 1,
+                        max_retries,
+                        type(e).__name__,
+                    )
                     if attempt < max_retries - 1:
                         time.sleep(delay * (attempt + 1))  # 指数退避
             raise last_exception
@@ -159,10 +164,10 @@ def _fetch_rsa_key_from_server(timeout: int = 10) -> Optional[str]:
         return None
         
     except requests.RequestException as e:
-        logger.warning(f"从服务器获取公钥失败（网络错误）: {e}")
+        logger.warning("从服务器获取公钥失败（网络错误）: %s", type(e).__name__)
         return None
     except Exception as e:
-        logger.warning(f"从服务器获取公钥失败: {e}")
+        logger.warning("从服务器获取公钥失败: %s", type(e).__name__)
         return None
 
 
@@ -388,7 +393,7 @@ class NEUAuthClient:
 
         # Step 3: 分析错误，非密码错误时尝试刷新公钥
         error_type = _classify_login_error(error_msg)
-        logger.warning(f"首次登录失败，错误类型: {error_type}，信息: {error_msg}")
+        logger.warning("首次登录失败，错误类型: %s", error_type)
 
         if error_type != LOGIN_ERR_WRONG_PWD:
             # 非密码错误 → 尝试从服务器 JS 文件获取最新公钥
@@ -411,7 +416,10 @@ class NEUAuthClient:
                     self._current_key = new_key
                     self._save_cookies()
                     return True
-                logger.warning(f"使用新公钥重试仍然失败: {error_msg}")
+                logger.warning(
+                    "使用新公钥重试仍然失败，错误类型: %s",
+                    _classify_login_error(error_msg),
+                )
             elif new_key is None:
                 logger.warning("无法从服务器获取新公钥（网络问题）")
 
@@ -727,7 +735,9 @@ class NEUAuthClient:
         except requests.exceptions.Timeout as error:
             raise WebVPNLoginError("WebVPN 登录请求超时，请检查网络或改用微信扫码快速登录") from error
         except requests.RequestException as error:
-            raise WebVPNLoginError(f"WebVPN 请求失败: {error}") from error
+            raise WebVPNLoginError(
+                f"WebVPN 请求失败（{type(error).__name__}）"
+            ) from error
 
     def _open_webvpn_password_page(self) -> tuple[requests.Response, bool]:
         """Open the WebVPN CAS page, retrying once with a clean cookie jar."""
@@ -762,7 +772,9 @@ class NEUAuthClient:
             response.raise_for_status()
             result = response.json()
         except (requests.RequestException, ValueError) as error:
-            raise WebVPNLoginError(f"发送短信验证码失败: {error}") from error
+            raise WebVPNLoginError(
+                f"发送短信验证码失败（{type(error).__name__}）"
+            ) from error
 
         info = result.get("info")
         logger.info(
@@ -796,9 +808,16 @@ class NEUAuthClient:
             response.raise_for_status()
             info = response.json().get("info")
         except (requests.RequestException, ValueError) as error:
-            raise WebVPNLoginError(f"验证短信验证码失败: {error}") from error
+            raise WebVPNLoginError(
+                f"验证短信验证码失败（{type(error).__name__}）"
+            ) from error
 
-        logger.info("WebVPN SMS verify response: status=%s info=%s", response.status_code, info)
+        verification_result = info if info in {"ok", "most", "codeErr", "timeout"} else "other"
+        logger.info(
+            "WebVPN SMS verify response: status=%s result=%s",
+            response.status_code,
+            verification_result,
+        )
         if info == "codeErr":
             raise WebVPNLoginError("验证码有误")
         if info == "timeout":
@@ -1145,7 +1164,7 @@ class NEUAuthClient:
                     "default_avatar": user_data.get("userImg", ""),
                 }
         except Exception as e:
-            print(f"获取用户信息失败: {e}")
+            logger.warning("获取用户信息失败: %s", type(e).__name__)
         return {}
 
     def get_avatar(self, avatar_token: str = None) -> Optional[bytes]:
@@ -1173,7 +1192,7 @@ class NEUAuthClient:
             # 步骤1：获取文件信息
             file_info_url = f"https://jwxt.neu.edu.cn/jwapp/sys/emapcomponent/file/getUploadedAttachment/{avatar_token}.do"
             resp = self.get(file_info_url)
-            print(f"[Avatar] 文件信息状态: {resp.status_code}")
+            logger.debug("头像文件信息状态: %s", resp.status_code)
             
             # 如果直接返回图片
             if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', ''):
@@ -1182,8 +1201,6 @@ class NEUAuthClient:
             # 尝试解析JSON获取实际文件URL
             try:
                 data = resp.json()
-                print(f"[Avatar] 文件信息: {data}")
-                
                 # 从 items 数组获取第一个文件的 fileUrl
                 items = data.get('items', [])
                 if items and len(items) > 0:
@@ -1195,25 +1212,26 @@ class NEUAuthClient:
                         else:
                             download_url = file_url
                         
-                        print(f"[Avatar] 下载URL: {download_url}")
                         resp = self.get(download_url)
-                        print(f"[Avatar] 下载状态: {resp.status_code}, Content-Type: {resp.headers.get('Content-Type')}")
+                        logger.debug(
+                            "头像下载状态: %s, Content-Type: %s",
+                            resp.status_code,
+                            resp.headers.get("Content-Type", ""),
+                        )
                         
                         if resp.status_code == 200:
                             return resp.content
                 else:
-                    print("[Avatar] 没有文件items")
+                    logger.debug("头像文件信息不含 items")
                     
-            except ValueError as e:
+            except ValueError:
                 # 不是JSON，可能是直接图片数据
-                print(f"[Avatar] JSON解析失败: {e}")
+                logger.debug("头像文件信息不是 JSON")
                 if resp.status_code == 200:
                     return resp.content
                     
-        except Exception as e:
-            print(f"[Avatar] 获取头像失败: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception as error:
+            logger.error("获取头像失败: %s", type(error).__name__)
         return None
 
     # ── Cookie 持久化 ─────────────────────────────────────────────────────────
@@ -1355,7 +1373,7 @@ class NEUAuthClient:
             
             # 如果最终 URL 不是 CAS 登录页，说明成功获取了票据
             if final_domain != cas_domain:
-                logger.info(f"票据刷新成功，当前 URL: {final_url}")
+                logger.info("票据刷新成功，目标域名: %s", final_domain)
                 self._logged_in = True
                 self._save_cookies()  # 保存更新后的 cookies
                 return True
@@ -1365,7 +1383,7 @@ class NEUAuthClient:
                 return False
                 
         except Exception as e:
-            logger.warning(f"票据刷新失败: {e}")
+            logger.warning("票据刷新失败: %s", type(e).__name__)
             return False
 
     # ── 内部方法 ───────────────────────────────────────────────────────────────
@@ -1488,8 +1506,11 @@ class NEUAuthClient:
             
             alt_url = self._swap_protocol(url)
             logger.info(
-                f"请求 {url} 失败 ({type(e).__name__})，"
-                f"尝试协议回退: {alt_url}"
+                "请求域名 %s 失败 (%s)，尝试协议回退 %s -> %s",
+                urlparse(url).hostname or "unknown",
+                type(e).__name__,
+                urlparse(url).scheme,
+                urlparse(alt_url).scheme,
             )
             resp = self._session.request(method, alt_url, **kwargs)
             # 记住可用协议，后续请求直接使用

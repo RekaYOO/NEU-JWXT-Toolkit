@@ -1,18 +1,16 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Card, Table, Select, DatePicker, Button, Tag, Space, 
   Statistic, Row, Col, Alert, Input, message, Spin,
-  Radio, Typography, Empty, Grid, Descriptions, Modal
+  Radio, Typography, Empty, Grid, Descriptions, Modal, Drawer
 } from 'antd';
 import { 
   FileTextOutlined, DownloadOutlined, DeleteOutlined,
-  SearchOutlined, ReloadOutlined, InfoCircleOutlined,
-  WarningOutlined, CloseCircleOutlined, CheckCircleOutlined
+  SearchOutlined, ReloadOutlined
 } from '@ant-design/icons';
 import { getLogSummary, getLogFiles, getLogContent, tailLog, searchLogs, cleanupLogs } from '../services/api';
 import dayjs from 'dayjs';
 import {
-  MobileDetailDrawer,
   MobileFilterButton,
   MobileFilterChips,
   MobileFilterDrawer,
@@ -20,7 +18,6 @@ import {
 import './LogsPage.css';
 
 const { Option } = Select;
-const { RangePicker } = DatePicker;
 const { Text } = Typography;
 
 // 日志级别颜色映射
@@ -42,6 +39,162 @@ const categoryOptions = [
   { value: 'sync', label: '同步日志', color: 'orange' },
 ];
 
+const detailLabels = {
+  event: '事件标识',
+  outcome: '结果',
+  request_id: '请求 ID',
+  error_id: '错误编号',
+  method: '请求方法',
+  path: '请求路径',
+  status_code: '状态码',
+  response_time_ms: '耗时（ms）',
+  response_size_bytes: '响应大小（字节）',
+  client_ip: '客户端 IP',
+  peer_ip: '连接节点 IP',
+  scheme: '协议',
+  gateway_state: '访问网关状态',
+  access_session_id: '访问会话 ID',
+  user_id: 'NEU 账号',
+  session_user: '会话账号',
+  user_agent: 'User-Agent',
+  subject: '账号主体',
+  reason: '原因',
+  auth_method: '认证方式',
+  network_mode: '网络模式',
+  remember: '记住登录',
+  trust_device: '信任设备',
+  clear_data: '清理数据',
+  component: '组件',
+  error_type: '异常类型',
+  error_code: '错误代码',
+  trace: '安全调用位置',
+};
+
+const formatDetailValue = (value) => {
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (value === null || value === undefined || value === '') return '-';
+  if (typeof value === 'object') return JSON.stringify(value, null, 2);
+  return String(value);
+};
+
+const outcomeLabels = {
+  success: '成功', failure: '失败', blocked: '已拦截', denied: '已拒绝',
+  error: '异常', pending: '进行中',
+};
+
+const reasonLabels = {
+  wrong_password: '密码错误',
+  webvpn_required: '需要使用 WebVPN',
+  rate_limit: '失败次数过多',
+  gateway_not_configured: '访问密码未配置',
+  login_rejected: '登录被拒绝',
+  direct_access_failed: '校园网直连失败',
+  request_error: '认证请求失败',
+  flow_missing: '认证流程不存在',
+  flow_replaced: '认证流程已被替换',
+};
+
+const eventTitles = {
+  http_access: 'HTTP 请求',
+  application_error: '应用异常',
+  access_gateway_login: '网站访问验证',
+  access_gateway_logout: '退出网站访问',
+  neu_login: 'NEU 账号登录',
+  neu_logout: 'NEU 账号退出',
+  neu_session_restore: 'NEU 会话恢复',
+  webvpn_qr_login: 'WebVPN 二维码登录',
+  webvpn_password_login: 'WebVPN 密码登录',
+  webvpn_sms_send: 'WebVPN 短信发送',
+  webvpn_sms_verify: 'WebVPN 短信验证',
+  tracking_recovery_login: '成绩追踪登录恢复',
+};
+
+const compactText = (value, limit = 180) => {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+};
+
+const parseStructuredMessage = (message) => {
+  if (!message) return null;
+  const start = message.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = start; index < message.length; index += 1) {
+    const character = message[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === '{') depth += 1;
+    else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const parsed = JSON.parse(message.slice(start, index + 1));
+          return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+};
+
+// 兼容尚未重启的旧后端：旧接口只有 message，也能按真实日志格式生成摘要。
+const normalizeLogEntry = (entry = {}) => {
+  if (entry.summary) return entry;
+  const payload = parseStructuredMessage(entry.message);
+  const event = payload?.event;
+  if (event === 'http_access') {
+    const duration = payload.response_time_ms === undefined ? '' : ` · ${payload.response_time_ms} ms`;
+    return {
+      ...entry,
+      event_type: entry.event_type || event,
+      event_title: entry.event_title || eventTitles[event],
+      summary: `${payload.method || 'HTTP'} ${payload.path || '-'} · ${payload.status_code ?? '-'}${duration}`,
+      details: entry.details || payload,
+    };
+  }
+  if (event && eventTitles[event]) {
+    const outcome = outcomeLabels[payload.outcome] || '状态未知';
+    const reason = payload.reason ? ` · ${reasonLabels[payload.reason] || payload.reason}` : '';
+    const method = payload.auth_method && !payload.reason ? ` · ${payload.auth_method}` : '';
+    return {
+      ...entry,
+      event_type: entry.event_type || event,
+      event_title: entry.event_title || eventTitles[event],
+      summary: `${outcome}${reason}${method}`,
+      details: entry.details || payload,
+    };
+  }
+  return {
+    ...entry,
+    event_type: entry.event_type || 'generic_system',
+    event_title: entry.event_title || '普通日志',
+    summary: compactText(entry.message) || '空消息',
+    details: entry.details || {},
+  };
+};
+
+const orderNewestFirst = (entries) => {
+  const normalized = entries.map(normalizeLogEntry);
+  const withTimestamp = normalized.filter(entry => entry.timestamp);
+  if (withTimestamp.length > 1) {
+    const first = withTimestamp[0].timestamp;
+    const last = withTimestamp[withTimestamp.length - 1].timestamp;
+    if (first < last) return [...normalized].reverse();
+  }
+  return [...normalized].sort((left, right) => (
+    String(right.timestamp || '').localeCompare(String(left.timestamp || ''))
+  ));
+};
+
 const LogsPage = () => {
   // 状态
   const [summary, setSummary] = useState(null);
@@ -54,10 +207,11 @@ const LogsPage = () => {
   const [selectedCategory, setSelectedCategory] = useState('system');
   const [selectedDate, setSelectedDate] = useState(dayjs());
   const [selectedLevel, setSelectedLevel] = useState(null);
+  const [selectedEventType, setSelectedEventType] = useState(null);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [viewMode, setViewMode] = useState('content'); // content / tail / search
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
-  const [mobileDetail, setMobileDetail] = useState(null);
+  const [detailEntry, setDetailEntry] = useState(null);
   const [mobileDraft, setMobileDraft] = useState(null);
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
@@ -107,7 +261,7 @@ const LogsPage = () => {
         );
       }
       
-      setEntries(data.entries || []);
+      setEntries(orderNewestFirst(data.entries || []));
     } catch (error) {
       // 静默处理错误
       console.log('加载日志内容失败:', error);
@@ -131,13 +285,18 @@ const LogsPage = () => {
     try {
       const data = await searchLogs(keyword, category, 7, 100);
       // 转换为统一的格式
-      const formatted = (data.results || []).map(r => ({
+      const formatted = (data.results || []).map(r => normalizeLogEntry({
         timestamp: r.timestamp || `${r.date} 00:00:00`,
         level: r.level || 'INFO',
-        logger: `${r.category}`,
+        logger: r.logger || `${r.category}`,
         message: r.message,
+        event_type: r.event_type || 'generic_system',
+        event_title: r.event_title || '普通日志',
+        summary: r.summary || r.message,
+        details: r.details || {},
+        structured: Boolean(r.structured),
       }));
-      setEntries(formatted);
+      setEntries(orderNewestFirst(formatted));
       setViewMode('search');
       if (data.total > 0) {
         message.success(`找到 ${data.total} 条记录`);
@@ -182,6 +341,7 @@ const LogsPage = () => {
       date: selectedDate,
       level: selectedLevel,
       keyword: searchKeyword,
+      eventType: selectedEventType,
       view: viewMode === 'tail' ? 'tail' : 'content',
     });
     setMobileFilterOpen(true);
@@ -193,6 +353,7 @@ const LogsPage = () => {
     setSelectedDate(mobileDraft.date);
     setSelectedLevel(mobileDraft.level);
     setSearchKeyword(mobileDraft.keyword);
+    setSelectedEventType(mobileDraft.eventType);
     setMobileFilterOpen(false);
     if (mobileDraft.keyword.trim()) {
       handleSearch(mobileDraft.keyword, mobileDraft.category);
@@ -207,6 +368,7 @@ const LogsPage = () => {
       date: dayjs(),
       level: null,
       keyword: '',
+      eventType: null,
       view: 'content',
     };
     setMobileDraft(reset);
@@ -214,6 +376,7 @@ const LogsPage = () => {
     setSelectedDate(reset.date);
     setSelectedLevel(reset.level);
     setSearchKeyword('');
+    setSelectedEventType(null);
     setViewMode('content');
   };
 
@@ -221,6 +384,7 @@ const LogsPage = () => {
     selectedCategory !== 'system',
     !selectedDate?.isSame(dayjs(), 'day'),
     Boolean(selectedLevel),
+    Boolean(selectedEventType),
     Boolean(searchKeyword),
     viewMode === 'tail',
   ].filter(Boolean).length;
@@ -234,6 +398,10 @@ const LogsPage = () => {
       label: `日期：${selectedDate?.format('YYYY-MM-DD')}`,
     },
     selectedLevel && { key: 'level', label: `级别：${selectedLevel}` },
+    selectedEventType && {
+      key: 'eventType',
+      label: `类型：${entries.find(item => item.event_type === selectedEventType)?.event_title || selectedEventType}`,
+    },
     searchKeyword && { key: 'keyword', label: `关键词：${searchKeyword}` },
     viewMode === 'tail' && { key: 'view', label: '最新 100 行' },
   ].filter(Boolean);
@@ -247,6 +415,7 @@ const LogsPage = () => {
     }
     if (key === 'date') setSelectedDate(dayjs());
     if (key === 'level') setSelectedLevel(null);
+    if (key === 'eventType') setSelectedEventType(null);
     if (key === 'keyword') {
       setSearchKeyword('');
       setViewMode('content');
@@ -277,6 +446,23 @@ const LogsPage = () => {
     }
   }, [loadLogContent, viewMode]);
 
+  const eventTypeOptions = useMemo(() => {
+    const options = new Map();
+    entries.forEach(entry => {
+      const value = entry.event_type || 'generic_system';
+      if (!options.has(value)) {
+        options.set(value, entry.event_title || '普通日志');
+      }
+    });
+    return Array.from(options, ([value, label]) => ({ value, label }));
+  }, [entries]);
+
+  const displayedEntries = useMemo(() => (
+    selectedEventType
+      ? entries.filter(entry => entry.event_type === selectedEventType)
+      : entries
+  ), [entries, selectedEventType]);
+
   // 表格列定义
   const columns = [
     {
@@ -298,18 +484,18 @@ const LogsPage = () => {
       ),
     },
     {
-      title: '日志器',
-      dataIndex: 'logger',
-      key: 'logger',
-      width: 200,
-      ellipsis: true,
+      title: '类型',
+      dataIndex: 'event_title',
+      key: 'event_title',
+      width: 190,
+      render: (text) => <span className="log-event-title">{text || '普通日志'}</span>,
     },
     {
-      title: '消息',
-      dataIndex: 'message',
-      key: 'message',
+      title: '摘要',
+      dataIndex: 'summary',
+      key: 'summary',
       ellipsis: true,
-      render: (text) => <Text code style={{ fontSize: '12px' }}>{text}</Text>,
+      render: (text) => <span className="log-summary">{text || '-'}</span>,
     },
   ];
 
@@ -413,6 +599,15 @@ const LogsPage = () => {
             ))}
           </Select>
 
+          <Select
+            value={selectedEventType}
+            onChange={setSelectedEventType}
+            options={eventTypeOptions}
+            style={{ width: 190 }}
+            placeholder="消息类型"
+            allowClear
+          />
+
           <DatePicker
             value={selectedDate}
             onChange={setSelectedDate}
@@ -487,12 +682,12 @@ const LogsPage = () => {
         {isMobile ? (
           <Spin spinning={loading}>
             <div className="mobile-log-list">
-              {entries.map((entry, index) => (
+              {displayedEntries.map((entry, index) => (
                 <button
                   type="button"
                   className="mobile-log-card"
                   key={`${entry.timestamp}-${index}`}
-                  onClick={() => setMobileDetail(entry)}
+                  onClick={() => setDetailEntry(entry)}
                 >
                   <span className="mobile-log-card__head">
                     <Tag color={levelColors[entry.level?.toUpperCase()] || 'default'}>
@@ -500,17 +695,17 @@ const LogsPage = () => {
                     </Tag>
                     <time>{entry.timestamp || '-'}</time>
                   </span>
-                  <strong>{entry.logger || '未知日志器'}</strong>
-                  <code>{entry.message || '-'}</code>
+                  <strong>{entry.event_title || '普通日志'}</strong>
+                  <span className="mobile-log-card__summary">{entry.summary || '-'}</span>
                 </button>
               ))}
-              {!entries.length && !loading && <Empty description="暂无日志记录" />}
+              {!displayedEntries.length && !loading && <Empty description="暂无符合条件的日志" />}
             </div>
           </Spin>
         ) : (
           <Table
             columns={columns}
-            dataSource={entries}
+            dataSource={displayedEntries}
             rowKey={(record, index) => `${record.timestamp}-${index}`}
             loading={loading}
             pagination={{
@@ -522,8 +717,19 @@ const LogsPage = () => {
             bordered
             scroll={{ x: 'max-content', y: 500 }}
             locale={{
-              emptyText: <Empty description="暂无日志记录" />,
+              emptyText: <Empty description="暂无符合条件的日志" />,
             }}
+            onRow={(record) => ({
+              className: 'log-table-row',
+              tabIndex: 0,
+              onClick: () => setDetailEntry(record),
+              onKeyDown: event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  setDetailEntry(record);
+                }
+              },
+            })}
           />
         )}
 
@@ -594,6 +800,14 @@ const LogsPage = () => {
               }))}
               onChange={level => setMobileDraft(current => ({ ...current, level }))}
             />
+            <label className="mobile-field-label">消息类型</label>
+            <Select
+              allowClear
+              value={mobileDraft.eventType}
+              options={eventTypeOptions}
+              onChange={eventType => setMobileDraft(current => ({ ...current, eventType }))}
+              placeholder="全部消息类型"
+            />
             <label className="mobile-field-label">查看范围</label>
             <Radio.Group
               value={mobileDraft.view}
@@ -619,22 +833,36 @@ const LogsPage = () => {
           </>
         )}
       </MobileFilterDrawer>
-      <MobileDetailDrawer
-        open={Boolean(mobileDetail)}
-        onClose={() => setMobileDetail(null)}
-        title="日志详情"
+      <Drawer
+        open={Boolean(detailEntry)}
+        onClose={() => setDetailEntry(null)}
+        title={detailEntry?.event_title || '日志详情'}
+        placement={isMobile ? 'bottom' : 'right'}
+        width={isMobile ? undefined : 680}
+        height={isMobile ? '88dvh' : undefined}
+        destroyOnClose
       >
-        {mobileDetail && (
-          <Descriptions column={1} bordered size="small">
-            <Descriptions.Item label="时间">{mobileDetail.timestamp || '-'}</Descriptions.Item>
-            <Descriptions.Item label="级别">{mobileDetail.level || 'UNKNOWN'}</Descriptions.Item>
-            <Descriptions.Item label="日志器">{mobileDetail.logger || '-'}</Descriptions.Item>
-            <Descriptions.Item label="消息">
-              <pre className="mobile-log-detail">{mobileDetail.message || '-'}</pre>
+        {detailEntry && (
+          <Descriptions column={1} bordered size="small" className="log-detail-descriptions">
+            <Descriptions.Item label="摘要">{detailEntry.summary || '-'}</Descriptions.Item>
+            <Descriptions.Item label="时间">{detailEntry.timestamp || '-'}</Descriptions.Item>
+            <Descriptions.Item label="级别">
+              <Tag color={levelColors[detailEntry.level?.toUpperCase()] || 'default'}>
+                {detailEntry.level?.toUpperCase() || 'UNKNOWN'}
+              </Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="日志器">{detailEntry.logger || '-'}</Descriptions.Item>
+            {Object.entries(detailEntry.details || {}).map(([key, value]) => (
+              <Descriptions.Item key={key} label={detailLabels[key] || key}>
+                <pre className="log-detail-value">{formatDetailValue(value)}</pre>
+              </Descriptions.Item>
+            ))}
+            <Descriptions.Item label="原始消息">
+              <pre className="log-detail-value">{detailEntry.message || '-'}</pre>
             </Descriptions.Item>
           </Descriptions>
         )}
-      </MobileDetailDrawer>
+      </Drawer>
     </div>
   );
 };

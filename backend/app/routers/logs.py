@@ -9,6 +9,20 @@ from backend.core.log import LogCategory
 router = APIRouter()
 
 
+def _serialize_entry(entry):
+    return {
+        "timestamp": entry.timestamp,
+        "level": entry.level,
+        "logger": entry.logger,
+        "message": entry.message,
+        "event_type": entry.event_type,
+        "event_title": entry.event_title,
+        "summary": entry.summary,
+        "details": entry.details or {},
+        "structured": entry.structured,
+    }
+
+
 @router.get("/logs/summary", response_model=LogSummaryResponse)
 def get_logs_summary(days: int = Query(7, ge=1, le=30)):
     """获取日志统计摘要"""
@@ -55,15 +69,7 @@ def get_log_content(
         "category": category,
         "date": date,
         "total_returned": len(entries),
-        "entries": [
-            {
-                "timestamp": e.timestamp,
-                "level": e.level,
-                "logger": e.logger,
-                "message": e.message,
-            }
-            for e in entries
-        ]
+        "entries": [_serialize_entry(entry) for entry in entries]
     }
 
 
@@ -84,15 +90,7 @@ def tail_log(
         "category": category,
         "date": date,
         "lines": len(entries),
-        "entries": [
-            {
-                "timestamp": e.timestamp,
-                "level": e.level,
-                "logger": e.logger,
-                "message": e.message,
-            }
-            for e in entries
-        ]
+        "entries": [_serialize_entry(entry) for entry in entries]
     }
 
 

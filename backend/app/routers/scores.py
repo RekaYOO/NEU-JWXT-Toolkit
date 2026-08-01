@@ -7,6 +7,7 @@ from backend.app.dependencies import (
     require_cached_auth_identity,
 )
 from backend.app.cache_support import read_cache, submit_refresh, wait_for_job
+from backend.core.log import log_application_error
 
 router = APIRouter()
 
@@ -112,7 +113,8 @@ def get_scores(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取成绩失败: {str(e)}")
+        error_id = log_application_error("scores.get", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取成绩失败（错误编号：{error_id}）") from e
 
 
 @router.get("/scores/by-term", response_model=List[TermScoresModel])
@@ -148,7 +150,8 @@ def get_scores_by_term(auth: NEUAuthClient = Depends(require_cached_auth_identit
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取成绩失败: {str(e)}")
+        error_id = log_application_error("scores.by_term", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取成绩失败（错误编号：{error_id}）") from e
 
 
 @router.post("/scores/refresh")

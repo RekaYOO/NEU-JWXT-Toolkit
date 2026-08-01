@@ -8,6 +8,7 @@ from backend.app.dependencies import (
     require_serialized_auth,
 )
 from backend.app.cache_support import read_cache, submit_refresh, wait_for_job
+from backend.core.log import log_application_error
 
 router = APIRouter()
 
@@ -84,10 +85,8 @@ def get_academic_report(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        print(f"获取培养计划错误: {e}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"获取培养计划失败: {str(e)}")
+        error_id = log_application_error("academic_report.get", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取培养计划失败（错误编号：{error_id}）") from e
 
 
 @router.post("/academic-report/refresh")
@@ -137,7 +136,7 @@ def get_academic_report_summary(
         report = entry.payload if entry else None
 
         if report is None:
-            raise HTTPException(status_code=500, detail="获取培养计划失败")
+            raise RuntimeError("academic report payload unavailable")
 
         credit_summary = report.get("credit_summary", {})
 
@@ -194,7 +193,8 @@ def get_academic_report_summary(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取培养计划摘要失败: {str(e)}")
+        error_id = log_application_error("academic_report.summary", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取培养计划摘要失败（错误编号：{error_id}）") from e
 
 
 @router.get("/academic-report/export")
@@ -217,4 +217,5 @@ def export_academic_report(
             "files": files
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+        error_id = log_application_error("academic_report.export", e, 500)
+        raise HTTPException(status_code=500, detail=f"导出失败（错误编号：{error_id}）") from e

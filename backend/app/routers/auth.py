@@ -16,6 +16,7 @@ from backend.core.auth.client import (
     DirectAccessError, LOGIN_ERR_WRONG_PWD, NEULoginError,
     WebVPNLoginError, WebVPNRequiredError,
 )
+from backend.core.log import log_application_error, log_security_event
 
 router = APIRouter()
 
@@ -85,6 +86,14 @@ def login(request: LoginRequest):
                     _auto_login.save_login(client)
 
         if success:
+            log_security_event(
+                "neu_login",
+                "success",
+                subject=request.username,
+                auth_method="password",
+                network_mode=client.active_mode,
+                remember=request.remember,
+            )
             return LoginResponse(
                 success=True,
                 message="登录成功",
@@ -92,12 +101,29 @@ def login(request: LoginRequest):
                 network_mode=client.active_mode,
             )
         else:
+            log_security_event(
+                "neu_login",
+                "failure",
+                subject=request.username,
+                reason="login_rejected",
+                auth_method="password",
+                network_mode=request.network_mode,
+            )
             return LoginResponse(
                 success=False,
                 message="登录失败"
             )
 
     except WebVPNRequiredError as e:
+        log_security_event(
+            "neu_login",
+            "failure",
+            subject=request.username,
+            reason="webvpn_required",
+            auth_method="password",
+            network_mode="direct",
+            error_type=type(e).__name__,
+        )
         return LoginResponse(
             success=False,
             message=str(e),
@@ -107,6 +133,15 @@ def login(request: LoginRequest):
             suggestion="校外网络请选择 WebVPN，并使用微信扫码快速登录或账号密码登录。",
         )
     except DirectAccessError as e:
+        log_security_event(
+            "neu_login",
+            "failure",
+            subject=request.username,
+            reason="direct_access_failed",
+            auth_method="password",
+            network_mode="direct",
+            error_type=type(e).__name__,
+        )
         return LoginResponse(
             success=False,
             message=str(e),
@@ -117,6 +152,16 @@ def login(request: LoginRequest):
         )
     except NEULoginError as e:
         wrong_password = e.error_type == LOGIN_ERR_WRONG_PWD
+        log_security_event(
+            "neu_login",
+            "failure",
+            subject=request.username,
+            reason="wrong_password" if wrong_password else "request_error",
+            auth_method="password",
+            network_mode=request.network_mode,
+            error_code="WRONG_PASSWORD" if wrong_password else "REQUEST_ERROR",
+            error_type=type(e).__name__,
+        )
         return LoginResponse(
             success=False,
             message=str(e),
@@ -124,9 +169,19 @@ def login(request: LoginRequest):
             suggestion="请检查学号和密码。" if wrong_password else "请稍后重试；若持续失败请查看日志。",
         )
     except Exception as e:
+        error_id = log_application_error("auth.password_login", e, 500)
+        log_security_event(
+            "neu_login",
+            "error",
+            subject=request.username,
+            reason="unexpected_error",
+            auth_method="password",
+            network_mode=request.network_mode,
+            error_type=type(e).__name__,
+        )
         return LoginResponse(
             success=False,
-            message=f"登录错误: {str(e)}",
+            message=f"登录错误（错误编号：{error_id}）",
             error_code="REQUEST_ERROR",
             suggestion="请稍后重试；若持续失败请查看日志。",
         )
@@ -145,9 +200,26 @@ def start_webvpn_qr_login(request: WebVPNQRStartRequest):
             )
             flow = client.start_webvpn_qr_login()
             set_auth_client(client)
+        log_security_event(
+            "webvpn_qr_login",
+            "pending",
+            subject=request.username,
+            auth_method="qr_start",
+            network_mode="webvpn",
+        )
         return {"success": True, **flow}
     except Exception as e:
-        return {"success": False, "message": f"无法启动 WebVPN 二维码登录: {e}"}
+        error_id = log_application_error("auth.webvpn_qr_start", e, 500)
+        log_security_event(
+            "webvpn_qr_login",
+            "error",
+            subject=request.username,
+            reason="qr_start_failed",
+            auth_method="qr_start",
+            network_mode="webvpn",
+            error_type=type(e).__name__,
+        )
+        return {"success": False, "message": f"无法启动 WebVPN 二维码登录（错误编号：{error_id}）"}
 
 
 @router.post("/api/webvpn/qr/status")
@@ -155,10 +227,24 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
     """Poll an in-memory WebVPN QR flow without creating a second session."""
     client = peek_auth_client()
     if client is None:
+        log_security_event(
+            "webvpn_qr_login",
+            "failure",
+            reason="flow_missing",
+            auth_method="qr",
+            network_mode="webvpn",
+        )
         return {"success": False, "status": "missing", "message": "二维码登录流程不存在"}
     try:
         with remote_session_guard():
             if peek_auth_client() is not client:
+                log_security_event(
+                    "webvpn_qr_login",
+                    "failure",
+                    reason="flow_replaced",
+                    auth_method="qr",
+                    network_mode="webvpn",
+                )
                 return {
                     "success": False,
                     "status": "missing",
@@ -168,22 +254,62 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
             if result.get("status") == "authenticated":
                 set_auth_client(client, force_epoch=True)
                 schedule_login_bootstrap(client)
+                log_security_event(
+                    "webvpn_qr_login",
+                    "success",
+                    subject=getattr(client, "username", ""),
+                    auth_method="qr",
+                    network_mode="webvpn",
+                )
         return {"success": True, **result}
     except WebVPNLoginError as e:
+        log_security_event(
+            "webvpn_qr_login",
+            "failure",
+            subject=getattr(client, "username", ""),
+            reason="qr_callback_failed",
+            auth_method="qr",
+            network_mode="webvpn",
+            error_type=type(e).__name__,
+        )
         return {
             "success": False,
             "status": "error",
             "message": str(e),
             "diagnostics": client.get_webvpn_qr_diagnostics(),
         }
+    except Exception as e:
+        error_id = log_application_error("auth.webvpn_qr_poll", e, 500)
+        log_security_event(
+            "webvpn_qr_login",
+            "error",
+            subject=getattr(client, "username", ""),
+            reason="qr_poll_failed",
+            auth_method="qr",
+            network_mode="webvpn",
+            error_type=type(e).__name__,
+        )
+        return {"success": False, "status": "error", "message": f"二维码登录暂时失败（错误编号：{error_id}）"}
 
 
 @router.post("/api/webvpn/qr/cancel")
 def cancel_webvpn_qr_login(request: WebVPNQRStatusRequest):
     client = peek_auth_client()
-    if client:
-        with remote_session_guard():
-            client.cancel_webvpn_qr_login(request.flow_id)
+    try:
+        if client:
+            with remote_session_guard():
+                client.cancel_webvpn_qr_login(request.flow_id)
+        log_security_event("webvpn_qr_login", "success", auth_method="qr_cancel")
+    except Exception as error:
+        error_id = log_application_error("auth.webvpn_qr_cancel", error, 500)
+        log_security_event(
+            "webvpn_qr_login",
+            "error",
+            reason="qr_cancel_failed",
+            auth_method="qr_cancel",
+            error_type=type(error).__name__,
+        )
+        return {"success": False, "message": f"取消二维码登录失败（错误编号：{error_id}）"}
     return {"success": True}
 
 
@@ -211,21 +337,55 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
             result = client.start_webvpn_password_login()
             if result["status"] == "authenticated":
                 _save_webvpn_password_login(client, request.remember)
+                log_security_event(
+                    "webvpn_password_login",
+                    "pending",
+                    subject=request.username,
+                    auth_method="password",
+                    network_mode="webvpn",
+                    remember=request.remember,
+                )
             else:
                 # The flow stays only in memory and is discarded on server restart.
                 client._webvpn_sms_flow["remember"] = request.remember
                 set_auth_client(client)
+                log_security_event(
+                    "webvpn_password_login",
+                    "success",
+                    subject=request.username,
+                    auth_method="password_sms_challenge",
+                    network_mode="webvpn",
+                    remember=request.remember,
+                )
         return {"success": True, **result}
     except NEULoginError as error:
+        log_security_event(
+            "webvpn_password_login",
+            "failure",
+            subject=request.username,
+            reason="wrong_password" if error.error_type == LOGIN_ERR_WRONG_PWD else "request_error",
+            auth_method="password",
+            network_mode="webvpn",
+            error_type=type(error).__name__,
+        )
         return {
             "success": False, "message": str(error),
             "error_code": "WRONG_PASSWORD" if error.error_type == LOGIN_ERR_WRONG_PWD else "WEBVPN_TIMEOUT",
             "suggestion": "请检查网络；响应较慢时建议优先使用微信扫码快速登录。",
         }
     except Exception as error:
-        _api_logger.exception("[WebVPN] 账号密码登录失败")
+        error_id = log_application_error("auth.webvpn_password_login", error, 500)
+        log_security_event(
+            "webvpn_password_login",
+            "error",
+            subject=request.username,
+            reason="unexpected_error",
+            auth_method="password",
+            network_mode="webvpn",
+            error_type=type(error).__name__,
+        )
         return {
-            "success": False, "message": f"WebVPN 登录失败: {error}",
+            "success": False, "message": f"WebVPN 登录失败（错误编号：{error_id}）",
             "error_code": "WEBVPN_TIMEOUT", "suggestion": "请检查网络或改用微信扫码快速登录。",
         }
 
@@ -234,37 +394,114 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
 def send_webvpn_sms_code(request: WebVPNSMSCodeRequest):
     client = peek_auth_client()
     if client is None:
+        log_security_event(
+            "webvpn_sms_send",
+            "failure",
+            reason="flow_missing",
+            auth_method="sms",
+        )
         return {"success": False, "message": "短信验证流程不存在，请重新登录"}
     try:
         with remote_session_guard():
-            return {"success": True, **client.send_webvpn_sms_code(request.flow_id)}
+            result = client.send_webvpn_sms_code(request.flow_id)
+        log_security_event("webvpn_sms_send", "success", auth_method="sms")
+        return {"success": True, **result}
     except WebVPNLoginError as error:
+        log_security_event(
+            "webvpn_sms_send",
+            "failure",
+            reason="sms_send_failed",
+            auth_method="sms",
+            error_type=type(error).__name__,
+        )
         return {"success": False, "message": str(error)}
+    except Exception as error:
+        error_id = log_application_error("auth.webvpn_sms_send", error, 500)
+        log_security_event(
+            "webvpn_sms_send",
+            "error",
+            reason="sms_send_failed",
+            auth_method="sms",
+            error_type=type(error).__name__,
+        )
+        return {"success": False, "message": f"发送短信验证码失败（错误编号：{error_id}）"}
 
 
 @router.post("/api/webvpn/sms/verify")
 def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
     client = peek_auth_client()
     if client is None:
+        log_security_event(
+            "webvpn_sms_verify",
+            "failure",
+            reason="flow_missing",
+            auth_method="sms",
+        )
         return {"success": False, "message": "短信验证流程不存在，请重新登录"}
     try:
         remember = bool((client._webvpn_sms_flow or {}).get("remember"))
         with remote_session_guard():
             if peek_auth_client() is not client:
+                log_security_event(
+                    "webvpn_sms_verify",
+                    "failure",
+                    reason="flow_replaced",
+                    auth_method="sms",
+                )
                 return {"success": False, "message": "短信验证流程不存在，请重新登录"}
             result = client.verify_webvpn_sms_code(request.flow_id, request.code, request.trust_device)
             _save_webvpn_password_login(client, remember)
+        log_security_event(
+            "webvpn_sms_verify",
+            "success",
+            subject=getattr(client, "username", ""),
+            auth_method="sms",
+            network_mode="webvpn",
+            trust_device=request.trust_device,
+            remember=remember,
+        )
         return {"success": True, **result}
     except WebVPNLoginError as error:
+        log_security_event(
+            "webvpn_sms_verify",
+            "failure",
+            subject=getattr(client, "username", ""),
+            reason="sms_verify_failed",
+            auth_method="sms",
+            error_type=type(error).__name__,
+        )
         return {"success": False, "message": str(error)}
+    except Exception as error:
+        error_id = log_application_error("auth.webvpn_sms_verify", error, 500)
+        log_security_event(
+            "webvpn_sms_verify",
+            "error",
+            subject=getattr(client, "username", ""),
+            reason="sms_verify_failed",
+            auth_method="sms",
+            error_type=type(error).__name__,
+        )
+        return {"success": False, "message": f"短信验证失败（错误编号：{error_id}）"}
 
 
 @router.post("/api/webvpn/sms/cancel")
 def cancel_webvpn_sms_login(request: WebVPNSMSCodeRequest):
     client = peek_auth_client()
-    if client:
-        with remote_session_guard():
-            client.cancel_webvpn_sms_login(request.flow_id)
+    try:
+        if client:
+            with remote_session_guard():
+                client.cancel_webvpn_sms_login(request.flow_id)
+        log_security_event("webvpn_sms_verify", "success", auth_method="sms_cancel")
+    except Exception as error:
+        error_id = log_application_error("auth.webvpn_sms_cancel", error, 500)
+        log_security_event(
+            "webvpn_sms_verify",
+            "error",
+            reason="sms_cancel_failed",
+            auth_method="sms_cancel",
+            error_type=type(error).__name__,
+        )
+        return {"success": False, "message": f"取消短信验证失败（错误编号：{error_id}）"}
     return {"success": True}
 
 
@@ -280,6 +517,7 @@ def logout(clear_data: bool = Query(True, description="是否清理用户数据"
 
     # 清除当前内存会话及其持久化 Cookie。
     client = peek_auth_client()
+    account = str(getattr(client, "username", "") or "") or None
     with remote_session_guard():
         if client:
             client.cancel_webvpn_qr_login()
@@ -298,8 +536,14 @@ def logout(clear_data: bool = Query(True, description="是否清理用户数据"
                 result["data_cleared"] = True
                 result["cleared_files"] = clear_result["deleted_count"]
             except Exception as e:
-                _api_logger.error(f"[Logout] 清理数据失败: {e}")
+                error_id = log_application_error("auth.logout_cleanup", e, 500)
                 result["data_cleared"] = False
-                result["clear_error"] = str(e)
+                result["clear_error"] = f"清理失败（错误编号：{error_id}）"
 
+    log_security_event(
+        "neu_logout",
+        "success",
+        subject=account,
+        clear_data=clear_data,
+    )
     return result

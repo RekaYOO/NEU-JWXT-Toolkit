@@ -7,6 +7,7 @@ from backend.app.schemas import EvaluationSubmitRequest, EvaluationBatchRequest
 from backend.core.auth import NEUAuthClient
 from backend.core.cache import mutation_policy
 from backend.core.evaluation.api import EvaluationAPI
+from backend.core.log import log_application_error
 from backend.mock_evaluation import (
     EVAL_TEST_MODE, get_mock_tasks, get_mock_courses,
     get_mock_indicators, mock_submit, mock_batch,
@@ -37,11 +38,8 @@ def get_evaluation_cycles(
             "default": default_value,
         }
     except Exception as e:
-        import traceback
-        error_msg = f"获取学期列表失败: {e}"
-        _api_logger.error(error_msg)
-        _api_logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_msg)
+        error_id = log_application_error("evaluation.list_cycles", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取学期列表失败（错误编号：{error_id}）") from e
 
 
 @router.get("/evaluation/tasks")
@@ -82,11 +80,8 @@ def get_evaluation_tasks(
             "xnxq": xnxq,
         }
     except Exception as e:
-        import traceback
-        error_msg = f"获取评教任务失败: {e}"
-        _api_logger.error(error_msg)
-        _api_logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_msg)
+        error_id = log_application_error("evaluation.list_tasks", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取评教任务失败（错误编号：{error_id}）") from e
 
 
 @router.get("/evaluation/tasks/{task_id}/courses")
@@ -138,11 +133,8 @@ def get_evaluation_courses(
             "completed": len([c for c in courses if c.is_evaluated]),
         }
     except Exception as e:
-        import traceback
-        error_msg = f"获取评教课程列表失败: {e}"
-        _api_logger.error(error_msg)
-        _api_logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_msg)
+        error_id = log_application_error("evaluation.list_courses", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取评教课程列表失败（错误编号：{error_id}）") from e
 
 
 @router.get("/evaluation/courses/{xspjid}/indicators")
@@ -222,11 +214,8 @@ def get_evaluation_indicators(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        error_msg = f"获取评教指标失败: {e}"
-        _api_logger.error(error_msg)
-        _api_logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_msg)
+        error_id = log_application_error("evaluation.get_indicators", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取评教指标失败（错误编号：{error_id}）") from e
 
 
 @router.post("/evaluation/submit")
@@ -260,7 +249,7 @@ def submit_evaluation(
         # 获取指标体系
         target = api.get_evaluation_target(request.task_id, request.xspjid, course.xnxqid)
         if not target:
-            raise HTTPException(status_code=500, detail="获取评教指标体系失败")
+            raise RuntimeError("evaluation target unavailable")
 
         # 应用文本型指标内容
         if request.text_results:
@@ -285,11 +274,8 @@ def submit_evaluation(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        error_msg = f"提交评教失败: {e}"
-        _api_logger.error(error_msg)
-        _api_logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_msg)
+        error_id = log_application_error("evaluation.submit", e, 500)
+        raise HTTPException(status_code=500, detail=f"提交评教失败（错误编号：{error_id}）") from e
 
 
 @router.post("/evaluation/batch")
@@ -350,8 +336,5 @@ def batch_evaluation(
             "invalidations": policy.invalidations if success_count else (),
         }
     except Exception as e:
-        import traceback
-        error_msg = f"批量评教失败: {e}"
-        _api_logger.error(error_msg)
-        _api_logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_msg)
+        error_id = log_application_error("evaluation.batch", e, 500)
+        raise HTTPException(status_code=500, detail=f"批量评教失败（错误编号：{error_id}）") from e

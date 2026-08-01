@@ -1,10 +1,11 @@
 from typing import Dict
 from fastapi import APIRouter, HTTPException, Depends, Query
 
-from backend.app.dependencies import _api_logger, _cache_coordinator
+from backend.app.dependencies import _cache_coordinator
 from backend.core.auth import NEUAuthClient
 from backend.core.academic.experiment import ExperimentCourseAPI
 from backend.core.cache import mutation_policy
+from backend.core.log import log_application_error
 from backend.app.dependencies import require_serialized_auth
 
 router = APIRouter()
@@ -21,24 +22,16 @@ def get_experiment_courses(
     - term 不传则自动获取当前学期
     """
     try:
-        print(f"[Experiment] 获取实验课程, term={term}")
-        print(f"[Experiment] auth client: {auth}, username: {auth.username}")
-
         api = ExperimentCourseAPI(auth)
 
         # 如果没有传term，获取当前学期
         if not term:
-            print("[Experiment] 未提供term，尝试自动获取...")
             term = api.get_semester()
-            print(f"[Experiment] 自动获取学期: {term}")
 
         if not term:
-            print("[Experiment] 无法获取学期，返回空列表")
             return {"courses": [], "term": "", "total": 0}
 
-        print(f"[Experiment] 调用API获取课程，term={term}")
         courses = api.get_courses(term)
-        print(f"[Experiment] 获取到 {len(courses)} 门课程")
 
         return {
             "courses": [
@@ -71,12 +64,8 @@ def get_experiment_courses(
             "total": len(courses),
         }
     except Exception as e:
-        import traceback
-        error_msg = f"获取实验课程失败: {e}"
-        trace = traceback.format_exc()
-        _api_logger.error(error_msg)
-        _api_logger.error(trace)
-        raise HTTPException(status_code=500, detail=error_msg)
+        error_id = log_application_error("experiment.list_courses", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取实验课程失败（错误编号：{error_id}）") from e
 
 
 @router.get("/experiment-courses/{task_id}/rounds")
@@ -117,7 +106,8 @@ def get_experiment_rounds(
             "total": len(rounds),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取实验班失败: {str(e)}")
+        error_id = log_application_error("experiment.list_rounds", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取实验班失败（错误编号：{error_id}）") from e
 
 
 @router.post("/experiment-courses/select")
@@ -156,7 +146,8 @@ def select_experiment_course(
 
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"选课失败: {str(e)}")
+        error_id = log_application_error("experiment.select", e, 500)
+        raise HTTPException(status_code=500, detail=f"选课失败（错误编号：{error_id}）") from e
 
 
 @router.post("/experiment-courses/deselect")
@@ -195,4 +186,5 @@ def deselect_experiment_course(
 
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"退课失败: {str(e)}")
+        error_id = log_application_error("experiment.deselect", e, 500)
+        raise HTTPException(status_code=500, detail=f"退课失败（错误编号：{error_id}）") from e

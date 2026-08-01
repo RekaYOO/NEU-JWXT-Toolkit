@@ -17,7 +17,14 @@ from backend.core.storage import (
     ResearchTrainingStorage,
     Storage,
 )
-from backend.core.log import setup_logging, LogConfig, LogLevel, LogCategory, get_logger
+from backend.core.log import (
+    LogCategory,
+    LogConfig,
+    LogLevel,
+    get_logger,
+    log_security_event,
+    setup_logging,
+)
 from backend.core.log.manager import LogManager
 from backend.core.tracking import GradeTrackingService
 from backend.core.cache import (
@@ -323,6 +330,14 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
                 "[Auth] 当前会话自动恢复失败: %s",
                 type(error).__name__,
             )
+            log_security_event(
+                "neu_session_restore",
+                "failure",
+                subject=getattr(active_client, "username", ""),
+                reason="active_session_restore_failed",
+                auth_method="session_cookie",
+                error_type=type(error).__name__,
+            )
         set_auth_client(None)
 
     # 2. 先尝试恢复二维码/WebVPN Cookie 会话，不要求保存密码
@@ -331,11 +346,25 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
         if session_client.ensure_login():
             set_auth_client(session_client)
             schedule_login_bootstrap(session_client)
+            log_security_event(
+                "neu_session_restore",
+                "success",
+                subject=getattr(session_client, "username", ""),
+                auth_method="session_cookie",
+                network_mode=getattr(session_client, "active_mode", ""),
+            )
             return session_client
     except Exception as error:
         _api_logger.warning(
             "[Auth] Cookie 会话自动恢复失败: %s",
             type(error).__name__,
+        )
+        log_security_event(
+            "neu_session_restore",
+            "failure",
+            reason="stored_session_restore_failed",
+            auth_method="session_cookie",
+            error_type=type(error).__name__,
         )
 
     # 3. 尝试加载保存的凭证并创建客户端
@@ -353,11 +382,26 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
             if client.ensure_login():
                 set_auth_client(client)
                 schedule_login_bootstrap(client)
+                log_security_event(
+                    "neu_session_restore",
+                    "success",
+                    subject=username,
+                    auth_method="stored_credentials",
+                    network_mode=getattr(client, "active_mode", ""),
+                )
                 return client
         except Exception as error:
             _api_logger.warning(
                 "[Auth] 已保存账号密码自动恢复失败: %s",
                 type(error).__name__,
+            )
+            log_security_event(
+                "neu_session_restore",
+                "failure",
+                subject=username,
+                reason="stored_credentials_restore_failed",
+                auth_method="stored_credentials",
+                error_type=type(error).__name__,
             )
 
     return None

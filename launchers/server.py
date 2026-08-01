@@ -72,8 +72,9 @@ def _serve(config_path: Path) -> int:
         app,
         host=config.host,
         port=config.port,
-        proxy_headers=True,
-        forwarded_allow_ips=",".join(config.trusted_proxies),
+        # The application resolves trusted forwarding headers itself so logs can
+        # retain both the reverse-proxy peer and the original client address.
+        proxy_headers=False,
         log_level="info",
         access_log=False,
     )

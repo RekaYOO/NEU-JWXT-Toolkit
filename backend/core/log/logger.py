@@ -15,10 +15,75 @@ import logging
 import logging.handlers
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any
+
+from .context import get_request_context
+
+
+class DailyRotatingFileHandler(logging.Handler):
+    """Switch daily files without rename races and cap each day's file size."""
+
+    def __init__(self, config: "LogConfig", category: "LogCategory"):
+        super().__init__(logging.DEBUG)
+        self.config = config
+        self.category = category
+        self.current_date: Optional[str] = None
+        self.file_handler: Optional[logging.handlers.RotatingFileHandler] = None
+
+    def _open_for(self, date: str) -> None:
+        if self.file_handler is not None:
+            self.file_handler.close()
+        self.current_date = date
+        self.file_handler = logging.handlers.RotatingFileHandler(
+            self.config.get_log_path(self.category, date),
+            maxBytes=self.config.max_bytes,
+            backupCount=self.config.backup_count,
+            encoding="utf-8",
+        )
+        self.file_handler.setLevel(self.level)
+        if self.formatter is not None:
+            self.file_handler.setFormatter(self.formatter)
+        self._cleanup_expired(date)
+
+    def _cleanup_expired(self, current_date: str) -> None:
+        cutoff = datetime.strptime(current_date, "%Y-%m-%d") - timedelta(
+            days=self.config.retention_days
+        )
+        prefix = f"{self.category.value}_"
+        for path in Path(self.config.log_dir).glob(f"{prefix}*.log*"):
+            date_text = path.name[len(prefix):len(prefix) + 10]
+            try:
+                file_date = datetime.strptime(date_text, "%Y-%m-%d")
+            except ValueError:
+                continue
+            if file_date < cutoff:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            date = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d")
+            if date != self.current_date or self.file_handler is None:
+                self._open_for(date)
+            self.file_handler.emit(record)
+        except Exception:
+            self.handleError(record)
+
+    def setFormatter(self, formatter: logging.Formatter) -> None:
+        super().setFormatter(formatter)
+        if self.file_handler is not None:
+            self.file_handler.setFormatter(formatter)
+
+    def close(self) -> None:
+        if self.file_handler is not None:
+            self.file_handler.close()
+            self.file_handler = None
+        super().close()
 
 
 class LogLevel(Enum):
@@ -48,6 +113,7 @@ class LogConfig:
         level: LogLevel = LogLevel.INFO,
         max_bytes: int = 10 * 1024 * 1024,  # 10MB
         backup_count: int = 7,               # 保留7个备份
+        retention_days: int = 30,
         format_type: str = "text",           # text 或 json
         console_output: bool = True,         # 是否输出到控制台
     ):
@@ -55,6 +121,7 @@ class LogConfig:
         self.level = level
         self.max_bytes = max_bytes
         self.backup_count = backup_count
+        self.retention_days = retention_days
         self.format_type = format_type
         self.console_output = console_output
         
@@ -71,6 +138,28 @@ class LogConfig:
 # 全局配置
 _default_config: Optional[LogConfig] = None
 _loggers: Dict[str, logging.Logger] = {}
+_category_handlers: Dict[LogCategory, logging.Handler] = {}
+
+
+class RequestContextFormatter(logging.Formatter):
+    """Append correlation fields to ordinary system and error log lines."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = super().format(record)
+        if record.name.startswith(("neu.access.", "neu.login.")):
+            return rendered
+        context = get_request_context()
+        if not context.get("request_id"):
+            return rendered
+        correlation = {
+            "request_id": context.get("request_id"),
+            "client_ip": context.get("client_ip"),
+            "session_user": context.get("session_user"),
+        }
+        return "%s context=%s" % (
+            rendered,
+            json.dumps(correlation, ensure_ascii=False, separators=(",", ":")),
+        )
 
 
 def setup_logging(config: Optional[LogConfig] = None) -> LogConfig:
@@ -83,7 +172,13 @@ def setup_logging(config: Optional[LogConfig] = None) -> LogConfig:
     Returns:
         LogConfig 实例
     """
-    global _default_config
+    global _default_config, _category_handlers, _loggers
+    for handler in _category_handlers.values():
+        handler.close()
+    for logger in _loggers.values():
+        logger.handlers.clear()
+    _category_handlers.clear()
+    _loggers.clear()
     _default_config = config or LogConfig()
     
     # 配置根日志器
@@ -97,7 +192,7 @@ def setup_logging(config: Optional[LogConfig] = None) -> LogConfig:
     if _default_config.console_output:
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(_default_config.level.value)
-        console_formatter = logging.Formatter(
+        console_formatter = RequestContextFormatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
@@ -123,7 +218,7 @@ def get_logger(
     Returns:
         Logger 实例
     """
-    global _default_config, _loggers
+    global _default_config, _loggers, _category_handlers
     
     if config is None:
         config = _default_config or LogConfig()
@@ -135,45 +230,38 @@ def get_logger(
     # 创建日志器
     logger = logging.getLogger(f"neu.{category.value}.{name}")
     logger.setLevel(logging.DEBUG)
+    # Access traffic is persisted in its category file. Avoid duplicating every
+    # request to stdout/journald, where scanner bursts can create backpressure.
+    logger.propagate = category != LogCategory.ACCESS
     
     # 避免重复添加处理器
     if logger.handlers:
         return logger
     
-    # 文件处理器 - 按分类分文件
-    log_path = config.get_log_path(category)
-    file_handler = logging.handlers.TimedRotatingFileHandler(
-        log_path,
-        when='midnight',
-        interval=1,
-        backupCount=config.backup_count,
-        encoding='utf-8'
-    )
-    file_handler.setLevel(logging.DEBUG)
-    
     # 格式化
     if config.format_type == "json":
         formatter = JsonFormatter()
     else:
-        formatter = logging.Formatter(
+        formatter = RequestContextFormatter(
             '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
     
-    file_handler.setFormatter(formatter)
+    file_handler = _category_handlers.get(category)
+    if file_handler is None:
+        file_handler = DailyRotatingFileHandler(config, category)
+        file_handler.setFormatter(formatter)
+        _category_handlers[category] = file_handler
     logger.addHandler(file_handler)
     
     # 错误日志同时写入 error 文件
     if category != LogCategory.ERROR:
-        error_handler = logging.handlers.TimedRotatingFileHandler(
-            config.get_log_path(LogCategory.ERROR),
-            when='midnight',
-            interval=1,
-            backupCount=config.backup_count,
-            encoding='utf-8'
-        )
+        error_handler = _category_handlers.get(LogCategory.ERROR)
+        if error_handler is None:
+            error_handler = DailyRotatingFileHandler(config, LogCategory.ERROR)
+            error_handler.setFormatter(formatter)
+            _category_handlers[LogCategory.ERROR] = error_handler
         error_handler.setLevel(logging.ERROR)
-        error_handler.setFormatter(formatter)
         logger.addHandler(error_handler)
     
     _loggers[cache_key] = logger
@@ -193,6 +281,14 @@ class JsonFormatter(logging.Formatter):
             "function": record.funcName,
             "line": record.lineno,
         }
+
+        request_context = get_request_context()
+        if request_context.get("request_id"):
+            log_data["request"] = {
+                "request_id": request_context.get("request_id"),
+                "client_ip": request_context.get("client_ip"),
+                "session_user": request_context.get("session_user"),
+            }
         
         # 添加额外字段
         if hasattr(record, 'extra'):

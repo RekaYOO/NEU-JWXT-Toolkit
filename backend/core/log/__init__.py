@@ -19,6 +19,7 @@ from .access_logger import (
     AccessLogger,
     log_api_call,
 )
+from .security_logger import log_application_error, log_security_event
 
 __all__ = [
     'get_logger',
@@ -28,4 +29,6 @@ __all__ = [
     'LogCategory',
     'AccessLogger',
     'log_api_call',
+    'log_security_event',
+    'log_application_error',
 ]

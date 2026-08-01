@@ -6,6 +6,7 @@ from backend.core.auth import NEUAuthClient
 from backend.core.exam import ExamAPI
 from backend.app.dependencies import require_serialized_auth
 from backend.app.schemas import ExamListResponse, ExamItem, ExamTermsResponse, ExamTerm
+from backend.core.log import log_application_error
 
 router = APIRouter()
 
@@ -36,7 +37,8 @@ def get_exam_terms(auth: NEUAuthClient = Depends(require_serialized_auth)):
             current=current,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取学期列表失败: {str(e)}")
+        error_id = log_application_error("exam.list_terms", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取学期列表失败（错误编号：{error_id}）") from e
 
 
 @router.get("/exams", response_model=ExamListResponse)
@@ -100,7 +102,8 @@ def get_exams(
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取考试安排失败: {str(e)}")
+        error_id = log_application_error("exam.list", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取考试安排失败（错误编号：{error_id}）") from e
 
 
 @router.get("/exams/export-ics")
@@ -128,4 +131,5 @@ def export_exams_ics(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"导出 ICS 失败: {str(e)}")
+        error_id = log_application_error("exam.export_ics", e, 500)
+        raise HTTPException(status_code=500, detail=f"导出 ICS 失败（错误编号：{error_id}）") from e

@@ -14,12 +14,15 @@ from backend.core.runtime.access import (
     COOKIE_TTL_SECONDS,
     LoginRateLimiter,
     MAX_PASSWORD_LENGTH,
+    access_cookie_payload,
     issue_access_cookie,
     request_source,
     request_uses_https,
     validate_access_cookie,
     verify_access_password,
 )
+from backend.core.log import log_security_event
+from backend.core.log.access_logger import update_request_context
 
 
 router = APIRouter()
@@ -64,13 +67,32 @@ async def access_status(request: Request):
 
 @router.post("/api/access/login")
 async def access_login(payload: AccessLoginRequest, request: Request, response: Response):
+    source = request_source(request, config)
+    update_request_context(
+        client_ip=source,
+        peer_ip=request.client.host if request.client else "unknown",
+    )
     if not config.access_gateway_enabled:
+        log_security_event(
+            "access_gateway_login",
+            "success",
+            auth_method="gateway_disabled",
+        )
         return {"success": True}
     if not _access_gateway_configured():
+        log_security_event(
+            "access_gateway_login",
+            "error",
+            reason="gateway_not_configured",
+        )
         raise HTTPException(status_code=503, detail="服务器访问密码尚未配置")
 
-    source = request_source(request, config)
     if rate_limiter.is_blocked(source):
+        log_security_event(
+            "access_gateway_login",
+            "blocked",
+            reason="rate_limit",
+        )
         raise HTTPException(status_code=429, detail="失败次数过多，请 5 分钟后重试")
     if not verify_access_password(
         payload.password,
@@ -78,24 +100,36 @@ async def access_login(payload: AccessLoginRequest, request: Request, response: 
         config.access_password_hash,
     ):
         rate_limiter.register_failure(source)
+        log_security_event(
+            "access_gateway_login",
+            "failure",
+            reason="wrong_password",
+        )
         raise HTTPException(status_code=401, detail="访问密码错误")
 
     rate_limiter.clear(source)
+    access_token = issue_access_cookie(config.session_secret)
     response.set_cookie(
         COOKIE_NAME,
-        issue_access_cookie(config.session_secret),
+        access_token,
         max_age=COOKIE_TTL_SECONDS,
         httponly=True,
         secure=request_uses_https(request, config),
         samesite="lax",
         path="/",
     )
+    cookie_payload = access_cookie_payload(access_token, config.session_secret)
+    update_request_context(
+        access_session_id=cookie_payload.get("session_id") if cookie_payload else None,
+    )
+    log_security_event("access_gateway_login", "success", auth_method="password")
     return {"success": True}
 
 
 @router.post("/api/access/logout")
 async def access_logout(response: Response):
     response.delete_cookie(COOKIE_NAME, path="/")
+    log_security_event("access_gateway_logout", "success")
     return {"success": True}
 
 

@@ -11,9 +11,11 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from collections import deque
 
 from .logger import LogCategory, LogConfig
+from .presentation import present_log_message
 
 
 @dataclass
@@ -24,6 +26,11 @@ class LogEntry:
     logger: str
     message: str
     raw_line: str
+    event_type: str = "generic_system"
+    event_title: str = "系统记录"
+    summary: str = ""
+    details: Dict[str, Any] = field(default_factory=dict)
+    structured: bool = False
 
 
 @dataclass
@@ -43,6 +50,17 @@ class LogManager:
     
     def __init__(self, config: Optional[LogConfig] = None):
         self.config = config or LogConfig()
+
+    def _segments(self, category: LogCategory, date: str) -> List[Path]:
+        base = Path(self.config.get_log_path(category, date))
+        rotated = []
+        for path in base.parent.glob(f"{base.name}.*"):
+            suffix = path.name[len(base.name) + 1:]
+            if suffix.isdigit():
+                rotated.append((int(suffix), path))
+        return [path for _, path in sorted(rotated, reverse=True)] + (
+            [base] if base.exists() else []
+        )
     
     def get_log_files(
         self,
@@ -93,13 +111,14 @@ class LogManager:
             if file_date not in target_dates:
                 continue
             
+            segments = self._segments(LogCategory(cat), file_date)
             stat = log_file.stat()
             files.append(LogFileInfo(
                 category=cat,
                 date=file_date,
                 filename=log_file.name,
                 path=str(log_file),
-                size_bytes=stat.st_size,
+                size_bytes=sum(path.stat().st_size for path in segments),
                 modified_time=datetime.fromtimestamp(stat.st_mtime),
             ))
         
@@ -130,43 +149,34 @@ class LogManager:
         Returns:
             LogEntry 列表
         """
-        log_path = self.config.get_log_path(category, date)
-        
-        if not os.path.exists(log_path):
+        segments = self._segments(category, date)
+        if not segments:
             return []
         
         entries = []
-        skipped = 0
         
-        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                entry = self._parse_log_line(line)
-                if not entry:
-                    continue
-                
-                # 级别过滤
-                if level and entry.level.upper() != level.upper():
-                    continue
-                
-                # 搜索过滤
-                if search and search.lower() not in line.lower():
-                    continue
-                
-                # 分页
-                if skipped < offset:
-                    skipped += 1
-                    continue
-                
-                entries.append(entry)
-                
-                if len(entries) >= limit:
-                    break
-        
-        return entries
+        for segment in segments:
+            with segment.open('r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    entry = self._parse_log_line(line)
+                    if not entry:
+                        continue
+
+                    if level and entry.level.upper() != level.upper():
+                        continue
+
+                    if search and search.lower() not in line.lower():
+                        continue
+
+                    entries.append(entry)
+
+        # 日志查看器以最新记录为主：先合并轮转分片，再倒序应用分页。
+        entries.reverse()
+        return entries[offset:offset + limit]
     
     def tail_log(
         self,
@@ -185,39 +195,16 @@ class LogManager:
         Returns:
             LogEntry 列表
         """
-        log_path = self.config.get_log_path(category, date)
-        
-        if not os.path.exists(log_path):
+        segments = self._segments(category, date)
+        if not segments:
             return []
-        
-        # 读取最后 N 行
-        buffer_size = 8192
-        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-            # 移动到文件末尾
-            f.seek(0, 2)
-            file_size = f.tell()
-            
-            # 估算需要读取的字节数
-            estimated_bytes = lines * 200  # 假设平均每行 200 字节
-            start_pos = max(0, file_size - estimated_bytes)
-            f.seek(start_pos)
-            
-            # 读取并分割成行
-            content = f.read()
-            all_lines = content.split('\n')
-            
-            # 取最后 N 行
-            last_lines = all_lines[-lines:]
-            
-            entries = []
-            for line in last_lines:
-                line = line.strip()
-                if line:
-                    entry = self._parse_log_line(line)
-                    if entry:
-                        entries.append(entry)
-            
-            return entries
+        last_lines = deque(maxlen=lines)
+        for segment in segments:
+            with segment.open('r', encoding='utf-8', errors='ignore') as handle:
+                for line in handle:
+                    if line.strip():
+                        last_lines.append(line.strip())
+        return list(reversed([self._parse_log_line(line) for line in last_lines]))
     
     def get_log_summary(self, days: int = 7) -> Dict[str, Any]:
         """
@@ -299,7 +286,13 @@ class LogManager:
                     "category": file_info.category,
                     "timestamp": entry.timestamp,
                     "level": entry.level,
+                    "logger": entry.logger,
                     "message": entry.message,
+                    "event_type": entry.event_type,
+                    "event_title": entry.event_title,
+                    "summary": entry.summary,
+                    "details": entry.details or {},
+                    "structured": entry.structured,
                 })
         
         return results
@@ -321,8 +314,8 @@ class LogManager:
         if not log_dir.exists():
             return 0
         
-        for log_file in log_dir.glob("*.log"):
-            match = re.match(r"\w+_(\d{4}-\d{2}-\d{2})\.log", log_file.name)
+        for log_file in log_dir.glob("*.log*"):
+            match = re.match(r"\w+_(\d{4}-\d{2}-\d{2})\.log(?:\.\d+)?$", log_file.name)
             if not match:
                 continue
             
@@ -340,21 +333,33 @@ class LogManager:
         match = re.match(pattern, line)
         
         if match:
+            presentation = present_log_message(match.group(4), match.group(3))
             return LogEntry(
                 timestamp=match.group(1),
                 level=match.group(2),
                 logger=match.group(3),
                 message=match.group(4),
-                raw_line=line
+                raw_line=line,
+                event_type=presentation.event_type,
+                event_title=presentation.title,
+                summary=presentation.summary,
+                details=presentation.details,
+                structured=presentation.structured,
             )
         
         # 无法解析，返回原始行
+        presentation = present_log_message(line)
         return LogEntry(
             timestamp="",
             level="UNKNOWN",
             logger="",
             message=line,
-            raw_line=line
+            raw_line=line,
+            event_type=presentation.event_type,
+            event_title=presentation.title,
+            summary=presentation.summary,
+            details=presentation.details,
+            structured=presentation.structured,
         )
     
     def download_log(self, category: LogCategory, date: str) -> Optional[bytes]:
@@ -364,10 +369,7 @@ class LogManager:
         Returns:
             文件内容 bytes，文件不存在返回 None
         """
-        log_path = self.config.get_log_path(category, date)
-        
-        if not os.path.exists(log_path):
+        segments = self._segments(category, date)
+        if not segments:
             return None
-        
-        with open(log_path, 'rb') as f:
-            return f.read()
+        return b"\n".join(path.read_bytes().rstrip(b"\n") for path in segments) + b"\n"

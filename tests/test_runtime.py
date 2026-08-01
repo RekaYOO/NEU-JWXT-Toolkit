@@ -12,12 +12,15 @@ from unittest.mock import Mock, patch
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from backend.core.runtime.access import (
     COOKIE_TTL_SECONDS,
     LoginRateLimiter,
     hash_access_password,
     issue_access_cookie,
+    access_cookie_payload,
+    request_source,
     validate_access_cookie,
     verify_access_password,
 )
@@ -41,6 +44,9 @@ def test_password_hash_round_trip():
 
 def test_signed_cookie_rejects_tampering_and_expiry():
     token = issue_access_cookie("test-secret", now=1_000)
+    second_token = issue_access_cookie("test-secret", now=1_000)
+    assert token != second_token
+    assert access_cookie_payload(token, "test-secret", now=1_001)["session_id"]
     assert validate_access_cookie(token, "test-secret", now=1_001)
     assert not validate_access_cookie(token + "x", "test-secret", now=1_001)
     assert not validate_access_cookie(
@@ -49,6 +55,31 @@ def test_signed_cookie_rejects_tampering_and_expiry():
         now=1_000 + COOKIE_TTL_SECONDS + 1,
     )
     assert not validate_access_cookie("x" * 2049, "test-secret", now=1_001)
+
+
+def test_request_source_only_trusts_forwarding_from_configured_proxy():
+    spoofed = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [(b"x-forwarded-for", b"198.51.100.20")],
+        "client": ("203.0.113.10", 1234),
+        "scheme": "http",
+        "server": ("test", 80),
+    })
+    config = SimpleNamespace(trusted_proxies=("127.0.0.1",))
+    assert request_source(spoofed, config) == "203.0.113.10"
+
+    proxied = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [(b"x-forwarded-for", b"198.51.100.20, 127.0.0.1")],
+        "client": ("127.0.0.1", 1234),
+        "scheme": "http",
+        "server": ("test", 80),
+    })
+    assert request_source(proxied, config) == "198.51.100.20"
 
 
 def test_rate_limiter_blocks_fifth_failure():

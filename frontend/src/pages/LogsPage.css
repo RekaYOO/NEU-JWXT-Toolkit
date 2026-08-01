@@ -33,6 +33,28 @@
   row-gap: 8px;
 }
 
+.logs-page .log-table-row {
+  cursor: pointer;
+}
+
+.logs-page .log-table-row:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
+}
+
+.logs-page .log-event-title {
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.logs-page .log-summary {
+  display: block;
+  overflow: hidden;
+  color: var(--color-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .logs-mobile-tools,
 .mobile-log-list {
   display: none;
@@ -180,6 +202,16 @@
     color: #475569;
     font-size: 12px;
   }
+
+  .mobile-log-card__summary {
+    display: block;
+    margin-top: 8px;
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 @media (max-width: 359px) {
@@ -195,4 +227,19 @@
   .logs-page .stats-row .ant-col:first-child .ant-card {
     border-top: 0;
   }
+}
+
+.log-detail-descriptions .ant-descriptions-item-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.log-detail-value {
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
 }

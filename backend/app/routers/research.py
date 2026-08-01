@@ -15,6 +15,7 @@ from backend.app.schemas.research import (
     ResearchFavoriteRequest,
     ResearchFavoriteResponse,
 )
+from backend.core.log import log_application_error
 from backend.core.academic.research_training import (
     ResearchTrainingAPI,
     ResearchTrainingError,
@@ -130,9 +131,10 @@ def refresh_research_training(
     except ResearchTrainingError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
+        error_id = log_application_error("research.refresh", error, 500)
         raise HTTPException(
             status_code=500,
-            detail=f"刷新科研训练课题失败: {error}",
+            detail=f"刷新科研训练课题失败（错误编号：{error_id}）",
         ) from error
 
 
@@ -207,7 +209,8 @@ def get_research_training(
     except ResearchTrainingError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
-        raise HTTPException(status_code=500, detail=f"获取科研训练课题失败: {error}") from error
+        error_id = log_application_error("research.list_topics", error, 500)
+        raise HTTPException(status_code=500, detail=f"获取科研训练课题失败（错误编号：{error_id}）") from error
 
 
 @router.get("/research-training/topics/{topic_id}")

@@ -77,7 +77,13 @@ def test_server_access_gateway_and_static_frontend(tmp_path):
         )
         assert recovery.status_code == 404
         assert recovery.json()["detail"] == "一次性登录链接不存在或已失效"
-        protected = requests.get(f"{base_url}/api/status")
+        protected = requests.get(
+            f"{base_url}/api/status",
+            headers={
+                "X-Forwarded-For": "198.51.100.23",
+                "User-Agent": "security-audit-test/1.0",
+            },
+        )
         assert protected.status_code == 401
         assert protected.json()["code"] == "ACCESS_REQUIRED"
         offline = requests.get(f"{base_url}/api/offline/status")
@@ -111,6 +117,23 @@ def test_server_access_gateway_and_static_frontend(tmp_path):
             json={"password": "wrong-password"},
         )
         assert blocked.status_code == 429
+
+        access_log = next((tmp_path / "data" / "logs").glob("access_*.log"))
+        access_text = access_log.read_text(encoding="utf-8")
+        assert '"path":"/api/status"' in access_text
+        assert '"status_code":401' in access_text
+        assert '"client_ip":"198.51.100.23"' in access_text
+        assert '"peer_ip":"127.0.0.1"' in access_text
+        assert '"user_agent":"security-audit-test/1.0"' in access_text
+
+        login_log = next((tmp_path / "data" / "logs").glob("login_*.log"))
+        login_text = login_log.read_text(encoding="utf-8")
+        assert '"event":"access_gateway_login"' in login_text
+        assert '"outcome":"failure"' in login_text
+        assert '"outcome":"blocked"' in login_text
+        assert '"access_session_id":"' in login_text
+        assert "server-test-password" not in login_text
+        assert "wrong-password" not in login_text
     finally:
         process.terminate()
         try:

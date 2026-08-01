@@ -7,6 +7,7 @@ from backend.app.schemas.tracking import (
     GradeTrackingConfigUpdate,
     GradeTrackingEnabledUpdate,
 )
+from backend.core.log import log_application_error, log_security_event
 
 
 router = APIRouter()
@@ -59,7 +60,8 @@ def check_grades_now():
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except Exception as error:
-        raise HTTPException(status_code=503, detail=f"成绩检查失败：{error}") from error
+        error_id = log_application_error("tracking.check", error, 503)
+        raise HTTPException(status_code=503, detail=f"成绩检查失败（错误编号：{error_id}）") from error
 
 
 @router.post("/test-email")
@@ -70,7 +72,8 @@ def test_tracking_email():
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
-        raise HTTPException(status_code=502, detail=f"测试邮件发送失败：{error}") from error
+        error_id = log_application_error("tracking.test_email", error, 502)
+        raise HTTPException(status_code=502, detail=f"测试邮件发送失败（错误编号：{error_id}）") from error
 
 
 @router.get("/recovery/{token}/status")
@@ -78,20 +81,45 @@ def get_recovery_status(token: str):
     try:
         return _grade_tracker.get_recovery_status(token)
     except Exception as error:
+        if not isinstance(error, ValueError):
+            log_application_error("tracking.recovery_status", error, 503)
         raise _recovery_error(error) from error
 
 
 @router.post("/recovery/{token}/start")
 def start_recovery_login(token: str):
     try:
-        return _grade_tracker.start_recovery_login(token)
+        result = _grade_tracker.start_recovery_login(token)
+        log_security_event("tracking_recovery_login", "pending", auth_method="recovery_qr")
+        return result
     except Exception as error:
+        if not isinstance(error, ValueError):
+            log_application_error("tracking.recovery_start", error, 503)
+        log_security_event(
+            "tracking_recovery_login",
+            "failure",
+            reason="recovery_start_failed",
+            auth_method="recovery_qr",
+            error_type=type(error).__name__,
+        )
         raise _recovery_error(error) from error
 
 
 @router.get("/recovery/{token}/poll")
 def poll_recovery_login(token: str):
     try:
-        return _grade_tracker.poll_recovery_login(token)
+        result = _grade_tracker.poll_recovery_login(token)
+        if isinstance(result, dict) and result.get("status") == "authenticated":
+            log_security_event("tracking_recovery_login", "success", auth_method="recovery_qr")
+        return result
     except Exception as error:
+        if not isinstance(error, ValueError):
+            log_application_error("tracking.recovery_poll", error, 503)
+        log_security_event(
+            "tracking_recovery_login",
+            "failure",
+            reason="recovery_poll_failed",
+            auth_method="recovery_qr",
+            error_type=type(error).__name__,
+        )
         raise _recovery_error(error) from error

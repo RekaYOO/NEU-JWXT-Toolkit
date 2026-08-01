@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import ipaddress
 import json
+import secrets
 import threading
 import time
 from collections import defaultdict, deque
@@ -77,7 +79,10 @@ def _decode(text: str) -> bytes:
 
 def issue_access_cookie(secret: str, now: int | None = None) -> str:
     payload = json.dumps(
-        {"issued_at": int(now or time.time())},
+        {
+            "issued_at": int(now or time.time()),
+            "session_id": secrets.token_urlsafe(12),
+        },
         separators=(",", ":"),
     ).encode("utf-8")
     payload_text = _encode(payload)
@@ -85,27 +90,49 @@ def issue_access_cookie(secret: str, now: int | None = None) -> str:
     return f"{payload_text}.{_encode(signature.digest())}"
 
 
-def validate_access_cookie(token: str, secret: str, now: int | None = None) -> bool:
+def access_cookie_payload(
+    token: str,
+    secret: str,
+    now: int | None = None,
+) -> dict[str, str | int] | None:
     if (
         not token
         or len(token) > MAX_COOKIE_LENGTH
         or not secret
         or "." not in token
     ):
-        return False
+        return None
     try:
         payload_text, signature_text = token.split(".", 1)
         expected = hmac.new(
             secret.encode("utf-8"), payload_text.encode("ascii"), hashlib.sha256
         ).digest()
         if not hmac.compare_digest(expected, _decode(signature_text)):
-            return False
+            return None
         payload = json.loads(_decode(payload_text))
         issued_at = int(payload["issued_at"])
         current = int(now or time.time())
-        return 0 <= current - issued_at <= COOKIE_TTL_SECONDS
-    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-        return False
+        session_id = str(payload.get("session_id") or "")
+        if not session_id:
+            session_id = "legacy-" + hashlib.sha256(token.encode("ascii")).hexdigest()[:16]
+        if len(session_id) > 64:
+            return None
+        if not 0 <= current - issued_at <= COOKIE_TTL_SECONDS:
+            return None
+        return {"issued_at": issued_at, "session_id": session_id}
+    except (
+        ValueError,
+        KeyError,
+        TypeError,
+        OverflowError,
+        binascii.Error,
+        json.JSONDecodeError,
+    ):
+        return None
+
+
+def validate_access_cookie(token: str, secret: str, now: int | None = None) -> bool:
+    return access_cookie_payload(token, secret, now) is not None
 
 
 def request_uses_https(request: Request, config: RuntimeConfig) -> bool:

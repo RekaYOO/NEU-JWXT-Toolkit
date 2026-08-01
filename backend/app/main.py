@@ -23,7 +23,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
 from backend.core.log.access_logger import FastAPILogMiddleware
-from backend.app.dependencies import _cache_coordinator, _grade_tracker, _log_config
+from backend.app.dependencies import (
+    _cache_coordinator,
+    _grade_tracker,
+    _log_config,
+    peek_auth_client,
+)
 from backend.app.routers import auth, cache, scores, logs, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking
 from backend.core.runtime import get_runtime_config, resource_path
 from backend.core.runtime.access import AccessGatewayMiddleware
@@ -58,8 +63,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 日志中间件（必须在 CORS 之前）
-app.add_middleware(FastAPILogMiddleware, config=_log_config)
+def _current_account() -> str | None:
+    client = peek_auth_client()
+    if client is None or not getattr(client, "is_logged_in", False):
+        return None
+    return str(getattr(client, "username", "") or "") or None
+
+
+# Starlette 后添加的中间件位于外层。网关先注册，确保日志层可以记录网关拒绝的 401。
+app.add_middleware(AccessGatewayMiddleware, config=runtime_config)
 
 # CORS 配置
 if runtime_config.profile == "development":
@@ -71,7 +83,12 @@ if runtime_config.profile == "development":
         allow_headers=["*"],
     )
 
-app.add_middleware(AccessGatewayMiddleware, config=runtime_config)
+app.add_middleware(
+    FastAPILogMiddleware,
+    config=_log_config,
+    runtime_config=runtime_config,
+    user_provider=_current_account,
+)
 
 # ── 路由挂载 ───────────────────────────────────────────────────────────────────
 

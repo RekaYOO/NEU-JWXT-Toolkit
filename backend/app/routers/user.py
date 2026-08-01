@@ -1,11 +1,11 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import Response
 
-from backend.app.dependencies import _storage, _api_logger
 from backend.core.auth import NEUAuthClient
 from backend.app.dependencies import require_cached_auth_identity, require_serialized_auth
 from backend.app.cache_support import read_cache, submit_refresh, wait_for_job
 from backend.core.cache.resources import avatar_bytes
+from backend.core.log import log_application_error
 
 router = APIRouter()
 
@@ -19,7 +19,8 @@ def get_user_info(auth: NEUAuthClient = Depends(require_serialized_auth)):
             raise HTTPException(status_code=500, detail="获取用户信息失败")
         return user_info
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取用户信息失败: {str(e)}")
+        error_id = log_application_error("user.info", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取用户信息失败（错误编号：{error_id}）") from e
 
 
 @router.get("/user/avatar")
@@ -59,9 +60,5 @@ def get_user_avatar(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        error_msg = f"[Avatar] 获取头像失败: {e}"
-        trace = traceback.format_exc()
-        _api_logger.error(error_msg)
-        _api_logger.error(trace)
-        raise HTTPException(status_code=500, detail=f"获取头像失败: {str(e)}")
+        error_id = log_application_error("user.avatar", e, 500)
+        raise HTTPException(status_code=500, detail=f"获取头像失败（错误编号：{error_id}）") from e

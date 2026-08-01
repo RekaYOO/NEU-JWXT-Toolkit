@@ -13,6 +13,7 @@ from backend.app.schemas import GPASimulationExportRequest, GPASimulationFile
 from backend.core.auth import NEUAuthClient
 from backend.app.dependencies import require_cached_auth_identity
 from backend.core.runtime.config import secure_file
+from backend.core.log import log_application_error
 
 router = APIRouter()
 
@@ -99,8 +100,8 @@ def export_gpa_simulation(
             "path": filepath
         }
     except Exception as e:
-        _api_logger.error(f"[GPA-Sim] 导出失败: {e}")
-        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+        error_id = log_application_error("gpa.export", e, 500)
+        raise HTTPException(status_code=500, detail=f"导出失败（错误编号：{error_id}）") from e
 
 
 @router.get("/gpa-simulation/files", response_model=List[GPASimulationFile])
@@ -140,8 +141,8 @@ def list_gpa_simulation_files(auth: NEUAuthClient = Depends(require_cached_auth_
         files.sort(key=lambda x: x["modified_time"], reverse=True)
         return files
     except Exception as e:
-        _api_logger.error(f"[GPA-Sim] 列出文件失败: {e}")
-        raise HTTPException(status_code=500, detail=f"列出文件失败: {str(e)}")
+        error_id = log_application_error("gpa.list_files", e, 500)
+        raise HTTPException(status_code=500, detail=f"列出文件失败（错误编号：{error_id}）") from e
 
 
 @router.get("/gpa-simulation/file/{filename}")
@@ -164,8 +165,8 @@ def get_gpa_simulation_file(
     except HTTPException:
         raise
     except Exception as e:
-        _api_logger.error(f"[GPA-Sim] 读取文件失败: {e}")
-        raise HTTPException(status_code=500, detail=f"读取文件失败: {str(e)}")
+        error_id = log_application_error("gpa.read_file", e, 500)
+        raise HTTPException(status_code=500, detail=f"读取文件失败（错误编号：{error_id}）") from e
 
 
 @router.delete("/gpa-simulation/file/{filename}")
@@ -191,5 +192,5 @@ def delete_gpa_simulation_file(
     except HTTPException:
         raise
     except Exception as e:
-        _api_logger.error(f"[GPA-Sim] 删除文件失败: {e}")
-        raise HTTPException(status_code=500, detail=f"删除文件失败: {str(e)}")
+        error_id = log_application_error("gpa.delete_file", e, 500)
+        raise HTTPException(status_code=500, detail=f"删除文件失败（错误编号：{error_id}）") from e

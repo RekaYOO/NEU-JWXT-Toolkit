@@ -1,5 +1,5 @@
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LogSummaryResponse(BaseModel):
@@ -16,6 +16,11 @@ class LogEntryResponse(BaseModel):
     level: str
     logger: str
     message: str
+    event_type: str = "generic_system"
+    event_title: str = "系统记录"
+    summary: str = ""
+    details: Dict[str, Any] = Field(default_factory=dict)
+    structured: bool = False
 
 
 class LogListResponse(BaseModel):
