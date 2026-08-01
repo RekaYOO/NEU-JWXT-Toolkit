@@ -339,7 +339,7 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
                 _save_webvpn_password_login(client, request.remember)
                 log_security_event(
                     "webvpn_password_login",
-                    "pending",
+                    "success",
                     subject=request.username,
                     auth_method="password",
                     network_mode="webvpn",
@@ -351,7 +351,7 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
                 set_auth_client(client)
                 log_security_event(
                     "webvpn_password_login",
-                    "success",
+                    "pending",
                     subject=request.username,
                     auth_method="password_sms_challenge",
                     network_mode="webvpn",

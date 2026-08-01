@@ -62,6 +62,7 @@ class AuthRouteTests(unittest.TestCase):
         with (
             patch.object(auth, "NEUAuthClient", return_value=password_client) as client_class,
             patch.object(auth, "_save_webvpn_password_login"),
+            patch.object(auth, "log_security_event") as security_log,
         ):
             response = auth.start_webvpn_password_login(
                     WebVPNPasswordStartRequest(
@@ -79,6 +80,34 @@ class AuthRouteTests(unittest.TestCase):
             network_mode="webvpn",
             restore_session=False,
         )
+        security_log.assert_called_once()
+        self.assertEqual(security_log.call_args.args[:2], ("webvpn_password_login", "success"))
+
+    def test_webvpn_password_sms_challenge_is_logged_as_pending(self):
+        client = Mock()
+        client._webvpn_sms_flow = {}
+        client.start_webvpn_password_login.return_value = {
+            "status": "sms_required",
+            "flow_id": "sms-flow",
+        }
+
+        with (
+            patch.object(auth, "NEUAuthClient", return_value=client),
+            patch.object(auth, "set_auth_client"),
+            patch.object(auth, "log_security_event") as security_log,
+        ):
+            response = auth.start_webvpn_password_login(
+                WebVPNPasswordStartRequest(
+                    username="20250001",
+                    password="not-used",
+                    remember=True,
+                )
+            )
+
+        self.assertTrue(response["success"])
+        self.assertEqual(client._webvpn_sms_flow["remember"], True)
+        security_log.assert_called_once()
+        self.assertEqual(security_log.call_args.args[:2], ("webvpn_password_login", "pending"))
 
     def test_logout_uses_current_client_without_name_error(self):
         client = Mock()
