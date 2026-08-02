@@ -1,7 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = Path(SPECPATH).parents[1]
 
@@ -13,12 +12,21 @@ a = Analysis(
         (str(ROOT / "frontend" / "build"), "frontend/build"),
         (str(ROOT / "VERSION"), "."),
     ],
-    hiddenimports=collect_submodules("backend"),
+    # Backend imports are statically discoverable, including the few imports
+    # placed inside properties/functions. Collecting every backend submodule
+    # also pulled development-only modules into the launcher and made the
+    # frozen image unnecessarily opaque to security scanners.
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
-    noarchive=False,
+    # anyio exposes optional pytest helpers when pytest happens to be installed
+    # in the build environment. They are never used by the application.
+    excludes=["pytest", "_pytest"],
+    # Keep Python bytecode as individual files in the onedir _internal tree.
+    # This trades some file count for a more inspectable bundle and avoids one
+    # large opaque PYZ payload in the executable.
+    noarchive=True,
 )
 pyz = PYZ(a.pure)
 

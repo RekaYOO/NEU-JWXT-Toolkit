@@ -168,22 +168,112 @@ def test_server_runtime_does_not_mutate_read_only_config(monkeypatch, tmp_path):
 def test_shutdown_route_is_desktop_only():
     from backend.app.routers import runtime
 
+    request = SimpleNamespace(headers={}, app=SimpleNamespace(state=SimpleNamespace()))
     with patch.object(runtime, "config", SimpleNamespace(desktop_mode=False)):
         with pytest.raises(HTTPException) as error:
-            asyncio.run(runtime.desktop_shutdown())
+            asyncio.run(runtime.desktop_shutdown(request))
 
     assert error.value.status_code == 404
 
     timer = Mock()
+    shutdown = Mock()
+    request = SimpleNamespace(
+        headers={
+            "host": "127.0.0.1:18476",
+            "origin": "http://127.0.0.1:18476",
+            "x-neu-shutdown-token": "test-token",
+        },
+        app=SimpleNamespace(state=SimpleNamespace(desktop_shutdown=shutdown)),
+    )
     with (
-        patch.object(runtime, "config", SimpleNamespace(desktop_mode=True)),
+        patch.object(runtime, "config", SimpleNamespace(desktop_mode=True, port=18476)),
+        patch.dict(runtime.os.environ, {"NEU_JWXT_SHUTDOWN_TOKEN": "test-token"}),
         patch.object(runtime.threading, "Timer", return_value=timer) as timer_class,
     ):
-        result = asyncio.run(runtime.desktop_shutdown())
+        result = asyncio.run(runtime.desktop_shutdown(request))
 
     assert result == {"success": True}
-    timer_class.assert_called_once()
+    timer_class.assert_called_once_with(0.1, shutdown)
     timer.start.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("headers", "status_code"),
+    [
+        ({"host": "127.0.0.1:18476"}, 403),
+        (
+            {
+                "host": "127.0.0.1:18476",
+                "x-neu-shutdown-token": "wrong-token",
+            },
+            403,
+        ),
+        (
+            {
+                "host": "evil.example",
+                "x-neu-shutdown-token": "test-token",
+            },
+            403,
+        ),
+        (
+            {
+                "host": "127.0.0.1:18476",
+                "origin": "https://evil.example",
+                "x-neu-shutdown-token": "test-token",
+            },
+            403,
+        ),
+    ],
+)
+def test_shutdown_route_rejects_untrusted_requests(headers, status_code):
+    from backend.app.routers import runtime
+
+    request = SimpleNamespace(
+        headers=headers,
+        app=SimpleNamespace(state=SimpleNamespace(desktop_shutdown=Mock())),
+    )
+    with (
+        patch.object(runtime, "config", SimpleNamespace(desktop_mode=True, port=18476)),
+        patch.dict(runtime.os.environ, {"NEU_JWXT_SHUTDOWN_TOKEN": "test-token"}),
+        pytest.raises(HTTPException) as error,
+    ):
+        asyncio.run(runtime.desktop_shutdown(request))
+    assert error.value.status_code == status_code
+
+
+def test_shutdown_route_requires_ready_graceful_callback():
+    from backend.app.routers import runtime
+
+    request = SimpleNamespace(
+        headers={
+            "host": "127.0.0.1:18476",
+            "x-neu-shutdown-token": "test-token",
+        },
+        app=SimpleNamespace(state=SimpleNamespace()),
+    )
+    with (
+        patch.object(runtime, "config", SimpleNamespace(desktop_mode=True, port=18476)),
+        patch.dict(runtime.os.environ, {"NEU_JWXT_SHUTDOWN_TOKEN": "test-token"}),
+        pytest.raises(HTTPException) as error,
+    ):
+        asyncio.run(runtime.desktop_shutdown(request))
+    assert error.value.status_code == 503
+
+
+def test_health_exposes_shutdown_token_only_in_desktop_mode():
+    from backend.app.routers import runtime
+
+    with (
+        patch.object(runtime, "config", SimpleNamespace(desktop_mode=True, version="1", profile="desktop")),
+        patch.dict(runtime.os.environ, {"NEU_JWXT_SHUTDOWN_TOKEN": "test-token"}),
+    ):
+        assert asyncio.run(runtime.health())["shutdown_token"] == "test-token"
+    with patch.object(
+        runtime,
+        "config",
+        SimpleNamespace(desktop_mode=False, version="1", profile="server"),
+    ):
+        assert "shutdown_token" not in asyncio.run(runtime.health())
 
 
 def test_config_healthcheck_uses_exact_port_and_ignores_http_proxy(

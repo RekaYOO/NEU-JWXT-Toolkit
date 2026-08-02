@@ -5,17 +5,66 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Jobs opt in to additional permissions only where required.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
-  web:
+  validate:
+    name: Validate release version
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Validate VERSION and tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < VERSION)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "VERSION is not a supported semantic version: $version" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match VERSION v$version" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            set +e
+            git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null 2>&1
+            tag_query_status=$?
+            set -e
+            if [[ "$tag_query_status" -eq 0 ]]; then
+              echo "VERSION v$version is already published; bump VERSION before building new release candidates" >&2
+              exit 1
+            fi
+            if [[ "$tag_query_status" -ne 2 ]]; then
+              echo "Unable to verify whether VERSION v$version already exists (git ls-remote exit $tag_query_status)" >&2
+              exit 1
+            fi
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  web:
+    name: Build web assets
+    needs: validate
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "20"
           cache: npm
@@ -26,193 +75,513 @@ jobs:
         env:
           REACT_APP_API_URL: ""
         run: npm run build
-      - uses: actions/upload-artifact@v4
+      # actions/upload-artifact v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: web-build
           path: frontend/build
           if-no-files-found: error
+          retention-days: 7
 
   windows:
-    needs: web
-    runs-on: windows-latest
+    name: Build and verify Windows release
+    needs: [validate, web]
+    runs-on: windows-2022
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      # actions/setup-python v5.6.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: requirements-build.lock
-      - uses: actions/download-artifact@v4
+      # actions/download-artifact v4.3.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: web-build
           path: frontend/build
       - run: python -m pip install --disable-pip-version-check -r requirements-build.lock
       - name: Build frozen desktop application
         run: pyinstaller packaging/pyinstaller/desktop.spec --distpath dist --workpath build/pyinstaller --clean --noconfirm
-      - name: Smoke test desktop application
+
+      - name: Configure optional Authenticode signing
         shell: pwsh
         env:
-          NEU_JWXT_NO_BROWSER: "1"
+          WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
-          $process = Start-Process -FilePath ".\dist\NEU-JWXT-Toolkit\NEU-JWXT-Toolkit.exe" -PassThru
-          $instance = Join-Path $env:LOCALAPPDATA "NEU-JWXT-Toolkit\desktop-instance.json"
-          $healthy = $false
-          for ($i = 0; $i -lt 80; $i++) {
-            if (Test-Path $instance) {
-              $state = Get-Content $instance -Raw | ConvertFrom-Json
-              try {
-                $health = Invoke-RestMethod "$($state.url)/api/health" -TimeoutSec 1
-                if ($health.status -eq "ok") { $healthy = $true; break }
-              } catch {}
-            }
-            Start-Sleep -Milliseconds 125
+          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD)
+          if (-not $hasCertificate -and -not $hasPassword) {
+            "SIGNATURE_POLICY=ignore" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "WINDOWS_SIGNING_STATUS=unsigned" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Host "::notice::Authenticode secrets are not configured. Windows artifacts will be explicitly marked unsigned; final artifact smoke tests and Defender scanning still run."
+            exit 0
           }
-          if (-not $healthy) { Stop-Process -Id $process.Id -Force; throw "Desktop health check failed" }
-          $homepage = Invoke-WebRequest "$($state.url)/app" -UseBasicParsing
-          if ($homepage.StatusCode -ne 200 -or $homepage.Content -notmatch 'id="root"') {
-            Stop-Process -Id $process.Id -Force
-            throw "Bundled homepage check failed"
+          if (-not $hasCertificate -or -not $hasPassword) {
+            throw "Authenticode configuration is incomplete: both certificate and password secrets are required"
           }
-          $second = Start-Process -FilePath ".\dist\NEU-JWXT-Toolkit\NEU-JWXT-Toolkit.exe" -PassThru
-          if (-not $second.WaitForExit(5000) -or $second.ExitCode -ne 0) {
-            Stop-Process -Id $second.Id -Force -ErrorAction SilentlyContinue
-            Stop-Process -Id $process.Id -Force
-            throw "Desktop single-instance check failed"
+          $pfxPath = Join-Path $env:RUNNER_TEMP "release-signing-certificate.pfx"
+          [IO.File]::WriteAllBytes(
+            $pfxPath,
+            [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)
+          )
+          "WINDOWS_SIGNING_PFX=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SIGNATURE_POLICY=require-present" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "WINDOWS_SIGNING_STATUS=signed" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Sign and verify portable launcher when configured
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:WINDOWS_SIGNING_STATUS -ne "signed") { exit 0 }
+          $signToolCommand = Get-Command signtool.exe -ErrorAction SilentlyContinue
+          $signTool = if ($signToolCommand) {
+            $signToolCommand.Source
+          } else {
+            Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
+              -File -ErrorAction SilentlyContinue `
+              | Sort-Object FullName -Descending `
+              | Select-Object -First 1 -ExpandProperty FullName
           }
-          Invoke-RestMethod "$($state.url)/api/runtime/shutdown" -Method Post | Out-Null
-          if (-not $process.WaitForExit(5000)) {
-            Stop-Process -Id $process.Id -Force
-            throw "Desktop shutdown check failed"
-          }
-          python tools/check_release_bundle.py ".\dist\NEU-JWXT-Toolkit"
+          if ([string]::IsNullOrWhiteSpace($signTool)) { throw "signtool.exe is unavailable" }
+          $launcher = (Resolve-Path ".\dist\NEU-JWXT-Toolkit\NEU-JWXT-Toolkit.exe").Path
+          & $signTool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
+            /f $env:WINDOWS_SIGNING_PFX /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD $launcher
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for portable launcher" }
+          & $signTool verify /pa /all $launcher
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed for portable launcher" }
+
       - name: Create portable archive
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          $version = (Get-Content VERSION -Raw).Trim()
-          New-Item -ItemType Directory -Force release | Out-Null
-          Compress-Archive -Path "dist\NEU-JWXT-Toolkit\*" -DestinationPath "release\NEU-JWXT-Toolkit-$version-windows-x64-portable.zip"
-      - name: Build Inno Setup installer
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path ".\release" | Out-Null
+          $archive = ".\release\NEU-JWXT-Toolkit-$env:RELEASE_VERSION-windows-x64-portable.zip"
+          Compress-Archive -Path ".\dist\NEU-JWXT-Toolkit\*" -DestinationPath $archive
+
+      - name: Extract and smoke test final portable archive
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          NEU_JWXT_NO_BROWSER: "1"
+          NEU_JWXT_NO_TRAY: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = (Resolve-Path ".\release\NEU-JWXT-Toolkit-$env:RELEASE_VERSION-windows-x64-portable.zip").Path
+          $extractRoot = Join-Path $env:RUNNER_TEMP "portable-final-smoke"
+          New-Item -ItemType Directory -Path $extractRoot | Out-Null
+          Expand-Archive -LiteralPath $archive -DestinationPath $extractRoot
+          python tools/check_release_bundle.py --signature-policy $env:SIGNATURE_POLICY $extractRoot
+          if ($LASTEXITCODE -ne 0) { throw "Portable bundle validation failed" }
+
+          $launcher = Join-Path $extractRoot "NEU-JWXT-Toolkit.exe"
+          $instance = Join-Path $env:LOCALAPPDATA "NEU-JWXT-Toolkit\desktop-instance.json"
+          $process = Start-Process -FilePath $launcher -WindowStyle Hidden -PassThru
+          try {
+            $healthy = $false
+            for ($i = 0; $i -lt 120; $i++) {
+              if (Test-Path -LiteralPath $instance) {
+                $state = Get-Content -LiteralPath $instance -Raw | ConvertFrom-Json
+                if ($state.pid -ne $process.Id) {
+                  Start-Sleep -Milliseconds 250
+                  continue
+                }
+                $instanceUri = [Uri]$state.url
+                if ($instanceUri.Scheme -ne "http" -or $instanceUri.Host -ne "127.0.0.1" `
+                    -or $instanceUri.AbsolutePath -ne "/" -or $instanceUri.Query) {
+                  throw "Desktop instance URL is not a clean loopback HTTP origin"
+                }
+                try {
+                  $health = Invoke-RestMethod "$($state.url)/api/health" -TimeoutSec 1
+                  if ($health.status -eq "ok" -and $health.profile -eq "desktop" `
+                      -and -not [string]::IsNullOrWhiteSpace($health.shutdown_token)) {
+                    $healthy = $true
+                    break
+                  }
+                } catch {}
+              }
+              Start-Sleep -Milliseconds 250
+            }
+            if (-not $healthy) { throw "Extracted portable health check failed" }
+            $homepage = Invoke-WebRequest "$($state.url)/app" -UseBasicParsing -TimeoutSec 5
+            if ($homepage.StatusCode -ne 200 -or $homepage.Content -notmatch 'id="root"') {
+              throw "Extracted portable homepage check failed"
+            }
+            $second = Start-Process -FilePath $launcher -WindowStyle Hidden -PassThru
+            if (-not $second.WaitForExit(5000) -or $second.ExitCode -ne 0) {
+              Stop-Process -Id $second.Id -Force -ErrorAction SilentlyContinue
+              throw "Extracted portable single-instance check failed"
+            }
+            Invoke-RestMethod "$($state.url)/api/runtime/shutdown" -Method Post -TimeoutSec 5 `
+              -Headers @{ "X-NEU-Shutdown-Token" = $health.shutdown_token } | Out-Null
+            if (-not $process.WaitForExit(10000)) { throw "Extracted portable shutdown check failed" }
+            if ($process.ExitCode -ne 0) { throw "Extracted portable exited with code $($process.ExitCode)" }
+            if (Test-Path -LiteralPath $instance) { throw "Extracted portable left its instance file behind" }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Install pinned Inno Setup
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          choco install innosetup -y --no-progress
-          $version = (Get-Content VERSION -Raw).Trim()
+          choco install innosetup --version=6.7.1 --exact -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Installing pinned Inno Setup 6.7.1 failed" }
+          $iscc = (Get-Command ISCC.exe -ErrorAction Stop).Source
+          # ISCC.exe intentionally exposes 0.0.0.0 in its PE version resource.
+          # The sibling Inno uninstaller carries the installed product version.
+          $innoUninstaller = Join-Path (Split-Path -Parent $iscc) "unins000.exe"
+          $productVersion = (Get-Item -LiteralPath $innoUninstaller -ErrorAction Stop).VersionInfo.ProductVersion
+          if ($productVersion -notlike "6.7.1*") {
+            throw "Unexpected Inno Setup version: $productVersion"
+          }
+          "INNO_ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build Inno Setup installer
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
           $translation = Join-Path $env:RUNNER_TEMP "ChineseSimplified.isl"
           $translationUrl = "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/6da09d23e14443d4cf8f07b1c5fd821bfe459788/ChineseSimplified.isl"
           Invoke-WebRequest -Uri $translationUrl -OutFile $translation
           $expectedHash = "869e43e7c7b8d20c7e4397c8e98f7d1b7cf0528803acdf019ad350143ec85469"
-          $actualHash = (Get-FileHash -Algorithm SHA256 $translation).Hash.ToLowerInvariant()
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $translation).Hash.ToLowerInvariant()
           if ($actualHash -ne $expectedHash) {
             throw "Unexpected SHA-256 for ChineseSimplified.isl: $actualHash"
           }
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
-            "/DMyAppVersion=$version" `
+          & $env:INNO_ISCC `
+            "/DMyAppVersion=$env:RELEASE_VERSION" `
             "/DSourceDir=$pwd\dist\NEU-JWXT-Toolkit" `
             "/DChineseMessagesFile=$translation" `
-            "packaging\windows\installer.iss"
-      - uses: actions/upload-artifact@v4
+            ".\packaging\windows\installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
+
+      - name: Sign and verify installer when configured
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:WINDOWS_SIGNING_STATUS -ne "signed") { exit 0 }
+          $signToolCommand = Get-Command signtool.exe -ErrorAction SilentlyContinue
+          $signTool = if ($signToolCommand) {
+            $signToolCommand.Source
+          } else {
+            Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
+              -File -ErrorAction SilentlyContinue `
+              | Sort-Object FullName -Descending `
+              | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if ([string]::IsNullOrWhiteSpace($signTool)) { throw "signtool.exe is unavailable" }
+          $installer = (Resolve-Path ".\release\NEU-JWXT-Toolkit-$env:RELEASE_VERSION-windows-x64-setup.exe").Path
+          & $signTool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
+            /f $env:WINDOWS_SIGNING_PFX /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD $installer
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for installer" }
+          & $signTool verify /pa /all $installer
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed for installer" }
+
+      - name: Install and run final installer
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          NEU_JWXT_NO_BROWSER: "1"
+          NEU_JWXT_NO_TRAY: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = (Resolve-Path ".\release\NEU-JWXT-Toolkit-$env:RELEASE_VERSION-windows-x64-setup.exe").Path
+          $installRoot = Join-Path $env:RUNNER_TEMP "installed-final-smoke"
+          $install = Start-Process -FilePath $installer -WindowStyle Hidden -PassThru -Wait -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=`"$installRoot`""
+          )
+          if ($install.ExitCode -ne 0) { throw "Installer exited with code $($install.ExitCode)" }
+          python tools/check_release_bundle.py --signature-policy $env:SIGNATURE_POLICY --allow-installer-files $installRoot
+          if ($LASTEXITCODE -ne 0) { throw "Installed bundle validation failed" }
+
+          $launcher = Join-Path $installRoot "NEU-JWXT-Toolkit.exe"
+          $instance = Join-Path $env:LOCALAPPDATA "NEU-JWXT-Toolkit\desktop-instance.json"
+          $process = Start-Process -FilePath $launcher -WindowStyle Hidden -PassThru
+          try {
+            $healthy = $false
+            for ($i = 0; $i -lt 120; $i++) {
+              if (Test-Path -LiteralPath $instance) {
+                $state = Get-Content -LiteralPath $instance -Raw | ConvertFrom-Json
+                if ($state.pid -ne $process.Id) {
+                  Start-Sleep -Milliseconds 250
+                  continue
+                }
+                $instanceUri = [Uri]$state.url
+                if ($instanceUri.Scheme -ne "http" -or $instanceUri.Host -ne "127.0.0.1" `
+                    -or $instanceUri.AbsolutePath -ne "/" -or $instanceUri.Query) {
+                  throw "Desktop instance URL is not a clean loopback HTTP origin"
+                }
+                try {
+                  $health = Invoke-RestMethod "$($state.url)/api/health" -TimeoutSec 1
+                  if ($health.status -eq "ok" -and $health.profile -eq "desktop" `
+                      -and -not [string]::IsNullOrWhiteSpace($health.shutdown_token)) {
+                    $healthy = $true
+                    break
+                  }
+                } catch {}
+              }
+              Start-Sleep -Milliseconds 250
+            }
+            if (-not $healthy) { throw "Installed application health check failed" }
+            $homepage = Invoke-WebRequest "$($state.url)/app" -UseBasicParsing -TimeoutSec 5
+            if ($homepage.StatusCode -ne 200 -or $homepage.Content -notmatch 'id="root"') {
+              throw "Installed application homepage check failed"
+            }
+            Invoke-RestMethod "$($state.url)/api/runtime/shutdown" -Method Post -TimeoutSec 5 `
+              -Headers @{ "X-NEU-Shutdown-Token" = $health.shutdown_token } | Out-Null
+            if (-not $process.WaitForExit(10000)) { throw "Installed application shutdown check failed" }
+            if ($process.ExitCode -ne 0) { throw "Installed application exited with code $($process.ExitCode)" }
+            if (Test-Path -LiteralPath $instance) { throw "Installed application left its instance file behind" }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Scan final Windows artifacts with Microsoft Defender when available
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $defender = Join-Path $env:ProgramFiles "Windows Defender\MpCmdRun.exe"
+          if (-not (Test-Path -LiteralPath $defender)) {
+            $command = Get-Command MpCmdRun.exe -ErrorAction SilentlyContinue
+            if ($command) { $defender = $command.Source }
+          }
+          if (-not (Test-Path -LiteralPath $defender)) {
+            Write-Host "::notice::Microsoft Defender command-line scanner is unavailable on this runner; smoke tests remain mandatory."
+            "WINDOWS_DEFENDER_STATUS=unavailable" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            exit 0
+          }
+          $defenderStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          if ($defenderStatus) {
+            "Defender engine: $($defenderStatus.AMEngineVersion); signatures: $($defenderStatus.AntivirusSignatureVersion)" `
+              | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+          $targets = @(
+            (Resolve-Path ".\release\NEU-JWXT-Toolkit-$env:RELEASE_VERSION-windows-x64-portable.zip").Path,
+            (Resolve-Path ".\release\NEU-JWXT-Toolkit-$env:RELEASE_VERSION-windows-x64-setup.exe").Path,
+            (Join-Path $env:RUNNER_TEMP "portable-final-smoke"),
+            (Join-Path $env:RUNNER_TEMP "installed-final-smoke")
+          )
+          foreach ($target in $targets) {
+            & $defender -Scan -ScanType 3 -File $target
+            if ($LASTEXITCODE -ne 0) {
+              throw "Microsoft Defender rejected or could not scan final target: $target (exit $LASTEXITCODE)"
+            }
+          }
+          "WINDOWS_DEFENDER_STATUS=passed" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Uninstall verified application
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installRoot = Join-Path $env:RUNNER_TEMP "installed-final-smoke"
+          $launcher = Join-Path $installRoot "NEU-JWXT-Toolkit.exe"
+          $uninstaller = Join-Path $installRoot "unins000.exe"
+          if (-not (Test-Path -LiteralPath $uninstaller)) {
+            Write-Host "::notice::No installed uninstaller was found; the installer may not have completed."
+            exit 0
+          }
+          $uninstall = Start-Process -FilePath $uninstaller -WindowStyle Hidden -PassThru -Wait -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+          )
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller exited with code $($uninstall.ExitCode)" }
+          if (Test-Path -LiteralPath $launcher) { throw "Uninstaller left the application launcher behind" }
+
+      - name: Record Windows signing status
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $statusFile = ".\release\WINDOWS-SIGNING-STATUS.txt"
+          if ($env:WINDOWS_SIGNING_STATUS -eq "signed") {
+            "Windows launcher and installer: Authenticode signed and verified during the release workflow. The Inno Setup uninstaller is not separately signed." | Set-Content -LiteralPath $statusFile -Encoding utf8
+            "Windows signing status: **launcher and installer signed and verified**; the Inno Setup uninstaller is not separately signed." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          } else {
+            "Windows launcher and installer: unsigned. Final archive, installer, and runtime smoke tests passed." | Set-Content -LiteralPath $statusFile -Encoding utf8
+            "Windows signing status: **unsigned** (signing is optional; artifact validation remains mandatory)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+          if ($env:WINDOWS_DEFENDER_STATUS -eq "passed") {
+            "Microsoft Defender: final portable ZIP, installer, extracted portable directory, and installed directory scanned with no detections." | Add-Content -LiteralPath $statusFile -Encoding utf8
+          } else {
+            "Microsoft Defender: scanner unavailable on the hosted runner; no antivirus-clean claim is made." | Add-Content -LiteralPath $statusFile -Encoding utf8
+          }
+
+      - name: Remove temporary signing certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX)) {
+            Remove-Item -LiteralPath $env:WINDOWS_SIGNING_PFX -Force -ErrorAction SilentlyContinue
+          }
+
+      # actions/upload-artifact v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-release
           path: release/*
           if-no-files-found: error
+          retention-days: 7
 
   linux:
-    needs: web
+    name: Build and verify Linux release
+    needs: [validate, web]
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      # actions/setup-python v5.6.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: requirements-build.lock
-      - uses: actions/download-artifact@v4
+      # actions/download-artifact v4.3.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: web-build
           path: frontend/build
       - run: python -m pip install --disable-pip-version-check -r requirements-build.lock
       - name: Build frozen server application
         run: pyinstaller packaging/pyinstaller/server.spec --distpath dist --workpath build/pyinstaller --clean --noconfirm
-      - name: Smoke test server application
+
+      - name: Assemble normalized Linux archive
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          mkdir -p "$RUNNER_TEMP/neu-config" "$RUNNER_TEMP/neu-data"
+          set -euo pipefail
+          package="release/neu-jwxt-toolkit"
+          mkdir -p "$package/app" "$package/examples"
+          cp -a dist/neu-jwxt-server/. "$package/app/"
+          cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/neu-jwxt-toolkit.service "$package/"
+          cp packaging/linux/examples/* "$package/examples/"
+          chmod +x "$package/install.sh" "$package/uninstall.sh" "$package/app/neu-jwxt-server"
+          python tools/check_release_bundle.py dist/neu-jwxt-server "$package" "$package/app"
+          source_date_epoch="$(git log -1 --format=%ct)"
+          archive="release/NEU-JWXT-Toolkit-$RELEASE_VERSION-linux-amd64.tar.gz"
+          tar --sort=name \
+            --mtime="@$source_date_epoch" \
+            --owner=0 --group=0 --numeric-owner \
+            --pax-option=delete=atime,delete=ctime \
+            -C release -cf - neu-jwxt-toolkit | gzip -n > "$archive"
+
+      - name: Extract and smoke test final Linux archive
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          extract_root="$RUNNER_TEMP/linux-final-smoke"
+          mkdir -p "$extract_root"
+          tar -xzf "release/NEU-JWXT-Toolkit-$RELEASE_VERSION-linux-amd64.tar.gz" -C "$extract_root"
+          package="$extract_root/neu-jwxt-toolkit"
+          python tools/check_release_bundle.py "$package" "$package/app"
+
+          config_root="$RUNNER_TEMP/neu-config"
+          data_root="$RUNNER_TEMP/neu-data"
+          mkdir -p "$config_root" "$data_root"
           python - <<'PY'
-          import json, secrets
+          import json, os, secrets
           from pathlib import Path
           from backend.core.runtime.access import hash_access_password
-          target = Path(__import__("os").environ["RUNNER_TEMP"]) / "neu-config" / "config.json"
+
+          target = Path(os.environ["RUNNER_TEMP"]) / "neu-config" / "config.json"
           target.write_text(json.dumps({
               "profile": "server",
               "host": "127.0.0.1",
               "port": 18765,
               "access_password": hash_access_password("release-test-password"),
               "session_secret": secrets.token_urlsafe(48),
-              "trusted_proxies": ["127.0.0.1"]
+              "trusted_proxies": ["127.0.0.1"],
           }), encoding="utf-8")
           PY
-          NEU_JWXT_DATA_DIR="$RUNNER_TEMP/neu-data" \
-            dist/neu-jwxt-server/neu-jwxt-server serve \
-            --config "$RUNNER_TEMP/neu-config/config.json" >"$RUNNER_TEMP/server.log" 2>&1 &
-          SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
-          for _ in $(seq 1 80); do
-            curl --fail --silent http://127.0.0.1:18765/api/health >/dev/null && break
-            sleep 0.125
+          config="$config_root/config.json"
+          NEU_JWXT_DATA_DIR="$data_root" \
+            "$package/app/neu-jwxt-server" serve --config "$config" \
+            >"$RUNNER_TEMP/server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 120); do
+            if curl --fail --silent http://127.0.0.1:18765/api/health >/dev/null; then
+              break
+            fi
+            sleep 0.25
           done
-          curl --fail http://127.0.0.1:18765/api/health
+          curl --fail --silent http://127.0.0.1:18765/api/health >/dev/null
+          curl --fail --silent http://127.0.0.1:18765/ | grep -q 'id="root"'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18765/api/status)" = "401"
           HTTP_PROXY=http://127.0.0.1:1 \
             HTTPS_PROXY=http://127.0.0.1:1 \
             NO_PROXY="" \
-            dist/neu-jwxt-server/neu-jwxt-server healthcheck \
-            --config "$RUNNER_TEMP/neu-config/config.json"
-          curl --fail --silent http://127.0.0.1:18765/ | grep -q 'id="root"'
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18765/api/status)" = "401"
-          kill "$SERVER_PID"
-          wait "$SERVER_PID" || true
+            "$package/app/neu-jwxt-server" healthcheck --config "$config"
+          kill "$server_pid"
+          wait "$server_pid" || true
           trap - EXIT
-      - name: Assemble Linux package
-        shell: bash
-        run: |
-          VERSION="$(tr -d '\r\n' < VERSION)"
-          PACKAGE="release/neu-jwxt-toolkit"
-          mkdir -p "$PACKAGE/app" "$PACKAGE/examples"
-          cp -a dist/neu-jwxt-server/. "$PACKAGE/app/"
-          cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/neu-jwxt-toolkit.service "$PACKAGE/"
-          cp packaging/linux/examples/* "$PACKAGE/examples/"
-          chmod +x "$PACKAGE/install.sh" "$PACKAGE/uninstall.sh" "$PACKAGE/app/neu-jwxt-server"
-          python tools/check_release_bundle.py dist/neu-jwxt-server "$PACKAGE" "$PACKAGE/app"
-          tar -C release -czf "release/NEU-JWXT-Toolkit-$VERSION-linux-amd64.tar.gz" neu-jwxt-toolkit
-          rm -rf "$PACKAGE"
-      - uses: actions/upload-artifact@v4
+
+      # actions/upload-artifact v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: linux-release
           path: release/*.tar.gz
           if-no-files-found: error
+          retention-days: 7
 
   publish:
+    name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux]
+    needs: [validate, windows, linux]
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - name: Verify tag matches VERSION
-        run: test "${GITHUB_REF_NAME}" = "v$(tr -d '\r\n' < VERSION)"
-      - uses: actions/download-artifact@v4
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      # actions/download-artifact v4.3.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: "*-release"
           path: release
           merge-multiple: true
       - name: Generate checksums
         working-directory: release
-        run: sha256sum * > SHA256SUMS.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%P\0' \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS.txt
+      # actions/attest v4.0.0
       - name: Attest release files
-        uses: actions/attest@v4
+        uses: actions/attest@c32b4b8b198b65d0bd9d63490e847ff7b53989d4
         with:
           subject-path: release/*
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${GITHUB_REF_NAME}" release/* --generate-notes --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" release/* --generate-notes --verify-tag

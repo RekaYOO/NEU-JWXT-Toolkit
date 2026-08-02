@@ -52,7 +52,13 @@ export const logoutAccessGateway = async () => {
 };
 
 export const shutdownRuntime = async () => {
-  const response = await api.post('/api/runtime/shutdown');
+  const health = await getHealth();
+  if (!health.shutdown_token) {
+    throw new Error('桌面程序未提供安全关闭令牌');
+  }
+  const response = await api.post('/api/runtime/shutdown', null, {
+    headers: { 'X-NEU-Shutdown-Token': health.shutdown_token },
+  });
   return response.data;
 };
 

@@ -1,7 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = Path(SPECPATH).parents[1]
 
@@ -13,11 +12,15 @@ a = Analysis(
         (str(ROOT / "frontend" / "build"), "frontend/build"),
         (str(ROOT / "VERSION"), "."),
     ],
-    hiddenimports=collect_submodules("backend"),
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["pytest", "_pytest"],
+    # The server is shipped as a Linux tarball, where an inspectable Windows
+    # launcher is not a concern. Keep PYZ here to avoid thousands of .pyc files
+    # and preserve efficient installs; the source tree and attestation remain
+    # the audit boundary.
     noarchive=False,
 )
 pyz = PYZ(a.pure)

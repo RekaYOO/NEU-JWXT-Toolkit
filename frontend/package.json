@@ -15,6 +15,7 @@
     "start": "set NODE_OPTIONS=--openssl-legacy-provider && react-scripts start",
     "start:unix": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start",
     "build": "react-scripts build",
+    "test": "react-scripts test --watchAll=false --runInBand",
     "test:term-sort": "react-scripts test --watchAll=false --runTestsByPath src/utils/termSort.test.js",
     "test:festival-activities": "react-scripts test --watchAll=false --runTestsByPath src/export/festivalActivityUtils.test.js src/export/festivalDataMode.test.js src/export/exportTools.test.js src/resources/ResourceStore.test.js src/pages/FestivalActivitiesPage.test.js"
   },

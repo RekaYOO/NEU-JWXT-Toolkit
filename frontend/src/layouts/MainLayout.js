@@ -157,6 +157,28 @@ const MainLayout = ({
     }
   };
 
+  const confirmShutdown = () => {
+    Modal.confirm({
+      title: '退出桌面程序？',
+      content: '退出后本地服务会停止。如需再次使用，请重新运行 NEU 教务工具箱。',
+      okText: '退出程序',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const result = await shutdownRuntime();
+          if (!result.success) {
+            throw new Error('本地服务未确认退出');
+          }
+          setServiceStopped(true);
+        } catch (error) {
+          message.error('退出桌面程序失败，请稍后重试');
+          throw error;
+        }
+      },
+    });
+  };
+
   const userMenuItems = [
     {
       key: 'logout',
@@ -170,28 +192,8 @@ const MainLayout = ({
       key: 'shutdown',
       danger: true,
       icon: <PoweroffOutlined />,
-      label: '退出本地服务',
-      onClick: () => {
-        Modal.confirm({
-          title: '退出本地服务？',
-          content: '退出后需要从桌面或开始菜单重新启动。',
-          okText: '退出',
-          okButtonProps: { danger: true },
-          cancelText: '取消',
-          onOk: async () => {
-            try {
-              const result = await shutdownRuntime();
-              if (!result.success) {
-                throw new Error('本地服务未确认退出');
-              }
-              setServiceStopped(true);
-            } catch (error) {
-              message.error('退出本地服务失败，请稍后重试');
-              throw error;
-            }
-          },
-        });
-      },
+      label: '退出桌面程序',
+      onClick: confirmShutdown,
     }] : []),
   ];
 
@@ -330,6 +332,18 @@ const MainLayout = ({
           />
 
           <div className="header-right">
+            {runtimeProfile === 'desktop' && (
+              <Tooltip title="退出桌面程序">
+                <Button
+                  type="text"
+                  danger
+                  className="desktop-shutdown-btn"
+                  aria-label="退出桌面程序"
+                  icon={<PoweroffOutlined />}
+                  onClick={confirmShutdown}
+                />
+              </Tooltip>
+            )}
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight" trigger={['click']}>
               <Button type="text" className="user-info" aria-label="打开用户菜单">
                 <Avatar 

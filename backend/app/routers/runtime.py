@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import hmac
 import threading
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -44,11 +46,14 @@ def _access_gateway_configured() -> bool:
 
 @router.get("/api/health")
 async def health():
-    return {
+    result = {
         "status": "ok",
         "version": config.version,
         "profile": config.profile,
     }
+    if config.desktop_mode:
+        result["shutdown_token"] = os.environ.get("NEU_JWXT_SHUTDOWN_TOKEN", "")
+    return result
 
 
 @router.get("/api/access/status")
@@ -134,8 +139,31 @@ async def access_logout(response: Response):
 
 
 @router.post("/api/runtime/shutdown")
-async def desktop_shutdown():
+async def desktop_shutdown(request: Request):
     if not config.desktop_mode:
         raise HTTPException(status_code=404, detail="该运行模式不支持关闭服务")
-    threading.Timer(0.25, lambda: os._exit(0)).start()
+    expected_host = f"127.0.0.1:{config.port}"
+    supplied_token = request.headers.get("x-neu-shutdown-token", "")
+    expected_token = os.environ.get("NEU_JWXT_SHUTDOWN_TOKEN", "")
+    if (
+        request.headers.get("host", "") != expected_host
+        or not expected_token
+        or not hmac.compare_digest(supplied_token, expected_token)
+    ):
+        raise HTTPException(status_code=403, detail="关闭请求验证失败")
+    origin = request.headers.get("origin")
+    if origin:
+        parsed_origin = urlsplit(origin)
+        if (
+            parsed_origin.scheme != "http"
+            or parsed_origin.netloc != expected_host
+            or parsed_origin.path not in {"", "/"}
+            or parsed_origin.query
+            or parsed_origin.fragment
+        ):
+            raise HTTPException(status_code=403, detail="关闭请求来源无效")
+    shutdown = getattr(request.app.state, "desktop_shutdown", None)
+    if not callable(shutdown):
+        raise HTTPException(status_code=503, detail="桌面服务尚未准备好关闭")
+    threading.Timer(0.1, shutdown).start()
     return {"success": True}
