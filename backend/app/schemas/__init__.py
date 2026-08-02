@@ -7,7 +7,15 @@ from .auth import (
     LoginRequest, LoginResponse, WebVPNQRStartRequest, WebVPNQRStatusRequest,
     WebVPNPasswordStartRequest, WebVPNSMSCodeRequest, WebVPNSMSVerifyRequest,
 )
-from .scores import CourseScoreModel, TermScoresModel, ScoresResponse, ColumnConfig
+from .scores import (
+    ColumnConfig,
+    CourseScoreDetailResponse,
+    CourseScoreModel,
+    ScoreDetailItem,
+    ScoreDetailQueryRequest,
+    ScoresResponse,
+    TermScoresModel,
+)
 from .logs import LogSummaryResponse, LogEntryResponse, LogListResponse
 from .report import CreditSummaryModel, CourseModel, CategoryNodeModel, AcademicReportResponse
 from .gpa import GPASimulationExportRequest, GPASimulationFile
@@ -26,6 +34,7 @@ __all__ = [
     "LoginRequest", "LoginResponse", "WebVPNQRStartRequest", "WebVPNQRStatusRequest",
     "WebVPNPasswordStartRequest", "WebVPNSMSCodeRequest", "WebVPNSMSVerifyRequest",
     "CourseScoreModel", "TermScoresModel", "ScoresResponse", "ColumnConfig",
+    "ScoreDetailItem", "CourseScoreDetailResponse", "ScoreDetailQueryRequest",
     "LogSummaryResponse", "LogEntryResponse", "LogListResponse",
     "CreditSummaryModel", "CourseModel", "CategoryNodeModel", "AcademicReportResponse",
     "GPASimulationExportRequest", "GPASimulationFile",

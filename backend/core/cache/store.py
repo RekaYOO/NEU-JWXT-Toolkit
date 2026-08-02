@@ -325,6 +325,30 @@ class CacheStore:
         finally:
             connection.close()
 
+    def mark_skip_success(
+        self, key: CacheKey, *, checked_at: datetime | None = None
+    ) -> None:
+        """Record a successful no-commit fetch without changing cached data."""
+        checked_at = checked_at or utc_now()
+        connection = self._connect()
+        try:
+            connection.execute(
+                """
+                UPDATE cache_entries
+                SET last_checked_at = ?, last_attempt_at = ?, last_error_kind = NULL
+                WHERE account_id = ? AND resource = ? AND variant = ?
+                """,
+                (
+                    _timestamp(checked_at),
+                    _timestamp(checked_at),
+                    key.account_id,
+                    key.resource,
+                    key.variant,
+                ),
+            )
+        finally:
+            connection.close()
+
     def invalidate(self, key: CacheKey) -> bool:
         connection = self._connect()
         try:

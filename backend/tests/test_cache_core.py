@@ -10,6 +10,7 @@ import pytest
 from backend.core.cache import (
     AccountScope,
     CacheCoordinator,
+    CacheFetchSkipped,
     CacheKey,
     CacheRegistry,
     CacheResourceSpec,
@@ -492,4 +493,59 @@ def test_logout_cancels_queued_account_work(tmp_path):
         assert calls == ["busy"]
     finally:
         release_first.set()
+        coordinator.shutdown(timeout=1)
+
+
+def test_skipped_fetch_completes_without_overwriting_existing_cache(tmp_path):
+    store = CacheStore(tmp_path / "cache.db")
+    key = CacheKey("a", "score-details", "course-one")
+    store.commit_success(
+        key=key,
+        schema_version=1,
+        revision_algorithm_version=1,
+        payload_type=PayloadType.JSON,
+        payload={"item_scores": [{"name": "平时成绩", "value": "90"}]},
+        revision="v1:existing",
+        dependency_revisions={},
+        changes={"added": 1},
+        reason="manual",
+    )
+    previous = store.get(key)
+    assert previous is not None
+    store.mark_failure(key, "OldFailure")
+    assert store.get(key).last_error_kind == "OldFailure"
+    coordinator = CacheCoordinator(
+        store,
+        CacheRegistry([
+            spec(
+                "score-details",
+                lambda _context: CacheFetchSkipped("no_detail_data"),
+            )
+        ]),
+    )
+    try:
+        submission = coordinator.submit(
+            account_id="a",
+            resource="score-details",
+            variant="course-one",
+            identity_epoch=1,
+            force=True,
+        )
+        job = wait_for(coordinator, submission.job_id)
+
+        assert job.status == JobStatus.COMPLETED
+        assert job.changed is False
+        assert job.revision == "v1:existing"
+        assert job.changes == {"skipped": True, "reason": "no_detail_data"}
+        current = store.get(key)
+        assert current is not None
+        assert current.revision == "v1:existing"
+        assert current.payload == {
+            "item_scores": [{"name": "平时成绩", "value": "90"}]
+        }
+        assert current.saved_at == previous.saved_at
+        assert current.last_error_kind is None
+        assert current.last_checked_at is not None
+        assert current.last_checked_at >= previous.last_checked_at
+    finally:
         coordinator.shutdown(timeout=1)

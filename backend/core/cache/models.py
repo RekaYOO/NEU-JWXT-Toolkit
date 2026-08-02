@@ -98,6 +98,13 @@ class FetchContext:
 
 
 @dataclass(frozen=True)
+class CacheFetchSkipped:
+    """A successful fetch that intentionally leaves the cached payload unchanged."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
 class CacheJob:
     job_id: str
     key: CacheKey
@@ -123,4 +130,3 @@ class RefreshSubmission:
     job_id: str | None
     revision: str | None
     is_stale: bool
-

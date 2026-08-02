@@ -71,6 +71,7 @@ class GradeTrackingService:
         auth_setter: Callable[[Any], None] | None = None,
         login_flow_pending: Callable[[], bool] | None = None,
         score_refresher: Callable[[str, bool], dict[str, Any]] | None = None,
+        score_detail_lookup: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
         remote_guard: Callable[[], Any] | None = None,
     ) -> None:
         root = Path(data_dir)
@@ -87,9 +88,11 @@ class GradeTrackingService:
         self.auth_setter = auth_setter
         self.login_flow_pending = login_flow_pending
         self.score_refresher = score_refresher
+        self.score_detail_lookup = score_detail_lookup
         self.remote_guard = remote_guard or nullcontext
         self._lock = threading.RLock()
         self._check_lock = threading.Lock()
+        self._revision_lock = threading.RLock()
         self._recovery_lock = threading.RLock()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -752,6 +755,22 @@ class GradeTrackingService:
         *,
         reason: str,
     ) -> dict[str, Any]:
+        with self._revision_lock:
+            return self._handle_scores_revision_locked(
+                account_id,
+                revision,
+                payload,
+                reason=reason,
+            )
+
+    def _handle_scores_revision_locked(
+        self,
+        account_id: str,
+        revision: str,
+        payload: dict[str, Any],
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
         """Consume one committed score revision from any producer."""
         if not revision:
             return {"change_count": 0}
@@ -776,7 +795,14 @@ class GradeTrackingService:
         additions, changes, removals, overall_gpa_changed = self._compare(
             previous, snapshot
         )
-        self._write_json(self.snapshot_path, snapshot)
+        # Notification-only detail annotations must never enter the persisted
+        # score baseline used by future change detection.
+        additions = [dict(item) for item in additions]
+        changes = [
+            {"before": dict(item["before"]), "after": dict(item["after"])}
+            for item in changes
+        ]
+        removals = [dict(item) for item in removals]
 
         should_notify = bool(config.get("enabled"))
         notification = None
@@ -793,6 +819,24 @@ class GradeTrackingService:
         elif should_notify and previous and (
             additions or changes or removals or overall_gpa_changed
         ):
+            if self.score_detail_lookup:
+                detail_targets = list(additions)
+                detail_targets.extend(
+                    item["after"]
+                    for item in changes
+                    if (
+                        item["before"].get("score") != item["after"].get("score")
+                        or item["before"].get("gpa") != item["after"].get("gpa")
+                    )
+                )
+                for course in detail_targets:
+                    try:
+                        course["_score_detail"] = self.score_detail_lookup(
+                            account_id,
+                            course,
+                        )
+                    except Exception:
+                        course["_score_detail"] = {"status": "failed"}
             notification = (
                 "[NEU 成绩追踪] 检测到成绩更新",
                 self._change_email(
@@ -805,6 +849,8 @@ class GradeTrackingService:
                 ),
                 f"revision:{revision}",
             )
+
+        self._write_json(self.snapshot_path, snapshot)
 
         with self._lock:
             self._state["last_seen_revision"] = revision
@@ -850,6 +896,27 @@ class GradeTrackingService:
             f"绩点 {item.get('gpa', '')}，{item.get('term_display', item.get('term', ''))}）"
         )
 
+    @staticmethod
+    def _format_score_detail(item: dict[str, Any]) -> str:
+        detail = item.get("_score_detail") or {}
+        status = detail.get("status")
+        if status == "available":
+            parts = []
+            for index, score_item in enumerate(detail.get("item_scores") or [], 1):
+                if not isinstance(score_item, dict):
+                    continue
+                name = str(score_item.get("name") or score_item.get("code") or f"分项 {index}")
+                value = score_item.get("value")
+                parts.append(f"{name} {value if value not in (None, '') else '暂无'}")
+            return "；".join(parts) if parts else "暂无可用分项成绩"
+        if status == "no_data":
+            return "暂无可用分项成绩"
+        return "本次未能获取分项成绩"
+
+    @classmethod
+    def _format_course_with_detail(cls, item: dict[str, Any]) -> str:
+        return f"{cls._format_course(item)}\n  分项成绩：{cls._format_score_detail(item)}"
+
     def _initial_email(self, snapshot: dict[str, Any]) -> str:
         rows = "\n".join(f"- {self._format_course(item)}" for item in snapshot["courses"]) or "无"
         return (
@@ -868,7 +935,9 @@ class GradeTrackingService:
         removals: list[dict[str, Any]],
         overall_gpa_changed: bool,
     ) -> str:
-        new_rows = "\n".join(f"- {self._format_course(item)}" for item in additions) or "无"
+        new_rows = "\n".join(
+            f"- {self._format_course_with_detail(item)}" for item in additions
+        ) or "无"
         field_labels = {
             "name": "课程名称",
             "score": "成绩",
@@ -896,6 +965,11 @@ class GradeTrackingService:
             changed_lines.append(
                 f"- {after.get('name') or before.get('name') or after.get('code')}："
                 + "；".join(details)
+                + (
+                    f"\n  分项成绩：{self._format_score_detail(after)}"
+                    if after.get("_score_detail") is not None
+                    else ""
+                )
             )
         changed_rows = "\n".join(changed_lines) or "无"
         removed_rows = "\n".join(

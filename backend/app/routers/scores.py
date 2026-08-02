@@ -1,15 +1,73 @@
 from typing import List
 from fastapi import APIRouter, HTTPException, Depends, Query
 
-from backend.app.schemas import CourseScoreModel, TermScoresModel, ScoresResponse, ColumnConfig
+from backend.app.schemas import (
+    ColumnConfig,
+    CourseScoreDetailResponse,
+    CourseScoreModel,
+    ScoreDetailQueryRequest,
+    ScoresResponse,
+    TermScoresModel,
+)
 from backend.core.auth import NEUAuthClient
 from backend.app.dependencies import (
+    _cache_coordinator,
+    _cache_registry,
+    _cache_store,
+    get_auth_generation,
     require_cached_auth_identity,
 )
 from backend.app.cache_support import read_cache, submit_refresh, wait_for_job
 from backend.core.log import log_application_error
+from backend.core.cache import CacheKey
+from backend.core.cache.resources import score_detail_variant
 
 router = APIRouter()
+
+
+def _find_cached_score(account: str, course_code: str, term: str) -> dict | None:
+    entry, _stale = read_cache(account, "scores")
+    if entry is None:
+        return None
+    for score in entry.payload.get("scores") or []:
+        if (
+            isinstance(score, dict)
+            and str(score.get("code") or "") == course_code
+            and str(score.get("term") or "") == term
+        ):
+            return score
+    return None
+
+
+def _detail_response(account: str, course_code: str, term: str):
+    variant = score_detail_variant(course_code, term)
+    entry = _cache_store.get(CacheKey(account, "score-details", variant))
+    spec = _cache_registry.get("score-details")
+    if (
+        entry is None
+        or entry.schema_version != spec.schema_version
+        or entry.revision_algorithm_version != spec.revision_algorithm_version
+        or not isinstance(entry.payload, dict)
+    ):
+        return None
+    source = _find_cached_score(account, course_code, term)
+    stale = bool(
+        source is None
+        or str(entry.payload.get("source_score") or "")
+        != str(source.get("score") or "")
+        or entry.payload.get("source_gpa") != source.get("gpa")
+    )
+    return CourseScoreDetailResponse(
+        course_code=course_code,
+        term=term,
+        score=str(entry.payload.get("score") or ""),
+        grade_point=str(entry.payload.get("grade_point") or ""),
+        pass_=entry.payload.get("pass"),
+        item_scores=entry.payload.get("item_scores") or [],
+        cached_at=entry.saved_at,
+        is_stale=stale,
+        cache=entry.metadata(is_stale=stale),
+    )
 
 
 def _score_value(score: dict) -> float:
@@ -173,6 +231,46 @@ def refresh_scores(auth: NEUAuthClient = Depends(require_cached_auth_identity)):
         status_code=503,
         detail=f"刷新失败: {getattr(job, 'error_kind', None) or 'unknown'}",
     )
+
+
+@router.get("/scores/details/cache", response_model=CourseScoreDetailResponse)
+def get_score_detail_cache(
+    course_code: str = Query(..., min_length=1, max_length=128),
+    term: str = Query(..., min_length=1, max_length=64),
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+):
+    detail = _detail_response(str(auth.username), course_code, term)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="本地没有该课程的分项成绩缓存")
+    return detail
+
+
+@router.post("/scores/details/query")
+def query_score_detail(
+    request: ScoreDetailQueryRequest,
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+):
+    account = str(auth.username or "")
+    score = _find_cached_score(account, request.course_code, request.term)
+    if score is None:
+        raise HTTPException(status_code=404, detail="当前成绩总表中没有该课程")
+    if not str(score.get("detail_ref") or ""):
+        raise HTTPException(status_code=409, detail="课程详情标识不可用，请先刷新总成绩")
+    submission = _cache_coordinator.submit(
+        account_id=account,
+        resource="score-details",
+        variant=score_detail_variant(request.course_code, request.term),
+        identity_epoch=get_auth_generation(),
+        force=True,
+        reason="manual",
+    )
+    return {
+        "status": submission.status.value,
+        "resource": "score-details",
+        "job_id": submission.job_id,
+        "revision": submission.revision,
+        "is_stale": submission.is_stale,
+    }
 
 
 @router.get("/columns/default")

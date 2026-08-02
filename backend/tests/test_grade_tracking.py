@@ -4,6 +4,8 @@ import hashlib
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from backend.core.academic.api import CourseScore
 from backend.core.tracking import GradeTrackingService
 from backend.core.runtime.access import is_public_api_path
@@ -530,3 +532,164 @@ def test_recovery_api_bypasses_server_password_only_with_token_path():
     assert redact_sensitive_path(
         "/api/grade-tracking/recovery/secret-token/poll"
     ) == "/api/grade-tracking/recovery/<redacted>/poll"
+
+
+def build_detail_tracking_service(tmp_path, lookup):
+    service, _, _ = build_service(tmp_path)
+    service.score_detail_lookup = lookup
+    service.update_config(mail_config(enabled=True, notify_initial=True))
+    service.resume_after_login("20250001")
+    return service
+
+
+def tracking_payload(scores, overall_gpa=3.8):
+    return canonicalize_scores({
+        "scores": [
+            score_to_dict(score) if isinstance(score, CourseScore) else score
+            for score in scores
+        ],
+        "overall_gpa": overall_gpa,
+    })
+
+
+def test_tracking_initialization_never_queries_score_details(tmp_path):
+    calls = []
+    service = build_detail_tracking_service(
+        tmp_path,
+        lambda account, course: calls.append((account, course)),
+    )
+
+    result = service.handle_scores_revision(
+        "20250001",
+        "v1:initial",
+        tracking_payload([make_score()]),
+        reason="tracking",
+    )
+
+    assert result["change_count"] == 0
+    assert calls == []
+    assert len(service._outbox) == 1
+    assert "_score_detail" not in service._outbox[0]["body"]
+
+
+def test_tracking_queries_added_course_and_includes_detail_in_email(tmp_path):
+    calls = []
+
+    def lookup(account, course):
+        calls.append((account, course["code"], course["term"]))
+        return {
+            "status": "available",
+            "item_scores": [
+                {"code": "DAILY", "name": "平时成绩", "value": "92"},
+                {"code": "FINAL", "name": "期末成绩", "value": "81"},
+            ],
+        }
+
+    service = build_detail_tracking_service(tmp_path, lookup)
+    base = tracking_payload([make_score()])
+    service.handle_scores_revision(
+        "20250001", "v1:base", base, reason="tracking"
+    )
+    service._outbox.clear()
+    added = {
+        **score_to_dict(make_score(score="81", gpa=3.1)),
+        "name": "新增课程",
+        "code": "B2002",
+    }
+
+    result = service.handle_scores_revision(
+        "20250001",
+        "v1:added",
+        tracking_payload([make_score(), added]),
+        reason="tracking",
+    )
+
+    assert result["change_count"] == 1
+    assert calls == [("20250001", "B2002", "2025-2026-2")]
+    assert "平时成绩 92" in service._outbox[0]["body"]
+    assert "期末成绩 81" in service._outbox[0]["body"]
+
+
+@pytest.mark.parametrize(
+    ("new_score", "new_gpa"),
+    [("91", 3.8), ("88", 4.0)],
+)
+def test_tracking_queries_details_when_score_or_gpa_changes(
+    tmp_path, new_score, new_gpa
+):
+    calls = []
+
+    def lookup(_account, course):
+        calls.append((course["score"], course["gpa"]))
+        return {"status": "no_data", "item_scores": []}
+
+    service = build_detail_tracking_service(tmp_path, lookup)
+    service.handle_scores_revision(
+        "20250001",
+        "v1:base",
+        tracking_payload([make_score()]),
+        reason="tracking",
+    )
+    service._outbox.clear()
+
+    service.handle_scores_revision(
+        "20250001",
+        f"v1:changed-{new_score}-{new_gpa}",
+        tracking_payload([make_score(score=new_score, gpa=new_gpa)]),
+        reason="tracking",
+    )
+
+    assert calls == [(new_score, new_gpa)]
+    assert "暂无可用分项成绩" in service._outbox[0]["body"]
+
+
+def test_tracking_other_course_field_change_does_not_query_details(tmp_path):
+    calls = []
+    service = build_detail_tracking_service(
+        tmp_path,
+        lambda account, course: calls.append((account, course)),
+    )
+    base_score = score_to_dict(make_score())
+    service.handle_scores_revision(
+        "20250001",
+        "v1:base",
+        tracking_payload([base_score]),
+        reason="tracking",
+    )
+    service._outbox.clear()
+
+    result = service.handle_scores_revision(
+        "20250001",
+        "v1:status",
+        tracking_payload([{**base_score, "exam_status": "重修"}]),
+        reason="tracking",
+    )
+
+    assert result["change_count"] == 1
+    assert calls == []
+    assert len(service._outbox) == 1
+
+
+def test_tracking_detail_failure_does_not_block_score_notification(tmp_path):
+    def failing_lookup(_account, _course):
+        raise RuntimeError("remote detail unavailable")
+
+    service = build_detail_tracking_service(tmp_path, failing_lookup)
+    service.handle_scores_revision(
+        "20250001",
+        "v1:base",
+        tracking_payload([make_score()]),
+        reason="tracking",
+    )
+    service._outbox.clear()
+
+    result = service.handle_scores_revision(
+        "20250001",
+        "v1:score-change",
+        tracking_payload([make_score(score="93", gpa=4.3)], overall_gpa=4.3),
+        reason="tracking",
+    )
+
+    assert result["change_count"] == 2
+    assert len(service._outbox) == 1
+    assert "本次未能获取分项成绩" in service._outbox[0]["body"]

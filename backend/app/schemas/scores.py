@@ -41,6 +41,35 @@ class ScoresResponse(BaseModel):
     scores: List[CourseScoreModel]
 
 
+class ScoreDetailItem(BaseModel):
+    code: str = ""
+    name: str = ""
+    value: Any = None
+    pass_: Optional[bool] = Field(default=None, alias="pass")
+    highest_score_in_proportion: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class CourseScoreDetailResponse(BaseModel):
+    course_code: str
+    term: str
+    score: str = ""
+    grade_point: str = ""
+    pass_: Optional[bool] = Field(default=None, alias="pass")
+    item_scores: List[ScoreDetailItem] = Field(default_factory=list)
+    cached_at: Optional[datetime] = None
+    is_stale: bool = False
+    cache: Optional[Dict[str, Any]] = None
+
+    model_config = {"populate_by_name": True}
+
+
+class ScoreDetailQueryRequest(BaseModel):
+    course_code: str = Field(..., min_length=1, max_length=128)
+    term: str = Field(..., min_length=1, max_length=64)
+
+
 class ColumnConfig(BaseModel):
     """列显示配置"""
     key: str

@@ -42,13 +42,16 @@ from backend.core.cache.resources import (
     canonicalize_avatar,
     canonicalize_research_training,
     canonicalize_scores,
+    canonicalize_score_detail,
     diff_academic_report,
     diff_avatar,
     diff_research_training,
     diff_scores,
+    diff_score_detail,
     fetch_academic_report,
     fetch_research_training,
     fetch_scores,
+    score_detail_variant,
 )
 
 # ── 全局状态 ──────────────────────────────────────────────────────────────────
@@ -108,6 +111,55 @@ def _fetch_scores_resource(context):
     return fetch_scores(_cache_client(context))
 
 
+def _fetch_score_detail_resource(context):
+    from backend.core.cache import CacheFetchSkipped, CacheKey
+
+    scores_entry = _cache_store.get(CacheKey(context.key.account_id, "scores"))
+    if scores_entry is None or not isinstance(scores_entry.payload, dict):
+        raise RuntimeError("成绩总表缓存不可用")
+    source = None
+    for score in scores_entry.payload.get("scores") or []:
+        if not isinstance(score, dict):
+            continue
+        if score_detail_variant(
+            str(score.get("code") or ""),
+            str(score.get("term") or ""),
+        ) == context.key.variant:
+            source = score
+            break
+    if source is None:
+        raise RuntimeError("课程已不在当前成绩总表中")
+    detail_ref = str(source.get("detail_ref") or "")
+    if not detail_ref:
+        raise RuntimeError("课程详情标识不可用，请先刷新总成绩")
+    detail = _cache_client(context).academic.get_score_detail(detail_ref)
+    items = [
+        {
+            "code": item.code,
+            "name": item.name,
+            "value": item.value,
+            "pass": item.passed,
+            "highest_score_in_proportion": item.highest_score_in_proportion,
+        }
+        for item in detail.items
+    ]
+    if not any(
+        item["code"] or item["name"] or item["value"] not in (None, "")
+        for item in items
+    ):
+        return CacheFetchSkipped("no_detail_data")
+    return {
+        "course_code": str(source.get("code") or ""),
+        "term": str(source.get("term") or ""),
+        "source_score": str(source.get("score") or ""),
+        "source_gpa": source.get("gpa"),
+        "score": detail.score,
+        "grade_point": detail.grade_point,
+        "pass": detail.passed,
+        "item_scores": items,
+    }
+
+
 def _fetch_report_resource(context):
     return fetch_academic_report(
         _cache_client(context),
@@ -152,6 +204,19 @@ _cache_registry = CacheRegistry(
             fetch=_fetch_scores_resource,
             canonicalize=canonicalize_scores,
             diff=diff_scores,
+        ),
+        CacheResourceSpec(
+            resource="score-details",
+            schema_version=1,
+            revision_algorithm_version=1,
+            account_scope=AccountScope.ACCOUNT,
+            payload_type=PayloadType.JSON,
+            max_age=timedelta(days=36500),
+            offline_readable=True,
+            sensitivity="private-academic",
+            fetch=_fetch_score_detail_resource,
+            canonicalize=canonicalize_score_detail,
+            diff=diff_score_detail,
         ),
         CacheResourceSpec(
             resource="academic-report",
@@ -466,6 +531,48 @@ def _tracking_score_refresh(account: str, manual: bool) -> dict:
     }
 
 
+def _tracking_score_detail_lookup(account: str, score: dict) -> dict:
+    """Fetch one changed course detail before composing a tracking email."""
+    import time
+    from backend.core.cache import CacheKey, JobStatus
+
+    variant = score_detail_variant(
+        str(score.get("code") or ""),
+        str(score.get("term") or ""),
+    )
+    submission = _cache_coordinator.submit(
+        account_id=account,
+        resource="score-details",
+        variant=variant,
+        identity_epoch=get_auth_generation(),
+        force=True,
+        reason="tracking",
+    )
+    job = None
+    if submission.job_id:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            job = _cache_coordinator.get_job(submission.job_id)
+            if job and job.status in {
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            }:
+                break
+            time.sleep(0.05)
+    if job is None or job.status != JobStatus.COMPLETED:
+        return {"status": "failed"}
+    if job.changes.get("skipped"):
+        return {"status": "no_data"}
+    entry = _cache_store.get(CacheKey(account, "score-details", variant))
+    if entry is None or not isinstance(entry.payload, dict):
+        return {"status": "failed"}
+    return {
+        "status": "available",
+        "item_scores": list(entry.payload.get("item_scores") or []),
+    }
+
+
 _grade_tracker = GradeTrackingService(
     data_dir=_storage.config.data_dir,
     auth_provider=get_auth_client,
@@ -476,6 +583,7 @@ _grade_tracker = GradeTrackingService(
     auth_setter=set_auth_client,
     login_flow_pending=_interactive_login_pending,
     score_refresher=_tracking_score_refresh,
+    score_detail_lookup=_tracking_score_detail_lookup,
     remote_guard=remote_session_guard,
 )
 

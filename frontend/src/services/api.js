@@ -220,6 +220,30 @@ export const getOfflineScores = async () => {
   return response.data;
 };
 
+export const getScoreDetailCache = async (courseCode, term) => {
+  const response = await api.get('/api/scores/details/cache', {
+    params: { course_code: courseCode, term },
+    skipAuthRedirect: true,
+  });
+  return response.data;
+};
+
+export const queryScoreDetail = async (courseCode, term) => {
+  const response = await api.post('/api/scores/details/query', {
+    course_code: courseCode,
+    term,
+  });
+  return response.data;
+};
+
+export const getOfflineScoreDetail = async (courseCode, term) => {
+  const response = await api.get('/api/offline/scores/details', {
+    params: { course_code: courseCode, term },
+    skipAuthRedirect: true,
+  });
+  return response.data;
+};
+
 export const getOfflineAcademicReport = async () => {
   const response = await api.get('/api/offline/academic-report');
   return response.data;

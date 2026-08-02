@@ -12,7 +12,7 @@ from backend.core.academic.report import AcademicReportAPI
 from backend.core.academic.research_training import ResearchTrainingAPI
 
 
-SCORE_FIELDS = (
+SCORE_TRACKED_FIELDS = (
     "name",
     "code",
     "score",
@@ -28,6 +28,9 @@ SCORE_FIELDS = (
     "course_nature",
     "is_passed",
 )
+SCORE_CACHE_FIELDS = (*SCORE_TRACKED_FIELDS, "detail_ref")
+# Backward-compatible name used by tracking and GPA reconciliation.
+SCORE_FIELDS = SCORE_TRACKED_FIELDS
 
 
 def _plain(value: Any) -> Any:
@@ -67,7 +70,48 @@ def score_to_dict(score: Any) -> dict[str, Any]:
     source = _plain(score)
     if not isinstance(source, Mapping):
         raise TypeError("score payload must be mapping-like")
-    return {field: source.get(field) for field in SCORE_FIELDS}
+    return {field: source.get(field) for field in SCORE_CACHE_FIELDS}
+
+
+def score_detail_variant(course_code: str, term: str) -> str:
+    """Opaque cache variant for one course; never contains the remote WID."""
+    encoded = f"{course_code}\x1f{term}".encode("utf-8")
+    return "course-" + hashlib.sha256(encoded).hexdigest()[:32]
+
+
+def canonicalize_score_detail(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise TypeError("score detail payload must be an object")
+    items = []
+    for item in payload.get("item_scores") or []:
+        if not isinstance(item, Mapping):
+            continue
+        items.append({
+            "code": str(item.get("code") or ""),
+            "name": str(item.get("name") or ""),
+            "value": item.get("value"),
+            "pass": item.get("pass") if isinstance(item.get("pass"), bool) else None,
+            "highest_score_in_proportion": bool(
+                item.get("highest_score_in_proportion")
+            ),
+        })
+    return {
+        "course_code": str(payload.get("course_code") or ""),
+        "term": str(payload.get("term") or ""),
+        "source_score": str(payload.get("source_score") or ""),
+        "source_gpa": payload.get("source_gpa"),
+        "score": str(payload.get("score") or ""),
+        "grade_point": str(payload.get("grade_point") or ""),
+        "pass": payload.get("pass") if isinstance(payload.get("pass"), bool) else None,
+        "item_scores": items,
+    }
+
+
+def diff_score_detail(previous: Any, current: Any) -> dict[str, Any]:
+    return {
+        "detail_changed": previous != current,
+        "item_count": len((current or {}).get("item_scores") or []),
+    }
 
 
 def fetch_scores(auth: Any) -> dict[str, Any]:
@@ -91,13 +135,16 @@ def canonicalize_scores(payload: Any) -> dict[str, Any]:
 
 
 def diff_scores(previous: Any, current: Any) -> dict[str, Any]:
+    def tracked(score: Mapping[str, Any]) -> dict[str, Any]:
+        return {field: score.get(field) for field in SCORE_TRACKED_FIELDS}
+
     old_scores = {
-        score_key(score): score
+        score_key(score): tracked(score)
         for score in (previous or {}).get("scores", [])
         if isinstance(score, Mapping)
     }
     new_scores = {
-        score_key(score): score
+        score_key(score): tracked(score)
         for score in (current or {}).get("scores", [])
         if isinstance(score, Mapping)
     }

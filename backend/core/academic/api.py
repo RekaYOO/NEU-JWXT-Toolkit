@@ -6,7 +6,11 @@ neu_academic/api.py
 使用系统返回的单科绩点进行计算
 """
 
+import random
+import threading
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 
@@ -31,6 +35,7 @@ class CourseScore:
     exam_status: str = ""        # CXCKDM_DISPLAY 初修/重修
     general_category: str = ""   # XGXKLBDM_DISPLAY 通识选修类别 "科学素养类"
     course_nature: str = ""      # KCXZDM 课程性质代码
+    detail_ref: str = ""          # WID，仅用于后端查询分项成绩
     
     # 原始数据（保留完整字段）
     raw_data: Dict[str, Any] = field(default_factory=dict)
@@ -91,6 +96,66 @@ class TermScores:
         return total / total_credits
 
 
+@dataclass
+class ScoreDetailItem:
+    code: str
+    name: str
+    value: Any
+    passed: Optional[bool]
+    highest_score_in_proportion: bool
+
+
+@dataclass
+class CourseScoreDetail:
+    score: str
+    grade_point: str
+    passed: Optional[bool]
+    items: List[ScoreDetailItem]
+
+
+class AcademicDataError(RuntimeError):
+    """The academic system did not return a complete, trustworthy response."""
+
+
+class ScoreDetailCircuitOpen(AcademicDataError):
+    """Detail lookups are temporarily paused after remote refusal or instability."""
+
+
+class _ScoreDetailGate:
+    _BACKOFF_SECONDS = (60.0, 300.0, 1800.0)
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last_started = 0.0
+        self._blocked_until = 0.0
+        self._failure_level = 0
+
+    def before_request(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            if now < self._blocked_until:
+                raise ScoreDetailCircuitOpen("成绩详情查询暂时受限，请稍后重试")
+            earliest = self._last_started + 1.2 + random.uniform(0.0, 0.3)
+            if earliest > now:
+                time.sleep(earliest - now)
+            self._last_started = time.monotonic()
+
+    def failure(self, retry_after: Optional[float] = None) -> None:
+        with self._lock:
+            level = min(self._failure_level, len(self._BACKOFF_SECONDS) - 1)
+            delay = max(float(retry_after or 0), self._BACKOFF_SECONDS[level])
+            self._blocked_until = time.monotonic() + delay
+            self._failure_level = min(level + 1, len(self._BACKOFF_SECONDS) - 1)
+
+    def success(self) -> None:
+        with self._lock:
+            self._blocked_until = 0.0
+            self._failure_level = 0
+
+
+_DETAIL_GATE = _ScoreDetailGate()
+
+
 class AcademicAPI:
     """
     成绩API
@@ -102,6 +167,7 @@ class AcademicAPI:
     TERMS_URL = "https://jwxt.neu.edu.cn/jwapp/sys/cjzhcxapp/modules/wdcj/cxwdcjxnxq.do"
     SCORES_URL = "https://jwxt.neu.edu.cn/jwapp/sys/cjzhcxapp/modules/wdcj/cxwdcj.do"
     GPA_URL = "https://jwxt.neu.edu.cn/jwapp/sys/cjzhcxapp/api/wdcj/queryPjxfjd.do"
+    DETAILS_URL = "https://jwxt.neu.edu.cn/jwapp/sys/cjzhcxapp/api/wdcj/details.do"
     
     # 请求头
     HEADERS = {
@@ -124,15 +190,23 @@ class AcademicAPI:
         """获取有成绩的学期列表"""
         try:
             resp = self._client.get(self.TERMS_URL, headers=self.HEADERS)
+            if int(getattr(resp, "status_code", 200) or 200) >= 400:
+                raise AcademicDataError("获取学期列表失败")
             data = resp.json()
-            
-            if data.get("code") == "0":
-                rows = data["datas"]["cxwdcjxnxq"]["rows"]
-                return [{"code": r["XNXQDM"], "name": r["XNXQMC"]} for r in rows]
-        except Exception as e:
-            logger.warning(f"获取学期列表失败: {e}")
-        
-        return []
+            if not isinstance(data, dict) or data.get("code") != "0":
+                raise AcademicDataError("获取学期列表失败")
+            rows = data.get("datas", {}).get("cxwdcjxnxq", {}).get("rows")
+            if not isinstance(rows, list):
+                raise AcademicDataError("学期列表响应结构异常")
+            return [
+                {"code": str(row.get("XNXQDM") or ""), "name": str(row.get("XNXQMC") or "")}
+                for row in rows
+                if isinstance(row, dict) and row.get("XNXQDM")
+            ]
+        except AcademicDataError:
+            raise
+        except Exception as error:
+            raise AcademicDataError("获取学期列表失败") from error
     
     def get_scores(self, term: str = "") -> List[CourseScore]:
         """
@@ -160,18 +234,23 @@ class AcademicAPI:
                 data={"XNXQDM": term, "pageSize": "500", "pageNumber": "1"},
                 headers=self.HEADERS
             )
+            if int(getattr(resp, "status_code", 200) or 200) >= 400:
+                raise AcademicDataError("获取成绩失败")
             data = resp.json()
-            
-            if data.get("code") != "0":
-                return []
-            
-            rows = data["datas"]["cxwdcj"]["rows"]
-        except Exception as e:
-            logger.warning(f"获取成绩失败: {e}")
-            return []
+            if not isinstance(data, dict) or data.get("code") != "0":
+                raise AcademicDataError("获取成绩失败")
+            rows = data.get("datas", {}).get("cxwdcj", {}).get("rows")
+            if not isinstance(rows, list):
+                raise AcademicDataError("成绩响应结构异常")
+        except AcademicDataError:
+            raise
+        except Exception as error:
+            raise AcademicDataError("获取成绩失败") from error
         
         scores = []
         for row in rows:
+            if not isinstance(row, dict):
+                raise AcademicDataError("成绩行结构异常")
             # 解析成绩 - 保留原始字符串（可能是数字或"优良中合格"）
             score_raw = str(row.get("XSZCJ", "")).strip()
             
@@ -203,6 +282,7 @@ class AcademicAPI:
                 exam_status=row.get("CXCKDM_DISPLAY", ""),
                 general_category=row.get("XGXKLBDM_DISPLAY", ""),
                 course_nature=row.get("KCXZDM", ""),
+                detail_ref=str(row.get("WID") or ""),
                 raw_data=dict(row)  # 保存完整原始数据
             ))
         
@@ -212,14 +292,87 @@ class AcademicAPI:
         """获取总绩点（系统计算）"""
         try:
             resp = self._client.get(self.GPA_URL, headers=self.HEADERS)
+            if int(getattr(resp, "status_code", 200) or 200) >= 400:
+                raise AcademicDataError("获取总绩点失败")
             data = resp.json()
             
-            if data.get("code") == "0":
-                return float(data["datas"]["queryPjxfjd"]["ZPJXFJD"])
-        except Exception as e:
-            logger.warning(f"获取总绩点失败: {e}")
-        
-        return None
+            if not isinstance(data, dict) or data.get("code") != "0":
+                raise AcademicDataError("获取总绩点失败")
+            value = data.get("datas", {}).get("queryPjxfjd", {}).get("ZPJXFJD")
+            if value in (None, ""):
+                return None
+            return float(value)
+        except AcademicDataError:
+            raise
+        except Exception as error:
+            raise AcademicDataError("获取总绩点失败") from error
+
+    def get_score_detail(self, detail_ref: str) -> CourseScoreDetail:
+        """Query one course detail without exposing or logging its WID."""
+        if not str(detail_ref or "").strip():
+            raise ValueError("成绩详情标识不能为空")
+        _DETAIL_GATE.before_request()
+        try:
+            response = self._client.post(
+                self.DETAILS_URL,
+                data={"WID": detail_ref},
+                headers=self.HEADERS,
+            )
+            status = int(getattr(response, "status_code", 200) or 200)
+            if status in {403, 429} or status >= 500:
+                retry_after = None
+                retry_header = response.headers.get("Retry-After")
+                try:
+                    retry_after = float(retry_header or 0)
+                except (TypeError, ValueError):
+                    try:
+                        retry_at = parsedate_to_datetime(str(retry_header))
+                        if retry_at.tzinfo is None:
+                            retry_at = retry_at.replace(tzinfo=timezone.utc)
+                        retry_after = max(
+                            0.0,
+                            (retry_at - datetime.now(timezone.utc)).total_seconds(),
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        retry_after = None
+                _DETAIL_GATE.failure(retry_after)
+                raise AcademicDataError("成绩详情服务暂时拒绝访问")
+            if status >= 400:
+                raise AcademicDataError("成绩详情请求失败")
+            body = response.json()
+            if not isinstance(body, dict) or body.get("code") != "0":
+                raise AcademicDataError("成绩详情业务响应失败")
+            details = (body.get("datas") or {}).get("details")
+            if not isinstance(details, dict):
+                raise AcademicDataError("成绩详情响应结构异常")
+            raw_items = details.get("itemScores")
+            raw_items = raw_items if isinstance(raw_items, list) else []
+            items = []
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    continue
+                value = item.get("value")
+                if not isinstance(value, (str, int, float, bool, type(None))):
+                    value = ""
+                items.append(ScoreDetailItem(
+                    code=str(item.get("code") or ""),
+                    name=str(item.get("name") or ""),
+                    value=value,
+                    passed=item.get("pass") if isinstance(item.get("pass"), bool) else None,
+                    highest_score_in_proportion=bool(item.get("highestScoreInProportion")),
+                ))
+            _DETAIL_GATE.success()
+            return CourseScoreDetail(
+                score=str(details.get("score") or ""),
+                grade_point=str(details.get("gradePoint") or ""),
+                passed=details.get("pass") if isinstance(details.get("pass"), bool) else None,
+                items=items,
+            )
+        except (AcademicDataError, ScoreDetailCircuitOpen):
+            raise
+        except Exception as error:
+            _DETAIL_GATE.failure()
+            raise AcademicDataError("成绩详情查询失败") from error
     
     def calculate_gpa(self, scores: List[CourseScore]) -> float:
         """计算GPA"""

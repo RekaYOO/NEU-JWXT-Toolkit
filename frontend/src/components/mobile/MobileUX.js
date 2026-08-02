@@ -156,11 +156,12 @@ export const MobileDetailDrawer = ({
   title,
   children,
   footer,
+  width = '100%',
 }) => (
   <Drawer
     className="mobile-detail-drawer"
     placement="right"
-    width="100%"
+    width={width}
     title={title}
     open={open}
     onClose={onClose}

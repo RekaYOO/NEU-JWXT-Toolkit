@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { 
   Table, Card, Statistic, Row, Col, Button, Tag, message, Alert,
   Tooltip, Dropdown, Checkbox, Space, InputNumber, Modal, Pagination, Grid,
-  Segmented, Empty, Select, Form, Descriptions
+  Segmented, Empty, Select, Form, Descriptions, Spin
 } from 'antd';
 import { 
   ReloadOutlined, TrophyOutlined, BookOutlined, SafetyOutlined,
@@ -11,6 +11,12 @@ import {
 } from '@ant-design/icons';
 import GPACalculator from '../components/GPACalculator';
 import { useCachedResource } from '../resources/ResourceStore';
+import {
+  getCacheRefreshJob,
+  getOfflineScoreDetail,
+  getScoreDetailCache,
+  queryScoreDetail,
+} from '../services/api';
 import { columnSettings } from '../utils/settings';
 import { compareAcademicTerms } from '../utils/termSort';
 import {
@@ -45,6 +51,67 @@ const NUMERIC_COLUMN_KEYS = ['score', 'gpa', 'credit'];
 const IMPACT_COLUMN_KEYS = ['mean_adjust_delta', 'exclude_delta'];
 const IMPACT_EPSILON = 0.00005;
 const { useBreakpoint } = Grid;
+const SCORE_DETAIL_JOB_POLL_MS = 600;
+const SCORE_DETAIL_TERMINAL_STATES = new Set([
+  'completed', 'failed', 'cancelled', 'fresh', 'throttled',
+]);
+
+const wait = (milliseconds) => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+const normalizeScoreDetail = (payload) => {
+  if (!payload) return null;
+  const detail = payload.detail
+    || payload.data?.detail
+    || payload.cached_detail
+    || payload.data
+    || payload;
+  const rawItems = detail.item_scores || detail.itemScores || [];
+  const itemScores = Array.isArray(rawItems)
+    ? rawItems.filter(item => item && (
+      item.value !== null && item.value !== undefined && item.value !== ''
+      || item.name
+      || item.code
+    )).map(item => ({
+      code: item.code ?? '',
+      name: item.name ?? '',
+      value: item.value,
+      pass: item.pass,
+      highestScoreInProportion: item.highest_score_in_proportion
+        ?? item.highestScoreInProportion
+        ?? false,
+    }))
+    : [];
+
+  return {
+    score: detail.score,
+    gradePoint: detail.grade_point ?? detail.gradePoint,
+    pass: detail.pass,
+    itemScores,
+    savedAt: detail.saved_at
+      || detail.cached_at
+      || detail.cache?.saved_at
+      || payload.saved_at
+      || payload.cached_at
+      || payload.cache?.saved_at
+      || null,
+  };
+};
+
+const jobStoredScoreDetail = (job) => {
+  const result = job?.result || job?.data || {};
+  if (typeof result.stored === 'boolean') return result.stored;
+  if (typeof result.cache_updated === 'boolean') return result.cache_updated;
+  if (typeof result.has_details === 'boolean') return result.has_details;
+  if (job?.diff?.skipped === true) return false;
+  if (Number.isFinite(Number(job?.diff?.item_count))) {
+    return Number(job.diff.item_count) > 0;
+  }
+  return null;
+};
+
+const scoreDetailErrorText = (error, fallback) => (
+  error?.response?.data?.detail || error?.message || fallback
+);
 
 const IMPACT_COLUMN_HELP = {
   mean_adjust_delta: '这门课相对当前平均 GPA 的贡献量，正数表示拉高 GPA',
@@ -67,7 +134,7 @@ const EMPTY_MOBILE_FILTERS = {
   meanImpactMax: null,
   excludeImpactMin: null,
   excludeImpactMax: null,
-  sort: 'term_desc',
+  sort: 'none',
 };
 
 const normalizeColumnConfig = (config) => {
@@ -216,12 +283,125 @@ const ScoresPage = ({ offlineMode = false }) => {
   const [mobileFilters, setMobileFilters] = useState(EMPTY_MOBILE_FILTERS);
   const [mobileFilterDraft, setMobileFilterDraft] = useState(EMPTY_MOBILE_FILTERS);
   const [mobileDetail, setMobileDetail] = useState(null);
+  const [scoreDetailState, setScoreDetailState] = useState({
+    cached: null,
+    loading: false,
+    error: '',
+    outcome: 'idle',
+  });
+  const scoreDetailRequestRef = useRef(0);
 
   // GPA计算器
   const [isSimulating, setIsSimulating] = useState(false);
   const gpaCalculatorRef = useRef(null);
   const dismissedRevisionRef = useRef('');
   const scoreResource = useCachedResource('scores');
+
+  useEffect(() => () => {
+    scoreDetailRequestRef.current += 1;
+  }, []);
+
+  const closeScoreDetail = useCallback(() => {
+    scoreDetailRequestRef.current += 1;
+    setMobileDetail(null);
+    setScoreDetailState({ cached: null, loading: false, error: '', outcome: 'idle' });
+  }, []);
+
+  const openScoreDetail = useCallback(async (course) => {
+    const requestId = scoreDetailRequestRef.current + 1;
+    scoreDetailRequestRef.current = requestId;
+    setMobileDetail(course);
+    setScoreDetailState({
+      cached: null,
+      loading: true,
+      error: '',
+      outcome: 'loading-cache',
+    });
+
+    const isCurrent = () => scoreDetailRequestRef.current === requestId;
+    let cached = null;
+    const readCache = offlineMode ? getOfflineScoreDetail : getScoreDetailCache;
+
+    try {
+      const payload = await readCache(course.code, course.term);
+      cached = normalizeScoreDetail(payload);
+      if (isCurrent()) {
+        setScoreDetailState({
+          cached,
+          loading: !offlineMode,
+          error: '',
+          outcome: offlineMode ? (cached?.itemScores.length ? 'cached' : 'missing') : 'querying',
+        });
+      }
+    } catch (error) {
+      if (error?.response?.status !== 404 && isCurrent()) {
+        setScoreDetailState(current => ({
+          ...current,
+          error: scoreDetailErrorText(error, '读取分项成绩缓存失败'),
+        }));
+      }
+      if (isCurrent()) {
+        setScoreDetailState(current => ({
+          ...current,
+          loading: !offlineMode,
+          outcome: offlineMode ? 'missing' : 'querying',
+        }));
+      }
+    }
+
+    if (offlineMode || !isCurrent()) {
+      if (offlineMode && isCurrent()) {
+        setScoreDetailState(current => ({ ...current, loading: false }));
+      }
+      return;
+    }
+
+    try {
+      let job = await queryScoreDetail(course.code, course.term);
+      const jobId = job?.job_id || job?.id;
+      while (job?.status && !SCORE_DETAIL_TERMINAL_STATES.has(job.status)) {
+        if (!jobId) throw new Error('后台任务未返回任务编号');
+        await wait(SCORE_DETAIL_JOB_POLL_MS);
+        job = await getCacheRefreshJob(jobId);
+      }
+      if (job?.status === 'throttled') {
+        throw new Error('分项成绩查询过于频繁，请稍后重试');
+      }
+      if (job?.status === 'failed' || job?.status === 'cancelled') {
+        throw new Error(job.error || job.error_kind || (
+          job.status === 'cancelled' ? '分项成绩查询已取消' : '分项成绩查询失败'
+        ));
+      }
+
+      let refreshed = null;
+      try {
+        refreshed = normalizeScoreDetail(await getScoreDetailCache(course.code, course.term));
+      } catch (error) {
+        if (error?.response?.status !== 404) throw error;
+      }
+      if (!isCurrent()) return;
+
+      const nextCached = refreshed?.itemScores.length ? refreshed : cached;
+      const stored = jobStoredScoreDetail(job);
+      setScoreDetailState({
+        cached: nextCached,
+        loading: false,
+        error: '',
+        outcome: stored === false || !refreshed?.itemScores.length
+          ? 'empty-refresh'
+          : 'updated',
+      });
+    } catch (error) {
+      if (!isCurrent()) return;
+      setScoreDetailState(current => ({
+        ...current,
+        cached: current.cached || cached,
+        loading: false,
+        error: scoreDetailErrorText(error, '暂时无法获取分项成绩'),
+        outcome: 'error',
+      }));
+    }
+  }, [offlineMode]);
 
   const applyScorePayload = useCallback((data) => {
     if (!data?.scores) return;
@@ -385,7 +565,7 @@ const ScoresPage = ({ offlineMode = false }) => {
         'max',
         mobileFilters.excludeImpactMax,
       ),
-      sort: sortField && newSorter?.order ? `${sortField}_${sortDirection}` : 'term_desc',
+      sort: sortField && newSorter?.order ? `${sortField}_${sortDirection}` : 'none',
     };
     setMobileFilters(nextFilters);
     setMobileFilterDraft(nextFilters);
@@ -569,12 +749,30 @@ const ScoresPage = ({ offlineMode = false }) => {
               }
             }
             
-            return <Tag color={color}>{score}</Tag>;
+            return (
+              <button
+                type="button"
+                className="score-detail-trigger"
+                onClick={() => openScoreDetail(record)}
+                aria-label={`查看${record.name || '课程'}的分项成绩`}
+              >
+                <Tag color={color}>{score}</Tag>
+              </button>
+            );
           };
         }
 
         if (col.key === 'gpa') {
-          column.render = (gpa) => <span className="gpa">{gpa?.toFixed(2)}</span>;
+          column.render = (gpa, record) => (
+            <button
+              type="button"
+              className="gpa score-detail-gpa-trigger"
+              onClick={() => openScoreDetail(record)}
+              aria-label={`通过绩点查看${record.name || '课程'}的分项成绩`}
+            >
+              {gpa?.toFixed(2)}
+            </button>
+          );
         }
 
         if (col.key === 'is_passed') {
@@ -586,7 +784,7 @@ const ScoresPage = ({ offlineMode = false }) => {
 
         return column;
       });
-  }, [columnConfig, allScores, mobileFilters]);
+  }, [columnConfig, allScores, mobileFilters, openScoreDetail]);
 
   // 列选择菜单
   const columnMenuItems = [
@@ -699,7 +897,7 @@ const ScoresPage = ({ offlineMode = false }) => {
       filters.creditMin !== null || filters.creditMax !== null,
       filters.meanImpactMin !== null || filters.meanImpactMax !== null,
       filters.excludeImpactMin !== null || filters.excludeImpactMax !== null,
-      filters.sort !== 'term_desc',
+      filters.sort !== 'none',
     ].filter(Boolean).length;
   }, [mobileFilters]);
 
@@ -734,32 +932,34 @@ const ScoresPage = ({ offlineMode = false }) => {
       )
     ));
 
-    const direction = nextFilters.sort.endsWith('_asc') ? 1 : -1;
-    const field = nextFilters.sort.replace(/_(asc|desc)$/, '');
-    filtered.sort((left, right) => {
-      if (field === 'term') {
-        return compareAcademicTerms(
-          left.term_display || left.term,
-          right.term_display || right.term,
-        ) * (nextFilters.sort === 'term_desc' ? 1 : -1);
-      }
-      if (field === 'score' || NUMERIC_COLUMN_KEYS.includes(field)) {
-        const leftValue = getScoreNumericValue(left, field);
-        const rightValue = getScoreNumericValue(right, field);
-        return (leftValue - rightValue) * direction;
-      }
-      if (IMPACT_COLUMN_KEYS.includes(field)) {
-        return compareNullableNumbers(
-          left[field],
-          right[field],
-          direction === 1 ? 'ascend' : 'descend',
-        );
-      }
-      if (field === 'is_passed') {
-        return (Number(left.is_passed) - Number(right.is_passed)) * direction;
-      }
-      return String(left[field] || '').localeCompare(String(right[field] || ''), 'zh-CN') * direction;
-    });
+    if (nextFilters.sort !== 'none') {
+      const direction = nextFilters.sort.endsWith('_asc') ? 1 : -1;
+      const field = nextFilters.sort.replace(/_(asc|desc)$/, '');
+      filtered.sort((left, right) => {
+        if (field === 'term') {
+          return compareAcademicTerms(
+            left.term_display || left.term,
+            right.term_display || right.term,
+          ) * (nextFilters.sort === 'term_desc' ? 1 : -1);
+        }
+        if (field === 'score' || NUMERIC_COLUMN_KEYS.includes(field)) {
+          const leftValue = getScoreNumericValue(left, field);
+          const rightValue = getScoreNumericValue(right, field);
+          return (leftValue - rightValue) * direction;
+        }
+        if (IMPACT_COLUMN_KEYS.includes(field)) {
+          return compareNullableNumbers(
+            left[field],
+            right[field],
+            direction === 1 ? 'ascend' : 'descend',
+          );
+        }
+        if (field === 'is_passed') {
+          return (Number(left.is_passed) - Number(right.is_passed)) * direction;
+        }
+        return String(left[field] || '').localeCompare(String(right[field] || ''), 'zh-CN') * direction;
+      });
+    }
     const active = [
       nextFilters.terms.length,
       nextFilters.courseTypes.length,
@@ -771,7 +971,7 @@ const ScoresPage = ({ offlineMode = false }) => {
       nextFilters.creditMin !== null || nextFilters.creditMax !== null,
       nextFilters.meanImpactMin !== null || nextFilters.meanImpactMax !== null,
       nextFilters.excludeImpactMin !== null || nextFilters.excludeImpactMax !== null,
-      nextFilters.sort !== 'term_desc',
+      nextFilters.sort !== 'none',
     ].some(Boolean);
     setDisplayScores(filtered);
     setHasActiveFilters(active);
@@ -816,8 +1016,9 @@ const ScoresPage = ({ offlineMode = false }) => {
         tags.push({ key, label: `${label}：${min ?? '不限'} – ${max ?? '不限'}` });
       }
     });
-    if (mobileFilters.sort !== 'term_desc') {
+    if (mobileFilters.sort !== 'none') {
       const labels = {
+        term_desc: '学期从新到旧',
         term_asc: '学期从旧到新',
         score_desc: '成绩从高到低',
         score_asc: '成绩从低到高',
@@ -1070,30 +1271,36 @@ const ScoresPage = ({ offlineMode = false }) => {
               <div className="mobile-course-list" aria-label="成绩明细">
                 {mobileScores.map(course => (
                   <article
-                    className="mobile-course-card is-interactive"
+                    className="mobile-course-card"
                     key={course._id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setMobileDetail(course)}
-                    onKeyDown={event => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        setMobileDetail(course);
-                      }
-                    }}
                   >
                     <div className="mobile-course-card__header">
                       <div className="mobile-course-card__identity">
                         <strong>{course.name}</strong>
                         <span>{course.term_display || course.term}</span>
                       </div>
-                      <div className="mobile-score-value">
+                      <button
+                        type="button"
+                        className="mobile-score-value"
+                        onClick={() => openScoreDetail(course)}
+                        aria-label={`查看${course.name || '课程'}的分项成绩`}
+                      >
                         <span>{course.score}</span>
                         <small>成绩</small>
-                      </div>
+                      </button>
                     </div>
                     <div className="mobile-course-card__meta">
-                      <span><small>绩点</small><b>{Number(course.gpa || 0).toFixed(2)}</b></span>
+                      <span>
+                        <small>绩点</small>
+                        <button
+                          type="button"
+                          className="mobile-gpa-trigger"
+                          onClick={() => openScoreDetail(course)}
+                          aria-label={`通过绩点查看${course.name || '课程'}的分项成绩`}
+                        >
+                          {Number(course.gpa || 0).toFixed(2)}
+                        </button>
+                      </span>
                       <span><small>学分</small><b>{course.credit ?? '-'}</b></span>
                       <Tag color={course.is_passed ? 'success' : 'error'}>
                         {course.is_passed ? '已通过' : '未通过'}
@@ -1246,6 +1453,7 @@ const ScoresPage = ({ offlineMode = false }) => {
             <Select
               value={mobileFilterDraft.sort}
               options={[
+                { label: '不排序', value: 'none' },
                 { label: '学期从新到旧', value: 'term_desc' },
                 { label: '学期从旧到新', value: 'term_asc' },
                 { label: '成绩从高到低', value: 'score_desc' },
@@ -1267,24 +1475,103 @@ const ScoresPage = ({ offlineMode = false }) => {
 
       <MobileDetailDrawer
         open={Boolean(mobileDetail)}
-        onClose={() => setMobileDetail(null)}
+        onClose={closeScoreDetail}
         title={mobileDetail?.name || '课程详情'}
+        width={isMobile ? '100%' : 520}
       >
         {mobileDetail && (
-          <Descriptions column={1} bordered size="small">
-            <Descriptions.Item label="课程代码">{mobileDetail.code || '-'}</Descriptions.Item>
-            <Descriptions.Item label="成绩">{mobileDetail.score ?? '-'}</Descriptions.Item>
-            <Descriptions.Item label="绩点">{mobileDetail.gpa ?? '-'}</Descriptions.Item>
-            <Descriptions.Item label="学分">{mobileDetail.credit ?? '-'}</Descriptions.Item>
-            <Descriptions.Item label="学期">{mobileDetail.term_display || mobileDetail.term || '-'}</Descriptions.Item>
-            <Descriptions.Item label="课程性质">{mobileDetail.course_type || '-'}</Descriptions.Item>
-            <Descriptions.Item label="课程类别">{mobileDetail.course_category || '-'}</Descriptions.Item>
-            <Descriptions.Item label="通识类别">{mobileDetail.general_category || '-'}</Descriptions.Item>
-            <Descriptions.Item label="考核方式">{mobileDetail.exam_type || '-'}</Descriptions.Item>
-            <Descriptions.Item label="考试状态">{mobileDetail.exam_status || '-'}</Descriptions.Item>
-            <Descriptions.Item label="均分贡献">{formatSignedDelta(mobileDetail.mean_adjust_delta)}</Descriptions.Item>
-            <Descriptions.Item label="保留贡献">{formatSignedDelta(mobileDetail.exclude_delta)}</Descriptions.Item>
-          </Descriptions>
+          <div className="score-detail-content">
+            <section className="score-detail-section" aria-labelledby="score-detail-items-title">
+              <div className="score-detail-section__heading">
+                <div>
+                  <h3 id="score-detail-items-title">分项成绩</h3>
+                  {scoreDetailState.cached?.savedAt && (
+                    <span>
+                      最近获取：{dayjs(scoreDetailState.cached.savedAt).format('YYYY-MM-DD HH:mm')}
+                    </span>
+                  )}
+                </div>
+                {scoreDetailState.loading && <Spin size="small" />}
+              </div>
+
+              {scoreDetailState.loading && scoreDetailState.outcome === 'loading-cache' && (
+                <div className="score-detail-placeholder">正在读取本地分项成绩…</div>
+              )}
+              {scoreDetailState.loading && scoreDetailState.outcome === 'querying' && (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="正在获取最新分项成绩"
+                  description={scoreDetailState.cached?.itemScores.length
+                    ? '先显示已缓存数据，查询完成后会自动更新。'
+                    : '总成绩不受影响，你可以关闭此页继续使用。'}
+                />
+              )}
+              {scoreDetailState.error && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="本次未能获取分项成绩"
+                  description={scoreDetailState.cached?.itemScores.length
+                    ? `${scoreDetailState.error}；下方仍显示上次成功保存的数据。`
+                    : scoreDetailState.error}
+                />
+              )}
+              {!scoreDetailState.loading
+                && !scoreDetailState.error
+                && scoreDetailState.outcome === 'empty-refresh' && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="本次未返回新的分项成绩"
+                    description={scoreDetailState.cached?.itemScores.length
+                      ? '已保留并继续显示上次成功保存的数据。'
+                      : '教务系统暂未提供这门课程的分项成绩。'}
+                  />
+                )}
+              {!scoreDetailState.loading
+                && !scoreDetailState.error
+                && scoreDetailState.outcome === 'missing' && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="没有已缓存的分项成绩"
+                    description="离线模式不会连接教务系统，请在线登录后点击成绩查询。"
+                  />
+                )}
+
+              {scoreDetailState.cached?.itemScores.length > 0 && (
+                <div className="score-detail-items">
+                  {scoreDetailState.cached.itemScores.map((item, index) => (
+                    <div className="score-detail-item" key={`${item.code || 'item'}-${index}`}>
+                      <div>
+                        <strong>{item.name || `分项 ${index + 1}`}</strong>
+                      </div>
+                      <span>{item.value ?? '-'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="score-detail-section" aria-labelledby="course-detail-title">
+              <h3 id="course-detail-title">课程信息</h3>
+              <Descriptions column={1} bordered size="small">
+                <Descriptions.Item label="课程代码">{mobileDetail.code || '-'}</Descriptions.Item>
+                <Descriptions.Item label="成绩">{mobileDetail.score ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="绩点">{mobileDetail.gpa ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="学分">{mobileDetail.credit ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="学期">{mobileDetail.term_display || mobileDetail.term || '-'}</Descriptions.Item>
+                <Descriptions.Item label="课程性质">{mobileDetail.course_type || '-'}</Descriptions.Item>
+                <Descriptions.Item label="课程类别">{mobileDetail.course_category || '-'}</Descriptions.Item>
+                <Descriptions.Item label="通识类别">{mobileDetail.general_category || '-'}</Descriptions.Item>
+                <Descriptions.Item label="考核方式">{mobileDetail.exam_type || '-'}</Descriptions.Item>
+                <Descriptions.Item label="考试状态">{mobileDetail.exam_status || '-'}</Descriptions.Item>
+                <Descriptions.Item label="均分贡献">{formatSignedDelta(mobileDetail.mean_adjust_delta)}</Descriptions.Item>
+                <Descriptions.Item label="保留贡献">{formatSignedDelta(mobileDetail.exclude_delta)}</Descriptions.Item>
+              </Descriptions>
+            </section>
+          </div>
         )}
       </MobileDetailDrawer>
 

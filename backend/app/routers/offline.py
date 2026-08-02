@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from backend.app.dependencies import (
     _cache_coordinator,
@@ -13,10 +13,13 @@ from backend.app.dependencies import (
 )
 from backend.app.schemas import (
     AcademicReportResponse,
+    CourseScoreDetailResponse,
     CourseScoreModel,
     ResearchCacheResponse,
     ScoresResponse,
 )
+from backend.core.cache import CacheKey
+from backend.core.cache.resources import score_detail_variant
 from backend.app.routers.research import _cache_response as _research_cache_response
 from backend.app.routers.scores import _score_model
 from backend.app.cache_support import read_cache_offline
@@ -179,6 +182,34 @@ def offline_scores():
         is_fresh=False,
         last_update=_storage.get_last_update_time(),
         scores=score_models,
+    )
+
+
+@router.get("/scores/details", response_model=CourseScoreDetailResponse)
+def offline_score_details(
+    course_code: str = Query(..., min_length=1, max_length=128),
+    term: str = Query(..., min_length=1, max_length=64),
+):
+    account = _offline_account()
+    if not account:
+        raise HTTPException(status_code=404, detail="本地没有可用的成绩账号")
+    entry = _cache_store.get(CacheKey(
+        account,
+        "score-details",
+        score_detail_variant(course_code, term),
+    ))
+    if not _compatible(entry, "score-details") or not isinstance(entry.payload, dict):
+        raise HTTPException(status_code=404, detail="本地没有该课程的分项成绩缓存")
+    return CourseScoreDetailResponse(
+        course_code=course_code,
+        term=term,
+        score=str(entry.payload.get("score") or ""),
+        grade_point=str(entry.payload.get("grade_point") or ""),
+        pass_=entry.payload.get("pass"),
+        item_scores=entry.payload.get("item_scores") or [],
+        cached_at=entry.saved_at,
+        is_stale=False,
+        cache=entry.metadata(is_stale=False),
     )
 
 

@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping
 
 from .models import (
     AccountScope,
+    CacheFetchSkipped,
     CacheJob,
     CacheKey,
     FetchContext,
@@ -376,6 +377,29 @@ class CacheCoordinator:
                 if not self._identity_valid(job):
                     raise _IdentityChanged
                 fetched = spec.fetch(context)
+            if isinstance(fetched, CacheFetchSkipped):
+                with self.identity_commit_guard(
+                    job.key.account_id, job.identity_epoch
+                ):
+                    if not self._identity_valid(job):
+                        raise _IdentityChanged
+                    self.store.mark_skip_success(job.key)
+                with self._lock:
+                    failure_key = (
+                        job.identity_epoch,
+                        job.key.account_id,
+                        job.key.resource,
+                        job.key.variant,
+                    )
+                    self._failures.pop(failure_key, None)
+                self._finish(
+                    job,
+                    status=JobStatus.COMPLETED,
+                    revision=previous.revision if previous else None,
+                    changed=False,
+                    changes={"skipped": True, "reason": fetched.reason[:64]},
+                )
+                return
             canonical = spec.canonicalize(fetched)
             revision = self._revision(
                 spec.payload_type, canonical, spec.revision_algorithm_version
