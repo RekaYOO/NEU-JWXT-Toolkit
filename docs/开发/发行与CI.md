@@ -92,6 +92,10 @@ SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Acti
 
 `.github/workflows/release.yml` 在推送 `v*` 标签时：
 
+Windows 安装器编译器固定从 Inno Setup 官方 GitHub Release 下载 6.7.1，并在执行前校验
+固定 SHA-256；校验通过后以 `/PORTABLE` 模式安装到 runner 临时目录，不依赖 Chocolatey
+或 runner 预装状态。升级 Inno Setup 时必须同时核对官方资产 URL、摘要和安装参数。
+
 1. 校验 `VERSION` 格式以及标签与版本的一致性；
 2. 只构建一次 React 静态资源并在任务间传递；
 3. 分别构建 Windows x64 与 Linux amd64 冻结程序；

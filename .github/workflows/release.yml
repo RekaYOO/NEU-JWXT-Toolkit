@@ -236,16 +236,39 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          choco install innosetup --version=6.7.1 --exact -y --no-progress
-          if ($LASTEXITCODE -ne 0) { throw "Installing pinned Inno Setup 6.7.1 failed" }
-          $iscc = (Get-Command ISCC.exe -ErrorAction Stop).Source
-          # ISCC.exe intentionally exposes 0.0.0.0 in its PE version resource.
-          # The sibling Inno uninstaller carries the installed product version.
-          $innoUninstaller = Join-Path (Split-Path -Parent $iscc) "unins000.exe"
-          $productVersion = (Get-Item -LiteralPath $innoUninstaller -ErrorAction Stop).VersionInfo.ProductVersion
-          if ($productVersion -notlike "6.7.1*") {
-            throw "Unexpected Inno Setup version: $productVersion"
+          $innoInstaller = Join-Path $env:RUNNER_TEMP "innosetup-6.7.1.exe"
+          $innoRoot = Join-Path $env:RUNNER_TEMP "inno-setup-6.7.1"
+          $innoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_1/innosetup-6.7.1.exe"
+          $expectedHash = "4d11e8050b6185e0d49bd9e8cc661a7a59f44959a621d31d11033124c4e8a7b0"
+          foreach ($attempt in 1..4) {
+            try {
+              Invoke-WebRequest -Uri $innoUrl -OutFile $innoInstaller
+              break
+            } catch {
+              if ($attempt -eq 4) { throw }
+              Write-Warning "Downloading Inno Setup failed (attempt $attempt); retrying"
+              Start-Sleep -Seconds (5 * $attempt)
+            }
           }
+          $actualHash = (Get-FileHash -LiteralPath $innoInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw "Inno Setup installer hash mismatch: $actualHash"
+          }
+
+          # Portable mode avoids depending on Chocolatey or preinstalled runner state.
+          $arguments = @(
+            "/PORTABLE=1",
+            "/VERYSILENT",
+            "/CURRENTUSER",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/SP-",
+            ('/DIR="{0}"' -f $innoRoot)
+          )
+          $process = Start-Process -FilePath $innoInstaller -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installing pinned Inno Setup 6.7.1 failed: $($process.ExitCode)" }
+          $iscc = Join-Path $innoRoot "ISCC.exe"
+          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw "Pinned ISCC.exe was not installed" }
           "INNO_ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build Inno Setup installer
