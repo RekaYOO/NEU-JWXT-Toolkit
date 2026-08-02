@@ -254,6 +254,74 @@ export const getOfflineResearchTraining = async () => {
   return response.data;
 };
 
+export const getOfflineFestivalActivities = async () => {
+  const response = await api.get('/api/offline/festival-activities', {
+    skipAuthRedirect: true,
+  });
+  return response.data;
+};
+
+// ── 导出中心 API ─────────────────────────────────────────────────────────────
+
+export const getFestivalActivities = async () => {
+  const response = await api.get('/api/export/festival-activities', {
+    timeout: 180000,
+  });
+  return response.data;
+};
+
+export const getFestivalActivitiesCache = async () => {
+  const response = await api.get('/api/export/festival-activities/cache', {
+    skipAuthRedirect: true,
+  });
+  return response.data;
+};
+
+export const deleteFestivalActivitiesCache = async () => {
+  const response = await api.delete('/api/export/festival-activities/cache');
+  return response.data;
+};
+
+const decodeBlobError = async (error) => {
+  const blob = error.response?.data;
+  if (!(blob instanceof Blob)) return error;
+  try {
+    const payload = JSON.parse(await blob.text());
+    const detail = payload.detail || payload.message || '证书打包失败';
+    const decoded = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    decoded.response = { ...error.response, data: payload };
+    return decoded;
+  } catch (parseError) {
+    return error;
+  }
+};
+
+const filenameFromDisposition = (value = '') => {
+  const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try { return decodeURIComponent(encoded); } catch (error) { return encoded; }
+  }
+  return value.match(/filename="?([^";]+)"?/i)?.[1] || '四节活动证书.zip';
+};
+
+export const downloadFestivalCertificates = async ({ startDate, endDate }) => {
+  try {
+    const response = await api.post(
+      '/api/export/festival-activities/certificates/archive',
+      { start_date: startDate, end_date: endDate },
+      { responseType: 'blob', timeout: 180000 },
+    );
+    return {
+      blob: response.data,
+      filename: filenameFromDisposition(response.headers['content-disposition']),
+      succeeded: Number(response.headers['x-certificate-succeeded'] || 0),
+      failed: Number(response.headers['x-certificate-failed'] || 0),
+    };
+  } catch (error) {
+    throw await decodeBlobError(error);
+  }
+};
+
 // ── 成绩追踪 API ─────────────────────────────────────────────────────────────
 
 export const getGradeTrackingConfig = async () => {

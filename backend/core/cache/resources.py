@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 
 from backend.core.academic.report import AcademicReportAPI
 from backend.core.academic.research_training import ResearchTrainingAPI
+from backend.core.festival_activities import fetch_festival_activities as _fetch_festival
 
 
 SCORE_TRACKED_FIELDS = (
@@ -359,4 +360,41 @@ def diff_avatar(previous: Any, current: Any) -> dict[str, Any]:
     return {
         "token_changed": previous_token != current_token,
         "image_changed": bytes(previous or b"") != bytes(current),
+    }
+
+
+def fetch_festival_activities(auth: Any) -> dict[str, Any]:
+    return _fetch_festival(auth)
+
+
+def canonicalize_festival_activities(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise TypeError("festival activities payload must be an object")
+    activities = [
+        {str(key): _plain(value) for key, value in item.items()}
+        for item in (payload.get("activities") or [])
+        if isinstance(item, Mapping)
+    ]
+    activities.sort(key=lambda item: (
+        str(item.get("section") or ""), str(item.get("id") or "")
+    ))
+    return {
+        "activities": activities,
+        "warnings": sorted(str(item) for item in (payload.get("warnings") or [])),
+    }
+
+
+def diff_festival_activities(previous: Any, current: Any) -> dict[str, Any]:
+    old = {
+        f"{item.get('section')}:{item.get('id')}": item
+        for item in (previous or {}).get("activities", [])
+    }
+    new = {
+        f"{item.get('section')}:{item.get('id')}": item
+        for item in (current or {}).get("activities", [])
+    }
+    return {
+        "added": len(new.keys() - old.keys()),
+        "removed": len(old.keys() - new.keys()),
+        "updated": sum(old[key] != new[key] for key in old.keys() & new.keys()),
     }

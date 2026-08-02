@@ -16,6 +16,7 @@ import {
   PoweroffOutlined,
   BellOutlined,
   ReadOutlined,
+  ExportOutlined,
 } from '@ant-design/icons';
 import { logout, getUserAvatar, shutdownRuntime } from '../services/api';
 import './MainLayout.css';
@@ -26,13 +27,14 @@ const AVATAR_STORAGE_KEY = 'neu_user_avatar';
 const AVATAR_TIMESTAMP_KEY = 'neu_user_avatar_timestamp';
 
 const menuItems = [
-  { key: '/scores', icon: <BookOutlined />, label: '成绩' },
+  { key: '/scores', icon: <BookOutlined />, label: '成绩明细' },
   { key: '/grade-tracking', icon: <BellOutlined />, label: '成绩追踪' },
   { key: '/academic-report', icon: <ScheduleOutlined />, label: '培养计划' },
   { key: '/experiment-courses', icon: <ExperimentOutlined />, label: '实验选课' },
   { key: '/research-training', icon: <ReadOutlined />, label: '科研训练' },
   { key: '/evaluation', icon: <StarOutlined />, label: '自动评教' },
   { key: '/exams', icon: <CalendarOutlined />, label: '我的考试' },
+  { key: '/export', icon: <ExportOutlined />, label: '导出下载' },
   { key: '/logs', icon: <FileTextOutlined />, label: '系统日志' },
 ];
 
@@ -59,6 +61,7 @@ const MainLayout = ({
       (item.key === '/scores' && offlineCapabilities.has_scores)
       || (item.key === '/academic-report' && offlineCapabilities.has_report)
       || (item.key === '/research-training' && offlineCapabilities.has_research)
+      || item.key === '/export'
     ))
     : menuItems;
 
@@ -227,7 +230,7 @@ const MainLayout = ({
     <Menu
       theme="dark"
       mode="inline"
-      selectedKeys={[location.pathname]}
+      selectedKeys={[location.pathname.startsWith('/export') ? '/export' : location.pathname]}
       items={visibleMenuItems}
       onClick={onMenuClick}
       aria-label="主要导航"
@@ -316,7 +319,7 @@ const MainLayout = ({
             )}
             <div className="page-context">
               <span className="page-context-label">教务工作台</span>
-              <strong>{pageTitles[location.pathname] || '教务工具箱'}</strong>
+              <strong>{location.pathname.startsWith('/export') ? '导出下载' : (pageTitles[location.pathname] || '教务工具箱')}</strong>
             </div>
           </div>
 

@@ -37,6 +37,27 @@ logger = logging.getLogger(__name__)
 CAS_BASE_URL = "https://pass.neu.edu.cn/tpass"
 CAS_LOGIN_URL = f"{CAS_BASE_URL}/login"
 
+# Extra campus services deliberately use an explicit allow-list.  Callers may
+# choose a service and a relative path, but can never turn the shared, logged-in
+# session into an arbitrary HTTP client.
+SERVICE_CONFIGS = {
+    "cxcy": {
+        "origin": "https://cxcy.neu.edu.cn",
+        "service": "https://cxcy.neu.edu.cn/ucenter/auth/caslogin?type=student",
+        "allowed_prefixes": (
+            "/popscience/comp/ucenter/",
+            "/originality/comp/ucenter/",
+            "/technical/comp/ucenter/",
+            "/business/comp/ucenter/",
+            "/popscience/comp/front/comp/info",
+            "/originality/comp/front/comp/info",
+            "/technical/comp/front/comp/info",
+            "/business/comp/front/comp/info",
+            "/static/uploads/",
+        ),
+    },
+}
+
 # CAS 登录 JS 资源 URL（包含最新 RSA 公钥，每次从服务器拉取以保证最新）
 _LOGIN_JS_URL = f"{CAS_BASE_URL}/comm/neu/js/login_neu.js"
 
@@ -1090,6 +1111,108 @@ class NEUAuthClient:
     def post(self, url: str, **kwargs) -> requests.Response:
         """发送 POST 请求"""
         return self.request("POST", url, **kwargs)
+
+    def request_service(
+        self, service: str, method: str, path: str, **kwargs
+    ) -> requests.Response:
+        """Request one explicitly supported campus service on the shared session.
+
+        Service requests always use the public service origin, including while
+        the primary JWXT session is accessed through WebVPN.  A final CAS page
+        means the service session is missing; it is established once and the
+        original request is retried exactly once.
+        """
+        config = SERVICE_CONFIGS.get(service)
+        if config is None:
+            raise ValueError(f"unsupported service: {service}")
+        parsed = urlparse(path)
+        if parsed.scheme or parsed.netloc or not path.startswith("/"):
+            raise ValueError("service path must be an absolute relative path")
+        normalized_path = parsed.path or "/"
+        if not any(normalized_path.startswith(prefix) for prefix in config["allowed_prefixes"]):
+            raise ValueError("service path is not allowed")
+        if not self._logged_in and not self.ensure_login():
+            raise NEULoginError("未登录或登录已过期")
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = self.timeout
+        if "verify" not in kwargs:
+            kwargs["verify"] = self.verify_ssl
+        url = urljoin(config["origin"], path)
+        # Deliberately bypass _session_request: it rewrites *.neu.edu.cn to a
+        # WebVPN URL, whereas cxcy is directly reachable in both modes.
+        response = self._request_service_redirects(method, url, **kwargs)
+        if self._is_service_auth_required(response):
+            login_url = (
+                f"{CAS_LOGIN_URL}?service="
+                f"{requests.utils.quote(config['service'], safe='')}"
+            )
+            ticket_response = self._request_service_redirects(
+                "GET", login_url, timeout=self.timeout, verify=self.verify_ssl
+            )
+            if urlparse(ticket_response.url).hostname != "cxcy.neu.edu.cn":
+                raise NEULoginError("统一认证会话已过期")
+            self._save_cookies()
+            response = self._request_service_redirects(method, url, **kwargs)
+        if self._is_service_auth_required(response):
+            raise NEULoginError("业务系统会话建立失败")
+        if urlparse(response.url).hostname != "cxcy.neu.edu.cn":
+            raise NEULoginError("业务系统返回了不受信任的跳转地址")
+        return response
+
+    def _is_service_auth_required(self, response: requests.Response) -> bool:
+        """Recognize both CAS and cxcy's same-origin login trampoline."""
+        if self._is_auth_redirect(str(getattr(response, "url", "") or "")):
+            return True
+        parsed = urlparse(str(getattr(response, "url", "") or ""))
+        return parsed.hostname == "cxcy.neu.edu.cn" and parsed.path in {
+            "/ucenter/index/login",
+            "/ucenter/auth/cas",
+            "/ucenter/auth/caslogin",
+        }
+
+    def _request_service_redirects(
+        self, method: str, url: str, **kwargs
+    ) -> requests.Response:
+        """Follow a small trusted redirect chain without contacting other hosts."""
+        options = dict(kwargs)
+        options.pop("allow_redirects", None)
+        current_method = method.upper()
+        current_url = url
+        for hop in range(9):
+            parsed_current = urlparse(current_url)
+            host = (parsed_current.hostname or "").lower()
+            try:
+                port = parsed_current.port
+            except ValueError as exc:
+                raise NEULoginError("业务系统返回了不受信任的跳转地址") from exc
+            if (
+                parsed_current.scheme != "https"
+                or host not in {"cxcy.neu.edu.cn", "pass.neu.edu.cn"}
+                or port not in {None, 443}
+                or parsed_current.username is not None
+                or parsed_current.password is not None
+            ):
+                raise NEULoginError("业务系统返回了不受信任的跳转地址")
+            response = self._session.request(
+                current_method, current_url, allow_redirects=False, **options
+            )
+            if response.status_code not in (301, 302, 303, 307, 308):
+                return response
+            location = response.headers.get("Location", "")
+            if not location:
+                return response
+            current_url = urljoin(current_url, location)
+            try:
+                response.close()
+            except AttributeError:
+                # Lightweight response doubles may not have a transport body.
+                pass
+            if response.status_code in (301, 302, 303) and current_method != "HEAD":
+                current_method = "GET"
+                options.pop("data", None)
+                options.pop("json", None)
+                options.pop("params", None)
+        raise requests.TooManyRedirects("campus service redirect limit exceeded")
 
     # ── 属性 ──────────────────────────────────────────────────────────────────
 

@@ -7,9 +7,11 @@ import {
   getCachedAcademicReport,
   getCachedScores,
   getOfflineAcademicReport,
+  getOfflineFestivalActivities,
   getOfflineResearchTraining,
   getOfflineScores,
   getResearchTrainingCache,
+  getFestivalActivitiesCache,
   requestCacheRefresh,
 } from '../services/api';
 
@@ -17,6 +19,15 @@ const ResourceContext = createContext(null);
 const JOB_POLL_MS = 900;
 const EVENT_POLL_MS = 15000;
 const TERMINAL_JOB_STATES = new Set(['completed', 'failed', 'cancelled']);
+const ACTIVE_SYNC_STATES = new Set(['starting', 'queued', 'running']);
+
+export const deriveCachedResourceLoading = ({
+  enabled = true, displayedData = null, state = {},
+}) => Boolean(
+  enabled
+  && !displayedData
+  && (state.loading !== false || ACTIVE_SYNC_STATES.has(state.syncState)),
+);
 
 const definitions = {
   scores: {
@@ -32,6 +43,11 @@ const definitions = {
   'research-training': {
     online: getResearchTrainingCache,
     offline: getOfflineResearchTraining,
+    offlineReadable: true,
+  },
+  'festival-activities': {
+    online: getFestivalActivitiesCache,
+    offline: getOfflineFestivalActivities,
     offlineReadable: true,
   },
 };
@@ -92,6 +108,14 @@ export const ResourceProvider = ({
     });
   }, [mergeState]);
 
+  const clear = useCallback((resource) => {
+    setStates(previous => {
+      const next = { ...previous };
+      delete next[resource];
+      return next;
+    });
+  }, []);
+
   const load = useCallback(async (resource, { quiet = false } = {}) => {
     const definition = definitions[resource];
     if (!definition) throw new Error(`未注册的缓存资源: ${resource}`);
@@ -107,6 +131,17 @@ export const ResourceProvider = ({
     try {
       const payload = await loader();
       if (generation !== generationRef.current) return null;
+      if (payload?.available === false) {
+        setStates(previous => ({
+          ...previous,
+          [resource]: {
+            loading: false,
+            error: null,
+            cacheMissing: true,
+          },
+        }));
+        return null;
+      }
       const meta = metadataOf(payload);
       mergeState(resource, {
         availableData: payload,
@@ -174,7 +209,7 @@ export const ResourceProvider = ({
       const jobId = result.job_id || result.id;
       if (!jobId) {
         // Transitional compatibility: a refresh endpoint may return the payload.
-        if (result.cache || result.scores || result.categories || result.topics) {
+        if (result.cache || result.scores || result.categories || result.topics || result.activities) {
           const meta = metadataOf(result);
           mergeState(resource, {
             availableData: result,
@@ -255,8 +290,8 @@ export const ResourceProvider = ({
   }, [identity, load, offlineMode]);
 
   const value = useMemo(() => ({
-    states, load, publish, refresh, offlineMode,
-  }), [states, load, publish, refresh, offlineMode]);
+    states, load, publish, refresh, clear, offlineMode,
+  }), [states, load, publish, refresh, clear, offlineMode]);
 
   return (
     <ResourceContext.Provider value={value}>
@@ -265,19 +300,22 @@ export const ResourceProvider = ({
   );
 };
 
-export const useCachedResource = (resource, { autoRefresh = true } = {}) => {
+export const useCachedResource = (resource, { autoRefresh = true, enabled = true } = {}) => {
   const store = useContext(ResourceContext);
   if (!store) throw new Error('useCachedResource 必须在 ResourceProvider 内使用');
   const state = store.states[resource] || {};
   const [displayedData, setDisplayedData] = useState(
-    () => state.availableData || null,
+    () => enabled ? state.availableData || null : null,
   );
   const [displayedRevision, setDisplayedRevision] = useState(
-    () => state.availableRevision || '',
+    () => enabled ? state.availableRevision || '' : '',
   );
   const mountedRef = useRef(false);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   useEffect(() => {
+    if (!enabled) return undefined;
     mountedRef.current = true;
     const cachedInMemory = store.states[resource]?.availableData || null;
     if (cachedInMemory) {
@@ -308,15 +346,16 @@ export const useCachedResource = (resource, { autoRefresh = true } = {}) => {
     return () => {
       mountedRef.current = false;
     };
-  }, [autoRefresh, resource, store.load, store.offlineMode, store.refresh]);
+  }, [autoRefresh, enabled, resource, store.load, store.offlineMode, store.refresh]);
 
   useEffect(() => {
-    if (!state.availableData || displayedData) return;
+    if (!enabled || !state.availableData || displayedData) return;
     setDisplayedData(state.availableData);
     setDisplayedRevision(state.availableRevision || '');
-  }, [displayedData, state.availableData, state.availableRevision]);
+  }, [displayedData, enabled, state.availableData, state.availableRevision]);
 
   useEffect(() => {
+    if (!enabled) return undefined;
     const onFocus = () => {
       store.load(resource, { quiet: true }).then(payload => {
         const meta = metadataOf(payload);
@@ -338,10 +377,10 @@ export const useCachedResource = (resource, { autoRefresh = true } = {}) => {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [autoRefresh, resource, store.load, store.offlineMode, store.refresh]);
+  }, [autoRefresh, enabled, resource, store.load, store.offlineMode, store.refresh]);
 
   const applyData = useCallback((payload) => {
-    if (!payload) return;
+    if (!payload || !enabledRef.current) return;
     const meta = metadataOf(payload);
     setDisplayedData(payload);
     setDisplayedRevision(meta.revision);
@@ -357,7 +396,7 @@ export const useCachedResource = (resource, { autoRefresh = true } = {}) => {
 
   const reloadAndApply = useCallback(async () => {
     const payload = await store.load(resource, { quiet: true });
-    if (payload) {
+    if (payload && enabledRef.current) {
       const meta = metadataOf(payload);
       setDisplayedData(payload);
       setDisplayedRevision(meta.revision);
@@ -376,6 +415,12 @@ export const useCachedResource = (resource, { autoRefresh = true } = {}) => {
     store.publish(resource, next);
   }, [displayedData, resource, store.publish]);
 
+  const clear = useCallback(() => {
+    setDisplayedData(null);
+    setDisplayedRevision('');
+    store.clear(resource);
+  }, [resource, store.clear]);
+
   return {
     data: displayedData,
     displayedRevision,
@@ -388,7 +433,7 @@ export const useCachedResource = (resource, { autoRefresh = true } = {}) => {
       && state.availableRevision !== displayedRevision
     ),
     metadata: state.metadata || {},
-    loading: !displayedData && state.loading !== false,
+    loading: deriveCachedResourceLoading({ enabled, displayedData, state }),
     error: state.error || null,
     syncState: state.syncState || 'idle',
     syncError: state.syncError || null,
@@ -397,6 +442,7 @@ export const useCachedResource = (resource, { autoRefresh = true } = {}) => {
     applyData,
     reloadAndApply,
     updateData,
+    clear,
     reloadCache: () => store.load(resource, { quiet: true }),
   };
 };

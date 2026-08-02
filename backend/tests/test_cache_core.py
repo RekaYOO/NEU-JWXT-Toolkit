@@ -496,6 +496,167 @@ def test_logout_cancels_queued_account_work(tmp_path):
         coordinator.shutdown(timeout=1)
 
 
+def test_delete_resource_cancels_running_commit_and_preserves_other_cache(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    def fetch(_context):
+        started.set()
+        release.wait(1)
+        return {"activities": [{"id": "late"}]}
+
+    store = CacheStore(tmp_path / "cache.db")
+    registry = CacheRegistry([
+        spec("festival-activities", fetch),
+        spec("scores", lambda _context: {"scores": []}),
+    ])
+    store.commit_success(
+        key=CacheKey("a", "festival-activities"),
+        schema_version=1,
+        revision_algorithm_version=1,
+        payload_type=PayloadType.JSON,
+        payload={"activities": [{"id": "old"}]},
+        revision="v1:old",
+        dependency_revisions={},
+        changes={},
+        reason="manual",
+    )
+    store.commit_success(
+        key=CacheKey("b", "festival-activities"),
+        schema_version=1,
+        revision_algorithm_version=1,
+        payload_type=PayloadType.JSON,
+        payload={"activities": [{"id": "other-account"}]},
+        revision="v1:other-account",
+        dependency_revisions={},
+        changes={},
+        reason="manual",
+    )
+    store.commit_success(
+        key=CacheKey("a", "scores"),
+        schema_version=1,
+        revision_algorithm_version=1,
+        payload_type=PayloadType.JSON,
+        payload={"scores": []},
+        revision="v1:scores",
+        dependency_revisions={},
+        changes={},
+        reason="manual",
+    )
+    coordinator = CacheCoordinator(store, registry, worker_count=1)
+    try:
+        submission = coordinator.submit(
+            account_id="a", resource="festival-activities",
+            identity_epoch=1, force=True,
+        )
+        assert started.wait(1)
+        deleted, cancelled = coordinator.delete_resource(
+            account_id="a", resource="festival-activities", identity_epoch=1
+        )
+        assert deleted is True and cancelled == 1
+        assert store.get(CacheKey("a", "festival-activities")) is None
+        assert store.get(CacheKey("a", "scores")) is not None
+        other_account = store.get(CacheKey("b", "festival-activities"))
+        assert other_account is not None
+        assert other_account.payload == {
+            "activities": [{"id": "other-account"}]
+        }
+        release.set()
+        job = wait_for(coordinator, submission.job_id)
+        assert job.status == JobStatus.CANCELLED
+        assert job.error_kind == "resource_deleted"
+        assert store.get(CacheKey("a", "festival-activities")) is None
+        assert store.get(CacheKey("b", "festival-activities")) is not None
+
+        # Repeating deletion is a successful no-op.
+        assert coordinator.delete_resource(
+            account_id="a", resource="festival-activities", identity_epoch=1
+        ) == (False, 0)
+    finally:
+        release.set()
+        coordinator.shutdown(timeout=1)
+
+
+def test_delete_resource_cancels_only_matching_queued_work(tmp_path):
+    busy_started = threading.Event()
+    release_busy = threading.Event()
+    festival_calls = []
+
+    def fetch_scores(_context):
+        busy_started.set()
+        release_busy.wait(1)
+        return {"scores": []}
+
+    def fetch_festival(_context):
+        festival_calls.append(True)
+        return {"activities": []}
+
+    store = CacheStore(tmp_path / "cache.db")
+    coordinator = CacheCoordinator(
+        store,
+        CacheRegistry([
+            spec("scores", fetch_scores),
+            spec("festival-activities", fetch_festival),
+        ]),
+        worker_count=1,
+    )
+    try:
+        busy = coordinator.submit(
+            account_id="a", resource="scores", identity_epoch=1, force=True
+        )
+        assert busy_started.wait(1)
+        queued = coordinator.submit(
+            account_id="a", resource="festival-activities",
+            identity_epoch=1, force=True,
+        )
+        assert coordinator.delete_resource(
+            account_id="a", resource="festival-activities", identity_epoch=1
+        ) == (False, 1)
+        release_busy.set()
+        assert wait_for(coordinator, busy.job_id).status == JobStatus.COMPLETED
+        assert coordinator.get_job(queued.job_id).status == JobStatus.CANCELLED
+        assert festival_calls == []
+        assert store.get(CacheKey("a", "scores")) is not None
+        assert store.get(CacheKey("a", "festival-activities")) is None
+    finally:
+        release_busy.set()
+        coordinator.shutdown(timeout=1)
+
+
+def test_delete_resource_rejects_stale_identity_without_deleting(tmp_path):
+    store = CacheStore(tmp_path / "cache.db")
+    key = CacheKey("old-account", "festival-activities")
+    store.commit_success(
+        key=key,
+        schema_version=1,
+        revision_algorithm_version=1,
+        payload_type=PayloadType.JSON,
+        payload={"activities": []},
+        revision="v1:old",
+        dependency_revisions={},
+        changes={},
+        reason="manual",
+    )
+    active = {"account": "new-account", "epoch": 2}
+    coordinator = CacheCoordinator(
+        store,
+        CacheRegistry([spec("festival-activities", lambda _context: {})]),
+        identity_validator=lambda account, epoch: (
+            account == active["account"] and epoch == active["epoch"]
+        ),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="identity"):
+            coordinator.delete_resource(
+                account_id="old-account",
+                resource="festival-activities",
+                identity_epoch=1,
+            )
+        assert store.get(key) is not None
+    finally:
+        coordinator.shutdown(timeout=1)
+
+
 def test_skipped_fetch_completes_without_overwriting_existing_cache(tmp_path):
     store = CacheStore(tmp_path / "cache.db")
     key = CacheKey("a", "score-details", "course-one")

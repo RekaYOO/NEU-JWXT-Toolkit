@@ -16,11 +16,13 @@ from backend.app.schemas import (
     CourseScoreDetailResponse,
     CourseScoreModel,
     ResearchCacheResponse,
+    FestivalActivitiesResponse,
     ScoresResponse,
 )
 from backend.core.cache import CacheKey
 from backend.core.cache.resources import score_detail_variant
 from backend.app.routers.research import _cache_response as _research_cache_response
+from backend.app.routers.festival_activities import _cache_response as _festival_cache_response
 from backend.app.routers.scores import _score_model
 from backend.app.cache_support import read_cache_offline
 
@@ -30,7 +32,7 @@ router = APIRouter()
 
 def _offline_account() -> str | None:
     account = _cache_store.latest_account_for(
-        ("scores", "academic-report", "research-training")
+        ("scores", "academic-report", "research-training", "festival-activities")
     )
     if account:
         return account
@@ -50,15 +52,18 @@ def _offline_status() -> dict:
         score_entry, _ = read_cache_offline(account, "scores")
         report_entry, _ = read_cache_offline(account, "academic-report")
         research_entry, _ = read_cache_offline(account, "research-training")
+        festival_entry, _ = read_cache_offline(account, "festival-activities")
         has_scores = _compatible(score_entry, "scores")
         has_report = _compatible(report_entry, "academic-report")
         has_research = _compatible(research_entry, "research-training")
+        has_festival = _compatible(festival_entry, "festival-activities")
         resources = [
             resource
             for resource, available in (
                 ("scores", has_scores),
                 ("academic-report", has_report),
                 ("research-training", has_research),
+                ("festival-activities", has_festival),
             )
             if available
         ]
@@ -283,3 +288,12 @@ def offline_research_training():
         entry,
         is_stale=bool(stale),
     )
+
+
+@router.get("/festival-activities", response_model=FestivalActivitiesResponse)
+def offline_festival_activities():
+    account = _offline_account()
+    entry, stale = _offline_entry("festival-activities")
+    if not account or not entry:
+        raise HTTPException(status_code=404, detail="本地没有已保存的四节活动数据")
+    return _festival_cache_response(account, entry, bool(stale), source="offline")

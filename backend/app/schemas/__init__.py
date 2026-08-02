@@ -29,6 +29,11 @@ from .research import (
     ResearchFavoriteRequest,
     ResearchFavoriteResponse,
 )
+from .festival_activities import (
+    CertificateArchiveRequest,
+    FestivalActivitiesResponse,
+    FestivalActivityModel,
+)
 
 __all__ = [
     "LoginRequest", "LoginResponse", "WebVPNQRStartRequest", "WebVPNQRStatusRequest",
@@ -43,5 +48,6 @@ __all__ = [
     "ResearchEnrollmentRequest", "ResearchCancellationRequest",
     "ResearchFavoriteRequest", "ResearchFavoriteResponse",
     "ResearchCacheResponse", "ResearchChangeSummary",
+    "CertificateArchiveRequest", "FestivalActivitiesResponse", "FestivalActivityModel",
 ]
 from .tracking import GradeTrackingConfigUpdate

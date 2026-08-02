@@ -51,6 +51,9 @@ from backend.core.cache.resources import (
     fetch_academic_report,
     fetch_research_training,
     fetch_scores,
+    fetch_festival_activities,
+    canonicalize_festival_activities,
+    diff_festival_activities,
     score_detail_variant,
 )
 
@@ -171,6 +174,10 @@ def _fetch_research_resource(context):
     return fetch_research_training(_cache_client(context))
 
 
+def _fetch_festival_resource(context):
+    return fetch_festival_activities(_cache_client(context))
+
+
 def _fetch_avatar_resource(context):
     client = _cache_client(context)
     user_info = client.get_user_info()
@@ -245,6 +252,19 @@ _cache_registry = CacheRegistry(
             canonicalize=canonicalize_research_training,
             diff=diff_research_training,
             mutation_invalidations=("research-training",),
+        ),
+        CacheResourceSpec(
+            resource="festival-activities",
+            schema_version=1,
+            revision_algorithm_version=1,
+            account_scope=AccountScope.ACCOUNT,
+            payload_type=PayloadType.JSON,
+            max_age=timedelta(minutes=30),
+            offline_readable=True,
+            sensitivity="private-activity",
+            fetch=_fetch_festival_resource,
+            canonicalize=canonicalize_festival_activities,
+            diff=diff_festival_activities,
         ),
         CacheResourceSpec(
             resource="avatar",

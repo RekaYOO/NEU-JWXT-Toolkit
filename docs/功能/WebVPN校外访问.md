@@ -20,7 +20,10 @@
 | `backend/app/routers/auth.py` | 对前端提供本地认证 API。 |
 | `frontend/src/pages/LoginPage.js` | 账号密码、二维码面板切换、二维码轮询和短信二次认证弹窗。 |
 
-`NEUAuthClient` 在 `webvpn` 模式下会将 `*.neu.edu.cn` 请求改写为 WebVPN URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。非东北大学域名不会被改写。
+`NEUAuthClient` 在 `webvpn` 模式下通常会将 `*.neu.edu.cn` 教务业务请求改写为 WebVPN
+URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控服务请求是例外：
+`request_service("cxcy", ...)` 始终直连 `cxcy.neu.edu.cn`，只复用当前 CAS 身份建立该
+系统自己的业务会话，不把路径改写到 WebVPN。
 
 ## 登录流程
 
@@ -133,4 +136,6 @@
 - WebVPN URL 的主机加密规则集中在 `WebVPNUrlCodec`；网关规则变化时只修改该模块。
 - 二维码和短信 `flow_id` 是单进程内存状态。部署多个后端进程时，需要使用粘性会话或共享的短期状态存储。
 - 对校内服务增加新 API 时，应继续向业务层传递原始校内 URL，由 `NEUAuthClient._session_request()` 统一改写，不要在每个业务模块手工拼接 WebVPN 地址。
+- 跨业务系统必须通过代码登记的 service 白名单接入。service 固定主机、CAS 回调和允许
+  路径，不接受调用方提供任意 URL；所有服务仍共享当前 Session、恢复流程和远端互斥。
 - 认证接口只用于本机服务；不要暴露到公网，也不要将 `data/` 目录纳入版本控制。

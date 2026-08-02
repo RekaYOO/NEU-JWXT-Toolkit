@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ConfigProvider, Layout, Modal, Spin, message } from 'antd';
+import zhCN from 'antd/locale/zh_CN';
+import dayjs from 'dayjs';
+import 'dayjs/locale/zh-cn';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import MainLayout from './layouts/MainLayout';
@@ -12,18 +15,23 @@ import GradeTrackingPage from './pages/GradeTrackingPage';
 import GradeTrackingRecoveryPage from './pages/GradeTrackingRecoveryPage';
 import ResearchTrainingPage from './pages/ResearchTrainingPage';
 import LogsPage from './pages/LogsPage';
+import ExportPage from './pages/ExportPage';
+import FestivalActivitiesPage from './pages/FestivalActivitiesPage';
 import AccessLoginPage from './pages/AccessLoginPage';
 import { checkStatus, getAccessStatus, getHealth, getOfflineStatus } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
+import { hasOfflineExportData, isExportToolAvailable } from './export/exportTools';
 import './App.css';
 
 const { Content } = Layout;
+dayjs.locale('zh-cn');
 const OFFLINE_SESSION_KEY = 'neu_offline_mode';
 const EMPTY_OFFLINE_CAPABILITIES = {
   has_scores: false,
   has_report: false,
   has_research: false,
   resources: [],
+  has_festival_activities: false,
 };
 
 const appTheme = {
@@ -266,7 +274,9 @@ function App() {
     ? '/scores'
     : offlineCapabilities.has_report
       ? '/academic-report'
-      : '/research-training';
+      : offlineCapabilities.has_research
+        ? '/research-training'
+        : hasOfflineExportData(offlineCapabilities) ? '/export' : '/login';
 
   if (isLoading) {
     return (
@@ -279,7 +289,7 @@ function App() {
 
   if (recoveryToken) {
     return (
-      <ConfigProvider theme={appTheme}>
+      <ConfigProvider theme={appTheme} locale={zhCN}>
         <GradeTrackingRecoveryPage token={recoveryToken} />
       </ConfigProvider>
     );
@@ -287,7 +297,7 @@ function App() {
 
   if (accessState.required && !accessState.authenticated) {
     return (
-      <ConfigProvider theme={appTheme}>
+      <ConfigProvider theme={appTheme} locale={zhCN}>
         <AccessLoginPage
           configured={accessState.configured}
           onSuccess={async () => {
@@ -304,7 +314,7 @@ function App() {
   }
 
   return (
-    <ConfigProvider theme={appTheme}>
+    <ConfigProvider theme={appTheme} locale={zhCN}>
       <ResourceProvider
         key={`${isLoggedIn ? String(userInfo || 'authenticated') : 'anonymous'}:${offlineMode ? 'offline' : 'online'}`}
         identity={isLoggedIn ? String(userInfo || 'authenticated') : ''}
@@ -363,6 +373,19 @@ function App() {
               <Route path="evaluation" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <EvaluationPage />} />
               <Route path="exams" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <ExamPage />} />
               <Route path="logs" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <LogsPage />} />
+              <Route
+                path="export"
+                element={<ExportPage offlineMode={offlineMode} offlineCapabilities={offlineCapabilities} />}
+              />
+              <Route
+                path="export/festival-activities"
+                element={isExportToolAvailable('festival-activities', {
+                  offlineMode,
+                  offlineCapabilities,
+                })
+                  ? <FestivalActivitiesPage offlineMode={offlineMode} />
+                  : <Navigate to="/export" />}
+              />
             </Route>
               </Routes>
             </Content>

@@ -75,6 +75,8 @@ class CacheCoordinator:
         self._jobs: dict[str, CacheJob] = {}
         self._inflight: dict[tuple[int, str, str, str], str] = {}
         self._failures: dict[tuple[int, str, str, str], datetime] = {}
+        self._cancelled_jobs: set[str] = set()
+        self._deleting_keys: set[tuple[str, str, str]] = set()
         self._listeners: list[EventListener] = []
         self._lock = threading.RLock()
         self._remote_lock = threading.RLock()
@@ -177,6 +179,8 @@ class CacheCoordinator:
         with self._lock:
             if not self._accepting:
                 raise RuntimeError("Cache coordinator is shutting down")
+            if (scoped_account, resource, variant) in self._deleting_keys:
+                raise RuntimeError("Cache resource is being deleted")
             existing_id = self._inflight.get(inflight_key)
             if existing_id:
                 existing = self._jobs[existing_id]
@@ -327,6 +331,62 @@ class CacheCoordinator:
                     cancelled += 1
         return cancelled
 
+    def delete_resource(
+        self,
+        *,
+        account_id: str,
+        resource: str,
+        identity_epoch: int,
+        variant: str = "default",
+    ) -> tuple[bool, int]:
+        """Fence one cache key, cancel its work, and delete it atomically.
+
+        Running remote work cannot be interrupted safely, so it is marked for
+        cancellation and checks the marker while holding the same commit guard
+        used here.  It may finish its HTTP request, but cannot recreate the
+        entry after this method returns.
+        """
+        spec = self.registry.get(resource)
+        scoped_account = (
+            account_id if spec.account_scope == AccountScope.ACCOUNT else "__global__"
+        )
+        key = CacheKey(scoped_account, resource, variant)
+        deleting_key = (scoped_account, resource, variant)
+        cancelled = 0
+        try:
+            with self.identity_commit_guard(scoped_account, identity_epoch):
+                if not self.identity_validator(scoped_account, identity_epoch):
+                    raise RuntimeError("cache identity is no longer active")
+                with self._lock:
+                    self._deleting_keys.add(deleting_key)
+                    for job_id, job in list(self._jobs.items()):
+                        if job.key != key or job.status not in {
+                            JobStatus.QUEUED, JobStatus.RUNNING
+                        }:
+                            continue
+                        cancelled += 1
+                        if job.status == JobStatus.QUEUED:
+                            self._jobs[job_id] = job.with_updates(
+                                status=JobStatus.CANCELLED,
+                                error_kind="resource_deleted",
+                            )
+                            inflight_key = (
+                                job.identity_epoch, scoped_account, resource, variant
+                            )
+                            if self._inflight.get(inflight_key) == job_id:
+                                del self._inflight[inflight_key]
+                        else:
+                            self._cancelled_jobs.add(job_id)
+                deleted = self.store.delete(key)
+        finally:
+            with self._lock:
+                self._deleting_keys.discard(deleting_key)
+        return deleted, cancelled
+
+    def _job_cancelled(self, job: CacheJob) -> bool:
+        with self._lock:
+            return job.job_id in self._cancelled_jobs
+
     def _set_job(self, job_id: str, **updates: Any) -> CacheJob:
         with self._lock:
             current = self._jobs[job_id]
@@ -349,7 +409,12 @@ class CacheCoordinator:
         return result
 
     def _execute(self, job_id: str) -> None:
-        job = self._set_job(job_id, status=JobStatus.RUNNING)
+        with self._lock:
+            current = self._jobs[job_id]
+            if current.status != JobStatus.QUEUED:
+                return
+            job = current.with_updates(status=JobStatus.RUNNING)
+            self._jobs[job_id] = job
         if not self._identity_valid(job):
             self._finish(job, status=JobStatus.CANCELLED, error_kind="identity_changed")
             return
@@ -369,19 +434,19 @@ class CacheCoordinator:
             with self.identity_commit_guard(
                 job.key.account_id, job.identity_epoch
             ):
-                if not self._identity_valid(job):
+                if not self._identity_valid(job) or self._job_cancelled(job):
                     raise _IdentityChanged
                 self.store.mark_attempt(job.key)
             context = FetchContext(job.key, job.identity_epoch, job.reason)
             with self.remote_guard():
-                if not self._identity_valid(job):
+                if not self._identity_valid(job) or self._job_cancelled(job):
                     raise _IdentityChanged
                 fetched = spec.fetch(context)
             if isinstance(fetched, CacheFetchSkipped):
                 with self.identity_commit_guard(
                     job.key.account_id, job.identity_epoch
                 ):
-                    if not self._identity_valid(job):
+                    if not self._identity_valid(job) or self._job_cancelled(job):
                         raise _IdentityChanged
                     self.store.mark_skip_success(job.key)
                 with self._lock:
@@ -411,19 +476,23 @@ class CacheCoordinator:
             with self.identity_commit_guard(
                 job.key.account_id, job.identity_epoch
             ):
-                if not self._identity_valid(job):
-                    raise _IdentityChanged
-                event = self.store.commit_success(
-                    key=job.key,
-                    schema_version=spec.schema_version,
-                    revision_algorithm_version=spec.revision_algorithm_version,
-                    payload_type=spec.payload_type,
-                    payload=canonical,
-                    revision=revision,
-                    dependency_revisions=dependencies_before,
-                    changes=changes,
-                    reason=job.reason,
-                )
+                # Keep the cancellation check and commit under the coordinator
+                # lock. delete_resource marks cancellation under this same
+                # lock, so deletion and a final commit have a strict order.
+                with self._lock:
+                    if not self._identity_valid(job) or job.job_id in self._cancelled_jobs:
+                        raise _IdentityChanged
+                    event = self.store.commit_success(
+                        key=job.key,
+                        schema_version=spec.schema_version,
+                        revision_algorithm_version=spec.revision_algorithm_version,
+                        payload_type=spec.payload_type,
+                        payload=canonical,
+                        revision=revision,
+                        dependency_revisions=dependencies_before,
+                        changes=changes,
+                        reason=job.reason,
+                    )
             if dependencies_before != self._dependency_revisions(job):
                 self.store.invalidate(job.key)
             if event.changed:
@@ -457,8 +526,20 @@ class CacheCoordinator:
                     # Notification failures must never roll back committed data.
                     continue
         except _IdentityChanged:
-            self._finish(job, status=JobStatus.CANCELLED, error_kind="identity_changed")
+            self._finish(
+                job,
+                status=JobStatus.CANCELLED,
+                error_kind=(
+                    "resource_deleted" if self._job_cancelled(job)
+                    else "identity_changed"
+                ),
+            )
         except Exception as exc:
+            if self._job_cancelled(job):
+                self._finish(
+                    job, status=JobStatus.CANCELLED, error_kind="resource_deleted"
+                )
+                return
             error_kind = type(exc).__name__[:128]
             self.store.mark_failure(job.key, error_kind)
             failure_key = (
@@ -480,6 +561,7 @@ class CacheCoordinator:
             original.key.variant,
         )
         with self._lock:
+            self._cancelled_jobs.discard(original.job_id)
             if self._inflight.get(key) == original.job_id:
                 del self._inflight[key]
 

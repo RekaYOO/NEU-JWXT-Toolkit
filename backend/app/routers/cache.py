@@ -18,7 +18,7 @@ from backend.core.cache.models import RefreshStatus, utc_now
 
 
 router = APIRouter()
-PUBLIC_RESOURCES = frozenset(("scores", "academic-report", "research-training", "avatar"))
+PUBLIC_RESOURCES = frozenset(("scores", "academic-report", "research-training", "festival-activities", "avatar"))
 
 
 def _account(auth: NEUAuthClient) -> str:

@@ -1,0 +1,100 @@
+.festival-page { width: 100%; max-width: var(--content-max); margin-inline: auto; min-width: 0; }
+.festival-page > .ant-breadcrumb { margin-bottom: 14px; }
+.festival-page__header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+.festival-page__header h3 { margin: 0 0 4px; }
+.festival-page__saved { display: block; margin-top: 3px; font-size: 12px; }
+.festival-page__mode { display: flex; margin-top: 6px; }
+.festival-page > .ant-alert { margin-bottom: 12px; }
+.festival-refreshing-alert { margin-bottom: 14px; }
+.festival-entry-form { display: grid; gap: 16px; margin-top: 18px; }
+.festival-entry-form label > span:first-child,
+.festival-entry-form legend { display: block; margin-bottom: 6px; color: var(--color-muted); font-size: 12px; font-weight: 600; }
+.festival-entry-form .ant-select,
+.festival-entry-form .ant-picker { width: 100%; }
+.festival-entry-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.festival-entry-form .ant-radio-group { display: grid; grid-template-columns: 1fr 1fr; }
+.festival-entry-form .ant-radio-button-wrapper { text-align: center; }
+.festival-controls { margin-bottom: 14px; }
+.festival-controls__grid { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(270px, 1.25fr) minmax(150px, .65fr) minmax(180px, 1fr); gap: 12px; }
+.festival-controls__grid label { min-width: 0; }
+.festival-controls__grid label > span:first-child { display: block; margin-bottom: 5px; color: var(--color-muted); font-size: 12px; font-weight: 600; }
+.festival-controls__grid .ant-select, .festival-controls__grid .ant-picker { width: 100%; }
+.festival-controls__footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--color-line-soft); }
+.festival-mobile-controls { display: none; }
+.festival-stats { margin-bottom: 14px; }
+.festival-stats .ant-card-body { padding: 14px 18px; }
+.festival-stats .ant-statistic-content { font-size: 22px; }
+.festival-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.festival-loading {
+  min-height: 260px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--color-muted);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line-soft);
+  border-radius: var(--radius-lg);
+}
+.festival-card .ant-card-body { height: 100%; display: flex; flex-direction: column; }
+.festival-card__heading h5 { margin: 10px 0 0; overflow-wrap: anywhere; }
+.festival-card__summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; margin: 16px 0; }
+.festival-card__summary div { min-width: 0; }
+.festival-card__summary dt { color: var(--color-muted); font-size: 12px; }
+.festival-card__summary dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.festival-card__warning { display: block; margin: -4px 0 12px; }
+.festival-card > .ant-card-body > .ant-btn { align-self: flex-end; margin-top: auto; }
+.festival-detail__tags { margin-bottom: 16px; }
+.festival-detail__text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+@media (max-width: 1000px) { .festival-controls__grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 767px) {
+  .festival-page > .ant-breadcrumb { margin-top: -4px; }
+  .festival-page__header { align-items: flex-start; }
+  .festival-page__header h3 { font-size: 20px; }
+  .festival-page__header .ant-btn { min-height: 40px; flex: 0 0 auto; }
+  .festival-entry-form .ant-radio-group { grid-template-columns: 1fr; }
+  .festival-entry-form .ant-radio-button-wrapper { min-height: 42px; line-height: 40px; }
+  .festival-mobile-controls {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding: 12px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line-soft);
+    border-radius: var(--radius-lg);
+  }
+  .festival-mobile-controls__actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+  }
+  .festival-mobile-controls__actions .ant-badge,
+  .festival-mobile-controls__actions .ant-btn {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    padding-inline: 8px;
+    font-size: 12px;
+  }
+  .festival-mobile-controls .mobile-filter-chips { min-width: 0; }
+  .festival-controls { margin-inline: -16px; border-inline: 0; border-radius: 0; }
+  .festival-controls .ant-card-body { padding: 16px; }
+  .festival-controls__grid { grid-template-columns: 1fr; }
+  .festival-controls__footer { align-items: stretch; flex-direction: column; }
+  .festival-controls__footer .ant-segmented { width: 100%; overflow-x: auto; }
+  .festival-controls__footer .ant-segmented-group { min-width: max-content; }
+  .festival-controls__footer .ant-btn { min-height: 44px; }
+  .festival-stats { margin-inline: -8px; }
+  .festival-stats .ant-col { display: flex; }
+  .festival-stats .ant-card { width: 100%; }
+  .festival-stats .ant-card-body { padding: 12px 8px; text-align: center; }
+  .festival-stats .ant-statistic-title { min-height: 42px; font-size: 11px; }
+  .festival-stats .ant-statistic-content { font-size: 20px; }
+  .festival-grid { grid-template-columns: 1fr; }
+  .festival-card .ant-card-body { padding: 16px; }
+  .festival-card__summary { grid-template-columns: 1fr; gap: 8px; }
+  .festival-card > .ant-card-body > .ant-btn { width: 100%; min-height: 42px; }
+  .festival-page .ant-drawer-content-wrapper { width: 100% !important; }
+}

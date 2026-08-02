@@ -94,7 +94,9 @@ select {
 .experiment-course-page,
 .evaluation-page,
 .exam-page,
-.logs-page {
+.logs-page,
+.export-page,
+.festival-page {
   width: 100%;
   max-width: var(--content-max);
   margin-inline: auto;

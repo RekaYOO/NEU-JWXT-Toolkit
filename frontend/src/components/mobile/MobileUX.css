@@ -41,6 +41,11 @@
   margin-bottom: 0;
 }
 
+.mobile-sheet__body .ant-select,
+.mobile-sheet__body .ant-picker {
+  width: 100%;
+}
+
 .adaptive-modal .ant-modal-content {
   display: flex;
   flex-direction: column;
