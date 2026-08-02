@@ -20,7 +20,11 @@ import {
   getGPASimulationFile,
   deleteGPASimulationFile
 } from '../services/api';
-import { compareAcademicTerms } from '../utils/termSort';
+import {
+  compareAcademicTermsNewestFirst,
+  compareAcademicTermsOldestFirst,
+} from '../utils/termSort';
+import { academicTermFilterOptions, compareTextValues } from '../utils/tableFilters';
 import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
 import { AdaptiveModal } from './mobile/MobileUX';
 import './GPACalculator.css';
@@ -851,7 +855,7 @@ const GPACalculator = forwardRef(({
       isCustom: false,
       fromPlan: true,
       _original: plan,
-    }));
+    })).sort((left, right) => compareAcademicTermsNewestFirst(left.term, right.term));
   }, [academicPlan, realScores, courses, planSearchText, selectedCategoryKey, quickFilters, planCategories]);
 
   const importFromPlan = () => {
@@ -1161,11 +1165,8 @@ const GPACalculator = forwardRef(({
   };
 
   const courseFilterOptions = useMemo(() => {
-    const toOptions = (values) => [...new Set(values.filter(Boolean))]
-      .map(value => ({ text: value, value }));
-
     return {
-      term: toOptions(courses.map(c => c.term)).sort((a, b) => compareAcademicTerms(a.value, b.value)),
+      term: academicTermFilterOptions(courses.map(course => course.term)),
       type: [
         { text: '真实', value: '真实' },
         { text: '计划', value: '计划' },
@@ -1375,7 +1376,7 @@ const GPACalculator = forwardRef(({
       dataIndex: 'term',
       key: 'term',
       width: 150,
-      sorter: (a, b) => compareAcademicTerms(a.term, b.term),
+      sorter: (a, b) => compareAcademicTermsOldestFirst(a.term, b.term),
       filters: courseFilterOptions.term,
       filterSearch: true,
       onFilter: (value, record) => record.term === value,
@@ -1386,6 +1387,7 @@ const GPACalculator = forwardRef(({
       dataIndex: 'courseType',
       key: 'courseType',
       width: 90,
+      sorter: (a, b) => compareTextValues(getCourseSource(a), getCourseSource(b)),
       filters: courseFilterOptions.type,
       onFilter: (value, record) => getCourseSource(record) === value,
       render: (text, record) => {
@@ -1425,13 +1427,17 @@ const GPACalculator = forwardRef(({
 
   // 筛选课程
   const filteredCourses = useMemo(() => {
+    let result;
     switch (activeTab) {
-      case 'real': return courses.filter(c => c.isReal);
-      case 'custom': return courses.filter(c => !c.isReal);
-      case 'passed': return courses.filter(c => c.gpa > 0);
-      case 'pending': return courses.filter(c => !c.gpa && !c.score);
-      default: return courses;
+      case 'real': result = courses.filter(c => c.isReal); break;
+      case 'custom': result = courses.filter(c => !c.isReal); break;
+      case 'passed': result = courses.filter(c => c.gpa > 0); break;
+      case 'pending': result = courses.filter(c => !c.gpa && !c.score); break;
+      default: result = courses;
     }
+    return [...result].sort((left, right) => (
+      compareAcademicTermsNewestFirst(left.term, right.term)
+    ));
   }, [courses, activeTab]);
   const mobilePageCourses = useMemo(() => {
     const start = (courseTablePagination.current - 1) * courseTablePagination.pageSize;
@@ -1992,10 +1998,10 @@ const GPACalculator = forwardRef(({
                     dataIndex: 'term', 
                     key: 'term', 
                     width: 180,
-                    sorter: (a, b) => compareAcademicTerms(a.term, b.term),
-                    filters: [...new Set(getPlannedCourses.map(c => c.term).filter(Boolean))]
-                      .map(t => ({ text: t, value: t }))
-                      .sort((a, b) => compareAcademicTerms(a.value, b.value)),
+                    sorter: (a, b) => compareAcademicTermsOldestFirst(a.term, b.term),
+                    filters: academicTermFilterOptions(
+                      getPlannedCourses.map(course => course.term)
+                    ),
                     filterSearch: true,
                     onFilter: (value, record) => record.term === value,
                     render: (text) => <span className="term-cell">{text}</span>

@@ -18,7 +18,15 @@ import {
   queryScoreDetail,
 } from '../services/api';
 import { columnSettings } from '../utils/settings';
-import { compareAcademicTerms } from '../utils/termSort';
+import {
+  compareAcademicTermsNewestFirst,
+  compareAcademicTermsOldestFirst,
+} from '../utils/termSort';
+import {
+  academicTermFilterOptions,
+  compareTextValues,
+  uniqueFilterOptions,
+} from '../utils/tableFilters';
 import {
   MobileDetailDrawer,
   MobileFilterButton,
@@ -409,8 +417,14 @@ const ScoresPage = ({ offlineMode = false }) => {
       ...score,
       _id: `${score.code}-${score.term}-${index}`,
     })));
-    setAllScores(scoresWithId);
-    setDisplayScores(scoresWithId);
+    const orderedScores = [...scoresWithId].sort((left, right) => (
+      compareAcademicTermsNewestFirst(
+        left.term_display || left.term,
+        right.term_display || right.term,
+      )
+    ));
+    setAllScores(orderedScores);
+    setDisplayScores(orderedScores);
     setDataInfo({
       source: data.source || 'local',
       is_fresh: data.cache ? !data.cache.is_stale : data.is_fresh,
@@ -507,8 +521,10 @@ const ScoresPage = ({ offlineMode = false }) => {
 
   // 筛选选项
   const getFilterOptions = (key) => {
-    const values = [...new Set(allScores.map(s => s[key]).filter(Boolean))];
-    return values.map(v => ({ text: v, value: v }));
+    const values = allScores.map(score => score[key]);
+    return key === 'term_display'
+      ? academicTermFilterOptions(values)
+      : uniqueFilterOptions(values);
   };
 
   // 表格变化处理
@@ -582,7 +598,24 @@ const ScoresPage = ({ offlineMode = false }) => {
           dataIndex: col.key,
           key: col.key,
           width: col.width,
-          sorter: true,
+          sorter: (left, right) => {
+            if (col.key === 'term_display') {
+              return compareAcademicTermsOldestFirst(
+                left.term_display || left.term,
+                right.term_display || right.term,
+              );
+            }
+            if (NUMERIC_COLUMN_KEYS.includes(col.key)) {
+              return getScoreNumericValue(left, col.key) - getScoreNumericValue(right, col.key);
+            }
+            if (IMPACT_COLUMN_KEYS.includes(col.key)) {
+              return compareNullableNumbers(left[col.key], right[col.key], 'ascend');
+            }
+            if (col.key === 'is_passed') {
+              return Number(left.is_passed) - Number(right.is_passed);
+            }
+            return compareTextValues(left[col.key], right[col.key]);
+          },
         };
         const filterValues = {
           term_display: mobileFilters.terms,
@@ -863,7 +896,7 @@ const ScoresPage = ({ offlineMode = false }) => {
 
   const latestTerm = useMemo(() => {
     const terms = [...new Set(displayScores.map(score => score.term_display || score.term).filter(Boolean))];
-    return terms.sort(compareAcademicTerms)[0] || null;
+    return terms.sort(compareAcademicTermsNewestFirst)[0] || null;
   }, [displayScores]);
 
   const mobileFocusedScores = useMemo(() => {
@@ -937,10 +970,12 @@ const ScoresPage = ({ offlineMode = false }) => {
       const field = nextFilters.sort.replace(/_(asc|desc)$/, '');
       filtered.sort((left, right) => {
         if (field === 'term') {
-          return compareAcademicTerms(
+          return (nextFilters.sort === 'term_desc'
+            ? compareAcademicTermsNewestFirst
+            : compareAcademicTermsOldestFirst)(
             left.term_display || left.term,
             right.term_display || right.term,
-          ) * (nextFilters.sort === 'term_desc' ? 1 : -1);
+          );
         }
         if (field === 'score' || NUMERIC_COLUMN_KEYS.includes(field)) {
           const leftValue = getScoreNumericValue(left, field);
@@ -1350,7 +1385,7 @@ const ScoresPage = ({ offlineMode = false }) => {
               options={[...new Set(allScores
                 .map(score => score.term_display || score.term)
                 .filter(Boolean))]
-                .sort(compareAcademicTerms)
+                .sort(compareAcademicTermsNewestFirst)
                 .map(term => ({ label: term, value: term }))}
               onChange={terms => setMobileFilterDraft(current => ({ ...current, terms }))}
             />

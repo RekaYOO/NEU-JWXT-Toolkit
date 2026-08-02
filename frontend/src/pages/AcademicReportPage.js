@@ -16,7 +16,15 @@ import {
 } from '@ant-design/icons';
 import { useCachedResource } from '../resources/ResourceStore';
 import { columnSettings } from '../utils/settings';
-import { compareAcademicTerms } from '../utils/termSort';
+import {
+  compareAcademicTermsNewestFirst,
+  compareAcademicTermsOldestFirst,
+} from '../utils/termSort';
+import {
+  academicTermFilterOptions,
+  compareTextValues,
+  uniqueFilterOptions,
+} from '../utils/tableFilters';
 import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
 import dayjs from 'dayjs';
 import { MobileDetailDrawer } from '../components/mobile/MobileUX';
@@ -31,15 +39,98 @@ const DEFAULT_COLUMNS = [
   { key: 'course_code', title: '课程代码', visible: true, width: 120 },
   { key: 'credit', title: '学分', visible: true, width: 70 },
   { key: 'status', title: '状态', visible: true, width: 100 },
-  { key: 'score', title: '成绩', visible: true, width: 80 },
+  { key: 'score', title: '成绩', visible: false, width: 80 },
   { key: 'course_nature', title: '性质', visible: true, width: 80 },
   { key: 'is_passed', title: '通过', visible: false, width: 80 },
-  { key: 'category_path', title: '类别路径', visible: false, width: 200 },
+  { key: 'category_path', title: '类别路径', visible: true, width: 200 },
   { key: 'term_code', title: '学期', visible: false, width: 130 },
   { key: 'is_core', title: '核心课', visible: false, width: 80 },
 ];
 
 const getDefaultColumns = () => JSON.parse(JSON.stringify(DEFAULT_COLUMNS));
+
+const parseRangeFilter = (value) => {
+  try {
+    return JSON.parse(value || '{}');
+  } catch {
+    return {};
+  }
+};
+
+const matchesNumericRange = (filterValue, recordValue) => {
+  const { min, max } = parseRangeFilter(filterValue);
+  const value = Number(recordValue);
+  if (!Number.isFinite(value)) return false;
+  if (min !== null && min !== undefined && value < Number(min)) return false;
+  if (max !== null && max !== undefined && value > Number(max)) return false;
+  return true;
+};
+
+const numericRangeFilterDropdown = (minimumLabel, maximumLabel) => (
+  { setSelectedKeys, selectedKeys, confirm, clearFilters }
+) => {
+  const range = parseRangeFilter(selectedKeys?.[0]);
+  const update = (patch) => {
+    const next = { ...range, ...patch };
+    const hasValue = next.min !== null && next.min !== undefined
+      || next.max !== null && next.max !== undefined;
+    setSelectedKeys(hasValue ? [JSON.stringify(next)] : []);
+  };
+  return (
+    <div style={{ padding: 8 }}>
+      <Space direction="vertical">
+        <InputNumber
+          placeholder={minimumLabel}
+          value={range.min}
+          onChange={(value) => update({ min: value })}
+          style={{ width: 140 }}
+        />
+        <InputNumber
+          placeholder={maximumLabel}
+          value={range.max}
+          onChange={(value) => update({ max: value })}
+          style={{ width: 140 }}
+        />
+        <Space>
+          <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+          <Button size="small" onClick={() => { clearFilters?.(); confirm(); }}>重置</Button>
+        </Space>
+      </Space>
+    </div>
+  );
+};
+
+const textSearchFilterDropdown = (placeholder) => (
+  { setSelectedKeys, selectedKeys, confirm, clearFilters }
+) => (
+  <div style={{ padding: 8 }}>
+    <Input
+      placeholder={placeholder}
+      value={selectedKeys?.[0] || ''}
+      onChange={(event) => setSelectedKeys(event.target.value ? [event.target.value] : [])}
+      onPressEnter={() => confirm()}
+      style={{ width: 200, marginBottom: 8, display: 'block' }}
+    />
+    <Space>
+      <Button type="primary" size="small" onClick={() => confirm()}>搜索</Button>
+      <Button size="small" onClick={() => { clearFilters?.(); confirm(); }}>重置</Button>
+    </Space>
+  </div>
+);
+
+const includesText = (value, query) => String(value ?? '')
+  .toLocaleLowerCase('zh-CN')
+  .includes(String(query ?? '').toLocaleLowerCase('zh-CN'));
+
+const categoryPathText = (value) => Array.isArray(value) ? value.join(' > ') : String(value || '');
+
+const courseStatusValue = (course) => {
+  const rawStatus = String(course.status || '').trim();
+  if (course.is_passed || ['通过', '已通过', '合格'].includes(rawStatus)) return 'passed';
+  if (course.is_selected || ['已选', '已选课'].includes(rawStatus)) return 'selected';
+  if (course.is_planned || ['未修', '未修读', '待选'].includes(rawStatus)) return 'planned';
+  return String(course.status || 'other');
+};
 
 // 状态标签组件
 const StatusTag = ({ status, isPassed, isSelected, isPlanned }) => {
@@ -554,11 +645,12 @@ const AcademicReportPage = ({ offlineMode = false }) => {
     ].some(value => String(value || '').toLocaleLowerCase('zh-CN').includes(query)));
   }, [displayCourses, courseSearch]);
 
-  // 生成筛选选项
-  const getFilterOptions = (key) => {
-    const values = [...new Set(allCourses.map(c => c[key]).filter(Boolean))];
-    return values.map(v => ({ text: v, value: v }));
-  };
+  const orderedFilteredCourses = useMemo(() => (
+    [...filteredCourses].sort((left, right) => compareAcademicTermsNewestFirst(
+      left.term_code,
+      right.term_code,
+    ))
+  ), [filteredCourses]);
 
   // 处理表格变化
   const handleTableChange = (newPagination, newFilters, newSorter) => {
@@ -593,14 +685,43 @@ const AcademicReportPage = ({ offlineMode = false }) => {
           width: col.width,
           sorter: (a, b) => {
             if (col.key === 'credit') {
-              return (a.credit || 0) - (b.credit || 0);
+              return Number(a.credit || 0) - Number(b.credit || 0);
             }
             if (col.key === 'term_code') {
-              return compareAcademicTerms(a.term_code, b.term_code);
+              return compareAcademicTermsOldestFirst(a.term_code, b.term_code);
             }
-            return String(a[col.key] || '').localeCompare(String(b[col.key] || ''));
+            if (col.key === 'is_passed' || col.key === 'is_core') {
+              return Number(Boolean(a[col.key])) - Number(Boolean(b[col.key]));
+            }
+            if (col.key === 'status') {
+              return compareTextValues(courseStatusValue(a), courseStatusValue(b));
+            }
+            if (col.key === 'category_path') {
+              return compareTextValues(categoryPathText(a.category_path), categoryPathText(b.category_path));
+            }
+            if (col.key === 'score') {
+              const left = Number(a.score);
+              const right = Number(b.score);
+              if (Number.isFinite(left) && Number.isFinite(right)) return left - right;
+            }
+            return compareTextValues(a[col.key], b[col.key]);
           },
         };
+
+        if (col.key === 'course_name' || col.key === 'course_code') {
+          column.filterDropdown = textSearchFilterDropdown(
+            col.key === 'course_name' ? '搜索课程名称' : '搜索课程代码'
+          );
+          column.filterIcon = filtered => (
+            <SearchOutlined style={{ color: filtered ? 'var(--color-brand)' : undefined }} />
+          );
+          column.onFilter = (value, record) => includesText(record[col.key], value);
+        }
+
+        if (col.key === 'credit') {
+          column.filterDropdown = numericRangeFilterDropdown('最小学分', '最大学分');
+          column.onFilter = (value, record) => matchesNumericRange(value, record.credit);
+        }
 
         if (col.key === 'course_name') {
           column.render = (text, record) => (
@@ -626,10 +747,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
             { text: '未修读', value: 'planned' },
           ];
           column.onFilter = (value, record) => {
-            if (value === 'passed') return record.is_passed;
-            if (value === 'selected') return record.is_selected;
-            if (value === 'planned') return record.is_planned;
-            return true;
+            return courseStatusValue(record) === value;
           };
         }
 
@@ -649,6 +767,11 @@ const AcademicReportPage = ({ offlineMode = false }) => {
         }
 
         if (col.key === 'score') {
+          column.filterDropdown = textSearchFilterDropdown('搜索成绩');
+          column.filterIcon = filtered => (
+            <SearchOutlined style={{ color: filtered ? 'var(--color-brand)' : undefined }} />
+          );
+          column.onFilter = (value, record) => includesText(record.score, value);
           column.render = (text, record) => {
             if (!text) return '-';
             
@@ -687,16 +810,22 @@ const AcademicReportPage = ({ offlineMode = false }) => {
 
         // 性质列：添加筛选功能
         if (col.key === 'course_nature') {
-          column.filters = [
-            { text: '必修', value: '必修' },
-            { text: '选修', value: '选修' },
-          ];
+          column.filters = uniqueFilterOptions(allCourses.map(course => course.course_nature));
+          column.filterSearch = true;
           column.onFilter = (value, record) => {
             return record.course_nature === value;
           };
         }
 
         if (col.key === 'category_path') {
+          column.filterDropdown = textSearchFilterDropdown('搜索类别路径');
+          column.filterIcon = filtered => (
+            <SearchOutlined style={{ color: filtered ? 'var(--color-brand)' : undefined }} />
+          );
+          column.onFilter = (value, record) => includesText(
+            categoryPathText(record.category_path),
+            value,
+          );
           column.render = (text) => {
             const pathStr = Array.isArray(text) ? text.join(' > ') : (text || '-');
             return (
@@ -709,12 +838,25 @@ const AcademicReportPage = ({ offlineMode = false }) => {
 
         // 学期列：转换学期代码为中文学期
         if (col.key === 'term_code') {
+          column.filters = academicTermFilterOptions(
+            allCourses.map(course => course.term_code)
+          ).map(option => ({ ...option, text: formatTermCode(option.value) }));
+          column.filterSearch = true;
+          column.onFilter = (value, record) => record.term_code === value;
           column.render = (text) => formatTermCode(text);
+        }
+
+        if (col.key === 'is_core') {
+          column.filters = [
+            { text: '核心课', value: true },
+            { text: '非核心课', value: false },
+          ];
+          column.onFilter = (value, record) => Boolean(record.is_core) === value;
         }
 
         return column;
       });
-  }, [columnConfig]);
+  }, [allCourses, columnConfig]);
 
   // 列选择菜单
   const columnMenuItems = [
@@ -783,7 +925,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
       if ((a.course_nature === '必修') !== (b.course_nature === '必修')) {
         return a.course_nature === '必修' ? -1 : 1;
       }
-      return compareAcademicTerms(a.term_code, b.term_code);
+      return compareAcademicTermsNewestFirst(a.term_code, b.term_code);
     });
   }, [filteredCourses, mobilePlanView]);
 
@@ -1391,7 +1533,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
               <div className="table-scroll-container">
                 <Table
                   columns={tableColumns}
-                  dataSource={filteredCourses}
+                  dataSource={orderedFilteredCourses}
                   rowKey="_id"
                   pagination={pagination}
                   onChange={handleTableChange}
