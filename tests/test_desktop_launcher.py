@@ -100,6 +100,8 @@ def test_open_url_uses_windows_shell_before_browser_fallback():
 
 
 def test_tray_is_not_started_on_non_windows():
-    with patch.object(desktop.os, "name", "posix"), patch.object(desktop.ctypes, "WinDLL") as win_dll:
+    with patch.object(desktop.os, "name", "posix"), patch.object(
+        desktop.ctypes, "WinDLL", create=True
+    ) as win_dll:
         desktop._run_tray("http://127.0.0.1:18476")
     win_dll.assert_not_called()
