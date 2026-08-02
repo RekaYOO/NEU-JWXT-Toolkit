@@ -25,8 +25,13 @@ import {
   compareAcademicTermsOldestFirst,
 } from '../utils/termSort';
 import { academicTermFilterOptions, compareTextValues } from '../utils/tableFilters';
+import {
+  summarizeAcademicReportSnapshot,
+  summarizeAcademicReportUpdate,
+} from '../utils/resourceUpdateSummary';
 import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
 import { AdaptiveModal } from './mobile/MobileUX';
+import ResourceUpdateSummary from './ResourceUpdateSummary';
 import './GPACalculator.css';
 
 const { Text } = Typography;
@@ -180,6 +185,15 @@ const GPACalculator = forwardRef(({
   const [baseReportRevision, setBaseReportRevision] = useState('');
   const [baseRealScores, setBaseRealScores] = useState([]);
   const [pendingScoresBaseline, setPendingScoresBaseline] = useState(null);
+  const planUpdateModalRef = useRef(null);
+  const planUpdateResolveRef = useRef(null);
+
+  useEffect(() => () => {
+    planUpdateModalRef.current?.destroy();
+    planUpdateModalRef.current = null;
+    planUpdateResolveRef.current?.(false);
+    planUpdateResolveRef.current = null;
+  }, []);
 
   // 保存文件Modal
   const [saveModalVisible, setSaveModalVisible] = useState(false);
@@ -732,14 +746,34 @@ const GPACalculator = forwardRef(({
         && reportRevision
         && baseReportRevision !== reportRevision
       ) {
+        const updateItems = planCategories.length
+          ? summarizeAcademicReportUpdate({ categories: planCategories }, data)
+          : summarizeAcademicReportSnapshot(data);
         const accepted = await new Promise(resolve => {
-          Modal.confirm({
+          const finish = (value) => {
+            if (planUpdateResolveRef.current !== finish) return;
+            planUpdateResolveRef.current = null;
+            planUpdateModalRef.current = null;
+            resolve(value);
+          };
+          const previousFinish = planUpdateResolveRef.current;
+          planUpdateModalRef.current?.destroy();
+          previousFinish?.(false);
+          planUpdateResolveRef.current = finish;
+          planUpdateModalRef.current = Modal.confirm({
             title: '培养计划已有更新',
-            content: '当前成绩基线一致。是否将模拟方案的培养计划基线升级到最新版？',
+            content: (
+              <div>
+                <ResourceUpdateSummary items={updateItems} />
+                <Text type="secondary">
+                  当前成绩基线一致。是否将模拟方案的培养计划基线升级到最新版？
+                </Text>
+              </div>
+            ),
             okText: '接受新版',
             cancelText: '暂不导入',
-            onOk: () => resolve(true),
-            onCancel: () => resolve(false),
+            onOk: () => finish(true),
+            onCancel: () => finish(false),
           });
         });
         if (!accepted) return;

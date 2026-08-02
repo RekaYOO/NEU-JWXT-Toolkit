@@ -340,11 +340,16 @@ export const useCachedResource = (resource, { autoRefresh = true } = {}) => {
     };
   }, [autoRefresh, resource, store.load, store.offlineMode, store.refresh]);
 
+  const applyData = useCallback((payload) => {
+    if (!payload) return;
+    const meta = metadataOf(payload);
+    setDisplayedData(payload);
+    setDisplayedRevision(meta.revision);
+  }, []);
+
   const applyAvailable = useCallback(() => {
-    if (!state.availableData) return;
-    setDisplayedData(state.availableData);
-    setDisplayedRevision(state.availableRevision || '');
-  }, [state.availableData, state.availableRevision]);
+    applyData(state.availableData);
+  }, [applyData, state.availableData]);
 
   const refresh = useCallback((options = {}) => (
     store.refresh(resource, { force: true, reason: 'manual', ...options })
@@ -389,6 +394,7 @@ export const useCachedResource = (resource, { autoRefresh = true } = {}) => {
     syncError: state.syncError || null,
     refresh,
     applyAvailable,
+    applyData,
     reloadAndApply,
     updateData,
     reloadCache: () => store.load(resource, { quiet: true }),

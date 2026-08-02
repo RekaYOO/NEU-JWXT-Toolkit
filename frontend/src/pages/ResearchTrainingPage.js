@@ -18,6 +18,8 @@ import {
   setResearchTopicFavorite,
 } from '../services/api';
 import { useCachedResource } from '../resources/ResourceStore';
+import ResourceUpdateSummary from '../components/ResourceUpdateSummary';
+import { summarizeResearchTrainingUpdate } from '../utils/resourceUpdateSummary';
 import {
   AdaptiveModal,
   MobileFilterButton,
@@ -29,17 +31,6 @@ import './ResearchTrainingPage.css';
 const { Text, Title, Paragraph } = Typography;
 const EMPTY_FILTERS = { keyword: '', project_name: '', advisor_name: '' };
 const PAGE_SIZE = 20;
-
-const updateSummary = (result) => {
-  const changes = result.changes || {};
-  if (changes.new_batch) return '科研训练报名批次已经更新。';
-  const parts = [];
-  if (changes.added) parts.push(`新增 ${changes.added} 个课题`);
-  if (changes.updated) parts.push(`${changes.updated} 个课题信息有变化`);
-  if (changes.removed) parts.push(`${changes.removed} 个课题已下架`);
-  if (changes.confirmed_changed) parts.push('已确认课题状态有变化');
-  return parts.length ? `${parts.join('，')}。` : '课题数据已有更新。';
-};
 
 const ResearchTrainingPage = ({ offlineMode = false }) => {
   const screens = Grid.useBreakpoint();
@@ -72,7 +63,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
   }, []);
 
   const promptForUpdate = useCallback((
-    result, displayedRevision, availableRevision,
+    result, displayedData, displayedRevision, availableRevision,
   ) => {
     const revision = availableRevision || result.revision;
     if (
@@ -83,7 +74,14 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
     updateModalRef.current?.destroy();
     updateModalRef.current = Modal.confirm({
       title: '发现科研训练课题更新',
-      content: `${updateSummary(result)}是否刷新当前页面？`,
+      content: (
+        <div>
+          <ResourceUpdateSummary
+            items={summarizeResearchTrainingUpdate(displayedData, result)}
+          />
+          <Text type="secondary">是否刷新当前页面？</Text>
+        </div>
+      ),
       okText: '立即刷新',
       cancelText: '稍后',
       onOk: () => {
@@ -128,6 +126,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
     if (!resource.updateAvailable || !resource.availableData) return;
     promptForUpdate(
       resource.availableData,
+      resource.data,
       resource.displayedRevision,
       resource.availableRevision,
     );
@@ -135,6 +134,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
     promptForUpdate,
     resource.availableData,
     resource.availableRevision,
+    resource.data,
     resource.displayedRevision,
     resource.updateAvailable,
   ]);

@@ -122,7 +122,7 @@
 .main-content-wrapper {
   height: calc(100vh - 104px);
   margin-top: 0;
-  padding: 0 16px;
+  padding: 0;
 }
 
 /* 左右列高度一致 */
@@ -134,6 +134,25 @@
 .main-content-wrapper .main-content > .ant-col {
   height: 100%;
   padding: 8px;
+}
+
+@media (min-width: 993px) {
+  .main-content-wrapper .main-content {
+    display: grid;
+    grid-template-columns: clamp(320px, 28%, 400px) minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .main-content-wrapper .main-content > .ant-col {
+    width: auto;
+    max-width: none;
+    padding: 8px 0;
+    padding-inline: 0 !important;
+  }
+
+  .main-content-wrapper .main-content > .ant-col:only-child {
+    grid-column: 1 / -1;
+  }
 }
 
 /* 学分总览卡片 - 移除旧样式 */
@@ -345,6 +364,15 @@
 
 .courses-table-card .ant-table-wrapper {
   height: 100%;
+}
+
+.courses-table-card .ant-table-thead > tr > th,
+.courses-table-card .ant-table-column-title {
+  white-space: nowrap;
+}
+
+.course-credit-value {
+  font-variant-numeric: tabular-nums;
 }
 
 /* 树形节点样式 */

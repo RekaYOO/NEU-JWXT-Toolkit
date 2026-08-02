@@ -10,6 +10,7 @@ import {
   CheckCircleOutlined, CalculatorOutlined, ExclamationCircleOutlined
 } from '@ant-design/icons';
 import GPACalculator from '../components/GPACalculator';
+import ResourceUpdateSummary from '../components/ResourceUpdateSummary';
 import { useCachedResource } from '../resources/ResourceStore';
 import {
   getCacheRefreshJob,
@@ -27,6 +28,7 @@ import {
   compareTextValues,
   uniqueFilterOptions,
 } from '../utils/tableFilters';
+import { summarizeScoreUpdate } from '../utils/resourceUpdateSummary';
 import {
   MobileDetailDrawer,
   MobileFilterButton,
@@ -267,6 +269,7 @@ const ScoresPage = ({ offlineMode = false }) => {
   // 更新提示
   const [updateModalVisible, setUpdateModalVisible] = useState(false);
   const [pendingUpdateData, setPendingUpdateData] = useState(null);
+  const [pendingUpdateRevision, setPendingUpdateRevision] = useState('');
   
   // 列配置
   const [columnConfig, setColumnConfig] = useState(() => 
@@ -304,6 +307,11 @@ const ScoresPage = ({ offlineMode = false }) => {
   const gpaCalculatorRef = useRef(null);
   const dismissedRevisionRef = useRef('');
   const scoreResource = useCachedResource('scores');
+  const pendingUpdateSummary = useMemo(() => (
+    pendingUpdateData
+      ? summarizeScoreUpdate(scoreResource.data, pendingUpdateData)
+      : []
+  ), [pendingUpdateData, scoreResource.data]);
 
   useEffect(() => () => {
     scoreDetailRequestRef.current += 1;
@@ -454,32 +462,42 @@ const ScoresPage = ({ offlineMode = false }) => {
   useEffect(() => {
     if (
       !scoreResource.updateAvailable
-      || updateModalVisible
       || dismissedRevisionRef.current === scoreResource.availableRevision
     ) return;
+    if (
+      updateModalVisible
+      && pendingUpdateRevision === scoreResource.availableRevision
+    ) return;
     setPendingUpdateData(scoreResource.availableData);
+    setPendingUpdateRevision(scoreResource.availableRevision);
     setUpdateModalVisible(true);
   }, [
     scoreResource.availableData,
+    scoreResource.availableRevision,
     scoreResource.updateAvailable,
+    pendingUpdateRevision,
     updateModalVisible,
   ]);
 
   // 确认更新
   const handleConfirmUpdate = async () => {
     setUpdateModalVisible(false);
-    scoreResource.applyAvailable();
-    if (pendingUpdateData) applyScorePayload(pendingUpdateData);
+    if (pendingUpdateData) {
+      scoreResource.applyData(pendingUpdateData);
+      applyScorePayload(pendingUpdateData);
+    }
     dismissedRevisionRef.current = '';
     message.success('已显示最新成绩');
     setPendingUpdateData(null);
+    setPendingUpdateRevision('');
   };
 
   // 取消更新
   const handleCancelUpdate = () => {
-    dismissedRevisionRef.current = scoreResource.availableRevision;
+    dismissedRevisionRef.current = pendingUpdateRevision;
     setUpdateModalVisible(false);
     setPendingUpdateData(null);
+    setPendingUpdateRevision('');
   };
 
   // 手动刷新
@@ -1626,14 +1644,13 @@ const ScoresPage = ({ offlineMode = false }) => {
       >
         <Alert
           message="检测到云端有新成绩数据"
-          description='云端成绩与本地不同，点击"立即更新"同步最新数据（包括成绩和培养计划）。'
+          description="你可以先查看变化摘要，再决定是否刷新当前显示。"
           type="info"
           showIcon
         />
         {pendingUpdateData && (
           <div style={{ marginTop: 16 }}>
-            <p>本地课程: {allScores.length} 门</p>
-            <p>云端课程: {pendingUpdateData.scores?.length} 门</p>
+            <ResourceUpdateSummary items={pendingUpdateSummary} />
           </div>
         )}
       </Modal>

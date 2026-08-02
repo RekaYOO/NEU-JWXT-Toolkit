@@ -28,6 +28,8 @@ import {
 import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
 import dayjs from 'dayjs';
 import { MobileDetailDrawer } from '../components/mobile/MobileUX';
+import ResourceUpdateSummary from '../components/ResourceUpdateSummary';
+import { summarizeAcademicReportUpdate } from '../utils/resourceUpdateSummary';
 import './AcademicReportPage.css';
 
 const { Title, Text } = Typography;
@@ -549,9 +551,20 @@ const AcademicReportPage = ({ offlineMode = false }) => {
       || promptedRevisionRef.current === reportResource.availableRevision
     ) return undefined;
     promptedRevisionRef.current = reportResource.availableRevision;
+    const updateSummary = summarizeAcademicReportUpdate(
+      reportResource.data,
+      reportResource.availableData,
+    );
     const modal = Modal.confirm({
       title: '培养计划已有更新',
-      content: '后台已获取最新数据。是否刷新当前显示？你的搜索、分类和展开状态会尽量保留。',
+      content: (
+        <div>
+          <ResourceUpdateSummary items={updateSummary} />
+          <Text type="secondary">
+            刷新后，你的搜索、分类和展开状态会尽量保留。
+          </Text>
+        </div>
+      ),
       okText: '刷新当前显示',
       cancelText: '稍后',
       onOk: () => {
@@ -562,6 +575,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
     return () => modal.destroy();
   }, [
     applyReportPayload,
+    reportResource.data,
     reportResource.availableData,
     reportResource.availableRevision,
     reportResource.updateAvailable,
@@ -801,7 +815,9 @@ const AcademicReportPage = ({ offlineMode = false }) => {
         }
 
         if (col.key === 'credit') {
-          column.render = (text) => `${text} 学分`;
+          column.render = (text) => (
+            <span className="course-credit-value">{text ?? '-'}</span>
+          );
         }
 
         if (col.key === 'is_core') {
