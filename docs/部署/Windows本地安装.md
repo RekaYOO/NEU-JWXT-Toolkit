@@ -2,6 +2,11 @@
 
 Windows 发行版用于单台电脑上的本机使用。它不需要 Python、Node.js 或管理员权限，也不会向局域网开放端口。
 
+Windows 发行版当前不使用 Authenticode 代码签名。因此首次运行安装器或便携版 EXE 时，
+SmartScreen 可能显示“Windows 已保护你的电脑”并要求手动确认，单位管理策略也可能直接
+禁止运行未签名程序。请只使用本项目 GitHub Releases 的文件，并在运行前核对校验和与
+GitHub 构建来源；项目不会要求用户关闭 Defender 或添加安全排除项。
+
 ## 安装版
 
 1. 从 GitHub Releases 下载 `NEU-JWXT-Toolkit-<版本>-windows-x64-setup.exe`。
@@ -43,11 +48,11 @@ gh attestation verify .\NEU-JWXT-Toolkit-<版本>-windows-x64-portable.zip `
   --repo RekaYOO/NEU-JWXT-Toolkit
 ```
 
-安装器可用相同命令替换文件名。发行物还包含 `WINDOWS-SIGNING-STATUS.txt`，用于说明
-该次构建是否配置并验证了 Authenticode 签名，以及 Defender 扫描是 `passed` 还是
-`unavailable`。`unavailable` 表示托管 runner 无法执行该次扫描，不代表扫描通过，
-文件也不会声称“无病毒”。签名、SHA-256、GitHub 来源证明和 Defender 检测含义不同；
-任何一项都不能单独证明软件绝对安全。
+安装器可用相同命令替换文件名。发行物还包含 `WINDOWS-SECURITY-STATUS.txt`，明确记录
+Windows 文件未签名，并说明 Defender 扫描是 `passed` 还是 `unavailable`。
+`unavailable` 表示托管 runner 无法执行该次扫描，不代表扫描通过，文件也不会声称
+“无病毒”。SHA-256、GitHub 来源证明和 Defender 检测含义不同；任何一项都不能单独
+证明软件绝对安全。
 
 如果 Defender 或 SmartScreen 告警，不要关闭实时防护，也不要添加整个目录到排除项。
 先停止运行并记录版本、下载地址、SHA-256、检测名称和截图，再核对校验和与 GitHub
@@ -55,7 +60,7 @@ gh attestation verify .\NEU-JWXT-Toolkit-<版本>-windows-x64-portable.zip `
 保持文件隔离，并通过
 [Microsoft Security Intelligence 样本提交入口](https://www.microsoft.com/en-us/wdsi/filesubmission)
 申报疑似误报。
-不要因为 CI 曾扫描通过或文件已有签名而强行运行。
+不要因为 CI 曾扫描通过就绕过单位安全策略或强行运行。
 
 ## 启动与退出
 

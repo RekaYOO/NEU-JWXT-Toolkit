@@ -1,11 +1,10 @@
-"""Validate release layout, sensitive-data exclusions and signing policy."""
+"""Validate release layout and sensitive-data exclusions."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import re
-import struct
 import sys
 from pathlib import Path
 
@@ -80,40 +79,8 @@ def find_forbidden(root: Path) -> list[Path]:
     return sorted(set(found), key=lambda item: str(item).lower())
 
 
-def _pe_signature_table(path: Path) -> tuple[int, int] | None:
-    """Return the PE Authenticode certificate table range, if structurally present.
-
-    This intentionally checks presence, not publisher trust or revocation.
-    Trust validation belongs to the signing environment (`signtool verify /pa`).
-    """
-    try:
-        data = path.read_bytes()
-        if len(data) < 0x40 or data[:2] != b"MZ":
-            return None
-        pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
-        if pe_offset + 24 > len(data) or data[pe_offset:pe_offset + 4] != b"PE\0\0":
-            return None
-        optional = pe_offset + 24
-        magic = struct.unpack_from("<H", data, optional)[0]
-        directory = optional + (112 if magic == 0x20B else 96 if magic == 0x10B else -1)
-        if directory < optional:
-            return None
-        security_entry = directory + 8 * 4
-        if security_entry + 8 > len(data):
-            return None
-        offset, size = struct.unpack_from("<II", data, security_entry)
-        if offset == 0 or size < 8 or offset + size > len(data):
-            return None
-        certificate_size = struct.unpack_from("<I", data, offset)[0]
-        if certificate_size < 8 or certificate_size > size:
-            return None
-        return offset, size
-    except (OSError, struct.error, OverflowError):
-        return None
-
-
 def _desktop_layout_violations(
-    root: Path, signature_policy: str, allow_installer_files: bool
+    root: Path, allow_installer_files: bool
 ) -> list[str]:
     violations: list[str] = []
     launcher = root / "NEU-JWXT-Toolkit.exe"
@@ -156,26 +123,18 @@ def _desktop_layout_violations(
     )
     if scripts:
         violations.append("unexpected top-level launcher scripts: " + ", ".join(scripts))
-    if signature_policy == "require-present" and _pe_signature_table(launcher) is None:
-        violations.append("desktop launcher has no structurally valid Authenticode table")
     return violations
 
 
 def find_structure_violations(
     root: Path,
     *,
-    signature_policy: str = "ignore",
     allow_installer_files: bool = False,
 ) -> list[str]:
     """Validate a recognized frozen bundle without rejecting package wrappers."""
-    if signature_policy not in {"ignore", "require-present"}:
-        raise ValueError(f"unknown signature policy: {signature_policy}")
     if (root / "NEU-JWXT-Toolkit.exe").exists():
-        return _desktop_layout_violations(
-            root, signature_policy, allow_installer_files
-        )
-    # Linux frozen root or assembled package. Server signing is handled by the
-    # platform package/repository rather than Authenticode.
+        return _desktop_layout_violations(root, allow_installer_files)
+    # Linux frozen root or assembled package.
     server = root / "neu-jwxt-server"
     packaged_server = root / "app" / "neu-jwxt-server"
     if server.exists() and not (root / "_internal").is_dir():
@@ -188,14 +147,12 @@ def find_structure_violations(
 def inspect_bundle(
     root: Path,
     *,
-    signature_policy: str = "ignore",
     allow_installer_files: bool = False,
 ) -> list[str]:
     violations = [f"forbidden content: {path}" for path in find_forbidden(root)]
     violations.extend(
         find_structure_violations(
             root,
-            signature_policy=signature_policy,
             allow_installer_files=allow_installer_files,
         )
     )
@@ -205,15 +162,6 @@ def inspect_bundle(
 def main(arguments: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="Check frozen release bundles for private data and unsafe layout."
-    )
-    parser.add_argument(
-        "--signature-policy",
-        choices=("ignore", "require-present"),
-        default="ignore",
-        help=(
-            "ignore for local/unsigned builds; require-present after the release "
-            "signing step (presence only, then run signtool verify /pa)"
-        ),
     )
     parser.add_argument(
         "--allow-installer-files",
@@ -231,7 +179,6 @@ def main(arguments: list[str]) -> int:
         try:
             for item in inspect_bundle(
                 root,
-                signature_policy=args.signature_policy,
                 allow_installer_files=args.allow_installer_files,
             ):
                 violations.append(f"{root}: {item}")
@@ -241,10 +188,7 @@ def main(arguments: list[str]) -> int:
         print("Release bundle validation failed:", file=sys.stderr)
         print("\n".join(f"- {item}" for item in violations), file=sys.stderr)
         return 1
-    print(
-        "Release bundle validation passed "
-        f"(signature policy: {args.signature_policy})."
-    )
+    print("Release bundle validation passed.")
     return 0
 
 

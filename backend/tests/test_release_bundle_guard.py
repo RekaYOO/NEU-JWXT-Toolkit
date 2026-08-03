@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import struct
-
 import pytest
 from tools.check_release_bundle import (
     find_forbidden,
@@ -103,41 +101,21 @@ def test_release_bundle_guard_rejects_unsafe_symlinks(tmp_path):
     assert found == set(links)
 
 
-def _desktop_bundle(root, *, signed=False):
+def _desktop_bundle(root):
     internal = root / "_internal"
     (internal / "frontend" / "build").mkdir(parents=True)
     (internal / "VERSION").write_text("1.0.0", encoding="utf-8")
     (internal / "frontend" / "build" / "index.html").write_text(
         '<div id="root"></div>', encoding="utf-8"
     )
-    data = bytearray(512)
-    data[:2] = b"MZ"
-    struct.pack_into("<I", data, 0x3C, 0x80)
-    data[0x80:0x84] = b"PE\0\0"
-    optional = 0x80 + 24
-    struct.pack_into("<H", data, optional, 0x20B)
-    if signed:
-        security = optional + 112 + 8 * 4
-        struct.pack_into("<II", data, security, 0x180, 16)
-        struct.pack_into("<I", data, 0x180, 16)
-    (root / "NEU-JWXT-Toolkit.exe").write_bytes(data)
+    (root / "NEU-JWXT-Toolkit.exe").write_bytes(b"MZ")
 
 
-def test_desktop_layout_and_explicit_signature_policy(tmp_path):
-    unsigned = tmp_path / "unsigned"
-    unsigned.mkdir()
-    _desktop_bundle(unsigned)
-    assert find_structure_violations(unsigned, signature_policy="ignore") == []
-    assert find_structure_violations(
-        unsigned, signature_policy="require-present"
-    ) == ["desktop launcher has no structurally valid Authenticode table"]
-
-    signed = tmp_path / "signed"
-    signed.mkdir()
-    _desktop_bundle(signed, signed=True)
-    assert find_structure_violations(
-        signed, signature_policy="require-present"
-    ) == []
+def test_desktop_layout_accepts_expected_unsigned_launcher(tmp_path):
+    root = tmp_path / "desktop"
+    root.mkdir()
+    _desktop_bundle(root)
+    assert find_structure_violations(root) == []
 
 
 def test_desktop_layout_rejects_missing_assets_and_extra_launchers(tmp_path):

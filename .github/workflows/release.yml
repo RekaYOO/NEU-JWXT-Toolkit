@@ -109,57 +109,6 @@ jobs:
       - name: Build frozen desktop application
         run: pyinstaller packaging/pyinstaller/desktop.spec --distpath dist --workpath build/pyinstaller --clean --noconfirm
 
-      - name: Configure optional Authenticode signing
-        shell: pwsh
-        env:
-          WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
-          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)
-          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD)
-          if (-not $hasCertificate -and -not $hasPassword) {
-            "SIGNATURE_POLICY=ignore" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "WINDOWS_SIGNING_STATUS=unsigned" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            Write-Host "::notice::Authenticode secrets are not configured. Windows artifacts will be explicitly marked unsigned; final artifact smoke tests and Defender scanning still run."
-            exit 0
-          }
-          if (-not $hasCertificate -or -not $hasPassword) {
-            throw "Authenticode configuration is incomplete: both certificate and password secrets are required"
-          }
-          $pfxPath = Join-Path $env:RUNNER_TEMP "release-signing-certificate.pfx"
-          [IO.File]::WriteAllBytes(
-            $pfxPath,
-            [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)
-          )
-          "WINDOWS_SIGNING_PFX=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "SIGNATURE_POLICY=require-present" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "WINDOWS_SIGNING_STATUS=signed" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Sign and verify portable launcher when configured
-        shell: pwsh
-        env:
-          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          if ($env:WINDOWS_SIGNING_STATUS -ne "signed") { exit 0 }
-          $signToolCommand = Get-Command signtool.exe -ErrorAction SilentlyContinue
-          $signTool = if ($signToolCommand) {
-            $signToolCommand.Source
-          } else {
-            Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
-              -File -ErrorAction SilentlyContinue `
-              | Sort-Object FullName -Descending `
-              | Select-Object -First 1 -ExpandProperty FullName
-          }
-          if ([string]::IsNullOrWhiteSpace($signTool)) { throw "signtool.exe is unavailable" }
-          $launcher = (Resolve-Path ".\dist\NEU-JWXT-Toolkit\NEU-JWXT-Toolkit.exe").Path
-          & $signTool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
-            /f $env:WINDOWS_SIGNING_PFX /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD $launcher
-          if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for portable launcher" }
-          & $signTool verify /pa /all $launcher
-          if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed for portable launcher" }
-
       - name: Create portable archive
         shell: pwsh
         env:
@@ -182,7 +131,7 @@ jobs:
           $extractRoot = Join-Path $env:RUNNER_TEMP "portable-final-smoke"
           New-Item -ItemType Directory -Path $extractRoot | Out-Null
           Expand-Archive -LiteralPath $archive -DestinationPath $extractRoot
-          python tools/check_release_bundle.py --signature-policy $env:SIGNATURE_POLICY $extractRoot
+          python tools/check_release_bundle.py $extractRoot
           if ($LASTEXITCODE -ne 0) { throw "Portable bundle validation failed" }
 
           $launcher = Join-Path $extractRoot "NEU-JWXT-Toolkit.exe"
@@ -292,31 +241,6 @@ jobs:
             ".\packaging\windows\installer.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
 
-      - name: Sign and verify installer when configured
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
-          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          if ($env:WINDOWS_SIGNING_STATUS -ne "signed") { exit 0 }
-          $signToolCommand = Get-Command signtool.exe -ErrorAction SilentlyContinue
-          $signTool = if ($signToolCommand) {
-            $signToolCommand.Source
-          } else {
-            Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
-              -File -ErrorAction SilentlyContinue `
-              | Sort-Object FullName -Descending `
-              | Select-Object -First 1 -ExpandProperty FullName
-          }
-          if ([string]::IsNullOrWhiteSpace($signTool)) { throw "signtool.exe is unavailable" }
-          $installer = (Resolve-Path ".\release\NEU-JWXT-Toolkit-$env:RELEASE_VERSION-windows-x64-setup.exe").Path
-          & $signTool sign /fd SHA256 /td SHA256 /tr "http://timestamp.digicert.com" `
-            /f $env:WINDOWS_SIGNING_PFX /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD $installer
-          if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for installer" }
-          & $signTool verify /pa /all $installer
-          if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed for installer" }
-
       - name: Install and run final installer
         shell: pwsh
         env:
@@ -331,7 +255,7 @@ jobs:
             "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=`"$installRoot`""
           )
           if ($install.ExitCode -ne 0) { throw "Installer exited with code $($install.ExitCode)" }
-          python tools/check_release_bundle.py --signature-policy $env:SIGNATURE_POLICY --allow-installer-files $installRoot
+          python tools/check_release_bundle.py --allow-installer-files $installRoot
           if ($LASTEXITCODE -ne 0) { throw "Installed bundle validation failed" }
 
           $launcher = Join-Path $installRoot "NEU-JWXT-Toolkit.exe"
@@ -429,30 +353,17 @@ jobs:
           if ($uninstall.ExitCode -ne 0) { throw "Uninstaller exited with code $($uninstall.ExitCode)" }
           if (Test-Path -LiteralPath $launcher) { throw "Uninstaller left the application launcher behind" }
 
-      - name: Record Windows signing status
+      - name: Record Windows security status
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $statusFile = ".\release\WINDOWS-SIGNING-STATUS.txt"
-          if ($env:WINDOWS_SIGNING_STATUS -eq "signed") {
-            "Windows launcher and installer: Authenticode signed and verified during the release workflow. The Inno Setup uninstaller is not separately signed." | Set-Content -LiteralPath $statusFile -Encoding utf8
-            "Windows signing status: **launcher and installer signed and verified**; the Inno Setup uninstaller is not separately signed." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          } else {
-            "Windows launcher and installer: unsigned. Final archive, installer, and runtime smoke tests passed." | Set-Content -LiteralPath $statusFile -Encoding utf8
-            "Windows signing status: **unsigned** (signing is optional; artifact validation remains mandatory)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          }
+          $statusFile = ".\release\WINDOWS-SECURITY-STATUS.txt"
+          "Windows launcher, installer, and uninstaller: unsigned. Final archive, installer, and runtime smoke tests passed." | Set-Content -LiteralPath $statusFile -Encoding utf8
+          "Windows code-signing status: **unsigned by project policy**; artifact validation remains mandatory." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           if ($env:WINDOWS_DEFENDER_STATUS -eq "passed") {
             "Microsoft Defender: final portable ZIP, installer, extracted portable directory, and installed directory scanned with no detections." | Add-Content -LiteralPath $statusFile -Encoding utf8
           } else {
             "Microsoft Defender: scanner unavailable on the hosted runner; no antivirus-clean claim is made." | Add-Content -LiteralPath $statusFile -Encoding utf8
-          }
-
-      - name: Remove temporary signing certificate
-        if: always()
-        shell: pwsh
-        run: |
-          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX)) {
-            Remove-Item -LiteralPath $env:WINDOWS_SIGNING_PFX -Force -ErrorAction SilentlyContinue
           }
 
       # actions/upload-artifact v4.6.2

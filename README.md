@@ -33,6 +33,11 @@
 
 ### Windows：本机应用
 
+> **注意：Windows 发行版当前未进行代码签名。** 首次运行安装器或便携版 EXE 时，
+> Windows Defender SmartScreen 可能提示“Windows 已保护你的电脑”、要求手动确认，
+> 或被单位管理策略直接拦截。请只从本项目 GitHub Releases 下载，并先按下文核对
+> `SHA256SUMS.txt`；项目不会要求用户关闭 Defender 或添加安全排除项。
+
 1. 下载 `NEU-JWXT-Toolkit-<版本>-windows-x64-setup.exe` 并完成安装；
    也可以下载便携 ZIP，解压后直接运行其中的程序。
 2. 从开始菜单、桌面快捷方式或便携目录启动程序。
@@ -66,7 +71,7 @@ Linux 服务默认只监听 `127.0.0.1`，需要使用独立子域名反代；�
 
 项目首版不提供程序内自动更新。需要更新时，从 GitHub Releases 下载目标平台的新版
 发行包；建议同时下载 `SHA256SUMS.txt` 核对文件完整性，并验证 GitHub artifact
-attestation。更新前建议先阅读该版本的 Release Notes。具体命令、签名状态和
+attestation。更新前建议先阅读该版本的 Release Notes。具体命令和
 Defender/SmartScreen 告警处理见
 [Windows 本地安装](docs/部署/Windows本地安装.md)与
 [发行与 CI/CD](docs/开发/发行与CI.md)；不建议通过关闭实时防护来运行发行包。

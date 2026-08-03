@@ -120,21 +120,18 @@ Windows 版本、企业安全策略、代理配置和真实升级场景的人工
 
 ## Windows 信任、Defender 与误报
 
-Windows Authenticode 签名是可选的发行增强项。仓库同时配置
-`WINDOWS_SIGNING_CERTIFICATE_BASE64` 和 `WINDOWS_SIGNING_CERTIFICATE_PASSWORD`
-时，工作流会签名并验证便携版启动器和最终安装器，并使用时间戳服务；两项都未配置时，
-发行继续生成明确标记为 unsigned 的产物；只配置其中一项会直接失败。每次 Windows
-构建都会附带 `WINDOWS-SIGNING-STATUS.txt`，不要根据文件名或 Release 页面猜测签名
-状态。该文件也明确记录本次 Defender 状态：`passed` 表示最终 ZIP、安装器和解压目录
-在当时的 runner 上完成扫描且未检出；`unavailable` 表示扫描器不可用，并明确不作
-“无病毒”声明。
+项目当前不提供 Authenticode 代码签名。发行工作流不读取 PFX、证书密码或代码签名
+Secrets，也不调用 SignTool；便携版启动器、安装器和卸载器均按未签名文件发布。
+因此 SmartScreen 可能要求用户手动确认，单位管理策略也可能直接阻止运行。更换冻结器
+或安装器不能把未签名文件变成受 Windows 信任的发布者。
 
-签名只能辅助确认发布者及文件签名后的完整性，并可能改善系统信誉；它不证明程序没有
-恶意行为，也不能保证 Defender 或 SmartScreen 不告警。反过来，未签名本身也不能
-证明文件有害。校验和、GitHub 构建来源证明、签名和安全软件检测分别回答不同问题，
-不能互相替代。
+每次 Windows 构建都会附带 `WINDOWS-SECURITY-STATUS.txt`，明确记录未签名策略和本次
+Defender 状态：`passed` 表示最终 ZIP、安装器、解压目录和实际安装目录在当时的 runner
+上完成扫描且未检出；`unavailable` 表示扫描器不可用，并明确不作“无病毒”声明。
+未签名本身不证明文件有害；校验和、GitHub 构建来源证明和安全软件检测分别回答不同
+问题，不能互相替代。
 
-Defender 检测记录包括 `WINDOWS-SIGNING-STATUS.txt` 中的结果，以及 Release Actions
+Defender 检测记录包括 `WINDOWS-SECURITY-STATUS.txt` 中的结果，以及 Release Actions
 中“Scan final Windows artifacts with Microsoft Defender when available”步骤的日志
 和结论。后者在可用时还记录引擎与安全智能版本。它只是当时 runner 上一个引擎版本的
 扫描结果；状态为 `unavailable`、或某次扫描为 `passed`，都不能扩展解释为所有环境、
@@ -150,8 +147,8 @@ Defender 检测记录包括 `WINDOWS-SIGNING-STATUS.txt` 中的结果，以及 R
 4. 摘要和来源均正确但仍被 Defender 检测时，由维护者或受影响用户通过
    [Microsoft Security Intelligence 样本提交入口](https://www.microsoft.com/en-us/wdsi/filesubmission)
    申报疑似误报，并保留提交编号；
-5. 在 Microsoft 给出结果或项目发布新版本前，保持隔离，不把“CI 扫描通过”或“已有
-   签名”当作强行运行的理由。
+5. 在 Microsoft 给出结果或项目发布新版本前，保持隔离，不把“CI 扫描通过”当作绕过
+   单位安全策略或强行运行的理由。
 
 ## 校验下载文件
 
@@ -178,9 +175,9 @@ gh attestation verify NEU-JWXT-Toolkit-<版本>-windows-x64-portable.zip \
 ```
 
 安装器和 Linux tar 包使用相同命令替换文件名即可。Attestation 验证的是产物摘要与
-GitHub Actions 构建身份的关联，不审计源码逻辑、不等同于 Authenticode 发布者签名，
-也不是恶意软件扫描结果。摘要匹配只能说明下载文件与发布清单一致；若发布源本身不可信，
-校验和不能单独建立信任。
+GitHub Actions 构建身份的关联，不审计源码逻辑、不提供 Authenticode 发布者身份，也不是
+恶意软件扫描结果。摘要匹配只能说明下载文件与发布清单一致；若发布源本身不可信，校验和
+不能单独建立信任。
 
 ## 发行前检查
 
@@ -189,7 +186,7 @@ GitHub Actions 构建身份的关联，不审计源码逻辑、不等同于 Auth
 - Windows 自动化必须验收解压后的便携包，以及安装、启动、卸载后的安装版；正式发布
   仍应在未安装 Python/Node.js 的干净环境抽查两条路径。
 - Linux 应验证安装、重启、升级成功、健康检查失败回滚和两种反向代理。
-- 检查 Actions 中 Windows 签名状态和 Defender 步骤的实际结论；扫描器不可用必须
+- 检查 Actions 中 Windows 未签名声明和 Defender 步骤的实际结论；扫描器不可用必须
   作为发行记录保留，不能写成“扫描通过”。
 - 下载 Release 成品后复核 `SHA256SUMS.txt` 和 artifact attestation，不能只校验
   Actions 中间产物。
