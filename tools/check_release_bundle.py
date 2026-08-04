@@ -85,6 +85,12 @@ def _desktop_payload_violations(root: Path) -> list[str]:
     required = (
         root / "VERSION",
         root / "frontend" / "build" / "index.html",
+        root / "frontend" / "build" / "favicon.ico",
+        root / "frontend" / "build" / "manifest.webmanifest",
+        root / "frontend" / "build" / "icon-192.png",
+        root / "frontend" / "build" / "icon-512.png",
+        root / "frontend" / "build" / "apple-touch-icon.png",
+        root / "app.ico",
     )
     for path in required:
         if not path.exists():
@@ -148,7 +154,15 @@ def _installed_desktop_layout_violations(
 
 def _server_payload_violations(root: Path, executable: Path) -> list[str]:
     violations: list[str] = []
-    required = (root / "VERSION", root / "frontend" / "build" / "index.html")
+    required = (
+        root / "VERSION",
+        root / "frontend" / "build" / "index.html",
+        root / "frontend" / "build" / "favicon.ico",
+        root / "frontend" / "build" / "manifest.webmanifest",
+        root / "frontend" / "build" / "icon-192.png",
+        root / "frontend" / "build" / "icon-512.png",
+        root / "frontend" / "build" / "apple-touch-icon.png",
+    )
     for path in required:
         if not path.exists():
             violations.append(f"missing server bundle path: {path.relative_to(root)}")

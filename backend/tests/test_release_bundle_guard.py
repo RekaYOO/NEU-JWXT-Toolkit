@@ -1,3 +1,6 @@
+import hashlib
+import json
+import struct
 from pathlib import Path
 
 import pytest
@@ -106,6 +109,15 @@ def _desktop_bundle(root):
     (root / "frontend" / "build" / "index.html").write_text(
         '<div id="root"></div>', encoding="utf-8"
     )
+    for name in (
+        "favicon.ico",
+        "manifest.webmanifest",
+        "icon-192.png",
+        "icon-512.png",
+        "apple-touch-icon.png",
+    ):
+        (root / "frontend" / "build" / name).write_bytes(b"brand")
+    (root / "app.ico").write_bytes(b"brand")
     (root / "NEU-JWXT-Toolkit.exe").write_bytes(b"MZ")
 
 
@@ -145,6 +157,14 @@ def _server_bundle(root):
     (root / "frontend" / "build" / "index.html").write_text(
         '<div id="root"></div>', encoding="utf-8"
     )
+    for name in (
+        "favicon.ico",
+        "manifest.webmanifest",
+        "icon-192.png",
+        "icon-512.png",
+        "apple-touch-icon.png",
+    ):
+        (root / "frontend" / "build" / name).write_bytes(b"brand")
     (root / "neu-jwxt-server").write_bytes(b"\x7fELF")
 
 
@@ -207,3 +227,47 @@ def test_nuitka_build_keeps_inspectable_standalone_payload():
     assert '"--nofollow-import-to=pytest"' in text
     assert '"--nofollow-import-to=_pytest"' in text
     assert '"--windows-console-mode=disable"' in text
+    assert "--windows-icon-from-ico=" in text
+    assert "WINDOWS_ICON}=app.ico" in text
+
+
+def test_branding_assets_cover_web_and_windows_consumers():
+    project = Path(__file__).resolve().parents[2]
+    public = project / "frontend" / "public"
+    manifest = json.loads((public / "manifest.webmanifest").read_text(encoding="utf-8"))
+    assert {icon["sizes"] for icon in manifest["icons"]} == {"192x192", "512x512"}
+    assert manifest["lang"] == "zh-CN"
+
+    for name, expected_size in (
+        ("icon-192.png", (192, 192)),
+        ("icon-512.png", (512, 512)),
+        ("apple-touch-icon.png", (180, 180)),
+    ):
+        payload = (public / name).read_bytes()
+        assert payload[:8] == b"\x89PNG\r\n\x1a\n"
+        assert struct.unpack(">II", payload[16:24]) == expected_size
+
+    ico = (project / "packaging" / "windows" / "app.ico").read_bytes()
+    reserved, image_type, count = struct.unpack("<HHH", ico[:6])
+    assert (reserved, image_type) == (0, 1)
+    sizes = {
+        256 if ico[6 + index * 16] == 0 else ico[6 + index * 16]
+        for index in range(count)
+    }
+    assert sizes == {16, 20, 24, 32, 40, 48, 64, 128, 256}
+    assert (public / "favicon.ico").read_bytes() == ico
+
+    master = (project / "assets" / "branding" / "app-icon.png").read_bytes()
+    assert master[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", master[16:24]) == (1254, 1254)
+    assert master[25] == 6  # RGBA
+
+    official = project / "assets" / "branding" / "neu-official-emblem.png"
+    assert hashlib.sha256(official.read_bytes()).hexdigest() == (
+        "c11f01b8bd18c6586bd5c53fb40ff87a6ed243ef95b3e7c7cdb898700d1406d6"
+    )
+
+    html = (public / "index.html").read_text(encoding="utf-8")
+    assert "favicon.ico" in html
+    assert "manifest.webmanifest" in html
+    assert "apple-touch-icon.png" in html

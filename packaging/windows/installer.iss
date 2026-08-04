@@ -21,6 +21,7 @@ OutputBaseFilename=NEU-JWXT-Toolkit-{#MyAppVersion}-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=app.ico
 UninstallDisplayName=NEU 教务工具箱
 UninstallDisplayIcon={app}\runtime\NEU-JWXT-Toolkit.exe
 ArchitecturesAllowed=x64compatible

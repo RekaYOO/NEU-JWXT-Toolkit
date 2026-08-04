@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/branding/app-icon.png" width="128" alt="NEU 教务系统工具箱图标">
+</p>
+
 # NEU 教务系统工具箱
 
 东北大学教务系统第三方工具箱，提供经过优化的成绩查询与追踪、培养计划与学业预警、评教、绩点计算、选课等功能。支持在Windows系统下使用或Linux系统下部署并多端访问，并正在随教务的更新而更新。

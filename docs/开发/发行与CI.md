@@ -14,6 +14,16 @@
 
 `NEU_JWXT_DATA_DIR` 在全部模式下具有最高优先级。冻结程序通过统一资源定位函数读取打包内的 `frontend/build` 和 `VERSION`。
 
+## 应用图标
+
+透明母版与来源说明位于 `assets/branding/`。网页图标从母版派生到 `frontend/public/`；
+Windows 多尺寸 ICO 位于 `packaging/windows/app.ico`。Nuitka 将同一 ICO 嵌入桌面 EXE
+并随 standalone 载荷复制，托盘运行时优先加载该文件；Inno Setup 也使用它生成安装器
+图标。开始菜单、桌面快捷方式和卸载列表继续从桌面 EXE 继承图标。
+
+图标改动必须同时验证 favicon、Web Manifest、16 像素托盘效果、EXE 资源和安装器，
+不得只替换其中一个派生文件。
+
 ## 本地构建
 
 发行环境固定使用 Python 3.11 和 Node.js 20：

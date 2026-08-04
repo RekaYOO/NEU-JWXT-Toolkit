@@ -1,6 +1,6 @@
 import io
 import json
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from launchers import desktop
 
@@ -105,3 +105,52 @@ def test_tray_is_not_started_on_non_windows():
     ) as win_dll:
         desktop._run_tray("http://127.0.0.1:18476")
     win_dll.assert_not_called()
+
+
+def test_tray_icon_prefers_packaged_brand_asset(tmp_path):
+    icon = tmp_path / "app.ico"
+    icon.write_bytes(b"icon")
+    user32 = Mock()
+    user32.LoadImageW.return_value = 123
+
+    with patch.object(desktop, "_tray_icon_candidates", return_value=(icon,)):
+        handle, owns_icon = desktop._load_tray_icon(user32)
+
+    assert handle == 123
+    assert owns_icon is True
+    user32.LoadImageW.assert_called_once_with(
+        None,
+        str(icon),
+        desktop.IMAGE_ICON,
+        0,
+        0,
+        desktop.LR_LOADFROMFILE | desktop.LR_DEFAULTSIZE,
+    )
+    user32.LoadIconW.assert_not_called()
+
+
+def test_tray_icon_falls_back_to_windows_default(tmp_path):
+    user32 = Mock()
+    user32.LoadIconW.return_value = 456
+
+    with patch.object(
+        desktop,
+        "_tray_icon_candidates",
+        return_value=(tmp_path / "missing.ico",),
+    ):
+        handle, owns_icon = desktop._load_tray_icon(user32)
+
+    assert handle == 456
+    assert owns_icon is False
+    user32.LoadImageW.assert_not_called()
+    user32.LoadIconW.assert_called_once()
+
+
+def test_tray_icon_destroys_only_owned_handles():
+    user32 = Mock()
+
+    desktop._destroy_tray_icon(user32, 123, True)
+    desktop._destroy_tray_icon(user32, 456, False)
+    desktop._destroy_tray_icon(user32, None, True)
+
+    user32.DestroyIcon.assert_called_once_with(123)

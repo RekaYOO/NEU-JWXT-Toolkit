@@ -25,6 +25,10 @@ if str(PROJECT_ROOT) not in sys.path:
 APP_MUTEX_NAME = "Local\\NEU-JWXT-Toolkit-Desktop"
 DEFAULT_DESKTOP_PORT = 18476
 _mutex_handle = None
+IMAGE_ICON = 1
+LR_LOADFROMFILE = 0x0010
+LR_DEFAULTSIZE = 0x0040
+IDI_APPLICATION = 32512
 
 
 def _desktop_root() -> Path:
@@ -90,6 +94,37 @@ def _open_url(url: str) -> bool:
     return bool(webbrowser.open(url))
 
 
+def _tray_icon_candidates() -> tuple[Path, ...]:
+    """Return packaged and source-tree icon locations in priority order."""
+    return (
+        Path(sys.executable).resolve().parent / "app.ico",
+        PROJECT_ROOT / "packaging" / "windows" / "app.ico",
+    )
+
+
+def _load_tray_icon(user32):
+    """Load the branded icon, falling back to Windows' shared app icon."""
+    for path in _tray_icon_candidates():
+        if not path.is_file():
+            continue
+        handle = user32.LoadImageW(
+            None,
+            str(path),
+            IMAGE_ICON,
+            0,
+            0,
+            LR_LOADFROMFILE | LR_DEFAULTSIZE,
+        )
+        if handle:
+            return handle, True
+    return user32.LoadIconW(None, ctypes.c_void_p(IDI_APPLICATION)), False
+
+
+def _destroy_tray_icon(user32, handle, owns_icon: bool) -> None:
+    if owns_icon and handle:
+        user32.DestroyIcon(handle)
+
+
 def _run_tray(url: str, request_shutdown=lambda: None) -> None:
     """Run a minimal native Windows notification-area icon and context menu."""
     if os.name != "nt":
@@ -115,7 +150,6 @@ def _run_tray(url: str, request_shutdown=lambda: None) -> None:
     mf_separator = 0x00000800
     tpm_rightbutton = 0x0002
     tpm_returncmd = 0x0100
-    idi_application = 32512
 
     wndproc_type = ctypes.WINFUNCTYPE(
         wintypes.LPARAM,
@@ -203,6 +237,16 @@ def _run_tray(url: str, request_shutdown=lambda: None) -> None:
     user32.DispatchMessageW.argtypes = (ctypes.POINTER(wintypes.MSG),)
     user32.LoadIconW.argtypes = (wintypes.HINSTANCE, ctypes.c_void_p)
     user32.LoadIconW.restype = wintypes.HICON
+    user32.LoadImageW.argtypes = (
+        wintypes.HINSTANCE,
+        wintypes.LPCWSTR,
+        wintypes.UINT,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    )
+    user32.LoadImageW.restype = wintypes.HANDLE
+    user32.DestroyIcon.argtypes = (wintypes.HICON,)
     shell32.Shell_NotifyIconW.argtypes = (
         wintypes.DWORD, ctypes.POINTER(NOTIFYICONDATAW)
     )
@@ -267,9 +311,10 @@ def _run_tray(url: str, request_shutdown=lambda: None) -> None:
     icon_data.uID = 1
     icon_data.uFlags = nif_message | nif_icon | nif_tip
     icon_data.uCallbackMessage = tray_message
-    icon_data.hIcon = user32.LoadIconW(None, ctypes.c_void_p(idi_application))
+    icon_data.hIcon, owns_icon = _load_tray_icon(user32)
     icon_data.szTip = "NEU 教务工具箱（双击打开）"
     if not shell32.Shell_NotifyIconW(nim_add, ctypes.byref(icon_data)):
+        _destroy_tray_icon(user32, icon_data.hIcon, owns_icon)
         user32.DestroyWindow(hwnd)
         return
 
@@ -280,6 +325,7 @@ def _run_tray(url: str, request_shutdown=lambda: None) -> None:
             user32.DispatchMessageW(ctypes.byref(message))
     finally:
         shell32.Shell_NotifyIconW(nim_delete, ctypes.byref(icon_data))
+        _destroy_tray_icon(user32, icon_data.hIcon, owns_icon)
         user32.DestroyWindow(hwnd)
 
 

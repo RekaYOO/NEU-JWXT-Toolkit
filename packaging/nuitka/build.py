@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+WINDOWS_ICON = PROJECT_ROOT / "packaging" / "windows" / "app.ico"
 
 
 @dataclass(frozen=True)
@@ -71,7 +72,14 @@ def build_command(target_name: str, work_dir: Path) -> list[str]:
         f"--report={work_dir / 'compilation-report.xml'}",
     ]
     if target_name == "desktop":
-        command.extend(("--msvc=latest", "--windows-console-mode=disable"))
+        command.extend(
+            (
+                "--msvc=latest",
+                "--windows-console-mode=disable",
+                f"--windows-icon-from-ico={WINDOWS_ICON}",
+                f"--include-data-files={WINDOWS_ICON}=app.ico",
+            )
+        )
     command.append(str(target.entrypoint))
     return command
 
@@ -87,6 +95,8 @@ def build(target_name: str) -> Path:
         raise FileNotFoundError(
             "frontend/build/index.html is missing; run the frontend production build first"
         )
+    if target_name == "desktop" and not WINDOWS_ICON.is_file():
+        raise FileNotFoundError(f"Windows application icon is missing: {WINDOWS_ICON}")
 
     build_parent = PROJECT_ROOT / "build" / "nuitka"
     work_dir = build_parent / target_name
