@@ -68,11 +68,10 @@ def test_release_bundle_guard_rejects_new_private_artifact_types(tmp_path):
 
 def test_release_bundle_guard_allows_internal_relative_symlink(tmp_path):
     root = tmp_path / "bundle"
-    internal = root / "_internal"
-    internal.mkdir(parents=True)
-    target = internal / "libexample.so.1"
+    root.mkdir(parents=True)
+    target = root / "libexample.so.1"
     target.write_bytes(b"library")
-    link = internal / "libexample.so"
+    link = root / "libexample.so"
     try:
         link.symlink_to("libexample.so.1")
     except OSError as error:
@@ -102,10 +101,9 @@ def test_release_bundle_guard_rejects_unsafe_symlinks(tmp_path):
 
 
 def _desktop_bundle(root):
-    internal = root / "_internal"
-    (internal / "frontend" / "build").mkdir(parents=True)
-    (internal / "VERSION").write_text("1.0.0", encoding="utf-8")
-    (internal / "frontend" / "build" / "index.html").write_text(
+    (root / "frontend" / "build").mkdir(parents=True)
+    (root / "VERSION").write_text("1.0.0", encoding="utf-8")
+    (root / "frontend" / "build" / "index.html").write_text(
         '<div id="root"></div>', encoding="utf-8"
     )
     (root / "NEU-JWXT-Toolkit.exe").write_bytes(b"MZ")
@@ -132,12 +130,43 @@ def test_desktop_layout_rejects_missing_assets_and_extra_launchers(tmp_path):
     assert any(item.startswith("missing desktop bundle path:") for item in violations)
 
 
+def test_portable_desktop_rejects_installer_owned_files(tmp_path):
+    root = tmp_path / "portable"
+    root.mkdir()
+    _desktop_bundle(root)
+    (root / "unins000.exe").write_bytes(b"installer-owned")
+
+    assert "unexpected Inno installer files: unins000.exe" in find_structure_violations(root)
+
+
+def _server_bundle(root):
+    (root / "frontend" / "build").mkdir(parents=True)
+    (root / "VERSION").write_text("1.0.0", encoding="utf-8")
+    (root / "frontend" / "build" / "index.html").write_text(
+        '<div id="root"></div>', encoding="utf-8"
+    )
+    (root / "neu-jwxt-server").write_bytes(b"\x7fELF")
+
+
+def test_server_layout_accepts_nuitka_standalone_and_assembled_package(tmp_path):
+    standalone = tmp_path / "standalone"
+    standalone.mkdir()
+    _server_bundle(standalone)
+    assert find_structure_violations(standalone) == []
+
+    package = tmp_path / "package"
+    (package / "app").mkdir(parents=True)
+    _server_bundle(package / "app")
+    assert find_structure_violations(package) == []
+
+
 def test_installed_desktop_allows_only_expected_inno_uninstaller_files(
     tmp_path, capsys
 ):
     root = tmp_path / "installed"
     root.mkdir()
-    _desktop_bundle(root)
+    (root / "runtime").mkdir()
+    _desktop_bundle(root / "runtime")
     for name in ("unins000.exe", "unins000.dat", "unins000.msg"):
         (root / name).write_bytes(b"installer-owned")
 
@@ -166,18 +195,15 @@ def test_inspect_bundle_combines_data_and_structure_checks(tmp_path):
     assert violations == ["forbidden content: credentials.json"]
 
 
-def test_pyinstaller_specs_keep_inspectable_onedir_without_upx():
+def test_nuitka_build_keeps_inspectable_standalone_payload():
     project = Path(__file__).resolve().parents[2]
-    for name, noarchive in (
-        ("desktop.spec", "noarchive=True"),
-        ("server.spec", "noarchive=False"),
-    ):
-        text = (project / "packaging" / "pyinstaller" / name).read_text(
-            encoding="utf-8"
-        )
-        assert "hiddenimports=[]" in text
-        assert noarchive in text
-        assert "upx=False" in text
-        assert 'excludes=["pytest", "_pytest"]' in text
-        assert "COLLECT(" in text
-        assert "collect_submodules" not in text
+    text = (project / "packaging" / "nuitka" / "build.py").read_text(encoding="utf-8")
+    assert '"--mode=standalone"' in text
+    assert "--mode=onefile" not in text
+    assert "--include-data-dir=" in text
+    assert "--include-data-files=" in text
+    assert '"--include-package=uvicorn"' in text
+    assert '"--include-package-data=certifi"' in text
+    assert '"--nofollow-import-to=pytest"' in text
+    assert '"--nofollow-import-to=_pytest"' in text
+    assert '"--windows-console-mode=disable"' in text

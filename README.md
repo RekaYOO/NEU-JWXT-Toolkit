@@ -34,8 +34,8 @@
 ### Windows：本机应用
 
 > **注意：Windows 发行版当前未进行代码签名。** 首次运行安装器或便携版 EXE 时，
-> Windows Defender SmartScreen 可能提示“Windows 已保护你的电脑”、要求手动确认，
-> 或被单位管理策略直接拦截。请只从本项目 GitHub Releases 下载，并先按下文核对
+> Windows Defender SmartScreen 可能提示“Windows 已保护你的电脑”、需要点击更
+> 多信息并点击继续运行，请只从本项目 GitHub Releases 下载，并先按下文核对
 > `SHA256SUMS.txt`；项目不会要求用户关闭 Defender 或添加安全排除项。
 
 1. 下载 `NEU-JWXT-Toolkit-<版本>-windows-x64-setup.exe` 并完成安装；
@@ -92,7 +92,8 @@ Defender/SmartScreen 告警处理见
 2. 下载新版便携 ZIP，并完整解压到一个新的空目录。
 3. 从新目录运行 `NEU-JWXT-Toolkit.exe`，确认正常后再删除旧程序目录。
 
-不要在旧目录中只覆盖 EXE 或部分 `_internal` 文件。便携版的用户数据同样存放在
+不要在旧目录中只覆盖 EXE 或部分 DLL/PYD 文件，应完整解压并替换整个便携版目录。
+便携版的用户数据同样存放在
 `%LOCALAPPDATA%\NEU-JWXT-Toolkit\data`，因此无需手动复制数据目录。
 
 #### Linux 服务版

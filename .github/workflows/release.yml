@@ -106,8 +106,8 @@ jobs:
           name: web-build
           path: frontend/build
       - run: python -m pip install --disable-pip-version-check -r requirements-build.lock
-      - name: Build frozen desktop application
-        run: pyinstaller packaging/pyinstaller/desktop.spec --distpath dist --workpath build/pyinstaller --clean --noconfirm
+      - name: Compile standalone desktop application with Nuitka
+        run: python packaging/nuitka/build.py desktop
 
       - name: Create portable archive
         shell: pwsh
@@ -258,7 +258,7 @@ jobs:
           python tools/check_release_bundle.py --allow-installer-files $installRoot
           if ($LASTEXITCODE -ne 0) { throw "Installed bundle validation failed" }
 
-          $launcher = Join-Path $installRoot "NEU-JWXT-Toolkit.exe"
+          $launcher = Join-Path $installRoot "runtime\NEU-JWXT-Toolkit.exe"
           $instance = Join-Path $env:LOCALAPPDATA "NEU-JWXT-Toolkit\desktop-instance.json"
           $process = Start-Process -FilePath $launcher -WindowStyle Hidden -PassThru
           try {
@@ -341,7 +341,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $installRoot = Join-Path $env:RUNNER_TEMP "installed-final-smoke"
-          $launcher = Join-Path $installRoot "NEU-JWXT-Toolkit.exe"
+          $launcher = Join-Path $installRoot "runtime\NEU-JWXT-Toolkit.exe"
           $uninstaller = Join-Path $installRoot "unins000.exe"
           if (-not (Test-Path -LiteralPath $uninstaller)) {
             Write-Host "::notice::No installed uninstaller was found; the installer may not have completed."
@@ -397,8 +397,12 @@ jobs:
           name: web-build
           path: frontend/build
       - run: python -m pip install --disable-pip-version-check -r requirements-build.lock
-      - name: Build frozen server application
-        run: pyinstaller packaging/pyinstaller/server.spec --distpath dist --workpath build/pyinstaller --clean --noconfirm
+      - name: Install Linux compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential patchelf ccache
+      - name: Compile standalone server application with Nuitka
+        run: python packaging/nuitka/build.py server
 
       - name: Assemble normalized Linux archive
         shell: bash
@@ -432,6 +436,7 @@ jobs:
           tar -xzf "release/NEU-JWXT-Toolkit-$RELEASE_VERSION-linux-amd64.tar.gz" -C "$extract_root"
           package="$extract_root/neu-jwxt-toolkit"
           python tools/check_release_bundle.py "$package" "$package/app"
+          test "$("$package/app/neu-jwxt-server" --version)" = "$RELEASE_VERSION"
 
           config_root="$RUNNER_TEMP/neu-config"
           data_root="$RUNNER_TEMP/neu-data"

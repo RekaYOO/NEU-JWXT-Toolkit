@@ -25,7 +25,12 @@ def project_root() -> Path:
 
 def resource_root() -> Path:
     frozen_root = getattr(sys, "_MEIPASS", None)
-    return Path(frozen_root) if frozen_root else project_root()
+    if frozen_root:
+        return Path(frozen_root)
+    compiled = globals().get("__compiled__")
+    if getattr(compiled, "standalone", False):
+        return Path(sys.executable).resolve().parent
+    return project_root()
 
 
 def resource_path(*parts: str) -> Path:

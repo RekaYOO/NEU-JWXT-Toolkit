@@ -57,7 +57,7 @@ def find_forbidden(root: Path) -> list[Path]:
         relative = path.relative_to(root)
         parts_lower = tuple(part.lower() for part in relative.parts)
         if path.is_symlink():
-            # PyInstaller 6 uses relative symlinks extensively on POSIX. They
+            # Standalone POSIX bundles may contain relative library symlinks. They
             # are safe when they resolve to an existing target in this bundle;
             # `cp -a` and `tar` preserve them without dereferencing.
             if _unsafe_symlink(path, root):
@@ -79,16 +79,12 @@ def find_forbidden(root: Path) -> list[Path]:
     return sorted(set(found), key=lambda item: str(item).lower())
 
 
-def _desktop_layout_violations(
-    root: Path, allow_installer_files: bool
-) -> list[str]:
+def _desktop_payload_violations(root: Path) -> list[str]:
     violations: list[str] = []
     launcher = root / "NEU-JWXT-Toolkit.exe"
-    internal = root / "_internal"
     required = (
-        internal,
-        internal / "VERSION",
-        internal / "frontend" / "build" / "index.html",
+        root / "VERSION",
+        root / "frontend" / "build" / "index.html",
     )
     for path in required:
         if not path.exists():
@@ -100,15 +96,8 @@ def _desktop_layout_violations(
         for path in root.iterdir()
         if path.is_file() and INNO_INSTALLER_PATTERN.fullmatch(path.name)
     )
-    allowed_files = INNO_INSTALLER_FILES if allow_installer_files else set()
-    unexpected_installer_files = [
-        name for name in installer_files if name.lower() not in allowed_files
-    ]
-    if unexpected_installer_files:
-        violations.append(
-            "unexpected Inno installer files: "
-            + ", ".join(unexpected_installer_files)
-        )
+    if installer_files:
+        violations.append("unexpected Inno installer files: " + ", ".join(installer_files))
     extra_executables = sorted(
         path.name
         for path in root.glob("*.exe")
@@ -126,6 +115,48 @@ def _desktop_layout_violations(
     return violations
 
 
+def _installed_desktop_layout_violations(
+    root: Path, allow_installer_files: bool
+) -> list[str]:
+    violations = [
+        f"runtime/{item}" for item in _desktop_payload_violations(root / "runtime")
+    ]
+    installer_files = sorted(
+        path.name
+        for path in root.iterdir()
+        if path.is_file() and INNO_INSTALLER_PATTERN.fullmatch(path.name)
+    )
+    allowed_files = INNO_INSTALLER_FILES if allow_installer_files else set()
+    unexpected = [name for name in installer_files if name.lower() not in allowed_files]
+    if unexpected:
+        violations.append("unexpected Inno installer files: " + ", ".join(unexpected))
+    extra_executables = sorted(
+        path.name
+        for path in root.glob("*.exe")
+        if not INNO_INSTALLER_PATTERN.fullmatch(path.name)
+    )
+    if extra_executables:
+        violations.append("unexpected top-level executables: " + ", ".join(extra_executables))
+    scripts = sorted(
+        path.name for path in root.iterdir()
+        if path.is_file() and path.suffix.lower() in SCRIPT_SUFFIXES
+    )
+    if scripts:
+        violations.append("unexpected top-level launcher scripts: " + ", ".join(scripts))
+    return violations
+
+
+def _server_payload_violations(root: Path, executable: Path) -> list[str]:
+    violations: list[str] = []
+    required = (root / "VERSION", root / "frontend" / "build" / "index.html")
+    for path in required:
+        if not path.exists():
+            violations.append(f"missing server bundle path: {path.relative_to(root)}")
+    if not executable.is_file() or executable.read_bytes()[:4] != b"\x7fELF":
+        violations.append("server launcher is missing or is not an ELF executable")
+    return violations
+
+
 def find_structure_violations(
     root: Path,
     *,
@@ -133,14 +164,17 @@ def find_structure_violations(
 ) -> list[str]:
     """Validate a recognized frozen bundle without rejecting package wrappers."""
     if (root / "NEU-JWXT-Toolkit.exe").exists():
-        return _desktop_layout_violations(root, allow_installer_files)
-    # Linux frozen root or assembled package.
+        return _desktop_payload_violations(root)
+    if (root / "runtime" / "NEU-JWXT-Toolkit.exe").exists():
+        return _installed_desktop_layout_violations(root, allow_installer_files)
     server = root / "neu-jwxt-server"
     packaged_server = root / "app" / "neu-jwxt-server"
-    if server.exists() and not (root / "_internal").is_dir():
-        return ["frozen server bundle is missing _internal"]
-    if (root / "app").is_dir() and not packaged_server.is_file():
-        return ["assembled server package is missing app/neu-jwxt-server"]
+    if server.exists():
+        return _server_payload_violations(root, server)
+    if (root / "app").is_dir():
+        if not packaged_server.is_file():
+            return ["assembled server package is missing app/neu-jwxt-server"]
+        return [f"app/{item}" for item in _server_payload_violations(root / "app", packaged_server)]
     return []
 
 

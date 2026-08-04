@@ -22,6 +22,7 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName=NEU 教务工具箱
+UninstallDisplayIcon={app}\runtime\NEU-JWXT-Toolkit.exe
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
@@ -35,16 +36,17 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [InstallDelete]
 ; 用户数据位于独立的 %LOCALAPPDATA%\NEU-JWXT-Toolkit\data。
-; 升级前只清理冻结程序内部目录，避免旧版 Python 模块残留并被新版误加载。
+; 首个 Nuitka 版本继续清理旧 PyInstaller 载荷，并完整替换新的 runtime 目录。
 Type: filesandordirs; Name: "{app}\_internal"
 Type: files; Name: "{app}\NEU-JWXT-Toolkit.exe"
+Type: filesandordirs; Name: "{app}\runtime"
 
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\NEU 教务工具箱"; Filename: "{app}\NEU-JWXT-Toolkit.exe"
-Name: "{autodesktop}\NEU 教务工具箱"; Filename: "{app}\NEU-JWXT-Toolkit.exe"; Tasks: desktopicon
+Name: "{group}\NEU 教务工具箱"; Filename: "{app}\runtime\NEU-JWXT-Toolkit.exe"
+Name: "{autodesktop}\NEU 教务工具箱"; Filename: "{app}\runtime\NEU-JWXT-Toolkit.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\NEU-JWXT-Toolkit.exe"; Description: "启动 NEU 教务工具箱"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\runtime\NEU-JWXT-Toolkit.exe"; Description: "启动 NEU 教务工具箱"; Flags: nowait postinstall skipifsilent

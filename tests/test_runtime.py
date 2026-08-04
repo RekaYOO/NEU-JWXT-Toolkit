@@ -101,6 +101,22 @@ def test_runtime_data_dir_override(monkeypatch, tmp_path):
     assert config.data_dir.is_dir()
 
 
+def test_resource_root_uses_nuitka_standalone_executable_directory(monkeypatch, tmp_path):
+    from backend.core.runtime import config as runtime_config
+
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    executable = tmp_path / "python.exe"
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setattr(
+        runtime_config,
+        "__compiled__",
+        SimpleNamespace(standalone=True),
+        raising=False,
+    )
+
+    assert runtime_config.resource_root() == tmp_path
+
+
 def test_server_config_is_loaded(monkeypatch, tmp_path):
     password_data = hash_access_password("server-password")
     config_path = tmp_path / "config.json"
@@ -369,6 +385,11 @@ def test_windows_upgrade_cleans_only_frozen_program_internals():
     ).read_text(encoding="utf-8")
 
     assert "[InstallDelete]" in installer
+    # Keep one-cycle cleanup for pre-Nuitka installations, then atomically
+    # replace the current standalone runtime directory.
     assert 'Name: "{app}\\_internal"' in installer
+    assert 'Name: "{app}\\runtime"' in installer
+    assert 'DestDir: "{app}\\runtime"' in installer
+    assert 'Filename: "{app}\\runtime\\NEU-JWXT-Toolkit.exe"' in installer
     assert "%LOCALAPPDATA%\\NEU-JWXT-Toolkit\\data" in installer
     assert "cache.db" not in installer

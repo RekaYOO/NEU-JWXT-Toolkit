@@ -334,7 +334,7 @@ def _open_when_ready(url: str) -> None:
 
 
 def main() -> int:
-    # Windowed PyInstaller executables intentionally have no console streams.
+    # Windowed frozen executables intentionally have no console streams.
     # Give application loggers a harmless sink so an incidental log record can
     # never abort the background service.
     if sys.stdout is None:
@@ -405,7 +405,7 @@ def main() -> int:
     if os.environ.get("NEU_JWXT_NO_BROWSER") != "1":
         threading.Thread(target=_open_when_ready, args=(url,), daemon=True).start()
 
-    # A PyInstaller windowed executable has no stdout/stderr. Uvicorn's default
+    # A windowed frozen executable has no stdout/stderr. Uvicorn's default
     # formatter probes stderr.isatty(), which crashes before the server starts.
     server.run()
     return 0

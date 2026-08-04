@@ -2,7 +2,7 @@
 
 ## 版本来源
 
-根目录 `VERSION` 是发行版本的唯一来源。后端健康检查、PyInstaller 程序和发行文件名均从该文件读取。Git 标签必须使用相同版本并带 `v` 前缀，例如 `VERSION` 为 `1.4.0` 时使用标签 `v1.4.0`。
+根目录 `VERSION` 是发行版本的唯一来源。后端健康检查、Nuitka 程序和发行文件名均从该文件读取。Git 标签必须使用相同版本并带 `v` 前缀，例如 `VERSION` 为 `1.4.0` 时使用标签 `v1.4.0`。
 
 项目定义三种运行模式：
 
@@ -29,7 +29,7 @@ python -m pip install -r requirements-build.lock
 Windows：
 
 ```powershell
-pyinstaller packaging/pyinstaller/desktop.spec --clean --noconfirm
+python packaging/nuitka/build.py desktop
 $version = (Get-Content VERSION -Raw).Trim()
 $translation = Join-Path $env:TEMP "ChineseSimplified.isl"
 Invoke-WebRequest `
@@ -49,31 +49,32 @@ ISCC.exe `
 Linux：
 
 ```bash
-pyinstaller packaging/pyinstaller/server.spec --clean --noconfirm
+sudo apt-get install build-essential patchelf ccache
+python packaging/nuitka/build.py server
 ```
 
-PyInstaller 使用 `onedir`，前端构建被复制进冻结目录。Windows 的同一 `onedir`
-既用于便携 ZIP，也由 Inno Setup 生成按用户安装器；Linux 的 `onedir` 与安装脚本、
-systemd 单元和反代示例一起进入 `tar.gz`。
+Nuitka 使用 `standalone`，前端构建和 `VERSION` 被复制进独立载荷目录。Windows 的同一
+载荷既用于便携 ZIP，也由 Inno Setup 安装到 `runtime` 子目录；Linux 载荷与安装脚本、
+systemd 单元和反代示例一起进入 `tar.gz`。不使用 `onefile`，以便检查依赖并降低启动时
+解包的复杂度。
 
 Windows 冻结载荷采用以下可审计打包策略：
 
-- 关闭 UPX，不对可执行文件和依赖做额外可执行压缩；
-- 启用 PyInstaller `noarchive`，将 Python 字节码作为 `_internal` 下的外置模块，
-  而不是集中进单个 PYZ；
-- 保持 `onedir` 目录布局，启动器之外的运行库、前端和版本文件均可单独检查。
+- 使用 Nuitka 将应用模块编译为本机模块，依赖 DLL/PYD 保持为外置文件；
+- 不启用 `onefile`、UPX 或额外可执行压缩；
+- 入口程序之外的运行库、前端和版本文件均可单独检查。
 
 这些选择用于提高产物的可检查性、故障定位能力和构建透明度，不是规避杀毒软件，
 也不会改变程序行为或保证安全软件不告警。Windows 安装版复用同一冻结载荷，因此同样
-具备这些属性。Linux 服务版仍为 `onedir` 且关闭 UPX，但保留 PYZ，以控制服务包的
-文件数量；其审计边界是源码、最终 tar 包、校验和与构建来源证明。
+具备这些属性。Linux 服务版同样使用 `standalone`；其审计边界是源码、最终 tar 包、
+校验和与构建来源证明。
 
 1.4.5 与 1.4.6 使用了相同的旧版 PyInstaller spec；同一台 Windows 主机和同一组
 Defender 安全智能下，官方 1.4.5 启动器未检出，而官方 1.4.6 启动器被启发式检测为
 `Program:Win32/Wacapew.A!ml`。两版之间主要变化是业务载荷显著增加，并非 spec 切换。
-这说明问题不是简单的下载来源差异，也不能仅用“未签名”解释；旧布局把全部模块集中进
-较大的不透明归档，使无害业务变化也可能跨过机器学习检测阈值。当前外置模块策略用于
-消除这种脆弱的聚合形态。结论以同机扫描和最终发行产物复验为准，不把“本次未检出”
+这说明问题不是简单的下载来源差异，也不能仅用“未签名”解释。项目从后续版本改用
+Nuitka standalone，以避免继续依赖原冻结布局，并让运行库和资源保持可检查。结论仍以
+同机扫描和最终发行产物复验为准，不把“本次未检出”
 扩展成长期安全保证。
 
 ## 自动化
