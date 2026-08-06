@@ -34,6 +34,13 @@ from .festival_activities import (
     FestivalActivitiesResponse,
     FestivalActivityModel,
 )
+from .course_selection import (
+    CourseMarketModel,
+    CourseMarketSnapshotModel,
+    CourseSelectionOptimizeRequest,
+    CourseSelectionOptimizeResponse,
+    CourseSelectionPolicyModel,
+)
 
 __all__ = [
     "LoginRequest", "LoginResponse", "WebVPNQRStartRequest", "WebVPNQRStatusRequest",
@@ -49,5 +56,8 @@ __all__ = [
     "ResearchFavoriteRequest", "ResearchFavoriteResponse",
     "ResearchCacheResponse", "ResearchChangeSummary",
     "CertificateArchiveRequest", "FestivalActivitiesResponse", "FestivalActivityModel",
+    "CourseMarketModel", "CourseMarketSnapshotModel",
+    "CourseSelectionOptimizeRequest", "CourseSelectionOptimizeResponse",
+    "CourseSelectionPolicyModel",
 ]
 from .tracking import GradeTrackingConfigUpdate

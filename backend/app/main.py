@@ -29,7 +29,7 @@ from backend.app.dependencies import (
     _log_config,
     peek_auth_client,
 )
-from backend.app.routers import auth, cache, scores, logs, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking, festival_activities
+from backend.app.routers import auth, cache, scores, logs, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking, festival_activities, course_selection
 from backend.core.runtime import get_runtime_config, resource_path
 from backend.core.runtime.access import AccessGatewayMiddleware
 
@@ -105,6 +105,7 @@ app.include_router(exam.router, prefix="/api")
 app.include_router(offline.router, prefix="/api/offline")
 app.include_router(research.router, prefix="/api")
 app.include_router(festival_activities.router, prefix="/api")
+app.include_router(course_selection.router, prefix="/api")
 app.include_router(tracking.router, prefix="/api/grade-tracking")
 app.include_router(runtime.router)
 
