@@ -142,7 +142,7 @@ def test_remote_routes_use_the_shared_session_dependency():
     assert "with remote_session_guard():" in auth
 
 
-def test_remote_mutations_declare_no_retry_and_invalidations():
+def test_remote_mutations_declare_no_retry_and_consistency_action():
     expected = {
         "research.enroll",
         "research.cancel",
@@ -153,7 +153,8 @@ def test_remote_mutations_declare_no_retry_and_invalidations():
     }
     assert set(MUTATION_POLICIES) == expected
     assert all(
-        policy.automatic_retry is False and policy.invalidations
+        policy.automatic_retry is False
+        and (policy.invalidations or policy.refetches)
         for policy in MUTATION_POLICIES.values()
     )
     route_sources = "\n".join(

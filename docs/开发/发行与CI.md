@@ -89,7 +89,8 @@ Nuitka standalone，以避免继续依赖原冻结布局，并让运行库和资
 
 ## 自动化
 
-`.github/workflows/ci.yml` 在 push 和 pull request 上运行：
+`.github/workflows/ci.yml` 在 `main` push 和 pull request 上运行。功能分支由 PR 事件验证，
+不再同时为同一个提交运行 branch-push 与 PR 两套检查；合并后的 `main` 再运行一次：
 
 - 后端测试；
 - 前端交互与业务规则测试；
@@ -108,7 +109,8 @@ Windows 安装器编译器固定从 Inno Setup 官方 GitHub Release 下载 6.7.
 或 runner 预装状态。升级 Inno Setup 时必须同时核对官方资产 URL、摘要和安装参数。
 
 1. 校验 `VERSION` 格式以及标签与版本的一致性；
-2. 只构建一次 React 静态资源并在任务间传递；
+2. 构建一次 Release 专用 React 静态资源并作为同一 workflow 的 `web-build` 传给两个
+   平台任务；Release 不重复执行普通 CI 已覆盖的后端测试、前端测试和源码编译检查；
 3. 分别构建 Windows x64 与 Linux amd64 冻结程序；
 4. 对三条最终产物路径分别验收：
    - 便携 ZIP 解压到新临时目录后，检查目录结构和敏感数据，再验证健康检查、首页、
@@ -125,6 +127,8 @@ Windows 安装器编译器固定从 Inno Setup 官方 GitHub Release 下载 6.7.
 
 手动触发工作流只构建并保留 Actions 产物，不自动创建 Release；为避免同名候选包与已
 发布文件混淆，`VERSION` 对应的远端标签已经存在时会拒绝手动构建，需先升级版本号。
+为保持流程简单，Release 不跨 workflow 查询 CI 状态或下载历史产物；分支保护负责确保
+主分支合入前通过 CI，发布者必须只从已通过 CI 的 `main` 提交创建正式标签。
 
 上述自动化验证的是特定 GitHub runner 上的成品布局和核心启动流程，不能替代所有
 Windows 版本、企业安全策略、代理配置和真实升级场景的人工验收。

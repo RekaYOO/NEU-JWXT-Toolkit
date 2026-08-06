@@ -8,7 +8,7 @@ from typing import List
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends
 
-from backend.app.dependencies import _storage, _api_logger, get_gpa_simulation_dir
+from backend.app.dependencies import get_api_logger, get_gpa_simulation_dir
 from backend.app.schemas import GPASimulationExportRequest, GPASimulationFile
 from backend.core.auth import NEUAuthClient
 from backend.app.dependencies import require_cached_auth_identity
@@ -93,7 +93,11 @@ def export_gpa_simulation(
             if os.path.exists(temporary_name):
                 os.unlink(temporary_name)
 
-        _api_logger.info(f"[GPA-Sim] 导出成功: {safe_filename}, user={auth.username}")
+        get_api_logger().info(
+            "[GPA-Sim] 导出成功: %s, user=%s",
+            safe_filename,
+            auth.username,
+        )
         return {
             "success": True,
             "filename": safe_filename,
@@ -187,7 +191,11 @@ def delete_gpa_simulation_file(
 
         _read_owned_file(filepath, auth.username)
         os.remove(filepath)
-        _api_logger.info(f"[GPA-Sim] 删除文件: {safe_filename}, user={auth.username}")
+        get_api_logger().info(
+            "[GPA-Sim] 删除文件: %s, user=%s",
+            safe_filename,
+            auth.username,
+        )
         return {"success": True, "message": "文件已删除"}
     except HTTPException:
         raise

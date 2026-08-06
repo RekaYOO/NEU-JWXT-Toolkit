@@ -28,7 +28,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "interval_minutes": 30,
     "start_hour": 9,
     "end_hour": 21,
-    "notify_initial": True,
     "site_url": "",
     "smtp_host": "",
     "smtp_port": 465,
@@ -100,6 +99,7 @@ class GradeTrackingService:
         self._recovery_client: Any | None = None
         self._recovery_flow: dict[str, Any] | None = None
         self._config = {**DEFAULT_CONFIG, **self._read_json(self.config_path, {})}
+        self._config.pop("notify_initial", None)
         try:
             interval = int(self._config.get("interval_minutes", 30))
         except (TypeError, ValueError):
@@ -111,6 +111,41 @@ class GradeTrackingService:
             {"messages": []},
         ).get("messages", [])
         self._outbox = list(messages) if isinstance(messages, list) else []
+        # Keep the pending activation intent beside ``enabled`` so one atomic
+        # config write records the complete switch transition.  Migrate the
+        # earlier state marker (or a queued activation message) in memory.
+        legacy_activation_id = str(
+            self._state.pop("initial_notification_id", None) or ""
+        )
+        queued_activation_id = next(
+            (
+                str(item.get("dedupe_key") or "").removeprefix("activation:")
+                for item in self._outbox
+                if str(item.get("dedupe_key") or "").startswith("activation:")
+            ),
+            "",
+        )
+        if (
+            queued_activation_id
+            and queued_activation_id
+            == str(self._config.get("_activation_delivered_id") or "")
+        ):
+            queued_activation_id = ""
+        if self._config.get("enabled") and not self._config.get("_activation_id"):
+            activation_id = legacy_activation_id or queued_activation_id
+            if activation_id:
+                self._config["_activation_id"] = activation_id
+        if (
+            self._config.get("enabled")
+            and self._config.get("_activation_id")
+            and self._state.get("stage") == "disabled"
+        ):
+            self._state.update(
+                stage="scheduled",
+                message="成绩追踪已启用，正在准备初始邮件",
+                next_check_at=_iso(),
+                last_error=None,
+            )
 
     @staticmethod
     def _read_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -162,7 +197,11 @@ class GradeTrackingService:
 
     def get_config(self) -> dict[str, Any]:
         with self._lock:
-            result = {key: value for key, value in self._config.items() if key != "smtp_password"}
+            result = {
+                key: value
+                for key, value in self._config.items()
+                if key != "smtp_password" and not key.startswith("_")
+            }
             result["smtp_password_configured"] = bool(self._config.get("smtp_password"))
             return result
 
@@ -175,29 +214,61 @@ class GradeTrackingService:
             }
 
     def update_config(self, values: dict[str, Any]) -> dict[str, Any]:
-        site_url_changed = False
+        incoming = dict(values)
+        # Removed setting: every disabled -> enabled transition now schedules
+        # one initial notification unconditionally.
+        incoming.pop("notify_initial", None)
+        incoming.pop("_activation_id", None)
         with self._lock:
             previous_site_url = str(self._config.get("site_url", "")).strip()
-            password = values.pop("smtp_password", None)
-            clear_password = values.pop("clear_smtp_password", False)
-            self._config.update(values)
+            previously_enabled = bool(self._config.get("enabled"))
+            candidate = self._config.copy()
+            password = incoming.pop("smtp_password", None)
+            clear_password = incoming.pop("clear_smtp_password", False)
+            candidate.update(incoming)
             if password:
-                self._config["smtp_password"] = password
+                candidate["smtp_password"] = password
             elif clear_password:
-                self._config["smtp_password"] = ""
-            self._validate_config(self._config, require_complete=bool(self._config["enabled"]))
+                candidate["smtp_password"] = ""
+            if candidate.get("enabled") and not previously_enabled:
+                candidate["_activation_id"] = str(uuid.uuid4())
+            elif not candidate.get("enabled"):
+                candidate.pop("_activation_id", None)
+            self._validate_config(candidate, require_complete=bool(candidate["enabled"]))
             site_url_changed = (
-                str(self._config.get("site_url", "")).strip() != previous_site_url
+                str(candidate.get("site_url", "")).strip() != previous_site_url
             )
-            self._write_json(self.config_path, self._config)
+            self._write_json(self.config_path, candidate)
+            self._config = candidate
             if self._config["enabled"]:
-                self._state.update(
-                    stage="scheduled",
-                    message="成绩追踪已启用，等待下一次检查",
-                    next_check_at=_iso(),
-                    last_error=None,
-                )
+                if not previously_enabled:
+                    self._outbox = [
+                        item
+                        for item in self._outbox
+                        if not str(item.get("dedupe_key") or "").startswith(
+                            "activation:"
+                        )
+                    ]
+                    self._save_outbox()
+                # Config saves and idempotent PATCH true must preserve
+                # waiting_login/monitoring.  ``disabled`` is also accepted as
+                # recovery from a prior auxiliary state-file write failure.
+                if not previously_enabled or self._state.get("stage") == "disabled":
+                    self._state.update(
+                        stage="scheduled",
+                        message="成绩追踪已启用，正在准备初始邮件",
+                        next_check_at=_iso(),
+                        last_error=None,
+                    )
             else:
+                self._outbox = [
+                    item
+                    for item in self._outbox
+                    if not str(item.get("dedupe_key") or "").startswith(
+                        "activation:"
+                    )
+                ]
+                self._save_outbox()
                 self._state.update(
                     stage="disabled",
                     message="成绩追踪未启用",
@@ -322,9 +393,18 @@ class GradeTrackingService:
         while not self._stop.is_set():
             try:
                 with self._lock:
+                    activation_at_head = bool(
+                        self._outbox
+                        and str(self._outbox[0].get("dedupe_key") or "").startswith(
+                            "activation:"
+                        )
+                    )
                     may_notify = bool(
                         self._config.get("enabled")
-                        and self._within_window(_now())
+                        and (
+                            self._within_window(_now())
+                            or activation_at_head
+                        )
                     )
                 if may_notify:
                     self._flush_outbox()
@@ -340,6 +420,17 @@ class GradeTrackingService:
         with self._lock:
             if not self._config.get("enabled"):
                 return False
+            activation_key = f"activation:{self._config.get('_activation_id', '')}"
+            activation_already_queued = any(
+                str(item.get("dedupe_key") or "") == activation_key
+                for item in self._outbox
+            )
+            if (
+                self._config.get("_activation_id")
+                and not activation_already_queued
+                and self._state.get("stage") == "scheduled"
+            ):
+                return True
             now = _now()
             if not self._within_window(now):
                 self._state.update(
@@ -779,11 +870,27 @@ class GradeTrackingService:
                 return {"change_count": 0}
             if str(self._state.get("account_id") or "") != str(account_id):
                 return {"change_count": 0}
-            if not self._within_window(_now()):
+            configured_activation_id = str(
+                self._config.get("_activation_id") or ""
+            )
+            activation_key = f"activation:{configured_activation_id}"
+            activation_id = (
+                configured_activation_id
+                if configured_activation_id
+                and not any(
+                    str(item.get("dedupe_key") or "") == activation_key
+                    for item in self._outbox
+                )
+                else ""
+            )
+            if not activation_id and not self._within_window(_now()):
                 self._state["pending_revision"] = revision
                 self._save_state()
                 return {"change_count": 0}
-            if self._state.get("last_seen_revision") == revision:
+            if (
+                not activation_id
+                and self._state.get("last_seen_revision") == revision
+            ):
                 return {"change_count": 0}
             config = self._config.copy()
         snapshot = self._build_snapshot(
@@ -806,11 +913,16 @@ class GradeTrackingService:
 
         should_notify = bool(config.get("enabled"))
         notification = None
-        if (
-            should_notify
-            and not previous
-            and config.get("notify_initial")
-        ):
+        if should_notify and activation_id:
+            notification = (
+                "[NEU 成绩追踪] 已开启并完成初始同步",
+                self._initial_email(
+                    snapshot,
+                    opening="成绩追踪已开启，并完成本次初始成绩同步。",
+                ),
+                f"activation:{activation_id}",
+            )
+        elif should_notify and not previous:
             notification = (
                 "[NEU 成绩追踪] 首次成绩同步完成",
                 self._initial_email(snapshot),
@@ -853,11 +965,22 @@ class GradeTrackingService:
         self._write_json(self.snapshot_path, snapshot)
 
         with self._lock:
+            current_activation_id = str(self._config.get("_activation_id") or "")
+            activation_is_current = bool(
+                activation_id
+                and self._config.get("enabled")
+                and current_activation_id == activation_id
+            )
             self._state["last_seen_revision"] = revision
             self._state.pop("pending_revision", None)
             if (
                 notification
-                and self._state.get("last_notified_revision") != revision
+                and self._config.get("enabled")
+                and (
+                    activation_is_current
+                    or self._state.get("last_notified_revision") != revision
+                )
+                and (not activation_id or activation_is_current)
             ):
                 self._queue_email(*notification)
                 self._state["last_notified_revision"] = revision
@@ -917,10 +1040,15 @@ class GradeTrackingService:
     def _format_course_with_detail(cls, item: dict[str, Any]) -> str:
         return f"{cls._format_course(item)}\n  分项成绩：{cls._format_score_detail(item)}"
 
-    def _initial_email(self, snapshot: dict[str, Any]) -> str:
+    def _initial_email(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        opening: str = "成绩追踪已完成首次同步。",
+    ) -> str:
         rows = "\n".join(f"- {self._format_course(item)}" for item in snapshot["courses"]) or "无"
         return (
-            "成绩追踪已完成首次同步。\n\n"
+            f"{opening}\n\n"
             f"课程数：{len(snapshot['courses'])}\n"
             f"总 GPA：{snapshot.get('overall_gpa') if snapshot.get('overall_gpa') is not None else '未知'}\n\n"
             f"{rows}\n\n检查时间：{snapshot['updated_at']}"
@@ -990,16 +1118,18 @@ class GradeTrackingService:
         with self._lock:
             if any(item.get("dedupe_key") == dedupe_key for item in self._outbox):
                 return
-            self._outbox.append(
-                {
-                    "id": str(uuid.uuid4()),
-                    "dedupe_key": dedupe_key,
-                    "subject": subject,
-                    "body": body,
-                    "created_at": _iso(),
-                    "attempts": 0,
-                }
-            )
+            message = {
+                "id": str(uuid.uuid4()),
+                "dedupe_key": dedupe_key,
+                "subject": subject,
+                "body": body,
+                "created_at": _iso(),
+                "attempts": 0,
+            }
+            if dedupe_key.startswith("activation:"):
+                self._outbox.insert(0, message)
+            else:
+                self._outbox.append(message)
             self._save_outbox()
 
     def _flush_outbox(self) -> None:
@@ -1008,6 +1138,14 @@ class GradeTrackingService:
                 return
             config = self._config.copy()
             message = self._outbox[0].copy()
+            dedupe_key = str(message.get("dedupe_key") or "")
+            if dedupe_key.startswith("activation:") and (
+                not config.get("enabled")
+                or dedupe_key != f"activation:{config.get('_activation_id', '')}"
+            ):
+                self._outbox.pop(0)
+                self._save_outbox()
+                return
         try:
             self._validate_config(config, require_complete=True)
             self._send_email(config, message["subject"], message["body"])
@@ -1021,6 +1159,14 @@ class GradeTrackingService:
             return
         with self._lock:
             if self._outbox and self._outbox[0]["id"] == message["id"]:
+                if dedupe_key.startswith("activation:"):
+                    activation_id = dedupe_key.removeprefix("activation:")
+                    if str(self._config.get("_activation_id") or "") == activation_id:
+                        candidate = self._config.copy()
+                        candidate.pop("_activation_id", None)
+                        candidate["_activation_delivered_id"] = activation_id
+                        self._write_json(self.config_path, candidate)
+                        self._config = candidate
                 self._outbox.pop(0)
                 self._state["last_notification_at"] = _iso()
                 self._save_outbox()

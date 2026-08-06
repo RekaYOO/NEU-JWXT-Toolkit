@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 from backend.app.routers import experiment
+from backend.app.schemas import ExperimentCourseMutationRequest
+from backend.core.academic.experiment import ExperimentCourseAPI
 
 
 class _Registry:
@@ -20,17 +22,17 @@ class _Coordinator:
 
 
 def _request():
-    return {
-        "term": "2025-2026-2",
-        "task_id": "task",
-        "project_code": "project",
-        "round_id": "round",
-    }
+    return ExperimentCourseMutationRequest(
+        term="2025-2026-2",
+        task_id="task",
+        project_code="project",
+        round_id="round",
+    )
 
 
 def test_experiment_success_invalidates_declared_cache(monkeypatch):
     coordinator = _Coordinator()
-    monkeypatch.setattr(experiment, "_cache_coordinator", coordinator)
+    monkeypatch.setattr(experiment, "get_cache_coordinator", lambda: coordinator)
     monkeypatch.setattr(
         experiment,
         "ExperimentCourseAPI",
@@ -50,7 +52,7 @@ def test_experiment_success_invalidates_declared_cache(monkeypatch):
 
 def test_experiment_failure_does_not_invalidate_cache(monkeypatch):
     coordinator = _Coordinator()
-    monkeypatch.setattr(experiment, "_cache_coordinator", coordinator)
+    monkeypatch.setattr(experiment, "get_cache_coordinator", lambda: coordinator)
     monkeypatch.setattr(
         experiment,
         "ExperimentCourseAPI",
@@ -65,3 +67,18 @@ def test_experiment_failure_does_not_invalidate_cache(monkeypatch):
 
     assert result["code"] == "-1"
     assert coordinator.invalidated == []
+
+
+def test_experiment_remote_exception_is_not_returned_to_caller():
+    class Client:
+        def post(self, *_args, **_kwargs):
+            raise RuntimeError("ticket=secret-value")
+
+    api = ExperimentCourseAPI(Client())
+
+    selected = api.select("term", "task", "project", "round")
+    deselected = api.deselect("term", "task", "project", "round")
+
+    assert selected == {"code": "-1", "msg": "远端选课请求失败"}
+    assert deselected == {"code": "-1", "msg": "远端退课请求失败"}
+    assert "secret-value" not in str(selected) + str(deselected)

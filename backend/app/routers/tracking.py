@@ -1,8 +1,8 @@
 """Grade tracking configuration, status, and manual actions."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from backend.app.dependencies import _grade_tracker
+from backend.app.dependencies import get_grade_tracker
 from backend.app.schemas.tracking import (
     GradeTrackingConfigUpdate,
     GradeTrackingEnabledUpdate,
@@ -20,16 +20,19 @@ def _recovery_error(error: Exception) -> HTTPException:
 
 
 @router.get("/config")
-def get_tracking_config():
-    return _grade_tracker.get_config()
+def get_tracking_config(tracker=Depends(get_grade_tracker)):
+    return tracker.get_config()
 
 
 @router.put("/config")
-def update_tracking_config(payload: GradeTrackingConfigUpdate):
+def update_tracking_config(
+    payload: GradeTrackingConfigUpdate,
+    tracker=Depends(get_grade_tracker),
+):
     try:
         return {
             "success": True,
-            "config": _grade_tracker.update_config(
+            "config": tracker.update_config(
                 payload.model_dump(exclude_none=True)
             ),
         }
@@ -38,25 +41,28 @@ def update_tracking_config(payload: GradeTrackingConfigUpdate):
 
 
 @router.patch("/enabled")
-def update_tracking_enabled(payload: GradeTrackingEnabledUpdate):
+def update_tracking_enabled(
+    payload: GradeTrackingEnabledUpdate,
+    tracker=Depends(get_grade_tracker),
+):
     try:
         return {
             "success": True,
-            "config": _grade_tracker.set_enabled(payload.enabled),
+            "config": tracker.set_enabled(payload.enabled),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.get("/status")
-def get_tracking_status():
-    return _grade_tracker.get_status()
+def get_tracking_status(tracker=Depends(get_grade_tracker)):
+    return tracker.get_status()
 
 
 @router.post("/check")
-def check_grades_now():
+def check_grades_now(tracker=Depends(get_grade_tracker)):
     try:
-        return {"success": True, "result": _grade_tracker.check_now()}
+        return {"success": True, "result": tracker.check_now()}
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except Exception as error:
@@ -65,9 +71,9 @@ def check_grades_now():
 
 
 @router.post("/test-email")
-def test_tracking_email():
+def test_tracking_email(tracker=Depends(get_grade_tracker)):
     try:
-        _grade_tracker.test_email()
+        tracker.test_email()
         return {"success": True, "message": "测试邮件已发送"}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -77,9 +83,9 @@ def test_tracking_email():
 
 
 @router.get("/recovery/{token}/status")
-def get_recovery_status(token: str):
+def get_recovery_status(token: str, tracker=Depends(get_grade_tracker)):
     try:
-        return _grade_tracker.get_recovery_status(token)
+        return tracker.get_recovery_status(token)
     except Exception as error:
         if not isinstance(error, ValueError):
             log_application_error("tracking.recovery_status", error, 503)
@@ -87,9 +93,9 @@ def get_recovery_status(token: str):
 
 
 @router.post("/recovery/{token}/start")
-def start_recovery_login(token: str):
+def start_recovery_login(token: str, tracker=Depends(get_grade_tracker)):
     try:
-        result = _grade_tracker.start_recovery_login(token)
+        result = tracker.start_recovery_login(token)
         log_security_event("tracking_recovery_login", "pending", auth_method="recovery_qr")
         return result
     except Exception as error:
@@ -106,9 +112,9 @@ def start_recovery_login(token: str):
 
 
 @router.get("/recovery/{token}/poll")
-def poll_recovery_login(token: str):
+def poll_recovery_login(token: str, tracker=Depends(get_grade_tracker)):
     try:
-        result = _grade_tracker.poll_recovery_login(token)
+        result = tracker.poll_recovery_login(token)
         if isinstance(result, dict) and result.get("status") == "authenticated":
             log_security_event("tracking_recovery_login", "success", auth_method="recovery_qr")
         return result

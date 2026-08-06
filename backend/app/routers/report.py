@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 
-from backend.app.dependencies import _storage
+from backend.app.dependencies import get_storage
 from backend.app.schemas import AcademicReportResponse
 from backend.core.auth import NEUAuthClient
 from backend.app.dependencies import (
@@ -209,7 +209,10 @@ def export_academic_report(
         if report is None:
             raise HTTPException(status_code=500, detail="获取培养计划失败")
 
-        files = auth.academic_report.export_to_csv(report, output_dir=_storage.config.data_dir)
+        files = auth.academic_report.export_to_csv(
+            report,
+            output_dir=get_storage().config.data_dir,
+        )
 
         return {
             "success": True,

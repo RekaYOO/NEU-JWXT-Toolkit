@@ -21,9 +21,12 @@ from backend.app.dependencies import (
 from backend.app.schemas.festival_activities import CertificateArchiveRequest, FestivalActivitiesResponse
 from backend.core.auth import NEUAuthClient
 from backend.core.festival_activities import fetch_festival_activities
+from backend.app.presenters import festival_cache_response, festival_remote_response
 
 
 router = APIRouter()
+# One-cycle compatibility for callers of the former router-local presenter.
+_remote_response = festival_remote_response
 MAX_CERTIFICATES = 200
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_ARCHIVE_IMAGE_BYTES = 100 * 1024 * 1024
@@ -43,31 +46,9 @@ def _username(auth: NEUAuthClient) -> str:
     return value
 
 
-def _remote_response(username: str, payload: dict) -> dict:
-    public_fields = {
-        "id", "section", "name", "team_name", "status", "category", "type",
-        "award", "sign_in", "sign_out", "certificate_available",
-        "registration_time", "activity_time", "start_time", "duration",
-        "department", "location", "notes", "description",
-    }
-    activities = [
-        {key: value for key, value in item.items() if key in public_fields}
-        for item in (payload.get("activities") or []) if isinstance(item, dict)
-    ]
-    return {"available": True, "username": username, "source": "remote",
-            "activities": activities, "warnings": payload.get("warnings") or [],
-            "total": len(activities), "cache": None}
-
-
 def _cache_response(username: str, entry, stale: bool, source: str = "cache") -> dict:
-    if not entry:
-        return {"available": False, "username": username, "source": source,
-                "activities": [], "warnings": [], "total": 0, "cache": None}
-    payload = entry.payload if isinstance(entry.payload, dict) else {}
-    result = _remote_response(username, payload)
-    result["source"] = source
-    result["cache"] = entry.metadata(is_stale=stale)
-    return result
+    """Compatibility wrapper; shared mapping lives in app.presenters."""
+    return festival_cache_response(username, entry, stale, source)
 
 
 @router.get("/export/festival-activities/cache", response_model=FestivalActivitiesResponse)
@@ -107,7 +88,7 @@ def get_festival_activities(
     response.headers["Cache-Control"] = "no-store"
     username = _username(auth)
     payload = fetch_festival_activities(auth)
-    return _remote_response(username, payload)
+    return festival_remote_response(username, payload)
 
 
 def _safe_certificate_path(value: str) -> str:

@@ -10,21 +10,27 @@ class MutationPolicy:
     operation: str
     automatic_retry: bool
     invalidations: tuple[str, ...]
+    refetches: tuple[str, ...]
 
     def validate(self) -> None:
         if not self.operation.strip():
             raise ValueError("mutation operation is required")
-        if not self.invalidations:
+        if not self.invalidations and not self.refetches:
             raise ValueError(
-                f"mutation {self.operation!r} must declare invalidations"
+                f"mutation {self.operation!r} must declare a consistency action"
             )
 
 
-def _policy(operation: str, *invalidations: str) -> MutationPolicy:
+def _policy(
+    operation: str,
+    *invalidations: str,
+    refetches: tuple[str, ...] = (),
+) -> MutationPolicy:
     policy = MutationPolicy(
         operation=operation,
         automatic_retry=False,
         invalidations=tuple(invalidations),
+        refetches=refetches,
     )
     policy.validate()
     return policy
@@ -45,15 +51,11 @@ MUTATION_POLICIES = {
     ),
     "evaluation.submit": _policy(
         "evaluation.submit",
-        "evaluation-tasks",
-        "evaluation-courses",
-        "evaluation-indicators",
+        refetches=("evaluation-tasks", "evaluation-courses"),
     ),
     "evaluation.batch": _policy(
         "evaluation.batch",
-        "evaluation-tasks",
-        "evaluation-courses",
-        "evaluation-indicators",
+        refetches=("evaluation-tasks", "evaluation-courses"),
     ),
 }
 
@@ -63,4 +65,3 @@ def mutation_policy(operation: str) -> MutationPolicy:
         return MUTATION_POLICIES[operation]
     except KeyError as error:
         raise KeyError(f"undeclared mutation operation: {operation}") from error
-

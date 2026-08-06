@@ -1555,12 +1555,6 @@ const AcademicReportPage = ({ offlineMode = false }) => {
       </Row>
       </div>
       
-      {/* 底部信息 */}
-      <div className="footer-info" style={{ marginTop: 16, textAlign: 'center' }}>
-        <Text type="secondary">
-          <ClockCircleOutlined /> 培养计划更新时间: {report.calculated_time || '-'}
-        </Text>
-      </div>
       <MobileDetailDrawer
         open={Boolean(mobileCourseDetail)}
         onClose={() => setMobileCourseDetail(null)}

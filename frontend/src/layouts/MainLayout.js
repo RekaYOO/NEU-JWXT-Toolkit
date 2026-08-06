@@ -2,43 +2,21 @@ import React, { useState, useEffect } from 'react';
 import { Layout, Menu, Button, Avatar, Drawer, Dropdown, Grid, Tooltip, message, Modal } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  BookOutlined,
   UserOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  FileTextOutlined,
-  ScheduleOutlined,
-  ExperimentOutlined,
-  StarOutlined,
-  CalendarOutlined,
   MenuOutlined,
   PoweroffOutlined,
-  BellOutlined,
-  ReadOutlined,
-  ExportOutlined,
 } from '@ant-design/icons';
 import { logout, getUserAvatar, shutdownRuntime } from '../services/api';
+import { pageTitles, visibleMenuItems } from '../features/featureRegistry';
 import './MainLayout.css';
 
 const { Header, Sider, Content } = Layout;
 
 const AVATAR_STORAGE_KEY = 'neu_user_avatar';
 const AVATAR_TIMESTAMP_KEY = 'neu_user_avatar_timestamp';
-
-const menuItems = [
-  { key: '/scores', icon: <BookOutlined />, label: '成绩明细' },
-  { key: '/grade-tracking', icon: <BellOutlined />, label: '成绩追踪' },
-  { key: '/academic-report', icon: <ScheduleOutlined />, label: '培养计划' },
-  { key: '/experiment-courses', icon: <ExperimentOutlined />, label: '实验选课' },
-  { key: '/research-training', icon: <ReadOutlined />, label: '科研训练' },
-  { key: '/evaluation', icon: <StarOutlined />, label: '自动评教' },
-  { key: '/exams', icon: <CalendarOutlined />, label: '我的考试' },
-  { key: '/export', icon: <ExportOutlined />, label: '导出下载' },
-  { key: '/logs', icon: <FileTextOutlined />, label: '系统日志' },
-];
-
-const pageTitles = Object.fromEntries(menuItems.map(({ key, label }) => [key, label]));
 
 const MainLayout = ({
   userInfo,
@@ -56,14 +34,7 @@ const MainLayout = ({
   const location = useLocation();
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
-  const visibleMenuItems = offlineMode
-    ? menuItems.filter(item => (
-      (item.key === '/scores' && offlineCapabilities.has_scores)
-      || (item.key === '/academic-report' && offlineCapabilities.has_report)
-      || (item.key === '/research-training' && offlineCapabilities.has_research)
-      || item.key === '/export'
-    ))
-    : menuItems;
+  const menuItems = visibleMenuItems({ offlineMode, offlineCapabilities });
 
   // 加载用户头像（仅使用缓存，不自动下载）
   useEffect(() => {
@@ -233,7 +204,7 @@ const MainLayout = ({
       theme="dark"
       mode="inline"
       selectedKeys={[location.pathname.startsWith('/export') ? '/export' : location.pathname]}
-      items={visibleMenuItems}
+      items={menuItems}
       onClick={onMenuClick}
       aria-label="主要导航"
     />

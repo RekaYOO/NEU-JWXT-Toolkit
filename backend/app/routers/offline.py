@@ -21,13 +21,20 @@ from backend.app.schemas import (
 )
 from backend.core.cache import CacheKey
 from backend.core.cache.resources import score_detail_variant
-from backend.app.routers.research import _cache_response as _research_cache_response
-from backend.app.routers.festival_activities import _cache_response as _festival_cache_response
-from backend.app.routers.scores import _score_model
+from backend.app.presenters import (
+    festival_cache_response,
+    research_cache_response,
+    score_model,
+)
 from backend.app.cache_support import read_cache_offline
 
 
 router = APIRouter()
+
+
+def _research_cache_response(account, entry, **kwargs):
+    """Compatibility seam for existing tests; not shared across routers."""
+    return research_cache_response(_research_storage, account, entry, **kwargs)
 
 
 def _offline_account() -> str | None:
@@ -133,7 +140,7 @@ def offline_scores():
     entry, stale = _offline_entry("scores")
     if entry:
         scores = entry.payload.get("scores") or []
-        models = [_score_model(score) for score in scores]
+        models = [score_model(score) for score in scores]
         credits = sum(model.credit for model in models)
         return ScoresResponse(
             total_courses=len(models),
@@ -296,4 +303,4 @@ def offline_festival_activities():
     entry, stale = _offline_entry("festival-activities")
     if not account or not entry:
         raise HTTPException(status_code=404, detail="本地没有已保存的四节活动数据")
-    return _festival_cache_response(account, entry, bool(stale), source="offline")
+    return festival_cache_response(account, entry, bool(stale), source="offline")

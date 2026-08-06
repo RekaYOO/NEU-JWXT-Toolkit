@@ -1,12 +1,12 @@
-from typing import Dict
 from fastapi import APIRouter, HTTPException, Depends, Query
 
-from backend.app.dependencies import _cache_coordinator
+from backend.app.dependencies import get_cache_coordinator
 from backend.core.auth import NEUAuthClient
 from backend.core.academic.experiment import ExperimentCourseAPI
 from backend.core.cache import mutation_policy
 from backend.core.log import log_application_error
 from backend.app.dependencies import require_serialized_auth
+from backend.app.schemas import ExperimentCourseMutationRequest
 
 router = APIRouter()
 
@@ -112,7 +112,7 @@ def get_experiment_rounds(
 
 @router.post("/experiment-courses/select")
 def select_experiment_course(
-    data: Dict[str, str],
+    data: ExperimentCourseMutationRequest,
     auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
@@ -131,15 +131,16 @@ def select_experiment_course(
         api = ExperimentCourseAPI(auth)
 
         result = api.select(
-            data["term"],
-            data["task_id"],
-            data["project_code"],
-            data["round_id"]
+            data.term,
+            data.task_id,
+            data.project_code,
+            data.round_id
         )
         if str(result.get("code")) == "0":
+            coordinator = get_cache_coordinator()
             for resource in policy.invalidations:
-                if resource in _cache_coordinator.registry.resources():
-                    _cache_coordinator.invalidate(
+                if resource in coordinator.registry.resources():
+                    coordinator.invalidate(
                         account_id=str(auth.username),
                         resource=resource,
                     )
@@ -152,7 +153,7 @@ def select_experiment_course(
 
 @router.post("/experiment-courses/deselect")
 def deselect_experiment_course(
-    data: Dict[str, str],
+    data: ExperimentCourseMutationRequest,
     auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
@@ -171,15 +172,16 @@ def deselect_experiment_course(
         api = ExperimentCourseAPI(auth)
 
         result = api.deselect(
-            data["term"],
-            data["task_id"],
-            data["project_code"],
-            data["round_id"]
+            data.term,
+            data.task_id,
+            data.project_code,
+            data.round_id
         )
         if str(result.get("code")) == "0":
+            coordinator = get_cache_coordinator()
             for resource in policy.invalidations:
-                if resource in _cache_coordinator.registry.resources():
-                    _cache_coordinator.invalidate(
+                if resource in coordinator.registry.resources():
+                    coordinator.invalidate(
                         account_id=str(auth.username),
                         resource=resource,
                     )

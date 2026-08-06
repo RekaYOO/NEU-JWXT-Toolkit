@@ -56,7 +56,11 @@ def _serve(config_path: Path) -> int:
 
     from backend.core.runtime import get_runtime_config
 
-    config = get_runtime_config()
+    try:
+        config = get_runtime_config()
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        print(f"无法读取服务配置：{error}", file=sys.stderr)
+        return 2
     if not (
         config.access_password_salt
         and config.access_password_hash

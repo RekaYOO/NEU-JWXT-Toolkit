@@ -66,8 +66,7 @@ API 端点：
 
 """
 
-import sys
-import os
+import logging
 import re
 import json
 import time
@@ -76,6 +75,9 @@ from dataclasses import dataclass, field
 
 
 from backend.core.auth import NEUAuthClient
+
+
+logger = logging.getLogger(__name__)
 
 
 # ── 数据模型 ──────────────────────────────────────────────────────────────────
@@ -375,7 +377,7 @@ class EvaluationAPI:
             location = resp.headers.get("Location", "")
             match = re.search(r'ticket=([^&]+)', location)
             if not match:
-                print(f"[Evaluation] 无法提取 CAS ticket")
+                logger.warning("Evaluation CAS login did not return a service ticket")
                 return None
             service_ticket = match.group(1)
 
@@ -386,7 +388,7 @@ class EvaluationAPI:
             data = resp.json()
             self._jwt_token = data.get("accessToken")
             if not self._jwt_token:
-                print(f"[Evaluation] JWT 响应异常: {data}")
+                logger.warning("Evaluation JWT exchange returned no access token")
                 return None
 
             # 解析 JWT 获取过期时间（exp 字段在 payload 中）
@@ -401,8 +403,8 @@ class EvaluationAPI:
 
             return self._jwt_token
 
-        except Exception as e:
-            print(f"[Evaluation] 获取 JWT 失败: {e}")
+        except Exception:
+            logger.warning("Evaluation JWT exchange failed")
             return None
 
     def _api_headers(self) -> Dict[str, str]:
@@ -444,10 +446,13 @@ class EvaluationAPI:
             resp = self._client.post(url, json=None, headers=self._api_headers(), timeout=30)
             data = resp.json()
             if resp.status_code != 200:
-                print(f"[Evaluation] get_cycles 失败: {data}")
+                logger.warning(
+                    "Evaluation cycle request failed with status %s",
+                    resp.status_code,
+                )
                 return []
             if not isinstance(data, list):
-                print(f"[Evaluation] get_cycles 返回格式异常: {type(data)}")
+                logger.warning("Evaluation cycle response had an invalid shape")
                 return []
             return [
                 {
@@ -457,25 +462,26 @@ class EvaluationAPI:
                 }
                 for item in data
             ]
-        except Exception as e:
-            print(f"[Evaluation] 获取学期周期失败: {e}")
+        except Exception:
+            logger.warning("Evaluation cycle request failed")
             return []
 
     def get_default_cycle(self) -> str:
         """
         获取当前默认学年学期
 
-        优先返回 isdefault=1 的学期，找不到则返回列表第一项，都失败返回 "2025-2026-2" 兜底。
+        优先返回 isdefault=1 的学期，找不到则返回列表第一项；无法探测时显式失败。
         """
         cycles = self.get_cycles()
         # 优先取 isdefault=1
         for c in cycles:
-            if c.get("isdefault") == 1:
+            if c.get("isdefault") in (1, "1", True) and c.get("value"):
                 return c["value"]
         # 兜底取第一项
-        if cycles:
-            return cycles[0]["value"]
-        return "2025-2026-2"
+        first_value = next((c.get("value") for c in cycles if c.get("value")), None)
+        if first_value:
+            return first_value
+        raise RuntimeError("default evaluation cycle unavailable")
 
     # ── 一级页面：任务列表 ──────────────────────────────────────────────────
 
@@ -499,12 +505,15 @@ class EvaluationAPI:
             resp = self._client.post(url, json=body, headers=self._api_headers(), timeout=30)
             data = resp.json()
             if resp.status_code != 200:
-                print(f"[Evaluation] get_tasks 失败: {data}")
+                logger.warning(
+                    "Evaluation task request failed with status %s",
+                    resp.status_code,
+                )
                 return []
             items = data.get("items", [])
             return [EvaluationTask.from_dict(item) for item in items]
-        except Exception as e:
-            print(f"[Evaluation] 获取评教任务失败: {e}")
+        except Exception:
+            logger.warning("Evaluation task request failed")
             return []
 
     # ── 二级页面：课程列表 ──────────────────────────────────────────────────
@@ -539,12 +548,15 @@ class EvaluationAPI:
             resp = self._client.post(url, json=body, headers=self._api_headers(), timeout=30)
             data = resp.json()
             if resp.status_code != 200:
-                print(f"[Evaluation] get_courses 失败: {data}")
+                logger.warning(
+                    "Evaluation course request failed with status %s",
+                    resp.status_code,
+                )
                 return []
             items = data.get("items", [])
             return [CourseEvaluation.from_dict(item) for item in items]
-        except Exception as e:
-            print(f"[Evaluation] 获取课程列表失败: {e}")
+        except Exception:
+            logger.warning("Evaluation course request failed")
             return []
 
     def get_evaluated_info(self, task_id: str) -> List[Dict]:
@@ -564,8 +576,8 @@ class EvaluationAPI:
             if resp.status_code != 200:
                 return []
             return data if isinstance(data, list) else []
-        except Exception as e:
-            print(f"[Evaluation] 获取评教信息失败: {e}")
+        except Exception:
+            logger.warning("Evaluation status request failed")
             return []
 
     # ── 评教指标体系 ──────────────────────────────────────────────────────
@@ -596,7 +608,7 @@ class EvaluationAPI:
         # 先获取指标库ID
         lib_list = self.get_tasklib(task_id)
         if not lib_list:
-            print(f"[Evaluation] 未找到指标库 (task_id={task_id})")
+            logger.warning("Evaluation task has no indicator library")
             return None
 
         libid = lib_list[0].get("id", "")
@@ -619,7 +631,10 @@ class EvaluationAPI:
             resp = self._client.post(url, params=params, headers=self._api_headers(), timeout=30)
             data = resp.json()
             if resp.status_code != 200:
-                print(f"[Evaluation] 获取指标体系失败: {data}")
+                logger.warning(
+                    "Evaluation indicator request failed with status %s",
+                    resp.status_code,
+                )
                 return None
 
             indicators = []
@@ -635,8 +650,8 @@ class EvaluationAPI:
                 indicators=indicators,
                 raw_data=data,
             )
-        except Exception as e:
-            print(f"[Evaluation] 获取指标体系异常: {e}")
+        except Exception:
+            logger.warning("Evaluation indicator request failed")
             return None
 
     def get_tasklib(self, task_id: str) -> List[Dict]:
@@ -655,8 +670,8 @@ class EvaluationAPI:
             if resp.status_code != 200:
                 return []
             return data if isinstance(data, list) else []
-        except Exception as e:
-            print(f"[Evaluation] 获取指标库失败: {e}")
+        except Exception:
+            logger.warning("Evaluation indicator-library request failed")
             return []
 
     def get_eval_config(self, task_id: str) -> Dict:
@@ -675,8 +690,8 @@ class EvaluationAPI:
             if resp.status_code == 200:
                 return resp.json()
             return {}
-        except Exception as e:
-            print(f"[Evaluation] 获取评教配置失败: {e}")
+        except Exception:
+            logger.warning("Evaluation configuration request failed")
             return {}
 
     def get_task_state(self, task_id: str, xnxq: str = None) -> Dict:
@@ -698,8 +713,8 @@ class EvaluationAPI:
             if resp.status_code == 200:
                 return resp.json()
             return {}
-        except Exception as e:
-            print(f"[Evaluation] 获取任务状态失败: {e}")
+        except Exception:
+            logger.warning("Evaluation task-state request failed")
             return {}
 
     # ── 评分与提交 ────────────────────────────────────────────────────────
@@ -845,7 +860,7 @@ class EvaluationAPI:
             custom_scores: 自定义分数映射
 
         Returns:
-            {"success": True/False, "message": "...", "data": ...}
+            A success/failure result with a non-sensitive score summary.
         """
         # 构建提交数据
         submit_data = self.build_submit_data(course, target, strategy, custom_scores)
@@ -872,25 +887,81 @@ class EvaluationAPI:
             data = resp.json()
 
             if resp.status_code == 200 and data == "success":
-                avg = submit_data["task"]["zpf"]
-                print(f"[Evaluation] 评教提交成功! 课程: {course.course_name} 教师: {course.teacher_name} 均分: {avg}")
-                return {"success": True, "message": "评教提交成功", "data": submit_data}
+                logger.info("Evaluation submission succeeded")
+                result_list = submit_data.get("resultList") or []
+                task = submit_data.get("task") or {}
+                return {
+                    "success": True,
+                    "message": "评教提交成功",
+                    "summary": {
+                        "average_score": task.get("zpf", 0),
+                        "indicator_count": len(result_list),
+                    },
+                }
 
             # 处理已知错误
             if isinstance(data, dict):
                 msg = data.get("message", str(data))
                 if "重复提交" in msg:
-                    print(f"[Evaluation] 该课程已评过: {course.course_name}")
+                    logger.info("Evaluation submission was already completed")
                     return {"success": True, "message": "该课程已评价过（重复提交）", "skipped": True}
                 if "评价不能全部相同" in msg or "全部相同" in msg:
-                    return {"success": False, "message": "评分验证失败：评价选项不能全部相同", "data": data}
+                    return {"success": False, "message": "评分验证失败：评价选项不能全部相同"}
 
-            print(f"[Evaluation] 评教提交失败: {data}")
-            return {"success": False, "message": f"提交失败: {data}", "data": data}
+            logger.warning(
+                "Evaluation submission failed with status %s",
+                resp.status_code,
+            )
+            return {"success": False, "message": "评教提交失败"}
 
-        except Exception as e:
-            print(f"[Evaluation] 评教提交异常: {e}")
-            return {"success": False, "message": f"提交异常: {e}"}
+        except Exception:
+            logger.warning("Evaluation submission failed")
+            return {"success": False, "message": "评教提交失败"}
+
+    def preview_evaluation(
+        self,
+        course: CourseEvaluation,
+        target: EvaluationTarget,
+        strategy: str = "highest",
+        custom_scores: Optional[Dict[str, int]] = None,
+    ) -> Dict:
+        """Validate a submission and return a non-sensitive summary only."""
+        submit_data = self.build_submit_data(course, target, strategy, custom_scores)
+        if not submit_data:
+            return {"success": False, "dry_run": True, "message": "构建评教预览失败"}
+
+        if strategy == "highest":
+            scored = ScoringStrategy.highest(target.indicators)
+        elif strategy == "lowest":
+            scored = ScoringStrategy.lowest(target.indicators)
+        else:
+            scored = ScoringStrategy.custom(target.indicators, custom_scores or {})
+        validation = self._validate_scoring(scored)
+        if not validation["valid"]:
+            return {
+                "success": False,
+                "dry_run": True,
+                "message": "评分验证失败",
+                "errors": validation["errors"],
+            }
+
+        result_list = submit_data.get("resultList") or []
+        task = submit_data.get("task") or {}
+        return {
+            "success": True,
+            "dry_run": True,
+            "message": "安全模式预览完成，未向教务系统提交",
+            "preview": {
+                "average_score": task.get("zpf", 0),
+                "indicator_count": len(result_list),
+                "selection_count": sum(
+                    1 for item in result_list if item.get("evaltype") == 1
+                ),
+                "text_count": sum(
+                    1 for item in result_list if item.get("evaltype") != 1
+                ),
+            },
+        }
 
     def evaluate_course(self, course: CourseEvaluation,
                         strategy: str = "highest",
@@ -944,13 +1015,12 @@ class EvaluationAPI:
         pending = [c for c in courses if not c.is_evaluated]
 
         if not pending:
-            print(f"[Evaluation] 没有待评课程")
+            logger.info("Evaluation batch has no pending courses")
             return results
 
-        print(f"[Evaluation] 待评课程: {len(pending)} 门")
+        logger.info("Evaluation batch started for %s courses", len(pending))
 
         for i, course in enumerate(pending):
-            print(f"\n[Evaluation] [{i+1}/{len(pending)}] {course.course_name} - {course.teacher_name}")
             result = self.evaluate_course(course, strategy, custom_scores)
             results.append({
                 "course_name": course.course_name,
@@ -958,18 +1028,17 @@ class EvaluationAPI:
                 **result,
             })
 
-            if result["success"]:
-                print(f"  ✓ 成功")
-            else:
-                print(f"  ✗ 失败: {result['message']}")
-
             # 间隔
             if i < len(pending) - 1:
                 time.sleep(delay)
 
         # 统计
         success_count = sum(1 for r in results if r["success"])
-        print(f"\n[Evaluation] 完成: {success_count}/{len(pending)} 门成功")
+        logger.info(
+            "Evaluation batch completed: %s/%s succeeded",
+            success_count,
+            len(pending),
+        )
 
         return results
 

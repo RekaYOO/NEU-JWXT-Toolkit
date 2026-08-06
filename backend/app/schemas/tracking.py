@@ -2,15 +2,19 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GradeTrackingConfigUpdate(BaseModel):
-    enabled: bool = False
+    model_config = ConfigDict(extra="forbid")
+
+    # Accepted but never applied so one release of cached/older frontend code
+    # cannot overwrite the dedicated switch endpoint.
+    enabled: bool | None = Field(default=None, exclude=True)
+    notify_initial: bool | None = Field(default=None, exclude=True)
     interval_minutes: int = Field(default=30, ge=5, le=1440)
     start_hour: int = Field(default=9, ge=0, le=23)
     end_hour: int = Field(default=21, ge=1, le=24)
-    notify_initial: bool = True
     site_url: str = Field(default="", max_length=500)
     smtp_host: str = Field(default="", max_length=255)
     smtp_port: int = Field(default=465, ge=1, le=65535)
@@ -23,4 +27,6 @@ class GradeTrackingConfigUpdate(BaseModel):
 
 
 class GradeTrackingEnabledUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool

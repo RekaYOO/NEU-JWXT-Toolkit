@@ -8,6 +8,7 @@ neu_storage/storage.py
 
 import csv
 import json
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,6 +18,9 @@ from typing import List, Dict, Optional, Any
 from backend.core.academic.api import CourseScore, TermScores
 from backend.core.runtime import get_runtime_config
 from backend.core.runtime.config import secure_file
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -157,8 +161,8 @@ class Storage:
                         raw_data=raw_data
                     )
                     scores.append(score)
-                except (ValueError, KeyError) as e:
-                    print(f"跳过无效行: {e}")
+                except (ValueError, KeyError):
+                    logger.warning("Skipped an invalid legacy score row")
                     continue
         
         return scores

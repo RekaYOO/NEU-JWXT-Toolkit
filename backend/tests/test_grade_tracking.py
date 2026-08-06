@@ -11,6 +11,7 @@ from backend.core.tracking import GradeTrackingService
 from backend.core.runtime.access import is_public_api_path
 from backend.core.log.access_logger import redact_sensitive_path
 from backend.core.cache.resources import canonicalize_scores, score_to_dict
+from backend.app.schemas.tracking import GradeTrackingConfigUpdate
 
 
 def make_score(score="88", gpa=3.8):
@@ -84,6 +85,11 @@ def build_service(tmp_path):
         score_refresher=score_refresher_for(academic),
     )
     return service, academic, storage
+
+
+def deliver_pending_email(service):
+    service._send_email = lambda *_args, **_kwargs: None
+    service._flush_outbox()
 
 
 def mail_config(**overrides):
@@ -212,7 +218,267 @@ def test_tracking_switch_applies_immediately_without_changing_config(tmp_path):
     assert service.get_status()["stage"] == "disabled"
 
 
-def test_account_switch_discards_personal_baseline_and_outbox(tmp_path):
+def test_failed_enable_does_not_mutate_memory_or_disk(tmp_path):
+    service, _, _ = build_service(tmp_path)
+
+    with pytest.raises(ValueError, match="启用前请填写"):
+        service.set_enabled(True)
+
+    assert service.get_config()["enabled"] is False
+    assert service.get_status()["enabled"] is False
+    assert service.get_status()["stage"] == "disabled"
+    assert not service.config_path.exists()
+
+
+def test_config_write_failure_does_not_apply_enable_in_memory(
+    tmp_path,
+    monkeypatch,
+):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config())
+    original_write = service._write_json
+
+    def fail_config_write(path, value):
+        if path == service.config_path:
+            raise OSError("disk unavailable")
+        return original_write(path, value)
+
+    monkeypatch.setattr(service, "_write_json", fail_config_write)
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        service.set_enabled(True)
+
+    assert service.get_config()["enabled"] is False
+    assert service.get_status()["enabled"] is False
+
+
+def test_each_enable_transition_queues_a_fresh_initial_email(
+    tmp_path,
+    monkeypatch,
+):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config())
+    service.resume_after_login("20250001")
+    payload = canonicalize_scores({
+        "scores": [score_to_dict(make_score())],
+        "overall_gpa": 3.8,
+    })
+    monkeypatch.setattr(service, "_within_window", lambda _now: False)
+
+    service.set_enabled(True)
+    assert service._should_run() is True
+    service._state["stage"] = "waiting_login"
+    assert service._should_run() is False
+    service._state["stage"] = "scheduled"
+    service.handle_scores_revision(
+        "20250001", "v1:baseline", payload, reason="tracking"
+    )
+
+    assert len(service._outbox) == 1
+    first_key = service._outbox[0]["dedupe_key"]
+    assert first_key.startswith("activation:")
+    assert "初始" in service._outbox[0]["subject"]
+
+    deliver_pending_email(service)
+    service.set_enabled(True)
+    service.handle_scores_revision(
+        "20250001", "v1:baseline", payload, reason="tracking"
+    )
+    assert service._outbox == []
+
+    service.set_enabled(False)
+    service.set_enabled(True)
+    service.handle_scores_revision(
+        "20250001", "v1:baseline", payload, reason="tracking"
+    )
+
+    assert len(service._outbox) == 1
+    assert service._outbox[0]["dedupe_key"].startswith("activation:")
+    assert service._outbox[0]["dedupe_key"] != first_key
+    service.set_enabled(False)
+    assert service._outbox == []
+
+
+def test_repeated_enable_and_config_save_preserve_waiting_login(tmp_path):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config())
+    service.set_enabled(True)
+    waiting_until = "2099-01-01T00:00:00+08:00"
+    service._state.update(stage="waiting_login", next_check_at=waiting_until)
+
+    service.set_enabled(True)
+    service.update_config({"interval_minutes": 45})
+
+    assert service.get_status()["stage"] == "waiting_login"
+    assert service.get_status()["next_check_at"] == waiting_until
+    assert service._should_run() is False
+
+
+def test_activation_retries_until_smtp_success(tmp_path):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config())
+    service.resume_after_login("20250001")
+    service.set_enabled(True)
+    activation_id = service._config["_activation_id"]
+    service.handle_scores_revision(
+        "20250001",
+        "v1:baseline",
+        canonicalize_scores({
+            "scores": [score_to_dict(make_score())],
+            "overall_gpa": 3.8,
+        }),
+        reason="tracking",
+    )
+    attempts = []
+
+    def fail_once(*_args):
+        attempts.append("failed")
+        raise OSError("smtp unavailable")
+
+    service._send_email = fail_once
+    service._flush_outbox()
+    assert service._config["_activation_id"] == activation_id
+    assert service._outbox[0]["attempts"] == 1
+
+    service.handle_scores_revision(
+        "20250001",
+        "v1:changed",
+        canonicalize_scores({
+            "scores": [score_to_dict(make_score(score="92", gpa=4.2))],
+            "overall_gpa": 4.2,
+        }),
+        reason="tracking",
+    )
+    assert len(service._outbox) == 2
+    assert service._outbox[1]["dedupe_key"] == "revision:v1:changed"
+
+    deliver_pending_email(service)
+    assert "_activation_id" not in service._config
+    assert len(service._outbox) == 1
+
+
+def test_delivered_activation_is_not_resent_after_outbox_write_failure(
+    tmp_path,
+    monkeypatch,
+):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config())
+    service.resume_after_login("20250001")
+    service.set_enabled(True)
+    service.handle_scores_revision(
+        "20250001",
+        "v1:baseline",
+        canonicalize_scores({
+            "scores": [score_to_dict(make_score())],
+            "overall_gpa": 3.8,
+        }),
+        reason="tracking",
+    )
+    service._send_email = lambda *_args: None
+    monkeypatch.setattr(
+        service,
+        "_save_outbox",
+        lambda: (_ for _ in ()).throw(OSError("outbox unavailable")),
+    )
+
+    with pytest.raises(OSError, match="outbox unavailable"):
+        service._flush_outbox()
+
+    restarted, _, _ = build_service(tmp_path)
+    sent = []
+    restarted._send_email = lambda *_args: sent.append(True)
+    restarted._flush_outbox()
+
+    assert sent == []
+    assert restarted._outbox == []
+    assert "_activation_id" not in restarted._config
+
+
+def test_clear_personal_state_preserves_pending_activation_intent(tmp_path):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config())
+    service.set_enabled(True)
+    activation_id = service._config["_activation_id"]
+    service._outbox.append({
+        "id": "old-account-mail",
+        "dedupe_key": f"activation:{activation_id}",
+    })
+
+    service.pause_for_logout(clear_personal_state=True)
+
+    assert service._outbox == []
+    assert service._config["_activation_id"] == activation_id
+
+
+def test_disabling_during_snapshot_build_cancels_activation_commit(
+    tmp_path,
+    monkeypatch,
+):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config())
+    service.resume_after_login("20250001")
+    service.set_enabled(True)
+    original_build_snapshot = service._build_snapshot
+
+    def build_then_disable(*args, **kwargs):
+        snapshot = original_build_snapshot(*args, **kwargs)
+        service.set_enabled(False)
+        return snapshot
+
+    monkeypatch.setattr(service, "_build_snapshot", build_then_disable)
+    service.handle_scores_revision(
+        "20250001",
+        "v1:baseline",
+        canonicalize_scores({
+            "scores": [score_to_dict(make_score())],
+            "overall_gpa": 3.8,
+        }),
+        reason="tracking",
+    )
+
+    assert service.get_config()["enabled"] is False
+    assert service._outbox == []
+
+
+@pytest.mark.parametrize("failing_save", ["outbox", "state"])
+def test_partial_enable_write_is_recoverable(tmp_path, monkeypatch, failing_save):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config())
+    original_save = getattr(service, f"_save_{failing_save}")
+    monkeypatch.setattr(
+        service,
+        f"_save_{failing_save}",
+        lambda: (_ for _ in ()).throw(OSError(f"{failing_save} unavailable")),
+    )
+
+    with pytest.raises(OSError, match="unavailable"):
+        service.set_enabled(True)
+
+    persisted = json.loads(service.config_path.read_text(encoding="utf-8"))
+    assert persisted["enabled"] is True
+    assert persisted["_activation_id"] == service._config["_activation_id"]
+
+    restarted, _, _ = build_service(tmp_path)
+    monkeypatch.setattr(restarted, "_within_window", lambda _now: False)
+    assert restarted.get_status()["stage"] == "scheduled"
+    assert restarted._should_run() is True
+
+    monkeypatch.setattr(service, f"_save_{failing_save}", original_save)
+    service.set_enabled(True)
+    assert service.get_status()["stage"] == "scheduled"
+
+
+def test_config_api_cannot_overwrite_enabled_switch():
+    legacy_payload = GradeTrackingConfigUpdate.model_validate({
+        "enabled": True,
+        "notify_initial": False,
+    })
+
+    assert "enabled" not in legacy_payload.model_dump()
+    assert "notify_initial" not in legacy_payload.model_dump()
+
+
+def test_account_switch_rebuilds_pending_activation_for_new_account(tmp_path):
     service, _, _ = build_service(tmp_path)
     service.update_config(mail_config(enabled=True, notify_initial=True))
     service.resume_after_login("account-a")
@@ -241,7 +507,8 @@ def test_account_switch_discards_personal_baseline_and_outbox(tmp_path):
     )
     assert result["change_count"] == 0
     assert len(service._outbox) == 1
-    assert "首次成绩同步" in service._outbox[0]["subject"]
+    assert service._outbox[0]["dedupe_key"].startswith("activation:")
+    assert "初始" in service._outbox[0]["subject"]
 
 
 def test_unscoped_legacy_tracking_state_is_not_claimed_by_new_account(tmp_path):
@@ -281,7 +548,7 @@ def test_manual_check_creates_snapshot_then_notifies_changes(tmp_path, monkeypat
     service._flush_outbox()
     assert first["last_change_count"] == 0
     assert len(sent) == 1
-    assert "首次" in sent[0][0]
+    assert "初始" in sent[0][0]
 
     academic.scores = [make_score(score="92", gpa=4.2)]
     academic.gpa = 4.2
@@ -307,6 +574,7 @@ def test_tracking_notifies_overall_gpa_only_change(tmp_path):
     service.handle_scores_revision(
         "20250001", "v1:base", base, reason="tracking"
     )
+    deliver_pending_email(service)
     updated = {**base, "overall_gpa": 3.9}
 
     result = service.handle_scores_revision(
@@ -331,6 +599,7 @@ def test_tracking_notifies_non_score_course_field_change(tmp_path):
     service.handle_scores_revision(
         "20250001", "v1:base", base, reason="tracking"
     )
+    deliver_pending_email(service)
     changed = canonicalize_scores({
         "scores": [{**base_score, "exam_status": "重修"}],
         "overall_gpa": 3.8,
@@ -590,7 +859,7 @@ def test_tracking_queries_added_course_and_includes_detail_in_email(tmp_path):
     service.handle_scores_revision(
         "20250001", "v1:base", base, reason="tracking"
     )
-    service._outbox.clear()
+    deliver_pending_email(service)
     added = {
         **score_to_dict(make_score(score="81", gpa=3.1)),
         "name": "新增课程",
@@ -630,7 +899,7 @@ def test_tracking_queries_details_when_score_or_gpa_changes(
         tracking_payload([make_score()]),
         reason="tracking",
     )
-    service._outbox.clear()
+    deliver_pending_email(service)
 
     service.handle_scores_revision(
         "20250001",
@@ -656,7 +925,7 @@ def test_tracking_other_course_field_change_does_not_query_details(tmp_path):
         tracking_payload([base_score]),
         reason="tracking",
     )
-    service._outbox.clear()
+    deliver_pending_email(service)
 
     result = service.handle_scores_revision(
         "20250001",
@@ -681,7 +950,7 @@ def test_tracking_detail_failure_does_not_block_score_notification(tmp_path):
         tracking_payload([make_score()]),
         reason="tracking",
     )
-    service._outbox.clear()
+    deliver_pending_email(service)
 
     result = service.handle_scores_revision(
         "20250001",

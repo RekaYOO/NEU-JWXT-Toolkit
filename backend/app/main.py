@@ -11,22 +11,22 @@ FastAPI 后端服务入口
 import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 # 确保项目根目录在 PYTHONPATH 中，以支持 backend.* 绝对导入
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
 from backend.core.log.access_logger import FastAPILogMiddleware
 from backend.app.dependencies import (
-    _cache_coordinator,
-    _grade_tracker,
-    _log_config,
+    get_application_services,
+    get_log_config,
     peek_auth_client,
 )
 from backend.app.routers import auth, cache, scores, logs, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking, festival_activities, course_selection
@@ -34,21 +34,16 @@ from backend.core.runtime import get_runtime_config, resource_path
 from backend.core.runtime.access import AccessGatewayMiddleware
 
 runtime_config = get_runtime_config()
+application_services = get_application_services()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    _cache_coordinator.start()
-    _grade_tracker.start()
+    application_services.start()
     try:
         yield
     finally:
-        _grade_tracker.stop()
-        _cache_coordinator.shutdown(
-            wait=True,
-            cancel_queued=True,
-            timeout=8,
-        )
+        application_services.shutdown(timeout=8)
 
 
 # ── FastAPI 应用 ───────────────────────────────────────────────────────────────
@@ -85,7 +80,7 @@ if runtime_config.profile == "development":
 
 app.add_middleware(
     FastAPILogMiddleware,
-    config=_log_config,
+    config=get_log_config(),
     runtime_config=runtime_config,
     user_provider=_current_account,
 )
@@ -111,11 +106,51 @@ app.include_router(runtime.router)
 
 # ── 前端静态文件（生产/本地单端口模式）──────────────────────────────────────────
 
-_FRONTEND_BUILD_DIR = str(resource_path("frontend", "build"))
-_FRONTEND_INDEX = os.path.join(_FRONTEND_BUILD_DIR, "index.html")
-_FRONTEND_STATIC = os.path.join(_FRONTEND_BUILD_DIR, "static")
+_FRONTEND_BUILD_DIR = resource_path("frontend", "build").resolve()
+_FRONTEND_INDEX = _FRONTEND_BUILD_DIR / "index.html"
+_FRONTEND_STATIC = _FRONTEND_BUILD_DIR / "static"
+_FRONTEND_ROOT_FILES = frozenset(
+    {
+        "apple-touch-icon.png",
+        "asset-manifest.json",
+        "favicon.ico",
+        "icon-192.png",
+        "icon-512.png",
+        "manifest.webmanifest",
+    }
+)
 
-if os.path.isfile(_FRONTEND_INDEX) and os.path.isdir(_FRONTEND_STATIC):
+
+def _frontend_root_file(full_path: str) -> Path | None:
+    """Return a safe, generated file from the frontend build root.
+
+    CRA emits icons and its web manifest beside ``index.html``.  Nested assets
+    are served by ``StaticFiles``; accepting a nested path here would turn the
+    SPA fallback into a filesystem browser on both POSIX and Windows.
+    """
+    if (
+        full_path not in _FRONTEND_ROOT_FILES
+        or "/" in full_path
+        or "\\" in full_path
+    ):
+        return None
+    try:
+        target = (_FRONTEND_BUILD_DIR / full_path).resolve()
+        target.relative_to(_FRONTEND_BUILD_DIR)
+    except (OSError, ValueError):
+        return None
+    return target if target.is_file() else None
+
+
+def _has_unsafe_spa_path(full_path: str) -> bool:
+    """Reject traversal syntax instead of disguising it as an SPA route."""
+    normalized = full_path.replace("\\", "/")
+    return "\x00" in full_path or any(
+        segment in {".", ".."} for segment in normalized.split("/")
+    )
+
+
+if _FRONTEND_INDEX.is_file() and _FRONTEND_STATIC.is_dir():
     # 挂载静态资源目录
     app.mount("/static", StaticFiles(directory=_FRONTEND_STATIC), name="static")
 
@@ -123,9 +158,12 @@ if os.path.isfile(_FRONTEND_INDEX) and os.path.isdir(_FRONTEND_STATIC):
     async def serve_spa(full_path: str):
         """SPA fallback：非 API 路由都返回 index.html"""
         # API 路由已在上方注册，不会走到这里
-        # 文件系统存在的静态文件（如 favicon.ico）优先返回
-        target = os.path.join(_FRONTEND_BUILD_DIR, full_path)
-        if os.path.isfile(target):
+        if _has_unsafe_spa_path(full_path):
+            raise HTTPException(status_code=404, detail="Not Found")
+        # CRA 生成在 build 根目录的图标和 manifest 继续按原路径提供。
+        # 只允许根级单文件；嵌套静态资源由上方 StaticFiles 安全处理。
+        target = _frontend_root_file(full_path)
+        if target is not None:
             return FileResponse(target)
         return FileResponse(_FRONTEND_INDEX)
 

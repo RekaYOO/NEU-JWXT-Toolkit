@@ -31,6 +31,11 @@ curl http://127.0.0.1:8000/api/health
 sudo systemctl status neu-jwxt-toolkit
 ```
 
+`server` profile 会在启动前校验最终监听地址；配置文件或 `HOST` 环境变量中的非回环地址
+都会被拒绝，避免误配置后绕过 HTTPS 反向代理直接暴露个人数据。允许 IPv4 回环地址、
+`::1` 和 `localhost`。如需跨主机反代，应使用防火墙/隧道把代理安全地终止在本机，不能
+把应用改为监听 `0.0.0.0`。
+
 ## 配置反向代理
 
 首版只支持独立子域名，例如 `jwxt.example.com`，不支持部署到 `/jwxt/` 子路径。

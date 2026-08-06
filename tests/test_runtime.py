@@ -145,6 +145,61 @@ def test_server_config_is_loaded(monkeypatch, tmp_path):
     assert config.access_password_hash == password_data["hash"]
 
 
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.0.2.10", "server.example"])
+def test_server_runtime_rejects_non_loopback_bind_host(monkeypatch, tmp_path, host):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"profile": "server", "host": host, "port": 19001}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NEU_JWXT_PROFILE", "server")
+    monkeypatch.setenv("NEU_JWXT_CONFIG", str(config_path))
+    monkeypatch.setenv("NEU_JWXT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("HOST", raising=False)
+
+    from backend.core.runtime.config import get_runtime_config
+
+    with pytest.raises(ValueError, match="只允许监听回环地址"):
+        get_runtime_config()
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "::1", "localhost"])
+def test_server_runtime_accepts_loopback_bind_host(monkeypatch, tmp_path, host):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"profile": "server", "host": host, "port": 19001}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NEU_JWXT_PROFILE", "server")
+    monkeypatch.setenv("NEU_JWXT_CONFIG", str(config_path))
+    monkeypatch.setenv("NEU_JWXT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("HOST", raising=False)
+
+    from backend.core.runtime.config import get_runtime_config
+
+    assert get_runtime_config().host == host
+
+
+def test_server_runtime_rejects_non_loopback_host_environment_override(
+    monkeypatch,
+    tmp_path,
+):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"profile": "server", "host": "127.0.0.1", "port": 19001}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NEU_JWXT_PROFILE", "server")
+    monkeypatch.setenv("NEU_JWXT_CONFIG", str(config_path))
+    monkeypatch.setenv("NEU_JWXT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("HOST", "0.0.0.0")
+
+    from backend.core.runtime.config import get_runtime_config
+
+    with pytest.raises(ValueError, match="只允许监听回环地址"):
+        get_runtime_config()
+
+
 def test_server_runtime_does_not_mutate_read_only_config(monkeypatch, tmp_path):
     config_path = tmp_path / "config.json"
     config_path.write_text(

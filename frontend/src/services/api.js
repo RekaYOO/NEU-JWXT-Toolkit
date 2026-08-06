@@ -783,24 +783,24 @@ export const exportExamsICS = async (termCode = '') => {
 
 /**
  * 获取评教任务列表（一级页面）
- * @param {string} xnxq - 学年学期，默认 2025-2026-2
+ * @param {string} xnxq - 可选学年学期；省略时由后端探测当前默认学期
  */
-export const getEvaluationTasks = async (xnxq = '2025-2026-2') => {
-  const response = await api.get('/api/evaluation/tasks', {
-    params: { xnxq }
-  });
+export const getEvaluationTasks = async (xnxq) => {
+  const response = xnxq
+    ? await api.get('/api/evaluation/tasks', { params: { xnxq } })
+    : await api.get('/api/evaluation/tasks');
   return response.data;
 };
 
 /**
  * 获取评教任务下的课程列表（二级页面）
  * @param {string} taskId - 任务ID
- * @param {string} xnxq - 学年学期
+ * @param {string} xnxq - 可选学年学期；省略时由后端探测当前默认学期
  */
-export const getEvaluationCourses = async (taskId, xnxq = '2025-2026-2') => {
-  const response = await api.get(`/api/evaluation/tasks/${taskId}/courses`, {
-    params: { xnxq }
-  });
+export const getEvaluationCourses = async (taskId, xnxq) => {
+  const response = xnxq
+    ? await api.get(`/api/evaluation/tasks/${taskId}/courses`, { params: { xnxq } })
+    : await api.get(`/api/evaluation/tasks/${taskId}/courses`);
   return response.data;
 };
 
@@ -823,9 +823,17 @@ export const getEvaluationIndicators = async (xspjid, taskId) => {
  * @param {string} strategy - 评分策略: highest/lowest/custom
  * @param {Object} customScores - 自定义分数映射
  * @param {Object} textResults - 文本型指标内容 {zbid: text}
+ * @param {boolean} dryRun - true 仅预览；必须显式 false 才真实提交
  */
-export const submitEvaluation = async (taskId, xspjid, strategy = 'highest', customScores = null, textResults = null) => {
-  const data = { task_id: taskId, xspjid, strategy };
+export const submitEvaluation = async (
+  taskId,
+  xspjid,
+  strategy = 'highest',
+  customScores = null,
+  textResults = null,
+  dryRun = true,
+) => {
+  const data = { task_id: taskId, xspjid, strategy, dry_run: dryRun };
   if (customScores) data.custom_scores = customScores;
   if (textResults) data.text_results = textResults;
   const response = await api.post('/api/evaluation/submit', data);
@@ -842,9 +850,16 @@ export const submitEvaluation = async (taskId, xspjid, strategy = 'highest', cus
  * @param {string} strategy - 评分策略
  * @param {Object} customScores - 自定义分数映射
  * @param {string[]} xspjids - 选中的学生评教ID列表
+ * @param {boolean} dryRun - true 仅预览；必须显式 false 才真实提交
  */
-export const batchEvaluation = async (taskId, strategy = 'highest', customScores = null, xspjids = null) => {
-  const data = { task_id: taskId, strategy };
+export const batchEvaluation = async (
+  taskId,
+  strategy = 'highest',
+  customScores = null,
+  xspjids = null,
+  dryRun = true,
+) => {
+  const data = { task_id: taskId, strategy, dry_run: dryRun };
   if (customScores) data.custom_scores = customScores;
   if (xspjids) data.xspjids = xspjids;
   const response = await api.post('/api/evaluation/batch', data);

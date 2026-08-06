@@ -6,6 +6,7 @@
 
 import os
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Optional
@@ -649,6 +650,110 @@ def _handle_cache_event(event) -> None:
 _cache_event_unsubscribe = _cache_coordinator.add_event_listener(
     _handle_cache_event
 )
+
+
+@dataclass(frozen=True)
+class ApplicationServices:
+    """Explicit process service graph and lifecycle boundary.
+
+    The application is intentionally single-process because authentication,
+    tracking and cache identity fencing share one remote Session.  Routers
+    should depend on the public getters below instead of importing private
+    module globals.  Keeping the graph explicit also gives tests and future
+    launchers one stable composition boundary while legacy imports migrate.
+    """
+
+    auth_sessions: AuthSessionManager
+    storage: Storage
+    log_config: LogConfig
+    log_manager: LogManager
+    api_logger: object
+    cache_registry: CacheRegistry
+    cache_store: CacheStore
+    cache_coordinator: CacheCoordinator
+    grade_tracker: GradeTrackingService
+    report_storage: AcademicReportStorage
+    research_storage: ResearchTrainingStorage
+
+    def start(self) -> None:
+        self.cache_coordinator.start()
+        try:
+            self.grade_tracker.start()
+        except Exception:
+            self.cache_coordinator.shutdown(
+                wait=True,
+                cancel_queued=True,
+                timeout=8,
+            )
+            raise
+
+    def shutdown(self, *, timeout: float = 8) -> None:
+        tracker_error: Exception | None = None
+        cache_error: Exception | None = None
+        try:
+            self.grade_tracker.stop()
+        except Exception as exc:
+            tracker_error = exc
+        try:
+            self.cache_coordinator.shutdown(
+                wait=True,
+                cancel_queued=True,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            cache_error = exc
+        if tracker_error is not None and cache_error is not None:
+            raise ExceptionGroup(
+                "application service shutdown failed",
+                [tracker_error, cache_error],
+            )
+        if tracker_error is not None:
+            raise tracker_error
+        if cache_error is not None:
+            raise cache_error
+
+
+_application_services = ApplicationServices(
+    auth_sessions=_auth_sessions,
+    storage=_storage,
+    log_config=_log_config,
+    log_manager=_log_manager,
+    api_logger=_api_logger,
+    cache_registry=_cache_registry,
+    cache_store=_cache_store,
+    cache_coordinator=_cache_coordinator,
+    grade_tracker=_grade_tracker,
+    report_storage=_report_storage,
+    research_storage=_research_storage,
+)
+
+
+def get_application_services() -> ApplicationServices:
+    return _application_services
+
+
+def get_storage() -> Storage:
+    return _application_services.storage
+
+
+def get_log_config() -> LogConfig:
+    return _application_services.log_config
+
+
+def get_log_manager() -> LogManager:
+    return _application_services.log_manager
+
+
+def get_api_logger():
+    return _application_services.api_logger
+
+
+def get_grade_tracker() -> GradeTrackingService:
+    return _application_services.grade_tracker
+
+
+def get_cache_coordinator() -> CacheCoordinator:
+    return _application_services.cache_coordinator
 
 
 def require_auth() -> NEUAuthClient:

@@ -21,8 +21,13 @@ from backend.app.cache_support import read_cache, submit_refresh, wait_for_job
 from backend.core.log import log_application_error
 from backend.core.cache import CacheKey
 from backend.core.cache.resources import score_detail_variant
+from backend.app.presenters import score_model
 
 router = APIRouter()
+
+# One-cycle compatibility for tests and extensions that imported the former
+# router-local mapper. New code must import app.presenters.score_model.
+_score_model = score_model
 
 
 def _find_cached_score(account: str, course_code: str, term: str) -> dict | None:
@@ -70,42 +75,11 @@ def _detail_response(account: str, course_code: str, term: str):
     )
 
 
-def _score_value(score: dict) -> float:
-    try:
-        number = float(score.get("score"))
-        gpa = float(score.get("gpa") or 0)
-        expected = (number - 50) / 10
-        return number if abs(expected - gpa) < 0.3 else ((gpa + 5) * 10 if gpa else number)
-    except (TypeError, ValueError):
-        gpa = float(score.get("gpa") or 0)
-        return (gpa + 5) * 10 if gpa else 0.0
-
-
-def _score_model(score: dict) -> CourseScoreModel:
-    return CourseScoreModel(
-        name=str(score.get("name") or ""),
-        code=str(score.get("code") or ""),
-        score=str(score.get("score") or ""),
-        score_value=_score_value(score),
-        gpa=float(score.get("gpa") or 0),
-        credit=float(score.get("credit") or 0),
-        term=str(score.get("term") or ""),
-        term_display=str(score.get("term_display") or ""),
-        course_type=str(score.get("course_type") or ""),
-        course_category=str(score.get("course_category") or ""),
-        general_category=str(score.get("general_category") or ""),
-        exam_type=str(score.get("exam_type") or ""),
-        exam_status=str(score.get("exam_status") or ""),
-        course_nature=str(score.get("course_nature") or ""),
-        is_passed=bool(score.get("is_passed")),
-    )
-
-
 def _scores_response(entry, is_stale: bool, source: str = "local") -> ScoresResponse:
     payload = entry.payload
     scores = payload.get("scores") or []
     score_models = [
-        _score_model(score)
+        score_model(score)
         for score in scores
     ]
     total_credits = sum(float(score.get("credit") or 0) for score in scores)
@@ -190,7 +164,7 @@ def get_scores_by_term(auth: NEUAuthClient = Depends(require_cached_auth_identit
             )["scores"].append(score)
         result = []
         for term_code, term in sorted(grouped.items(), reverse=True):
-            courses = [_score_model(score) for score in term["scores"]]
+            courses = [score_model(score) for score in term["scores"]]
             credits = sum(course.credit for course in courses)
             result.append(TermScoresModel(
                 term_code=term_code,

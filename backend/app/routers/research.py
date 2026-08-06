@@ -22,6 +22,7 @@ from backend.core.academic.research_training import (
 )
 from backend.core.auth import NEUAuthClient
 from backend.core.cache import mutation_policy
+from backend.app.presenters import research_cache_response
 
 
 router = APIRouter()
@@ -46,41 +47,15 @@ def _cache_response(
     update_available: bool = False,
     changes: dict | None = None,
 ) -> dict:
-    if not entry:
-        return {
-            "available": False,
-            "favorite_topic_ids": [],
-            "favorite_topics": [],
-            "update_available": False,
-            "changes": {},
-        }
-    snapshot = entry.payload
-    batch = snapshot.get("batch") or {}
-    batch_id = str(batch.get("batch_id") or "")
-    topics = snapshot.get("topics") or []
-    return {
-        "available": True,
-        "version": entry.schema_version,
-        "username": username,
-        "saved_at": entry.saved_at.isoformat(),
-        "revision": entry.revision,
-        **snapshot,
-        "total": len(topics),
-        "favorite_topic_ids": _research_storage.favorite_ids(username, batch_id),
-        "favorite_topics": _research_storage.favorite_topics(
-            username,
-            snapshot,
-        ),
-        "update_available": update_available,
-        "changes": changes or {
-            "added": 0,
-            "updated": 0,
-            "removed": 0,
-            "new_batch": False,
-            "confirmed_changed": False,
-        },
-        "cache": entry.metadata(is_stale=is_stale),
-    }
+    """Compatibility wrapper; shared mapping lives in app.presenters."""
+    return research_cache_response(
+        _research_storage,
+        username,
+        entry,
+        is_stale=is_stale,
+        update_available=update_available,
+        changes=changes,
+    )
 
 
 @router.get("/research-training/cache", response_model=ResearchCacheResponse)

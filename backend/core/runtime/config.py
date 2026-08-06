@@ -6,6 +6,7 @@ server builds use writable platform locations and a relocatable resource root.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import stat
@@ -135,6 +136,17 @@ def _trusted_proxies(value: Any) -> tuple[str, ...]:
     return tuple(str(item) for item in value)
 
 
+def is_loopback_host(host: str) -> bool:
+    """Whether a bind host is explicitly constrained to this machine."""
+    normalized = str(host).strip().lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
 def get_runtime_config() -> RuntimeConfig:
     profile = _normalize_profile(os.environ.get("NEU_JWXT_PROFILE"))
     data_dir = _default_data_dir(profile)
@@ -144,11 +156,17 @@ def get_runtime_config() -> RuntimeConfig:
 
     default_host = "127.0.0.1"
     default_port = 8000
-    host = os.environ.get("HOST", str(file_config.get("host", default_host)))
+    host = os.environ.get("HOST", str(file_config.get("host", default_host))).strip()
     port_text = os.environ.get(
         "PORT",
         os.environ.get("BACKEND_PORT", str(file_config.get("port", default_port))),
     )
+
+    if profile == "server" and not is_loopback_host(host):
+        raise ValueError(
+            "server 模式只允许监听回环地址（127.0.0.1、::1 或 localhost）；"
+            "请通过同机 HTTPS 反向代理提供外部访问"
+        )
 
     secure_directory(data_dir)
     return RuntimeConfig(

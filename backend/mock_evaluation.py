@@ -269,8 +269,7 @@ def mock_submit(request):
     
     indicators, avg_score, _ = _calculate_scores(scored)
     
-    # 实际提交：更新内存状态
-    _test_eval_states[request.xspjid] = {
+    state = {
         "is_evaluated": True,
         "avg_score": avg_score,
         "indicators": [
@@ -283,11 +282,17 @@ def mock_submit(request):
             for ind in indicators
         ],
     }
+    if not request.dry_run:
+        _test_eval_states[request.xspjid] = state
     
     return {
         "success": True,
-        "message": "评教提交成功",
-        "data": {"task": {"zpf": avg_score}},
+        "dry_run": request.dry_run,
+        "message": "安全模式预览完成，未实际提交" if request.dry_run else "评教提交成功",
+        "summary": {
+            "average_score": avg_score,
+            "indicator_count": len(indicators),
+        },
         "course_name": course["course_name"],
         "teacher_name": course["teacher_name"],
     }
@@ -295,7 +300,14 @@ def mock_submit(request):
 
 def mock_batch(request):
     """模拟批量提交"""
-    courses = [c for c in MOCK_COURSES if not c["is_evaluated"]]
+    courses = [
+        course
+        for course in MOCK_COURSES
+        if not _test_eval_states.get(
+            course["xspjid"],
+            {"is_evaluated": course["is_evaluated"]},
+        ).get("is_evaluated")
+    ]
     if request.xspjids:
         courses = [c for c in courses if c["xspjid"] in request.xspjids]
     
@@ -314,7 +326,7 @@ def mock_batch(request):
         validation = _validate_scoring(scored)
         indicators, avg_score, _ = _calculate_scores(scored)
         
-        _test_eval_states[course["xspjid"]] = {
+        state = {
             "is_evaluated": True,
             "avg_score": avg_score,
             "indicators": [
@@ -327,6 +339,8 @@ def mock_batch(request):
                 for ind in indicators
             ],
         }
+        if not request.dry_run:
+            _test_eval_states[course["xspjid"]] = state
         results.append({
             "course_name": course["course_name"],
             "teacher_name": course["teacher_name"],
@@ -340,5 +354,6 @@ def mock_batch(request):
         "total": len(results),
         "pending_count": len(courses),
         "success_count": success_count,
-        "message": "批量评教完成",
+        "dry_run": request.dry_run,
+        "message": "批量预览完成" if request.dry_run else "批量评教完成",
     }

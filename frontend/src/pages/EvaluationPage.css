@@ -28,6 +28,30 @@
   margin-top: 8px;
 }
 
+.evaluation-acknowledge-button.is-attention {
+  animation: evaluation-acknowledge-pulse 0.5s ease-in-out 3;
+}
+
+@keyframes evaluation-acknowledge-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgb(250 140 22 / 0%);
+    transform: scale(1);
+  }
+
+  50% {
+    box-shadow: 0 0 0 7px rgb(250 140 22 / 24%);
+    transform: scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .evaluation-acknowledge-button.is-attention {
+    animation: none;
+    outline: 3px solid rgb(250 140 22 / 35%);
+    outline-offset: 3px;
+  }
+}
+
 .evaluation-strategy,
 .evaluation-batch-actions {
   margin-bottom: 16px;

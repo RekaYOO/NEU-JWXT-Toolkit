@@ -1,0 +1,52 @@
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CI = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+RELEASE = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+    encoding="utf-8"
+)
+
+
+def test_ci_avoids_duplicate_push_and_pull_request_runs():
+    assert 'branches: ["main"]' in CI
+    assert "pull_request:" in CI
+    assert 'branches: ["**"]' not in CI
+
+
+def test_ci_owns_the_complete_source_quality_gate():
+    expected_commands = (
+        "python -m pytest backend/tests",
+        "python -m compileall -q backend launchers",
+        "npm test",
+        "npm run build",
+        "python -m pytest tests",
+    )
+    assert all(command in CI for command in expected_commands)
+
+
+def test_release_builds_web_once_without_repeating_source_tests():
+    duplicated_commands = (
+        "python -m pytest backend/tests",
+        "python -m compileall -q backend launchers",
+        "npm test",
+        "python -m pytest tests",
+    )
+    assert all(command not in RELEASE for command in duplicated_commands)
+    assert RELEASE.count("npm run build") == 1
+    assert RELEASE.count("name: web-build") == 3
+    assert "run-id:" not in RELEASE
+    assert "github-token:" not in RELEASE
+
+
+def test_release_dag_stays_small_and_explicit():
+    assert RELEASE.count("needs: [validate, web]") == 2
+    assert "needs: [validate, windows, linux]" in RELEASE
+    assert "ci_gate:" not in RELEASE
+
+
+def test_release_only_publishes_version_tags_and_final_artifacts():
+    assert 'tags: ["v*"]' in RELEASE
+    assert "workflow_dispatch:" in RELEASE
+    assert "if: startsWith(github.ref, 'refs/tags/v')" in RELEASE
+    assert 'pattern: "*-release"' in RELEASE

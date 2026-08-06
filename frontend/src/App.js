@@ -20,7 +20,11 @@ import FestivalActivitiesPage from './pages/FestivalActivitiesPage';
 import AccessLoginPage from './pages/AccessLoginPage';
 import { checkStatus, getAccessStatus, getHealth, getOfflineStatus } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
-import { hasOfflineExportData, isExportToolAvailable } from './export/exportTools';
+import { isExportToolAvailable } from './export/exportTools';
+import {
+  featureAvailable,
+  offlineDefaultPath as resolveOfflineDefaultPath,
+} from './features/featureRegistry';
 import {
   clearManualLogout,
   isManualLogoutActive,
@@ -289,13 +293,7 @@ function App() {
     message.success('已进入只读离线模式');
   };
 
-  const offlineDefaultPath = offlineCapabilities.has_scores
-    ? '/scores'
-    : offlineCapabilities.has_report
-      ? '/academic-report'
-      : offlineCapabilities.has_research
-        ? '/research-training'
-        : hasOfflineExportData(offlineCapabilities) ? '/export' : '/login';
+  const offlineDefaultPath = resolveOfflineDefaultPath(offlineCapabilities);
 
   if (isLoading) {
     return (
@@ -371,30 +369,32 @@ function App() {
               <Route index element={<Navigate to={offlineMode ? offlineDefaultPath : '/scores'} />} />
               <Route
                 path="scores"
-                element={!offlineMode || offlineCapabilities.has_scores
+                element={featureAvailable('scores', { offlineMode, offlineCapabilities })
                   ? <ScoresPage offlineMode={offlineMode} />
                   : <Navigate to={offlineDefaultPath} />}
               />
-              <Route path="grade-tracking" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <GradeTrackingPage />} />
+              <Route path="grade-tracking" element={featureAvailable('grade-tracking', { offlineMode, offlineCapabilities }) ? <GradeTrackingPage /> : <Navigate to={offlineDefaultPath} />} />
               <Route
                 path="academic-report"
-                element={!offlineMode || offlineCapabilities.has_report
+                element={featureAvailable('academic-report', { offlineMode, offlineCapabilities })
                   ? <AcademicReportPage offlineMode={offlineMode} />
                   : <Navigate to={offlineDefaultPath} />}
               />
-              <Route path="experiment-courses" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <ExperimentCoursePage />} />
+              <Route path="experiment-courses" element={featureAvailable('experiment-courses', { offlineMode, offlineCapabilities }) ? <ExperimentCoursePage /> : <Navigate to={offlineDefaultPath} />} />
               <Route
                 path="research-training"
-                element={!offlineMode || offlineCapabilities.has_research
+                element={featureAvailable('research-training', { offlineMode, offlineCapabilities })
                   ? <ResearchTrainingPage offlineMode={offlineMode} />
                   : <Navigate to={offlineDefaultPath} />}
               />
-              <Route path="evaluation" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <EvaluationPage />} />
-              <Route path="exams" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <ExamPage />} />
-              <Route path="logs" element={offlineMode ? <Navigate to={offlineDefaultPath} /> : <LogsPage />} />
+              <Route path="evaluation" element={featureAvailable('evaluation', { offlineMode, offlineCapabilities }) ? <EvaluationPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="exams" element={featureAvailable('exams', { offlineMode, offlineCapabilities }) ? <ExamPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="logs" element={featureAvailable('logs', { offlineMode, offlineCapabilities }) ? <LogsPage /> : <Navigate to={offlineDefaultPath} />} />
               <Route
                 path="export"
-                element={<ExportPage offlineMode={offlineMode} offlineCapabilities={offlineCapabilities} />}
+                element={featureAvailable('export', { offlineMode, offlineCapabilities })
+                  ? <ExportPage offlineMode={offlineMode} offlineCapabilities={offlineCapabilities} />
+                  : <Navigate to={offlineDefaultPath} />}
               />
               <Route
                 path="export/festival-activities"

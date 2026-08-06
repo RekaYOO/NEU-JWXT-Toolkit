@@ -2,7 +2,7 @@ from typing import Optional, List, Dict, Any
 import time as py_time
 from fastapi import APIRouter, HTTPException, Depends, Query
 
-from backend.app.dependencies import _api_logger
+from backend.app.dependencies import get_api_logger
 from backend.app.schemas import EvaluationSubmitRequest, EvaluationBatchRequest
 from backend.core.auth import NEUAuthClient
 from backend.core.cache import mutation_policy
@@ -15,6 +15,9 @@ from backend.mock_evaluation import (
 from backend.app.dependencies import require_serialized_auth
 
 router = APIRouter()
+
+_IDENTIFIER_PATTERN = r"^[^\x00-\x1f\x7f]+$"
+_MAX_BATCH_COURSES = 50
 
 
 @router.get("/evaluation/cycles")
@@ -44,7 +47,13 @@ def get_evaluation_cycles(
 
 @router.get("/evaluation/tasks")
 def get_evaluation_tasks(
-    xnxq: str = Query(None, description="学年学期，不传则使用系统默认"),
+    xnxq: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=32,
+        pattern=_IDENTIFIER_PATTERN,
+        description="学年学期，不传则使用系统默认",
+    ),
     auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
@@ -87,7 +96,13 @@ def get_evaluation_tasks(
 @router.get("/evaluation/tasks/{task_id}/courses")
 def get_evaluation_courses(
     task_id: str,
-    xnxq: str = Query(None, description="学年学期，不传则使用系统默认"),
+    xnxq: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=32,
+        pattern=_IDENTIFIER_PATTERN,
+        description="学年学期，不传则使用系统默认",
+    ),
     auth: NEUAuthClient = Depends(require_serialized_auth)
 ):
     """
@@ -230,7 +245,15 @@ def submit_evaluation(
     """
     policy = mutation_policy("evaluation.submit")
     if EVAL_TEST_MODE:
-        return mock_submit(request)
+        result = mock_submit(request)
+        return {
+            **result,
+            "refetches": (
+                policy.refetches
+                if result.get("success") and not request.dry_run
+                else ()
+            ),
+        }
 
     try:
         api = EvaluationAPI(auth)
@@ -257,19 +280,40 @@ def submit_evaluation(
                 if ind.zbid in request.text_results:
                     ind.result = request.text_results[ind.zbid]
 
-        # 实际提交
-        result = api.submit_evaluation(course, target, request.strategy, request.custom_scores)
+        result = (
+            api.preview_evaluation(
+                course,
+                target,
+                request.strategy,
+                request.custom_scores,
+            )
+            if request.dry_run
+            else api.submit_evaluation(
+                course,
+                target,
+                request.strategy,
+                request.custom_scores,
+            )
+        )
 
         if result["success"]:
-            _api_logger.info(f"[Evaluation] 评教提交成功: task={request.task_id}, xspjid={request.xspjid}, strategy={request.strategy}")
+            get_api_logger().info(
+                "Evaluation preview completed"
+                if request.dry_run
+                else "Evaluation submission completed"
+            )
         else:
-            _api_logger.warning(f"[Evaluation] 评教提交失败: task={request.task_id}, reason={result['message']}")
+            get_api_logger().warning("Evaluation submission was rejected")
 
         return {
             **result,
             "course_name": course.course_name,
             "teacher_name": course.teacher_name,
-            "invalidations": policy.invalidations if result["success"] else (),
+            "refetches": (
+                policy.refetches
+                if result["success"] and not request.dry_run
+                else ()
+            ),
         }
     except HTTPException:
         raise
@@ -291,7 +335,15 @@ def batch_evaluation(
     """
     policy = mutation_policy("evaluation.batch")
     if EVAL_TEST_MODE:
-        return mock_batch(request)
+        result = mock_batch(request)
+        return {
+            **result,
+            "refetches": (
+                policy.refetches
+                if result.get("success_count") and not request.dry_run
+                else ()
+            ),
+        }
 
     try:
         api = EvaluationAPI(auth)
@@ -303,6 +355,12 @@ def batch_evaluation(
         # 根据前端传入的 xspjids 过滤选中课程
         if request.xspjids:
             pending = [c for c in pending if c.xspjid in request.xspjids]
+
+        if len(pending) > _MAX_BATCH_COURSES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Batch evaluation is limited to {_MAX_BATCH_COURSES} courses",
+            )
 
         if not pending:
             return {
@@ -316,7 +374,32 @@ def batch_evaluation(
         # 实际批量提交：只对选中的 pending 课程逐条提交
         results = []
         for i, course in enumerate(pending):
-            result = api.evaluate_course(course, request.strategy, request.custom_scores)
+            if request.dry_run:
+                target = api.get_evaluation_target(
+                    request.task_id,
+                    course.xspjid,
+                    course.xnxqid,
+                )
+                result = (
+                    api.preview_evaluation(
+                        course,
+                        target,
+                        request.strategy,
+                        request.custom_scores,
+                    )
+                    if target
+                    else {
+                        "success": False,
+                        "dry_run": True,
+                        "message": "评教指标不可用",
+                    }
+                )
+            else:
+                result = api.evaluate_course(
+                    course,
+                    request.strategy,
+                    request.custom_scores,
+                )
             results.append({
                 "course_name": course.course_name,
                 "teacher_name": course.teacher_name,
@@ -326,15 +409,26 @@ def batch_evaluation(
                 py_time.sleep(request.delay)
 
         success_count = sum(1 for r in results if r["success"])
-        _api_logger.info(f"[Evaluation] 批量评教完成: task={request.task_id}, {success_count}/{len(results)} 成功")
+        get_api_logger().info(
+            "Evaluation batch completed: %s/%s succeeded",
+            success_count,
+            len(results),
+        )
 
         return {
             "results": results,
             "total": len(results),
             "pending_count": len(pending),
             "success_count": success_count,
-            "invalidations": policy.invalidations if success_count else (),
+            "dry_run": request.dry_run,
+            "refetches": (
+                policy.refetches
+                if success_count and not request.dry_run
+                else ()
+            ),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         error_id = log_application_error("evaluation.batch", e, 500)
         raise HTTPException(status_code=500, detail=f"批量评教失败（错误编号：{error_id}）") from e

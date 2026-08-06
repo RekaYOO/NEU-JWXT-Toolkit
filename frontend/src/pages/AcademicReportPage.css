@@ -483,11 +483,6 @@
   margin: 16px;
 }
 
-/* 底部信息 */
-.footer-info {
-  padding: 16px 0;
-}
-
 /* 响应式设计 */
 @media (max-width: 1200px) {
   .credit-summary-float .summary-detail {
@@ -754,10 +749,6 @@
     flex-shrink: 0;
   }
 
-  .footer-info {
-    padding: 12px 6px 0;
-    font-size: 12px;
-  }
 }
 
 @media (max-width: 576px) {

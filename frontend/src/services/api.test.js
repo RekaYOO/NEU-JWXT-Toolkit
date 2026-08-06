@@ -1,7 +1,9 @@
 const loadApiWithAxios = () => {
   let rejectResponse;
+  let apiModule;
   const client = {
     get: jest.fn(),
+    post: jest.fn(),
     request: jest.fn(),
     interceptors: {
       response: {
@@ -18,10 +20,82 @@ const loadApiWithAxios = () => {
     default: { create: jest.fn(() => client) },
   }));
   jest.isolateModules(() => {
-    require('./api');
+    apiModule = require('./api');
   });
-  return { client, rejectResponse };
+  return { client, rejectResponse, apiModule };
 };
+
+describe('Evaluation API term discovery', () => {
+  test('omits xnxq so the backend can discover the current evaluation cycle', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.get.mockResolvedValue({ data: { tasks: [] } });
+
+    await apiModule.getEvaluationTasks();
+    await apiModule.getEvaluationCourses('task-id');
+
+    expect(client.get).toHaveBeenNthCalledWith(1, '/api/evaluation/tasks');
+    expect(client.get).toHaveBeenNthCalledWith(
+      2,
+      '/api/evaluation/tasks/task-id/courses'
+    );
+  });
+
+  test('still forwards an explicitly selected evaluation cycle', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.get.mockResolvedValue({ data: { tasks: [] } });
+
+    await apiModule.getEvaluationTasks('2026-2027-1');
+    await apiModule.getEvaluationCourses('task-id', '2026-2027-1');
+
+    expect(client.get).toHaveBeenNthCalledWith(1, '/api/evaluation/tasks', {
+      params: { xnxq: '2026-2027-1' },
+    });
+    expect(client.get).toHaveBeenNthCalledWith(
+      2,
+      '/api/evaluation/tasks/task-id/courses',
+      { params: { xnxq: '2026-2027-1' } }
+    );
+  });
+});
+
+describe('Evaluation API safety mode', () => {
+  test('preview is the default and real submission requires explicit false', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.post.mockResolvedValue({ data: { success: true, dry_run: true } });
+
+    await apiModule.submitEvaluation('task', 'course');
+    await apiModule.submitEvaluation(
+      'task', 'course', 'highest', null, null, false,
+    );
+
+    expect(client.post).toHaveBeenNthCalledWith(1, '/api/evaluation/submit', {
+      task_id: 'task',
+      xspjid: 'course',
+      strategy: 'highest',
+      dry_run: true,
+    });
+    expect(client.post).toHaveBeenNthCalledWith(2, '/api/evaluation/submit', {
+      task_id: 'task',
+      xspjid: 'course',
+      strategy: 'highest',
+      dry_run: false,
+    });
+  });
+
+  test('batch preview also defaults to non-writing mode', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.post.mockResolvedValue({ data: { success_count: 1, dry_run: true } });
+
+    await apiModule.batchEvaluation('task', 'lowest', null, ['course']);
+
+    expect(client.post).toHaveBeenCalledWith('/api/evaluation/batch', {
+      task_id: 'task',
+      strategy: 'lowest',
+      xspjids: ['course'],
+      dry_run: true,
+    });
+  });
+});
 
 describe('API silent authentication recovery', () => {
   beforeEach(() => {

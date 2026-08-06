@@ -72,6 +72,24 @@ def test_server_access_gateway_and_static_frontend(tmp_path):
         )
         assert homepage.status_code == 200
         assert "access-control-allow-origin" not in homepage.headers
+        traversal = requests.get(
+            f"{base_url}/..%2F..%2FVERSION",
+        )
+        assert traversal.status_code == 404
+        windows_traversal = requests.get(
+            f"{base_url}/..%5C..%5CVERSION",
+        )
+        assert windows_traversal.status_code == 404
+        static_traversal = requests.get(
+            f"{base_url}/static/..%2F..%2F..%2FVERSION",
+        )
+        assert static_traversal.status_code == 404
+        manifest = requests.get(f"{base_url}/manifest.webmanifest")
+        assert manifest.status_code == 200
+        assert manifest.json()["name"]
+        private_buildinfo = requests.get(f"{base_url}/.buildinfo")
+        assert private_buildinfo.status_code == 200
+        assert private_buildinfo.text == homepage.text
         recovery = requests.get(
             f"{base_url}/api/grade-tracking/recovery/invalid-token/status"
         )

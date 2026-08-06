@@ -9,13 +9,15 @@ NEU 实验选课 API
 - 获取当前学年学期
 """
 
-import sys
-import os
+import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 
 
 from backend.core.auth import NEUAuthClient
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -157,8 +159,8 @@ class ExperimentCourseAPI:
         try:
             resp = self._client.post(url, data={}, headers=self.HEADERS)
             return resp.json().get("datas", {}).get("queryAcademicYearSemester")
-        except Exception as e:
-            print(f"获取学期失败: {e}")
+        except Exception:
+            logger.warning("Experiment semester request failed")
             return None
 
     def get_courses(self, term_code: str = None) -> List[ExperimentCourse]:
@@ -183,8 +185,8 @@ class ExperimentCourseAPI:
             if data.get("code") == "0":
                 courses = data.get("datas", {}).get("queryCanSelectedCourses", [])
                 return [ExperimentCourse.from_dict(c) for c in courses]
-        except Exception as e:
-            print(f"获取课程失败: {e}")
+        except Exception:
+            logger.warning("Experiment course request failed")
         return []
 
     def get_rounds(self, term_code: str, task_id: str, course_no: str, project_code: str) -> List[ExperimentRound]:
@@ -213,8 +215,8 @@ class ExperimentCourseAPI:
             if data.get("code") == "0":
                 rounds = data.get("datas", {}).get("queryTaskProjectRounds", [])
                 return [ExperimentRound.from_dict(r) for r in rounds]
-        except Exception as e:
-            print(f"获取实验班失败: {e}")
+        except Exception:
+            logger.warning("Experiment round request failed")
         return []
 
     def select(self, term_code: str, task_id: str, project_code: str, round_id: str) -> Dict:
@@ -239,8 +241,9 @@ class ExperimentCourseAPI:
                 "PKLC_WID": round_id,
             }, headers=self.HEADERS)
             return resp.json()
-        except Exception as e:
-            return {"code": "-1", "msg": str(e)}
+        except Exception:
+            logger.warning("Experiment selection request failed")
+            return {"code": "-1", "msg": "远端选课请求失败"}
 
     def deselect(self, term_code: str, task_id: str, project_code: str, round_id: str) -> Dict:
         """
@@ -264,43 +267,6 @@ class ExperimentCourseAPI:
                 "PKLC_WID": round_id,
             }, headers=self.HEADERS)
             return resp.json()
-        except Exception as e:
-            return {"code": "-1", "msg": str(e)}
-
-
-def main():
-    """示例用法"""
-    print("=" * 60)
-    print("NEU 实验选课 API 示例")
-    print("=" * 60)
-    
-    # 登录（请替换为真实账号）
-    client = NEUAuthClient("学号", "密码")
-    if not client.login():
-        print("登录失败!")
-        return
-    print("登录成功!")
-    
-    api = ExperimentCourseAPI(client)
-    
-    # 获取学期
-    semester = api.get_semester()
-    print(f"\n当前学期: {semester}")
-    
-    # 获取课程
-    courses = api.get_courses(semester)
-    print(f"\n可选课程: {len(courses)} 门")
-    
-    for c in courses:
-        print(f"\n{c.course_name} ({c.course_no})")
-        print(f"  学分: {c.credit}, 实验学时: {c.experiment_hours}")
-        print(f"  必做项目: {c.must_do_count}个, 已完成: {c.selected_count}个")
-        for p in c.projects:
-            status = p.select_status if p.selected_round_id else "待选"
-            print(f"    - {p.project_name} [{status}]")
-    
-    print("\n" + "=" * 60)
-
-
-if __name__ == "__main__":
-    main()
+        except Exception:
+            logger.warning("Experiment deselection request failed")
+            return {"code": "-1", "msg": "远端退课请求失败"}

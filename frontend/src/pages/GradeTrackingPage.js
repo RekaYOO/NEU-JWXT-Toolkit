@@ -119,7 +119,7 @@ const GradeTrackingPage = () => {
 
   const saveConfig = async () => {
     try {
-      const values = { ...await form.validateFields(), enabled };
+      const values = await form.validateFields();
       setSaving(true);
       const result = await updateGradeTrackingConfig(values);
       const {
@@ -147,7 +147,11 @@ const GradeTrackingPage = () => {
       const result = await setGradeTrackingEnabled(nextEnabled);
       setEnabled(Boolean(result.config.enabled));
       await loadStatus();
-      message.success(nextEnabled ? '成绩追踪已开启' : '成绩追踪已关闭');
+      message.success(
+        nextEnabled
+          ? '成绩追踪已开启，初始邮件将在同步完成后自动发送'
+          : '成绩追踪已关闭'
+      );
     } catch (error) {
       message.error(errorText(
         error,
@@ -261,11 +265,9 @@ const GradeTrackingPage = () => {
         layout="vertical"
         requiredMark={false}
         initialValues={{
-          enabled: false,
           interval_minutes: 30,
           start_hour: 9,
           end_hour: 21,
-          notify_initial: true,
           smtp_port: 465,
           smtp_security: 'ssl',
         }}
@@ -307,12 +309,9 @@ const GradeTrackingPage = () => {
           </Row>
           <div className="tracking-inline-setting">
             <div>
-              <strong>首次同步后发送通知</strong>
-              <span>用于确认邮件和追踪流程均已正常工作。</span>
+              <strong>开启后发送初始邮件</strong>
+              <span>每次开启成绩追踪，都会同步当前成绩并自动发送一封初始邮件。</span>
             </div>
-            <Form.Item name="notify_initial" valuePropName="checked" noStyle>
-              <Switch />
-            </Form.Item>
           </div>
         </Card>
 

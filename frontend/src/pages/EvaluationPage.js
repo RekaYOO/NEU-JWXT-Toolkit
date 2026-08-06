@@ -1,20 +1,22 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Card, Table, Button, Tag, Space, Modal, Descriptions, Spin,
-  message, Alert, Tooltip, Progress, Select, Typography, Divider,
-  Switch, Popconfirm, Badge, Radio, Input, List, Form, Grid, Checkbox,
+  message, Alert, Progress, Select, Typography, Divider,
+  Badge, Radio, Input, List, Form, Grid, Checkbox,
 } from 'antd';
 import {
   StarOutlined, EyeOutlined, ThunderboltOutlined,
-  SafetyCertificateOutlined, ExclamationCircleOutlined,
+  ExclamationCircleOutlined,
   CheckCircleOutlined, CloseCircleOutlined, TrophyOutlined,
   LoadingOutlined, LeftOutlined, UnorderedListOutlined,
   EditOutlined, FileTextOutlined,
 } from '@ant-design/icons';
 import {
   getEvaluationTasks, getEvaluationCourses, getEvaluationIndicators,
-  submitEvaluation, batchEvaluation,
+  submitEvaluation,
 } from '../services/api';
+import { synchronizeEvaluationViews } from '../features/evaluationConsistency';
+import { evaluationConfirmationText } from '../features/evaluationConfirmation';
 import { MobileActionBar } from '../components/mobile/MobileUX';
 import './EvaluationPage.css';
 
@@ -59,12 +61,16 @@ const EvaluationPage = () => {
 
   // 须知确认
   const [acknowledged, setAcknowledged] = useState(false);
-  const [noticeExpanded, setNoticeExpanded] = useState(true);
+  const [noticeAttention, setNoticeAttention] = useState(false);
+  const noticeButtonRef = useRef(null);
+  const noticeAttentionTimerRef = useRef(null);
+  const submissionIntentLockRef = useRef(false);
 
   // 单独评价弹窗
   const [evaluateModalVisible, setEvaluateModalVisible] = useState(false);
   const [evaluateCourse, setEvaluateCourse] = useState(null);
   const [evaluateIndicators, setEvaluateIndicators] = useState([]);
+  const [evaluateStrategy, setEvaluateStrategy] = useState('custom');
   const [evaluateLoading, setEvaluateLoading] = useState(false);
   const [evaluateSubmitting, setEvaluateSubmitting] = useState(false);
 
@@ -95,6 +101,29 @@ const EvaluationPage = () => {
   useEffect(() => {
     loadTasks();
   }, [loadTasks]);
+
+  useEffect(() => () => {
+    if (noticeAttentionTimerRef.current) {
+      clearTimeout(noticeAttentionTimerRef.current);
+    }
+  }, []);
+
+  const requireAcknowledgement = () => {
+    if (acknowledged) return true;
+    message.warning('请先点击“已知晓”确认评教须知');
+    setNoticeAttention(false);
+    const scheduleAttention = window.requestAnimationFrame || window.setTimeout;
+    scheduleAttention(() => setNoticeAttention(true));
+    noticeButtonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    noticeButtonRef.current?.focus({ preventScroll: true });
+    if (noticeAttentionTimerRef.current) {
+      clearTimeout(noticeAttentionTimerRef.current);
+    }
+    noticeAttentionTimerRef.current = setTimeout(() => {
+      setNoticeAttention(false);
+    }, 1600);
+    return false;
+  };
 
   // ── 选中任务 → 加载课程列表（二级） ────────────────────────────────────
   const handleSelectTask = async (task) => {
@@ -135,10 +164,12 @@ const EvaluationPage = () => {
 
   // ── 打开单独评价弹窗 ───────────────────────────────────────────────────
   const handleOpenEvaluate = async (record) => {
+    if (!requireAcknowledgement()) return;
     setEvaluateCourse(record);
     setEvaluateModalVisible(true);
     setEvaluateLoading(true);
     setEvaluateIndicators([]);
+    setEvaluateStrategy('custom');
     try {
       const data = await getEvaluationIndicators(record.xspjid, record.task_id);
       const indicators = (data.indicators || []).map(ind => ({
@@ -157,6 +188,7 @@ const EvaluationPage = () => {
 
   // ── 修改单独评价的某题分数 ──────────────────────────────────────────────
   const handleScoreChange = (zbid, value) => {
+    setEvaluateStrategy('custom');
     setEvaluateIndicators(prev =>
       prev.map(ind =>
         ind.zbid === zbid ? { ...ind, _customDfdj: value } : ind
@@ -175,6 +207,7 @@ const EvaluationPage = () => {
 
   // ── 应用策略填充到评价弹窗 ──────────────────────────────────────────────
   const handleApplyStrategy = (strategy) => {
+    setEvaluateStrategy(strategy);
     setEvaluateIndicators(prev => {
       let selectionCount = 0;
       return prev.map(ind => {
@@ -231,7 +264,7 @@ const EvaluationPage = () => {
     }
 
     if (!acknowledged) {
-      message.warning('请先阅读须知');
+      requireAcknowledgement();
       return;
     }
 
@@ -245,12 +278,20 @@ const EvaluationPage = () => {
       }
     }
 
+    if (submissionIntentLockRef.current) {
+      message.warning('已有评教操作正在确认或提交');
+      return;
+    }
+    submissionIntentLockRef.current = true;
     Modal.confirm({
-      title: '确认提交本课程评价',
-      content: `即将向教务系统提交“${evaluateCourse.course_name}”的评价。提交后通常无法修改，请再次确认当前评分和文本内容。`,
-      okText: '确认真实提交',
+      title: '确认提交评教',
+      content: evaluationConfirmationText(evaluateStrategy, 1),
+      okText: '确认提交',
       okType: 'danger',
       cancelText: '返回检查',
+      onCancel: () => {
+        submissionIntentLockRef.current = false;
+      },
       onOk: async () => {
         setEvaluateSubmitting(true);
         try {
@@ -259,12 +300,20 @@ const EvaluationPage = () => {
             evaluateCourse.xspjid,
             'custom',
             customScores,
-            textResults
+            textResults,
+            false,
           );
           if (result.success) {
             message.success(`${evaluateCourse.course_name} 评教提交成功`);
             setEvaluateModalVisible(false);
-            if (selectedTask) handleSelectTask(selectedTask);
+            try {
+              await synchronizeEvaluationViews(result.refetches, {
+                loadTasks,
+                loadCourses: () => selectedTask && handleSelectTask(selectedTask),
+              });
+            } catch (_refreshError) {
+              message.warning('评教已提交成功，但页面状态刷新失败，请稍后手动刷新');
+            }
           } else {
             throw new Error(result.message || '提交失败');
           }
@@ -273,6 +322,7 @@ const EvaluationPage = () => {
           throw error;
         } finally {
           setEvaluateSubmitting(false);
+          submissionIntentLockRef.current = false;
         }
       },
     });
@@ -292,21 +342,27 @@ const EvaluationPage = () => {
     }
 
     if (!acknowledged) {
-      message.warning('请先阅读须知');
+      requireAcknowledgement();
       return;
     }
 
     const targetCourses = pendingCourses.filter(c => selectedXspjIds.includes(c.xspjid));
 
-    const strategyLabel = globalStrategy === 'highest' ? '最高分（首题5其余6）' : '最低分（首题2其余1）';
-
+    if (submissionIntentLockRef.current) {
+      message.warning('已有评教操作正在确认或提交');
+      return;
+    }
+    submissionIntentLockRef.current = true;
     // 实际批量提交（带进度条）
     const confirmModal = Modal.confirm({
-      title: '确认批量提交评教',
-      content: `将对 ${targetCourses.length} 门课程提交评教。评教系统不支持重试！\n\n当前评分策略：${strategyLabel}`,
+      title: '确认提交评教',
+      content: evaluationConfirmationText(globalStrategy, targetCourses.length),
       okText: '确认提交',
       okType: 'danger',
       cancelText: '取消',
+      onCancel: () => {
+        submissionIntentLockRef.current = false;
+      },
       onOk: async () => {
         confirmModal.destroy();
         abortBatchRef.current = false;
@@ -317,6 +373,7 @@ const EvaluationPage = () => {
         setProgressResults([]);
 
         const results = [];
+        const requiredRefetches = new Set();
         for (let i = 0; i < targetCourses.length; i++) {
           if (abortBatchRef.current) {
             message.warning('批量评教已终止');
@@ -332,16 +389,19 @@ const EvaluationPage = () => {
               selectedTask.task_id,
               course.xspjid,
               globalStrategy,
-              null
+              null,
+              null,
+              false,
             );
             const item = {
               course_name: course.course_name,
               teacher_name: course.teacher_name,
               success: result.success,
-              message: result.message || (result.success ? '提交成功' : '提交失败'),
-              avg_score: result.data?.task?.zpf,
+              message: result.message || (result.success ? '提交成功' : '处理失败'),
+              avg_score: result.preview?.average_score ?? result.summary?.average_score,
             };
             results.push(item);
+            (result.refetches || []).forEach(resource => requiredRefetches.add(resource));
             setProgressResults(prev => [...prev, item]);
 
             if (result.success) {
@@ -375,10 +435,17 @@ const EvaluationPage = () => {
           message.info(`批量评教已终止：成功 ${successCount}/${totalProcessed}`);
         }
 
-        // 刷新
-        handleSelectTask(selectedTask);
-        loadTasks();
-        setBatchRunning(false);
+        try {
+          await synchronizeEvaluationViews([...requiredRefetches], {
+            loadTasks,
+            loadCourses: () => selectedTask && handleSelectTask(selectedTask),
+          });
+        } catch (_refreshError) {
+          message.warning('评教处理已完成，但页面状态刷新失败，请稍后手动刷新');
+        } finally {
+          setBatchRunning(false);
+          submissionIntentLockRef.current = false;
+        }
       },
     });
   };
@@ -752,26 +819,27 @@ const EvaluationPage = () => {
       <Alert
         className="evaluation-notice"
         message="评教须知"
-        description={noticeExpanded
-          ? '由于教务系统存在更改接口等可能性，为了防止出现异常，当前自动评价脚本基于“2025-2026学年春季学期学生评教”完成和测试，请确保评教学期匹配后再进行操作。'
-          : '已确认评教须知。提交前仍会保留预览和确认步骤。'}
+        description="系统会从远端识别当前默认评教学期。评教会直接提交到教务系统，提交后通常无法修改；提交前会再次确认评分策略和课程数量。"
         type="warning"
         showIcon
         style={{ marginBottom: 16 }}
         action={
           <Button
+            ref={noticeButtonRef}
             type={acknowledged ? 'default' : 'primary'}
             size="small"
+            className={noticeAttention ? 'evaluation-acknowledge-button is-attention' : 'evaluation-acknowledge-button'}
+            icon={acknowledged ? <CheckCircleOutlined /> : null}
+            disabled={acknowledged}
             onClick={() => {
-              if (!acknowledged) {
-                setAcknowledged(true);
-                setNoticeExpanded(false);
-              } else {
-                setNoticeExpanded((value) => !value);
+              setAcknowledged(true);
+              setNoticeAttention(false);
+              if (noticeAttentionTimerRef.current) {
+                clearTimeout(noticeAttentionTimerRef.current);
               }
             }}
           >
-            {acknowledged ? (noticeExpanded ? '收起说明' : '重新查看') : '已知晓'}
+            已知晓
           </Button>
         }
       />
@@ -836,7 +904,7 @@ const EvaluationPage = () => {
             <Button
               type="primary"
               danger
-              icon={<SafetyCertificateOutlined />}
+              icon={<ThunderboltOutlined />}
               onClick={handleBatchEvaluate}
               loading={batchRunning}
               disabled={pendingCourses.length === 0 || selectedXspjIds.length === 0}
@@ -966,7 +1034,7 @@ const EvaluationPage = () => {
         <Button
           type="primary"
           danger
-          icon={<SafetyCertificateOutlined />}
+          icon={<ThunderboltOutlined />}
           onClick={handleBatchEvaluate}
           loading={batchRunning}
           disabled={selectedXspjIds.length === 0}
@@ -1068,6 +1136,7 @@ const EvaluationPage = () => {
         width={isMobile ? 'calc(100vw - 16px)' : 800}
         confirmLoading={evaluateSubmitting}
         okText="提交评教"
+        okButtonProps={{ danger: true }}
         cancelText="取消"
         onOk={handleSubmitEvaluate}
         styles={{ body: { maxHeight: '70vh', overflow: 'auto' } }}
@@ -1154,6 +1223,7 @@ const EvaluationPage = () => {
                   ) : (
                     <TextArea
                       rows={2}
+                      maxLength={2000}
                       placeholder="请输入评价内容（选填）"
                       value={ind._customResult}
                       onChange={(e) => handleResultChange(ind.zbid, e.target.value)}
