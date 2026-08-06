@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { isManualLogoutActive } from '../utils/authSessionPolicy';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';  // 默认使用相对路径，支持同源部署
 const OFFLINE_SESSION_KEY = 'neu_offline_mode';
@@ -11,19 +12,47 @@ const api = axios.create({
   },
 });
 
+let authRecoveryPromise = null;
+
+const trySilentAuthRecovery = async () => {
+  if (!authRecoveryPromise) {
+    authRecoveryPromise = api.get('/api/status', {
+      skipAuthRedirect: true,
+    }).then(response => Boolean(response.data?.is_logged_in))
+      .catch(() => false)
+      .finally(() => {
+        authRecoveryPromise = null;
+      });
+  }
+  return authRecoveryPromise;
+};
+
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     if (error.response?.status === 401) {
       if (error.response?.data?.code === 'ACCESS_REQUIRED') {
         window.dispatchEvent(new CustomEvent('neu-access-required'));
       } else if (
         sessionStorage.getItem(OFFLINE_SESSION_KEY) !== '1'
         && error.config?.url !== '/api/status'
+        && !isManualLogoutActive()
         && !error.config?.skipAuthRedirect
         && !error.config?.url?.startsWith('/api/access/')
         && !error.config?.url?.startsWith('/api/offline/')
       ) {
+        if (!error.config?._silentAuthRecoveryRetried) {
+          const recovered = await trySilentAuthRecovery();
+          if (recovered && !isManualLogoutActive()) {
+            return api.request({
+              ...error.config,
+              _silentAuthRecoveryRetried: true,
+            });
+          }
+        }
+        if (isManualLogoutActive()) {
+          return Promise.reject(error);
+        }
         window.dispatchEvent(new CustomEvent('neu-auth-required'));
       }
     }

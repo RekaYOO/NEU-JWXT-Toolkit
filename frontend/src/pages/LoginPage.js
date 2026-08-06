@@ -10,6 +10,7 @@ import {
   getOfflineStatus,
 } from '../services/api';
 import './LoginPage.css';
+import { isManualLogoutActive } from '../utils/authSessionPolicy';
 
 const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   const [loading, setLoading] = useState(false);
@@ -27,9 +28,10 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   const [offlineLoading, setOfflineLoading] = useState(false);
   const [form] = Form.useForm();
 
-  // 检查登录状态
+  // 自然会话失效时允许再次静默恢复；用户明确退出后则只读取离线能力，
+  // 避免 Cookie 或已保存凭据把用户立即带回主界面。
   useEffect(() => {
-    const checkLoginStatus = async () => {
+    const loadLoginState = async () => {
       try {
         const localStatus = await getOfflineStatus();
         setOfflineStatus(localStatus);
@@ -44,9 +46,10 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       } finally {
         setChecking(false);
       }
+
+      if (isManualLogoutActive()) return;
       try {
         const status = await checkStatus();
-        // 已登录则直接进入
         if (status.is_logged_in) {
           onLoginSuccess(status.current_user);
         }
@@ -54,8 +57,8 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
         console.log('检查登录状态失败', error);
       }
     };
-    checkLoginStatus();
-  }, [onLoginSuccess]);
+    loadLoginState();
+  }, []);
 
   useEffect(() => {
     const updateQRSize = () => setQrSize(Math.max(144, Math.min(196, window.innerWidth - 96)));

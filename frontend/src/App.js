@@ -21,6 +21,11 @@ import AccessLoginPage from './pages/AccessLoginPage';
 import { checkStatus, getAccessStatus, getHealth, getOfflineStatus } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
 import { hasOfflineExportData, isExportToolAvailable } from './export/exportTools';
+import {
+  clearManualLogout,
+  isManualLogoutActive,
+  markManualLogout,
+} from './utils/authSessionPolicy';
 import './App.css';
 
 const { Content } = Layout;
@@ -117,6 +122,14 @@ function App() {
     setAccessState(access);
     setRuntimeProfile(health.profile || 'development');
     if (!access.required || access.authenticated) {
+      if (isManualLogoutActive()) {
+        sessionStorage.removeItem(OFFLINE_SESSION_KEY);
+        setOfflineMode(false);
+        setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
+        setIsLoggedIn(false);
+        setUserInfo(null);
+        return access;
+      }
       if (sessionStorage.getItem(OFFLINE_SESSION_KEY) === '1') {
         let offline = null;
         try {
@@ -195,7 +208,11 @@ function App() {
     };
 
     const requireAuthentication = async () => {
-      if (offlineMode || authRecoveryPromptRef.current) return;
+      if (
+        offlineMode
+        || isManualLogoutActive()
+        || authRecoveryPromptRef.current
+      ) return;
       authRecoveryPromptRef.current = true;
 
       let localStatus = null;
@@ -243,6 +260,7 @@ function App() {
   }, [offlineMode]);
 
   const handleLoginSuccess = (username) => {
+    clearManualLogout();
     sessionStorage.removeItem(OFFLINE_SESSION_KEY);
     setOfflineMode(false);
     setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
@@ -253,6 +271,7 @@ function App() {
 
   const handleLogout = () => {
     const wasOffline = offlineMode;
+    markManualLogout();
     sessionStorage.removeItem(OFFLINE_SESSION_KEY);
     setOfflineMode(false);
     setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
