@@ -61,7 +61,8 @@ class CategoryInfo:
     requirement_type: str = "unknown"        # required/elective/mixed/unknown
     required_credits: float = 0.0            # 要求学分 (creditsRequired)
     declared_required_credits: float = 0.0   # 接口原始要求学分
-    requirement_adjustment: float = 0.0      # 父级规则分配的弹性学分
+    requirement_adjustment: float = 0.0      # 兼容旧缓存；不再调整接口要求学分
+    requires_child_minimums_and_total: bool = False  # 子类最低要求与父类总量双重约束
     earned_credits: float = 0.0              # 已获得学分 (creditsEarned)
     taken_credits: float = 0.0               # 已选学分 (creditsTaken)
     selection_credits: float = 0.0           # 待选学分 (creditsSelection)
@@ -324,7 +325,7 @@ class AcademicReportAPI:
         children = cat_data.get("children") or []
         if children:
             cat.children = self._parse_categories(children, nature_hint)
-            self._apply_flexible_elective_requirement(cat)
+            self._mark_unallocated_elective_requirement(cat)
         
         # 解析课程列表（从 checkCourseVOS 字段，这是关键！）
         courses_data = cat_data.get("checkCourseVOS") or []
@@ -334,14 +335,13 @@ class AcademicReportAPI:
         return cat
 
     @staticmethod
-    def _apply_flexible_elective_requirement(cat: CategoryInfo) -> None:
+    def _mark_unallocated_elective_requirement(cat: CategoryInfo) -> None:
         """
-        将选修父组未分配到直接子组的要求学分分配给唯一弹性子组。
+        标记“子类最低要求 + 父类总学分”双重约束的选修父组。
 
-        部分培养方案中，父组要求学分大于直接子组声明要求之和。例如
-        通识选修要求 13，普通子类合计 7，而带内部子组的科学素养类
-        仅声明 4。剩余 2 学分实际仍需由该弹性子组承担，因此其有效
-        上限应为 13 - 7 = 6。
+        部分培养方案中，选修父组要求学分大于直接子组要求之和。这一
+        差额不是某个子类的额外要求：每个子类仍只需满足接口声明的
+        最低学分，同时所有子类的实际修读学分之和还需达到父组要求。
         """
         if cat.requirement_type != "elective" or not cat.children:
             return
@@ -349,31 +349,8 @@ class AcademicReportAPI:
         declared_total = sum(
             child.declared_required_credits for child in cat.children
         )
-        unallocated = cat.required_credits - declared_total
-        if unallocated <= 1e-9:
-            return
-
-        flexible_children = [
-            child
-            for child in cat.children
-            if child.children and child.declared_required_credits > 0
-        ]
-        if len(flexible_children) != 1:
-            return
-
-        flexible_child = flexible_children[0]
-        other_declared = sum(
-            child.declared_required_credits
-            for child in cat.children
-            if child is not flexible_child
-        )
-        effective_required = max(
-            flexible_child.declared_required_credits,
-            cat.required_credits - other_declared,
-        )
-        flexible_child.required_credits = effective_required
-        flexible_child.requirement_adjustment = (
-            effective_required - flexible_child.declared_required_credits
+        cat.requires_child_minimums_and_total = (
+            cat.required_credits > declared_total + 1e-9
         )
 
     def _infer_requirement_type(

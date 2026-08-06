@@ -284,7 +284,7 @@ class AcademicReportStorage:
     """
     
     REPORT_FILENAME = "academic_report.json"
-    REPORT_SCHEMA_VERSION = 2
+    REPORT_SCHEMA_VERSION = 3
     
     def __init__(self, storage: Optional[Storage] = None):
         self.storage = storage or Storage()
@@ -531,15 +531,26 @@ class AcademicReportStorage:
             children_passed = 0
             children_selected = 0
             children_planned = 0
+            children_actual_passed = 0
+            children_actual_selected = 0
             
-            # 汇总子类别的学分（父层级汇总时，每个子类别的已修学分不能超过其要求学分）
-            children_required = 0
-            children_earned_limited = 0  # 受限的已修学分（用于父层级计算）
+            # 普通父级延续逐子类封顶的汇总方式。存在未分配选修学分的
+            # 父组则使用子类实际学分汇总，最后只按父组原始要求封顶。
+            aggregate_actual_child_credits = bool(
+                getattr(cat, 'requires_child_minimums_and_total', False)
+            )
             
             for child in cat.children:
                 child_dict = category_to_dict(child, current_path, depth + 1)
                 children_dicts.append(child_dict)
-                children_required += child_dict['required_credits']
+                children_actual_passed += child_dict['_raw_passed_credits']
+                children_actual_selected += child_dict['_raw_selected_credits']
+
+                if aggregate_actual_child_credits:
+                    children_passed += child_dict['_raw_passed_credits']
+                    children_selected += child_dict['_raw_selected_credits']
+                    children_planned += child_dict['planned_credits']
+                    continue
                 
                 # 父层级汇总时，子类别的已修学分不能超过其要求学分（防止超额溢出）
                 child_earned = child_dict['earned_credits']
@@ -588,10 +599,25 @@ class AcademicReportStorage:
             total_passed = node_passed_credits + children_passed
             total_selected = node_selected_credits + children_selected
             total_planned = node_planned_credits + children_planned
-            total_earned = total_passed + total_selected  # 已获得 = 已通过 + 已选
+            # 独立保存整个子树的真实课程学分，不受任何中间类别上限影响。
+            # 双重约束父组必须使用这一数值，否则孙级超修会提前丢失。
+            raw_total_passed = node_passed_credits + children_actual_passed
+            raw_total_selected = node_selected_credits + children_actual_selected
+            raw_total_earned = raw_total_passed + raw_total_selected
+            total_earned = total_passed + total_selected
             
             # 要求学分使用教务系统返回的原始值（即使教务系统有BUG也以其为准）
             total_required = cat.required_credits
+            constraint_total_earned = raw_total_earned
+            aggregate_remaining_credits = 0
+
+            if aggregate_actual_child_credits:
+                # 双重约束只汇总直接子类的真实课程学分；父节点偶然携带
+                # 的课程不属于“所有子类累加”的组成部分。
+                total_passed = children_actual_passed
+                total_selected = children_actual_selected
+                total_earned = total_passed + total_selected
+                constraint_total_earned = total_earned
             
             # 判断是否是叶节点（无子节点）
             # 注意：有子节点但自身有要求学分的节点（如科学素养类）被视为实际类别，不是虚拟父节点
@@ -610,12 +636,68 @@ class AcademicReportStorage:
                 total_earned = 0
             # 实际类别（有子节点且required>0）不限制，显示实际学分
 
+            if (
+                aggregate_actual_child_credits
+                and total_required > 0
+                and total_earned > total_required
+            ):
+                # 子类超额学分可共同补足父组差额，但父组自身展示不能
+                # 超过教务系统声明的原始要求学分。
+                total_passed = min(total_passed, total_required)
+                total_selected = min(
+                    total_selected,
+                    max(0, total_required - total_passed),
+                )
+                total_earned = total_required
+
             reported_passed = getattr(cat, 'reported_passed', None)
-            is_completed = (
-                reported_passed
-                if reported_passed is not None
-                else total_earned >= cat.required_credits
-            )
+            if aggregate_actual_child_credits:
+                required_children_completed = True
+                for child, child_dict in zip(cat.children, children_dicts):
+                    if child_dict['required_credits'] <= 0:
+                        continue
+                    child_actual_passed = child_dict['_raw_passed_credits']
+                    child_actual_selected = child_dict['_raw_selected_credits']
+                    child_actual_earned = child_actual_passed + child_actual_selected
+                    child_minimum_met = (
+                        child_actual_earned >= child_dict['required_credits']
+                    )
+                    child_rule_completed = child_dict['is_completed']
+                    if getattr(child, 'reported_passed', None) is None:
+                        child_rule_completed = (
+                            child_dict['missing_course_count'] == 0
+                            and child_dict['missing_group_count'] == 0
+                        )
+                    child_completed = child_minimum_met and child_rule_completed
+                    required_children_completed &= child_completed
+                    # 直接子类也按真实课程学分展示，避免其内部孙组的
+                    # 逐项上限让页面显示值与父组判定相互矛盾。
+                    child_dict['passed_credits'] = round(child_actual_passed, 2)
+                    child_dict['selected_credits'] = round(child_actual_selected, 2)
+                    child_dict['earned_credits'] = round(child_actual_earned, 2)
+                    child_dict['remaining_credits'] = round(
+                        max(0, child_dict['required_credits'] - child_actual_earned),
+                        2,
+                    )
+                    child_dict['completion_rate'] = round(
+                        child_actual_earned / child_dict['required_credits'] * 100,
+                        2,
+                    )
+                    # 学分最低值是必要条件；远端明确给出的其他培养规则
+                    # 失败也继续是必要条件，不能被实际学分覆盖。
+                    child_dict['is_completed'] = child_completed
+                is_completed = (
+                    required_children_completed
+                    and constraint_total_earned >= total_required
+                )
+                total_deficit = max(0, total_required - constraint_total_earned)
+                aggregate_remaining_credits = total_deficit
+            else:
+                is_completed = (
+                    reported_passed
+                    if reported_passed is not None
+                    else total_earned >= cat.required_credits
+                )
             missing_course_count = max(
                 0,
                 getattr(cat, 'course_count_required', 0)
@@ -648,6 +730,8 @@ class AcademicReportStorage:
                 "path_array": path_array,
                 "is_leaf": is_leaf,
                 "has_children": len(cat.children) > 0,
+                "requires_child_minimums_and_total": aggregate_actual_child_credits,
+                "aggregate_remaining_credits": round(aggregate_remaining_credits, 2),
                 "required_credits": round(total_required, 2),
                 "declared_required_credits": round(
                     getattr(cat, 'declared_required_credits', total_required),
@@ -662,7 +746,10 @@ class AcademicReportStorage:
                 "selected_credits": round(total_selected, 2),
                 "planned_credits": round(total_planned, 2),
                 "earned_credits": round(total_earned, 2),
-                "remaining_credits": round(max(0, total_required - total_earned), 2),
+                "remaining_credits": round(
+                    max(0, total_required - constraint_total_earned),
+                    2,
+                ),
                 # 完成度
                 "completion_rate": round(total_earned / cat.required_credits * 100, 2) if cat.required_credits > 0 else 100,
                 # passed 是教务系统综合学分、课程数和子组数规则后的权威状态。
@@ -703,10 +790,22 @@ class AcademicReportStorage:
                 ],
                 # 子类别
                 "children": children_dicts,
+                # 仅供递归父级汇总；返回响应前会移除。
+                "_raw_passed_credits": raw_total_passed,
+                "_raw_selected_credits": raw_total_selected,
             }
         
         # 转换所有顶层类别
         categories = [category_to_dict(cat) for cat in report.categories]
+
+        def remove_internal_totals(category):
+            category.pop('_raw_passed_credits', None)
+            category.pop('_raw_selected_credits', None)
+            for child in category.get('children', []):
+                remove_internal_totals(child)
+
+        for category in categories:
+            remove_internal_totals(category)
         
         # 计算总学分统计（从各个类别累加）
         total_required = report.total_required

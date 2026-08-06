@@ -227,7 +227,7 @@ _cache_registry = CacheRegistry(
         ),
         CacheResourceSpec(
             resource="academic-report",
-            schema_version=1,
+            schema_version=2,
             revision_algorithm_version=1,
             account_scope=AccountScope.ACCOUNT,
             payload_type=PayloadType.JSON,

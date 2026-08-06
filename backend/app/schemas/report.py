@@ -48,6 +48,8 @@ class CategoryNodeModel(BaseModel):
     path_array: List[str]
     is_leaf: bool
     has_children: bool = False
+    requires_child_minimums_and_total: bool = False
+    aggregate_remaining_credits: float = 0
     required_credits: float
     declared_required_credits: float = 0
     requirement_adjustment: float = 0

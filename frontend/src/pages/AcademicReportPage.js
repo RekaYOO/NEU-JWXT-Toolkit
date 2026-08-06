@@ -345,65 +345,81 @@ const getRuleDeficitText = (category) => {
 
 // 找到所有需要统计的类别（叶节点或要求学分>0的节点）
 const findLeafCategories = (categories, filterFn) => {
-  const result = [];
-  
-  const traverse = (nodes, parentNode = null) => {
+  const toSummaryItem = (node, remainingCredits) => ({
+    wid: node.wid,
+    name: getCategoryDisplayName(node),
+    originalName: node.name,
+    path: node.path,
+    path_array: node.path_array,
+    required_credits: node.required_credits,
+    earned_credits: node.earned_credits,
+    remaining_credits: remainingCredits,
+    missing_course_count: node.missing_course_count || 0,
+    missing_group_count: node.missing_group_count || 0,
+    is_completed: node.is_completed
+  });
+
+  const collect = (nodes, parentNode = null) => {
+    const result = [];
     nodes.forEach(node => {
-      if (!filterFn(node)) {
-        // 不是目标类别，继续遍历子节点（传递当前节点作为父节点）
-        if (node.children) {
-          traverse(node.children, node);
-        }
+      const childItems = node.children
+        ? collect(node.children, node)
+        : [];
+
+      const isDirectDoubleConstraintChild =
+        Boolean(parentNode?.requires_child_minimums_and_total);
+      if (!filterFn(node) && !isDirectDoubleConstraintChild) {
+        result.push(...childItems);
         return;
       }
-      
-      // 是目标类别
-      const hasChildrenWithCredits = node.children && node.children.some(child => 
-        child.required_credits > 0
-      );
-      
-      // 如果当前节点要求学分>0
-      if (node.required_credits > 0) {
-        // 检查子节点是否都学分为0
-        const childrenAllZero = node.children && node.children.every(child => 
-          child.required_credits === 0 && (!child.children || child.children.length === 0)
-        );
-        
-        // 如果没有子节点，或者子节点都学分为0，则统计当前节点
-        // 只要有差额（remaining_credits > 0）就显示，不管是否标记为已完成
-        const hasCountRuleDeficit =
-          (node.missing_course_count || 0) > 0 ||
-          (node.missing_group_count || 0) > 0;
-        const shouldShowParentRule =
-          (node.remaining_credits || 0) === 0 && hasCountRuleDeficit;
 
-        if (!node.children || node.children.length === 0 || childrenAllZero || shouldShowParentRule) {
-          if (node.remaining_credits > 0 || hasCountRuleDeficit || node.is_completed === false) {
-            result.push({
-              wid: node.wid,
-              name: getCategoryDisplayName(node),
-              originalName: node.name,
-              path: node.path,
-              path_array: node.path_array,
-              required_credits: node.required_credits,
-              earned_credits: node.earned_credits,
-              remaining_credits: node.remaining_credits,
-              missing_course_count: node.missing_course_count || 0,
-              missing_group_count: node.missing_group_count || 0,
-              is_completed: node.is_completed
-            });
-          }
+      if (node.required_credits <= 0) {
+        result.push(...childItems);
+        return;
+      }
+
+      const childrenAllZero = node.children && node.children.every(child =>
+        child.required_credits === 0 && (!child.children || child.children.length === 0)
+      );
+      const hasCountRuleDeficit =
+        (node.missing_course_count || 0) > 0 ||
+        (node.missing_group_count || 0) > 0;
+      const childCreditDeficit = childItems.reduce(
+        (sum, item) => sum + (item.remaining_credits || 0),
+        0
+      );
+
+      // 双重约束父组及其直接子类采用自底向上的增量差额：孙类先
+      // 计入，当前层只补尚未覆盖的部分，从而既不遗漏非叶子子类的
+      // 最低要求，也不会与父级总量要求重复累计。
+      const isDoubleConstraintLevel =
+        node.requires_child_minimums_and_total ||
+        isDirectDoubleConstraintChild;
+      if (isDoubleConstraintLevel) {
+        const ownCreditDeficit = node.requires_child_minimums_and_total
+          ? (node.aggregate_remaining_credits || 0)
+          : (node.remaining_credits || 0);
+        const incrementalDeficit = Math.max(0, ownCreditDeficit - childCreditDeficit);
+        if (incrementalDeficit > 0 || hasCountRuleDeficit) {
+          result.push(toSummaryItem(node, incrementalDeficit));
+        }
+        result.push(...childItems);
+        return;
+      }
+
+      const shouldShowParentRule =
+        (node.remaining_credits || 0) === 0 && hasCountRuleDeficit;
+      if (!node.children || node.children.length === 0 || childrenAllZero || shouldShowParentRule) {
+        if (node.remaining_credits > 0 || hasCountRuleDeficit || node.is_completed === false) {
+          result.push(toSummaryItem(node, node.remaining_credits || 0));
         }
       }
-      
-      // 继续遍历子节点（传递当前节点作为父节点）
-      if (node.children) {
-        traverse(node.children, node);
-      }
+      result.push(...childItems);
     });
+    return result;
   };
-  
-  traverse(categories);
+
+  const result = collect(categories);
   return result.sort((a, b) => b.remaining_credits - a.remaining_credits);
 };
 
@@ -996,35 +1012,9 @@ const AcademicReportPage = ({ offlineMode = false }) => {
       };
     }
     
-    // 收集当前节点及其所有子节点
-    const collectNodes = (node) => {
-      const nodes = [node];
-      if (node.children) {
-        node.children.forEach(child => {
-          nodes.push(...collectNodes(child));
-        });
-      }
-      return nodes;
-    };
-    
-    const allNodesInScope = collectNodes(selectedNode);
-    
-    // 计算选修还差学分 - 只统计叶节点（没有子节点的），避免重复计算
-    const electiveNodes = allNodesInScope.filter(node => {
-      if (!isElectiveCategory(node)) return false;
-      // 只统计叶节点或没有子类别的节点
-      const isLeaf = !node.children || node.children.length === 0;
-      return isLeaf && (node.remaining_credits || 0) > 0;
-    });
-    const electiveRemaining = electiveNodes.reduce((sum, node) => sum + (node.remaining_credits || 0), 0);
-    
-    // 计算必修还差学分 - 只统计叶节点，避免重复计算
-    const requiredNodes = allNodesInScope.filter(node => {
-      if (!isRequiredCategory(node)) return false;
-      const isLeaf = !node.children || node.children.length === 0;
-      return isLeaf && (node.remaining_credits || 0) > 0;
-    });
-    const requiredRemaining = requiredNodes.reduce((sum, node) => sum + (node.remaining_credits || 0), 0);
+    // 与全局统计复用同一规则，包含双重约束父组的非重复总量差额。
+    const electiveRemaining = calcElectiveRemainingCredits([selectedNode]);
+    const requiredRemaining = calcRequiredRemainingCredits([selectedNode]);
     
     return {
       electiveRemaining,
@@ -1600,4 +1590,9 @@ const AcademicReportPage = ({ offlineMode = false }) => {
   );
 };
 
+export {
+  findLeafCategories,
+  calcElectiveRemainingCredits,
+  calcRequiredRemainingCredits
+};
 export default AcademicReportPage;
