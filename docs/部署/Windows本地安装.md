@@ -2,31 +2,21 @@
 
 Windows 发行版用于单台电脑上的本机使用。它不需要 Python、Node.js 或管理员权限，也不会向局域网开放端口。
 
-Windows 发行版当前不使用 Authenticode 代码签名。因此首次运行安装器或便携版 EXE 时，
-SmartScreen 可能显示“Windows 已保护你的电脑”并要求手动确认，单位管理策略也可能直接
-禁止运行未签名程序。请只使用本项目 GitHub Releases 的文件，并在运行前核对校验和与
-GitHub 构建来源；项目不会要求用户关闭 Defender 或添加安全排除项。
-
-## 安装版
-
-1. 从 GitHub Releases 下载 `NEU-JWXT-Toolkit-<版本>-windows-x64-setup.exe`。
-2. 运行安装器。程序默认安装到当前用户的 `%LOCALAPPDATA%\Programs\NEU-JWXT-Toolkit`。
-3. 从开始菜单启动“NEU 教务工具箱”。安装时可选择创建桌面快捷方式。
-4. 程序会选择一个空闲的本机端口，健康检查通过后自动打开默认浏览器。
-
-安装新版会完整替换 `runtime` 程序目录，避免旧模块残留；从 1.4.8 及更早版本升级时
-还会清理旧 `_internal` 载荷。用户数据位于独立目录，不会被删除。
+项目目前无法提供可靠的 Authenticode 项目签名。v1.5.0 的无签名自解压安装器已被
+Defender 启发式检测，因此 Windows 正式发行物只保留编译后的 standalone 便携 ZIP，
+`setup.exe` 暂停发布。请只使用本项目 GitHub Releases 的文件，并在运行前核对校验和
+与 GitHub 构建来源；项目不会要求用户关闭 Defender 或添加安全排除项。
 
 ## 便携版
 
 下载 `NEU-JWXT-Toolkit-<版本>-windows-x64-portable.zip`，完整解压后运行
-`NEU-JWXT-Toolkit.exe`。不要只从压缩包内直接运行单个 EXE；同目录的 DLL、PYD、
-前端资源和版本文件也是运行所必需的。
+`NEU-JWXT-Toolkit.exe`。不要直接在压缩包内运行，也不要只复制 EXE；同目录的 DLL、
+PYD、前端资源和版本文件都是运行所必需的。
 
-便携版采用 Nuitka `standalone` 目录：入口程序、编译后的模块、依赖库和前端资源均可
-分别检查，不使用 onefile 或额外可执行压缩。这样设计是为了便于审计和排查，不是规避
-安全软件，也不代表 Defender
-或 SmartScreen 一定不会告警。
+便携版采用 Nuitka `standalone` 编译目录并附带固定依赖和已经构建完成的前端资源。用户
+不需要安装 Python、pip、Node.js，也不会在首次启动时联网安装依赖。构建不使用 onefile、
+UPX 或额外可执行压缩，并为入口写入稳定的产品名、发行者文本和版本资源。这保留冷启动
+性能与紧凑目录，但未签名 EXE 仍可能被 Defender 或 SmartScreen 告警。
 
 “便携”只表示程序无需安装。出于升级安全和避免误删，用户数据仍统一保存到：
 
@@ -51,11 +41,11 @@ gh attestation verify .\NEU-JWXT-Toolkit-<版本>-windows-x64-portable.zip `
   --repo RekaYOO/NEU-JWXT-Toolkit
 ```
 
-安装器可用相同命令替换文件名。发行物还包含 `WINDOWS-SECURITY-STATUS.txt`，明确记录
-Windows 文件未签名，并说明 Defender 扫描是 `passed` 还是 `unavailable`。
-`unavailable` 表示托管 runner 无法执行该次扫描，不代表扫描通过，文件也不会声称
-“无病毒”。SHA-256、GitHub 来源证明和 Defender 检测含义不同；任何一项都不能单独
-证明软件绝对安全。
+发行物还包含 `WINDOWS-SECURITY-STATUS.txt`，记录 compiled standalone 打包策略、
+安装器暂停状态以及 Defender 验证状态。扫描会先更新安全智能并确认服务正常，随后禁用
+自动处置、保留完整命令输出并核对扫描前后文件摘要；扫描器、服务或新鲜安全智能不可用时，
+Windows 发行任务会直接失败，不会上传该候选包。即使门禁通过，文件也不会声称“无病毒”。
+SHA-256、GitHub 来源证明和 Defender 检测含义不同；任何一项都不能单独证明软件绝对安全。
 
 如果 Defender 或 SmartScreen 告警，不要关闭实时防护，也不要添加整个目录到排除项。
 先停止运行并记录版本、下载地址、SHA-256、检测名称和截图，再核对校验和与 GitHub
@@ -68,8 +58,8 @@ Windows 文件未签名，并说明 Defender 扫描是 `passed` 还是 `unavaila
 ## 启动与退出
 
 - 服务启动后会在 Windows 通知区域（通常收纳在“隐藏的图标”中）显示托盘图标。
-- 托盘、开始菜单、桌面快捷方式和卸载列表使用同一应用图标，便于确认正在运行的是本工具。
-- 双击托盘图标、右键选择“打开教务工具箱”，或再次点击快捷方式，都会重新打开已有
+- 托盘使用项目应用图标，便于确认正在运行的是本工具。
+- 双击托盘图标、右键选择“打开教务工具箱”，或再次运行 `NEU-JWXT-Toolkit.exe`，都会重新打开已有
   页面，不会创建第二个服务实例。
 - 关闭浏览器标签页不会结束本地服务。要完整退出，右键托盘图标选择“退出程序”，或
   点击页面右上角的电源按钮；用户菜单中也保留同一入口。
@@ -79,9 +69,9 @@ Windows 文件未签名，并说明 Defender 扫描是 `passed` 还是 `unavaila
 
 ## 故障排查
 
-- 页面没有自动打开：双击托盘图标或再次点击快捷方式，并检查安全软件是否拦截了程序
+- 页面没有自动打开：双击托盘图标或再次运行 `NEU-JWXT-Toolkit.exe`，并检查安全软件是否拦截了程序
   的本地监听。
 - 安全软件报告威胁：不要禁用防护；按“下载验证与安全软件告警”保留信息并核对来源。
 - 升级后数据缺失：确认没有设置调试变量 `NEU_JWXT_DATA_DIR`，并检查上述数据目录。
-- 想彻底清除数据：先退出程序，再卸载程序并手动删除数据目录。
+- 想彻底清除程序和数据：先退出程序，删除解压目录，再手动删除上述数据目录。
 

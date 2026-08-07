@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WINDOWS_ICON = PROJECT_ROOT / "packaging" / "windows" / "app.ico"
+RELEASE_VERSION = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8").strip()
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,13 @@ TARGETS = {
         host_platform="linux",
     ),
 }
+
+
+def _windows_file_version(version: str) -> str:
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version)
+    if not match:
+        raise ValueError(f"VERSION cannot be represented in Windows resources: {version}")
+    return ".".join((*match.groups(), "0"))
 
 
 def _contained_path(path: Path, parent: Path) -> Path:
@@ -72,12 +81,19 @@ def build_command(target_name: str, work_dir: Path) -> list[str]:
         f"--report={work_dir / 'compilation-report.xml'}",
     ]
     if target_name == "desktop":
+        file_version = _windows_file_version(RELEASE_VERSION)
         command.extend(
             (
                 "--msvc=latest",
                 "--windows-console-mode=disable",
                 f"--windows-icon-from-ico={WINDOWS_ICON}",
                 f"--include-data-files={WINDOWS_ICON}=app.ico",
+                "--company-name=NEU-JWXT-Toolkit Contributors",
+                "--product-name=NEU JWXT Toolkit",
+                "--file-description=NEU 教务工具箱",
+                f"--file-version={file_version}",
+                f"--product-version={file_version}",
+                "--copyright=NEU-JWXT-Toolkit Contributors",
             )
         )
     command.append(str(target.entrypoint))
@@ -97,7 +113,6 @@ def build(target_name: str) -> Path:
         )
     if target_name == "desktop" and not WINDOWS_ICON.is_file():
         raise FileNotFoundError(f"Windows application icon is missing: {WINDOWS_ICON}")
-
     build_parent = PROJECT_ROOT / "build" / "nuitka"
     work_dir = build_parent / target_name
     final_parent = PROJECT_ROOT / "dist"

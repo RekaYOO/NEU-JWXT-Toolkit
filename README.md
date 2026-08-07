@@ -38,14 +38,12 @@
 
 ### Windows：本机应用
 
-> **注意：Windows 发行版当前未进行代码签名。** 首次运行安装器或便携版 EXE 时，
-> Windows Defender SmartScreen 可能提示“Windows 已保护你的电脑”、需要点击更
-> 多信息并点击继续运行，请只从本项目 GitHub Releases 下载，并先按下文核对
-> `SHA256SUMS.txt`；项目不会要求用户关闭 Defender 或添加安全排除项。
+> **注意：Windows 只发布编译后的便携 ZIP。** 项目无法提供可靠的 Authenticode 签名，
+> 因此暂停发布被 Defender 启发式检测的无签名安装器。请只从本项目 GitHub Releases
+> 下载，并先按下文核对 `SHA256SUMS.txt`；项目不会要求用户关闭 Defender 或添加安全排除项。
 
-1. 下载 `NEU-JWXT-Toolkit-<版本>-windows-x64-setup.exe` 并完成安装；
-   也可以下载便携 ZIP，解压后直接运行其中的程序。
-2. 从开始菜单、桌面快捷方式或便携目录启动程序。
+1. 下载 Windows 便携 ZIP，完整解压后双击 `NEU-JWXT-Toolkit.exe`。
+2. 包内已包含编译后的程序、全部依赖和前端，无需安装 Python 或 Node.js。
 3. 程序会在本机自动启动服务，并在默认浏览器中打开工具箱页面。
 4. 服务运行时会在 Windows 通知区域显示托盘图标；关闭浏览器后，双击托盘图标或
    再次运行 EXE 都会重新打开页面。
@@ -81,23 +79,15 @@ Defender/SmartScreen 告警处理见
 [Windows 本地安装](docs/部署/Windows本地安装.md)与
 [发行与 CI/CD](docs/开发/发行与CI.md)；不建议通过关闭实时防护来运行发行包。
 
-#### Windows 安装版
-
-1. 从托盘菜单或页面右上角电源按钮选择“退出程序”。
-2. 下载新版 `NEU-JWXT-Toolkit-<版本>-windows-x64-setup.exe`。
-3. 直接运行新版安装器覆盖安装，不需要先卸载旧版。
-4. 从原快捷方式启动并确认页面可以正常打开。
-
-安装器只替换程序文件，不删除
-`%LOCALAPPDATA%\NEU-JWXT-Toolkit\data` 中的成绩、培养计划、会话和设置。
-
 #### Windows 便携版
 
 1. 先从托盘菜单或页面右上角退出程序。
 2. 下载新版便携 ZIP，并完整解压到一个新的空目录。
 3. 从新目录运行 `NEU-JWXT-Toolkit.exe`，确认正常后再删除旧程序目录。
 
-不要在旧目录中只覆盖 EXE 或部分 DLL/PYD 文件，应完整解压并替换整个便携版目录。
+便携包已包含编译后的程序、全部 Python 依赖和构建后的前端，不需要另装 Python、pip 或
+Node.js。由于项目暂时无法提供可靠的 Authenticode 签名，无签名安装器已暂停发布。
+不要在旧目录中只覆盖 EXE 或部分文件，应完整解压并替换整个便携版目录。
 便携版的用户数据同样存放在
 `%LOCALAPPDATA%\NEU-JWXT-Toolkit\data`，因此无需手动复制数据目录。
 
@@ -314,7 +304,7 @@ Linux 服务器模式下仍必须先通过网站访问密码；离线入口不�
 
 **部署运行：**
 - [快速开始](docs/快速开始.md) - 环境搭建、生产部署与免密登录
-- [Windows 本地安装](docs/部署/Windows本地安装.md) - 安装版、便携版、数据位置与退出方式
+- [Windows 本地安装](docs/部署/Windows本地安装.md) - 编译便携版、数据位置与退出方式
 - [Linux 轻量服务](docs/部署/Linux轻量服务.md) - 安装、反向代理、升级、回滚与卸载
 - [发行与 CI/CD](docs/开发/发行与CI.md) - 版本、构建矩阵、发行物和安全边界
 

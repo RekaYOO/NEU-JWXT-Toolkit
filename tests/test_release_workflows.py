@@ -50,3 +50,27 @@ def test_release_only_publishes_version_tags_and_final_artifacts():
     assert "workflow_dispatch:" in RELEASE
     assert "if: startsWith(github.ref, 'refs/tags/v')" in RELEASE
     assert 'pattern: "*-release"' in RELEASE
+
+
+def test_windows_release_keeps_compiled_portable_but_drops_unsigned_installer():
+    assert "python packaging/nuitka/build.py desktop" in RELEASE
+    assert 'python-version: "3.11"' in RELEASE
+    assert "Compile standalone desktop application with Nuitka" in RELEASE
+    assert "Build Inno Setup installer" not in RELEASE
+    assert "windows-x64-setup.exe" not in RELEASE
+    assert "VersionInfo" in RELEASE
+    assert "NEU-JWXT-Toolkit Contributors" in RELEASE
+    assert "Portable archive contents differ from the validated standalone payload" in RELEASE
+
+
+def test_defender_gate_does_not_confuse_remediation_with_a_clean_scan():
+    assert "-DisableRemediation" in RELEASE
+    assert "-SignatureUpdate" in RELEASE
+    assert "Windows Defender\\Platform" in RELEASE
+    assert "[version]($_.Name" in RELEASE
+    assert "AMServiceEnabled" in RELEASE
+    assert "AntivirusSignatureLastUpdated" in RELEASE
+    assert "scanner is required for a Windows release" in RELEASE
+    assert "Compare-Object" in RELEASE
+    assert "MpCmdRun reported no malware (exit 0)" in RELEASE
+    assert "no detections" not in RELEASE

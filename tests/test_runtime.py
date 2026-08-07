@@ -429,23 +429,3 @@ def test_linux_upgrade_script_has_transactional_diagnostics():
     assert "ProtectSystem=strict" in service
     assert "ReadWritePaths=/var/lib/neu-jwxt-toolkit" in service
     assert "ReadWritePaths=/etc/neu-jwxt-toolkit" not in service
-
-
-def test_windows_upgrade_cleans_only_frozen_program_internals():
-    installer = (
-        Path(__file__).resolve().parents[1]
-        / "packaging"
-        / "windows"
-        / "installer.iss"
-    ).read_text(encoding="utf-8")
-
-    assert "[InstallDelete]" in installer
-    # Keep one-cycle cleanup for pre-Nuitka installations, then atomically
-    # replace the current standalone runtime directory.
-    assert 'Name: "{app}\\_internal"' in installer
-    assert 'Name: "{app}\\runtime"' in installer
-    assert 'DestDir: "{app}\\runtime"' in installer
-    assert 'Filename: "{app}\\runtime\\NEU-JWXT-Toolkit.exe"' in installer
-    assert "SetupIconFile=app.ico" in installer
-    assert "%LOCALAPPDATA%\\NEU-JWXT-Toolkit\\data" in installer
-    assert "cache.db" not in installer

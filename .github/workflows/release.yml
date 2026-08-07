@@ -109,6 +109,27 @@ jobs:
       - name: Compile standalone desktop application with Nuitka
         run: python packaging/nuitka/build.py desktop
 
+      - name: Validate Windows executable metadata and bundle
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          python tools/check_release_bundle.py .\dist\NEU-JWXT-Toolkit
+          if ($LASTEXITCODE -ne 0) { throw "Desktop bundle validation failed" }
+
+          $launcher = (Resolve-Path ".\dist\NEU-JWXT-Toolkit\NEU-JWXT-Toolkit.exe").Path
+          $versionInfo = (Get-Item -LiteralPath $launcher).VersionInfo
+          $numericVersion = (($env:RELEASE_VERSION -split "[.-]")[0..2] -join ".") + ".0"
+          if ($versionInfo.ProductName -ne "NEU JWXT Toolkit" -or
+              $versionInfo.CompanyName -ne "NEU-JWXT-Toolkit Contributors" -or
+              $versionInfo.FileVersion -ne $numericVersion -or
+              $versionInfo.ProductVersion -ne $numericVersion) {
+            throw "Windows executable metadata is missing or inconsistent"
+          }
+          "Windows executable: $($versionInfo.ProductName) $($versionInfo.ProductVersion); publisher metadata: $($versionInfo.CompanyName)" `
+            | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
       - name: Create portable archive
         shell: pwsh
         env:
@@ -133,6 +154,22 @@ jobs:
           Expand-Archive -LiteralPath $archive -DestinationPath $extractRoot
           python tools/check_release_bundle.py $extractRoot
           if ($LASTEXITCODE -ne 0) { throw "Portable bundle validation failed" }
+          $sourceRoot = (Resolve-Path ".\dist\NEU-JWXT-Toolkit").Path
+          $sourceManifest = @(
+            Get-ChildItem -LiteralPath $sourceRoot -File -Recurse | ForEach-Object {
+              $relative = [IO.Path]::GetRelativePath($sourceRoot, $_.FullName)
+              "$relative=$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+            } | Sort-Object
+          )
+          $archiveManifest = @(
+            Get-ChildItem -LiteralPath $extractRoot -File -Recurse | ForEach-Object {
+              $relative = [IO.Path]::GetRelativePath($extractRoot, $_.FullName)
+              "$relative=$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+            } | Sort-Object
+          )
+          if (Compare-Object $sourceManifest $archiveManifest) {
+            throw "Portable archive contents differ from the validated standalone payload"
+          }
 
           $launcher = Join-Path $extractRoot "NEU-JWXT-Toolkit.exe"
           $instance = Join-Path $env:LOCALAPPDATA "NEU-JWXT-Toolkit\desktop-instance.json"
@@ -181,190 +218,84 @@ jobs:
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
           }
 
-      - name: Install pinned Inno Setup
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $innoInstaller = Join-Path $env:RUNNER_TEMP "innosetup-6.7.1.exe"
-          $innoRoot = Join-Path $env:RUNNER_TEMP "inno-setup-6.7.1"
-          $innoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_1/innosetup-6.7.1.exe"
-          $expectedHash = "4d11e8050b6185e0d49bd9e8cc661a7a59f44959a621d31d11033124c4e8a7b0"
-          foreach ($attempt in 1..4) {
-            try {
-              Invoke-WebRequest -Uri $innoUrl -OutFile $innoInstaller
-              break
-            } catch {
-              if ($attempt -eq 4) { throw }
-              Write-Warning "Downloading Inno Setup failed (attempt $attempt); retrying"
-              Start-Sleep -Seconds (5 * $attempt)
-            }
-          }
-          $actualHash = (Get-FileHash -LiteralPath $innoInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualHash -ne $expectedHash) {
-            throw "Inno Setup installer hash mismatch: $actualHash"
-          }
-
-          # Portable mode avoids depending on Chocolatey or preinstalled runner state.
-          $arguments = @(
-            "/PORTABLE=1",
-            "/VERYSILENT",
-            "/CURRENTUSER",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            "/SP-",
-            ('/DIR="{0}"' -f $innoRoot)
-          )
-          $process = Start-Process -FilePath $innoInstaller -ArgumentList $arguments -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "Installing pinned Inno Setup 6.7.1 failed: $($process.ExitCode)" }
-          $iscc = Join-Path $innoRoot "ISCC.exe"
-          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw "Pinned ISCC.exe was not installed" }
-          "INNO_ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Build Inno Setup installer
+      - name: Scan final Windows artifacts with Microsoft Defender
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $translation = Join-Path $env:RUNNER_TEMP "ChineseSimplified.isl"
-          $translationUrl = "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/6da09d23e14443d4cf8f07b1c5fd821bfe459788/ChineseSimplified.isl"
-          Invoke-WebRequest -Uri $translationUrl -OutFile $translation
-          $expectedHash = "869e43e7c7b8d20c7e4397c8e98f7d1b7cf0528803acdf019ad350143ec85469"
-          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $translation).Hash.ToLowerInvariant()
-          if ($actualHash -ne $expectedHash) {
-            throw "Unexpected SHA-256 for ChineseSimplified.isl: $actualHash"
+          $platformRoot = Join-Path $env:ProgramData "Microsoft\Windows Defender\Platform"
+          $defender = Get-ChildItem -LiteralPath $platformRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object @{ Expression = { [version]($_.Name -replace '-\d+$', '') }; Descending = $true } |
+            ForEach-Object { Join-Path $_.FullName "MpCmdRun.exe" } |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+          if (-not $defender) {
+            $defender = Join-Path $env:ProgramFiles "Windows Defender\MpCmdRun.exe"
           }
-          & $env:INNO_ISCC `
-            "/DMyAppVersion=$env:RELEASE_VERSION" `
-            "/DSourceDir=$pwd\dist\NEU-JWXT-Toolkit" `
-            "/DChineseMessagesFile=$translation" `
-            ".\packaging\windows\installer.iss"
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
-
-      - name: Install and run final installer
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
-          NEU_JWXT_NO_BROWSER: "1"
-          NEU_JWXT_NO_TRAY: "1"
-        run: |
-          $ErrorActionPreference = "Stop"
-          $installer = (Resolve-Path ".\release\NEU-JWXT-Toolkit-$env:RELEASE_VERSION-windows-x64-setup.exe").Path
-          $installRoot = Join-Path $env:RUNNER_TEMP "installed-final-smoke"
-          $install = Start-Process -FilePath $installer -WindowStyle Hidden -PassThru -Wait -ArgumentList @(
-            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=`"$installRoot`""
-          )
-          if ($install.ExitCode -ne 0) { throw "Installer exited with code $($install.ExitCode)" }
-          python tools/check_release_bundle.py --allow-installer-files $installRoot
-          if ($LASTEXITCODE -ne 0) { throw "Installed bundle validation failed" }
-
-          $launcher = Join-Path $installRoot "runtime\NEU-JWXT-Toolkit.exe"
-          $instance = Join-Path $env:LOCALAPPDATA "NEU-JWXT-Toolkit\desktop-instance.json"
-          $process = Start-Process -FilePath $launcher -WindowStyle Hidden -PassThru
-          try {
-            $healthy = $false
-            for ($i = 0; $i -lt 120; $i++) {
-              if (Test-Path -LiteralPath $instance) {
-                $state = Get-Content -LiteralPath $instance -Raw | ConvertFrom-Json
-                if ($state.pid -ne $process.Id) {
-                  Start-Sleep -Milliseconds 250
-                  continue
-                }
-                $instanceUri = [Uri]$state.url
-                if ($instanceUri.Scheme -ne "http" -or $instanceUri.Host -ne "127.0.0.1" `
-                    -or $instanceUri.AbsolutePath -ne "/" -or $instanceUri.Query) {
-                  throw "Desktop instance URL is not a clean loopback HTTP origin"
-                }
-                try {
-                  $health = Invoke-RestMethod "$($state.url)/api/health" -TimeoutSec 1
-                  if ($health.status -eq "ok" -and $health.profile -eq "desktop" `
-                      -and -not [string]::IsNullOrWhiteSpace($health.shutdown_token)) {
-                    $healthy = $true
-                    break
-                  }
-                } catch {}
-              }
-              Start-Sleep -Milliseconds 250
-            }
-            if (-not $healthy) { throw "Installed application health check failed" }
-            $homepage = Invoke-WebRequest "$($state.url)/app" -UseBasicParsing -TimeoutSec 5
-            if ($homepage.StatusCode -ne 200 -or $homepage.Content -notmatch 'id="root"') {
-              throw "Installed application homepage check failed"
-            }
-            Invoke-RestMethod "$($state.url)/api/runtime/shutdown" -Method Post -TimeoutSec 5 `
-              -Headers @{ "X-NEU-Shutdown-Token" = $health.shutdown_token } | Out-Null
-            if (-not $process.WaitForExit(10000)) { throw "Installed application shutdown check failed" }
-            if ($process.ExitCode -ne 0) { throw "Installed application exited with code $($process.ExitCode)" }
-            if (Test-Path -LiteralPath $instance) { throw "Installed application left its instance file behind" }
-          } finally {
-            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
-          }
-
-      - name: Scan final Windows artifacts with Microsoft Defender when available
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $defender = Join-Path $env:ProgramFiles "Windows Defender\MpCmdRun.exe"
           if (-not (Test-Path -LiteralPath $defender)) {
             $command = Get-Command MpCmdRun.exe -ErrorAction SilentlyContinue
             if ($command) { $defender = $command.Source }
           }
           if (-not (Test-Path -LiteralPath $defender)) {
-            Write-Host "::notice::Microsoft Defender command-line scanner is unavailable on this runner; smoke tests remain mandatory."
-            "WINDOWS_DEFENDER_STATUS=unavailable" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            exit 0
+            throw "Microsoft Defender command-line scanner is required for a Windows release"
+          }
+          & $defender -SignatureUpdate
+          if ($LASTEXITCODE -ne 0) {
+            throw "Microsoft Defender security intelligence update failed: exit $LASTEXITCODE"
           }
           $defenderStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
-          if ($defenderStatus) {
-            "Defender engine: $($defenderStatus.AMEngineVersion); signatures: $($defenderStatus.AntivirusSignatureVersion)" `
-              | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          if (-not $defenderStatus -or -not $defenderStatus.AMServiceEnabled -or
+              -not $defenderStatus.AntivirusEnabled) {
+            throw "Microsoft Defender service is not active after the security intelligence update"
           }
+          $signatureAge = (Get-Date) - $defenderStatus.AntivirusSignatureLastUpdated
+          if ($signatureAge.TotalHours -gt 24) {
+            throw "Microsoft Defender security intelligence is stale: $($defenderStatus.AntivirusSignatureLastUpdated)"
+          }
+          "Defender engine: $($defenderStatus.AMEngineVersion); signatures: $($defenderStatus.AntivirusSignatureVersion); updated: $($defenderStatus.AntivirusSignatureLastUpdated)" `
+            | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           $targets = @(
             (Resolve-Path ".\release\NEU-JWXT-Toolkit-$env:RELEASE_VERSION-windows-x64-portable.zip").Path,
-            (Resolve-Path ".\release\NEU-JWXT-Toolkit-$env:RELEASE_VERSION-windows-x64-setup.exe").Path,
-            (Join-Path $env:RUNNER_TEMP "portable-final-smoke"),
-            (Join-Path $env:RUNNER_TEMP "installed-final-smoke")
+            (Join-Path $env:RUNNER_TEMP "portable-final-smoke")
+          )
+          $archiveHashBefore = (Get-FileHash -LiteralPath $targets[0] -Algorithm SHA256).Hash
+          $portableManifestBefore = @(
+            Get-ChildItem -LiteralPath $targets[1] -File -Recurse | ForEach-Object {
+              $relative = [IO.Path]::GetRelativePath($targets[1], $_.FullName)
+              "$relative=$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+            } | Sort-Object
           )
           foreach ($target in $targets) {
-            & $defender -Scan -ScanType 3 -File $target
-            if ($LASTEXITCODE -ne 0) {
-              throw "Microsoft Defender rejected or could not scan final target: $target (exit $LASTEXITCODE)"
+            & $defender -Scan -ScanType 3 -File $target -DisableRemediation
+            $scanExit = $LASTEXITCODE
+            if ($scanExit -ne 0) {
+              throw "Microsoft Defender detected malware or could not scan final target: $target (exit $scanExit)"
             }
           }
-          "WINDOWS_DEFENDER_STATUS=passed" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Uninstall verified application
-        if: always()
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $installRoot = Join-Path $env:RUNNER_TEMP "installed-final-smoke"
-          $launcher = Join-Path $installRoot "runtime\NEU-JWXT-Toolkit.exe"
-          $uninstaller = Join-Path $installRoot "unins000.exe"
-          if (-not (Test-Path -LiteralPath $uninstaller)) {
-            Write-Host "::notice::No installed uninstaller was found; the installer may not have completed."
-            exit 0
+          if (-not (Test-Path -LiteralPath $targets[0])) {
+            throw "Microsoft Defender removed the final portable archive"
           }
-          $uninstall = Start-Process -FilePath $uninstaller -WindowStyle Hidden -PassThru -Wait -ArgumentList @(
-            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+          $archiveHashAfter = (Get-FileHash -LiteralPath $targets[0] -Algorithm SHA256).Hash
+          $portableManifestAfter = @(
+            Get-ChildItem -LiteralPath $targets[1] -File -Recurse | ForEach-Object {
+              $relative = [IO.Path]::GetRelativePath($targets[1], $_.FullName)
+              "$relative=$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+            } | Sort-Object
           )
-          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller exited with code $($uninstall.ExitCode)" }
-          if (Test-Path -LiteralPath $launcher) { throw "Uninstaller left the application launcher behind" }
-
+          if ($archiveHashAfter -ne $archiveHashBefore -or
+              (Compare-Object $portableManifestBefore $portableManifestAfter)) {
+            throw "Microsoft Defender changed or removed a final Windows artifact"
+          }
       - name: Record Windows security status
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $statusFile = ".\release\WINDOWS-SECURITY-STATUS.txt"
-          "Windows launcher, installer, and uninstaller: unsigned. Final archive, installer, and runtime smoke tests passed." | Set-Content -LiteralPath $statusFile -Encoding utf8
-          "Windows code-signing status: **unsigned by project policy**; artifact validation remains mandatory." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          if ($env:WINDOWS_DEFENDER_STATUS -eq "passed") {
-            "Microsoft Defender: final portable ZIP, installer, extracted portable directory, and installed directory scanned with no detections." | Add-Content -LiteralPath $statusFile -Encoding utf8
-          } else {
-            "Microsoft Defender: scanner unavailable on the hosted runner; no antivirus-clean claim is made." | Add-Content -LiteralPath $statusFile -Encoding utf8
-          }
+          "Packaging policy: inspectable Nuitka standalone portable ZIP; no onefile or UPX. The launcher is unsigned but carries stable product and version metadata." | Set-Content -LiteralPath $statusFile -Encoding utf8
+          "Unsigned setup.exe publishing is suspended until reliable Authenticode signing is available." | Add-Content -LiteralPath $statusFile -Encoding utf8
+          "Windows packaging: **compiled standalone portable ZIP; unsigned installer suspended**." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "Microsoft Defender: final portable ZIP and extracted directory scanned with remediation disabled; MpCmdRun reported no malware (exit 0), and every artifact hash remained unchanged." | Add-Content -LiteralPath $statusFile -Encoding utf8
 
       # actions/upload-artifact v4.6.2
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -28,10 +28,6 @@ FORBIDDEN_FILE_PATTERNS = (
 FORBIDDEN_TOP_LEVEL_DIRECTORIES = {"data", "logs", "成绩"}
 FORBIDDEN_ANYWHERE_DIRECTORIES = {"gpa_simulations"}
 SCRIPT_SUFFIXES = {".bat", ".cmd", ".ps1", ".vbs", ".wsf"}
-INNO_INSTALLER_FILES = {"unins000.exe", "unins000.dat", "unins000.msg"}
-INNO_INSTALLER_PATTERN = re.compile(
-    r"^unins\d{3}\.(?:exe|dat|msg)$", re.IGNORECASE
-)
 
 
 def _unsafe_symlink(path: Path, root: Path) -> bool:
@@ -97,54 +93,14 @@ def _desktop_payload_violations(root: Path) -> list[str]:
             violations.append(f"missing desktop bundle path: {path.relative_to(root)}")
     if not launcher.is_file() or launcher.read_bytes()[:2] != b"MZ":
         violations.append("desktop launcher is missing or is not a PE executable")
-    installer_files = sorted(
-        path.name
-        for path in root.iterdir()
-        if path.is_file() and INNO_INSTALLER_PATTERN.fullmatch(path.name)
-    )
-    if installer_files:
-        violations.append("unexpected Inno installer files: " + ", ".join(installer_files))
     extra_executables = sorted(
-        path.name
-        for path in root.glob("*.exe")
-        if path.name != launcher.name
-        and not INNO_INSTALLER_PATTERN.fullmatch(path.name)
+        path.name for path in root.glob("*.exe") if path.name != launcher.name
     )
     if extra_executables:
         violations.append("unexpected top-level executables: " + ", ".join(extra_executables))
     scripts = sorted(
-        path.name for path in root.iterdir()
-        if path.is_file() and path.suffix.lower() in SCRIPT_SUFFIXES
-    )
-    if scripts:
-        violations.append("unexpected top-level launcher scripts: " + ", ".join(scripts))
-    return violations
-
-
-def _installed_desktop_layout_violations(
-    root: Path, allow_installer_files: bool
-) -> list[str]:
-    violations = [
-        f"runtime/{item}" for item in _desktop_payload_violations(root / "runtime")
-    ]
-    installer_files = sorted(
         path.name
         for path in root.iterdir()
-        if path.is_file() and INNO_INSTALLER_PATTERN.fullmatch(path.name)
-    )
-    allowed_files = INNO_INSTALLER_FILES if allow_installer_files else set()
-    unexpected = [name for name in installer_files if name.lower() not in allowed_files]
-    if unexpected:
-        violations.append("unexpected Inno installer files: " + ", ".join(unexpected))
-    extra_executables = sorted(
-        path.name
-        for path in root.glob("*.exe")
-        if not INNO_INSTALLER_PATTERN.fullmatch(path.name)
-    )
-    if extra_executables:
-        violations.append("unexpected top-level executables: " + ", ".join(extra_executables))
-    scripts = sorted(
-        path.name for path in root.iterdir()
         if path.is_file() and path.suffix.lower() in SCRIPT_SUFFIXES
     )
     if scripts:
@@ -173,14 +129,12 @@ def _server_payload_violations(root: Path, executable: Path) -> list[str]:
 
 def find_structure_violations(
     root: Path,
-    *,
-    allow_installer_files: bool = False,
 ) -> list[str]:
     """Validate a recognized frozen bundle without rejecting package wrappers."""
     if (root / "NEU-JWXT-Toolkit.exe").exists():
         return _desktop_payload_violations(root)
     if (root / "runtime" / "NEU-JWXT-Toolkit.exe").exists():
-        return _installed_desktop_layout_violations(root, allow_installer_files)
+        return ["installed Windows bundles are no longer published"]
     server = root / "neu-jwxt-server"
     packaged_server = root / "app" / "neu-jwxt-server"
     if server.exists():
@@ -194,16 +148,9 @@ def find_structure_violations(
 
 def inspect_bundle(
     root: Path,
-    *,
-    allow_installer_files: bool = False,
 ) -> list[str]:
     violations = [f"forbidden content: {path}" for path in find_forbidden(root)]
-    violations.extend(
-        find_structure_violations(
-            root,
-            allow_installer_files=allow_installer_files,
-        )
-    )
+    violations.extend(find_structure_violations(root))
     return violations
 
 
@@ -211,24 +158,13 @@ def main(arguments: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="Check frozen release bundles for private data and unsafe layout."
     )
-    parser.add_argument(
-        "--allow-installer-files",
-        action="store_true",
-        help=(
-            "allow only Inno Setup's expected unins000.exe/.dat/.msg files "
-            "in an installed desktop bundle; portable bundles stay strict"
-        ),
-    )
     parser.add_argument("roots", nargs="+")
     args = parser.parse_args(arguments)
     violations: list[str] = []
     for value in args.roots:
         root = Path(value).resolve()
         try:
-            for item in inspect_bundle(
-                root,
-                allow_installer_files=args.allow_installer_files,
-            ):
+            for item in inspect_bundle(root):
                 violations.append(f"{root}: {item}")
         except FileNotFoundError:
             violations.append(f"{root}: bundle root does not exist")

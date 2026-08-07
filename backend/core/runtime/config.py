@@ -1,6 +1,6 @@
 """Cross-platform runtime configuration.
 
-Development keeps the historical repository-local layout. Frozen desktop and
+Development keeps the historical repository-local layout. Packaged desktop and
 server builds use writable platform locations and a relocatable resource root.
 """
 

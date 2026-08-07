@@ -8,7 +8,6 @@ from tools.check_release_bundle import (
     find_forbidden,
     find_structure_violations,
     inspect_bundle,
-    main,
 )
 
 
@@ -121,7 +120,7 @@ def _desktop_bundle(root):
     (root / "NEU-JWXT-Toolkit.exe").write_bytes(b"MZ")
 
 
-def test_desktop_layout_accepts_expected_unsigned_launcher(tmp_path):
+def test_desktop_layout_accepts_compiled_standalone_runtime(tmp_path):
     root = tmp_path / "desktop"
     root.mkdir()
     _desktop_bundle(root)
@@ -131,14 +130,14 @@ def test_desktop_layout_accepts_expected_unsigned_launcher(tmp_path):
 def test_desktop_layout_rejects_missing_assets_and_extra_launchers(tmp_path):
     root = tmp_path / "bundle"
     root.mkdir()
-    (root / "NEU-JWXT-Toolkit.exe").write_bytes(b"not-pe")
+    _desktop_bundle(root)
     (root / "unexpected.exe").write_bytes(b"MZ")
-    (root / "run.cmd").write_text("start unexpected.exe", encoding="utf-8")
+    (root / "run.ps1").write_text("start unexpected.exe", encoding="utf-8")
+    (root / "frontend" / "build" / "index.html").unlink()
 
     violations = find_structure_violations(root)
-    assert "desktop launcher is missing or is not a PE executable" in violations
     assert "unexpected top-level executables: unexpected.exe" in violations
-    assert "unexpected top-level launcher scripts: run.cmd" in violations
+    assert "unexpected top-level launcher scripts: run.ps1" in violations
     assert any(item.startswith("missing desktop bundle path:") for item in violations)
 
 
@@ -148,7 +147,7 @@ def test_portable_desktop_rejects_installer_owned_files(tmp_path):
     _desktop_bundle(root)
     (root / "unins000.exe").write_bytes(b"installer-owned")
 
-    assert "unexpected Inno installer files: unins000.exe" in find_structure_violations(root)
+    assert "unexpected top-level executables: unins000.exe" in find_structure_violations(root)
 
 
 def _server_bundle(root):
@@ -180,32 +179,6 @@ def test_server_layout_accepts_nuitka_standalone_and_assembled_package(tmp_path)
     assert find_structure_violations(package) == []
 
 
-def test_installed_desktop_allows_only_expected_inno_uninstaller_files(
-    tmp_path, capsys
-):
-    root = tmp_path / "installed"
-    root.mkdir()
-    (root / "runtime").mkdir()
-    _desktop_bundle(root / "runtime")
-    for name in ("unins000.exe", "unins000.dat", "unins000.msg"):
-        (root / name).write_bytes(b"installer-owned")
-
-    assert (
-        "unexpected Inno installer files: "
-        "unins000.dat, unins000.exe, unins000.msg"
-    ) in find_structure_violations(root)
-    assert find_structure_violations(root, allow_installer_files=True) == []
-    assert main(["--allow-installer-files", str(root)]) == 0
-    assert "validation passed" in capsys.readouterr().out
-
-    (root / "unins001.exe").write_bytes(b"not part of the expected fresh install")
-    (root / "unins001.dat").write_bytes(b"not part of the expected fresh install")
-    (root / "unins000.cmd").write_text("unexpected", encoding="utf-8")
-    violations = find_structure_violations(root, allow_installer_files=True)
-    assert "unexpected Inno installer files: unins001.dat, unins001.exe" in violations
-    assert "unexpected top-level launcher scripts: unins000.cmd" in violations
-
-
 def test_inspect_bundle_combines_data_and_structure_checks(tmp_path):
     root = tmp_path / "bundle"
     root.mkdir()
@@ -215,7 +188,7 @@ def test_inspect_bundle_combines_data_and_structure_checks(tmp_path):
     assert violations == ["forbidden content: credentials.json"]
 
 
-def test_nuitka_build_keeps_inspectable_standalone_payload():
+def test_nuitka_build_keeps_inspectable_standalone_payload_and_windows_metadata():
     project = Path(__file__).resolve().parents[2]
     text = (project / "packaging" / "nuitka" / "build.py").read_text(encoding="utf-8")
     assert '"--mode=standalone"' in text
@@ -226,9 +199,13 @@ def test_nuitka_build_keeps_inspectable_standalone_payload():
     assert '"--include-package-data=certifi"' in text
     assert '"--nofollow-import-to=pytest"' in text
     assert '"--nofollow-import-to=_pytest"' in text
-    assert '"--windows-console-mode=disable"' in text
-    assert "--windows-icon-from-ico=" in text
-    assert "WINDOWS_ICON}=app.ico" in text
+    assert '"desktop"' in text
+    assert "NEU-JWXT-Toolkit.exe" in text
+    assert "--windows-console-mode=disable" in text
+    assert "--company-name=NEU-JWXT-Toolkit Contributors" in text
+    assert "--product-name=NEU JWXT Toolkit" in text
+    assert "--file-version=" in text
+    assert "--product-version=" in text
 
 
 def test_branding_assets_cover_web_and_windows_consumers():
