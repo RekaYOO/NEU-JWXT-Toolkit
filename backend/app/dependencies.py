@@ -49,6 +49,8 @@ from backend.core.cache.resources import (
     diff_research_training,
     diff_scores,
     diff_score_detail,
+    canonicalize_personal_timetable,
+    diff_personal_timetable,
     fetch_academic_report,
     fetch_research_training,
     fetch_scores,
@@ -56,6 +58,7 @@ from backend.core.cache.resources import (
     canonicalize_festival_activities,
     diff_festival_activities,
     score_detail_variant,
+    personal_timetable_term,
 )
 
 # ── 全局状态 ──────────────────────────────────────────────────────────────────
@@ -179,6 +182,81 @@ def _fetch_festival_resource(context):
     return fetch_festival_activities(_cache_client(context))
 
 
+def _fetch_personal_timetable_resource(context):
+    """Fetch one complete personal term for shared page/conflict consumers."""
+    client = _cache_client(context)
+    term_code = personal_timetable_term(context.key.variant)
+    api = client.timetable
+    campuses = api.get_campuses(term_code, mode="personal")
+    weeks = api.get_weeks(term_code)
+    campus_codes = [str(item.get("code") or "") for item in campuses]
+    sections_by_campus = {}
+    for campus_code in campus_codes or ["all"]:
+        sections_by_campus[campus_code] = api.get_sections(
+            term_code,
+            mode="personal",
+            campus_code=campus_code,
+        )
+    schedule = api.get_schedule(
+        mode="personal",
+        term_code=term_code,
+        campus_code="all",
+        week=None,
+    )
+    from backend.core.scheduling import meeting_extension, normalize_meeting
+
+    schedule["courses"] = [
+        {
+            **course,
+            **meeting_extension(normalize_meeting(
+                course,
+                term_code=term_code,
+                default_source="personal_timetable",
+            )),
+        }
+        for course in schedule.get("courses") or []
+    ]
+    from backend.core.cache import CacheKey
+
+    nature_by_code: dict[str, str] = {}
+    report_entry = _cache_store.get(CacheKey(context.key.account_id, "academic-report"))
+
+    def collect_course_metadata(value):
+        if isinstance(value, dict):
+            code = str(value.get("course_code") or value.get("code") or "").strip()
+            nature = str(
+                value.get("course_nature") or value.get("course_type") or ""
+            ).strip()
+            if code and nature and code not in nature_by_code:
+                nature_by_code[code] = nature
+            for nested in value.values():
+                collect_course_metadata(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                collect_course_metadata(nested)
+
+    if report_entry is not None:
+        collect_course_metadata(report_entry.payload)
+    scores_entry = _cache_store.get(CacheKey(context.key.account_id, "scores"))
+    if scores_entry is not None:
+        collect_course_metadata(scores_entry.payload)
+    schedule["courses"] = [
+        {
+            **course,
+            "course_nature": str(course.get("course_nature") or "").strip()
+            or nature_by_code.get(str(course.get("course_code") or "").strip(), ""),
+        }
+        for course in schedule["courses"]
+    ]
+    return {
+        "term_code": term_code,
+        "campuses": campuses,
+        "weeks": weeks,
+        "sections_by_campus": sections_by_campus,
+        **schedule,
+    }
+
+
 def _fetch_avatar_resource(context):
     client = _cache_client(context)
     user_info = client.get_user_info()
@@ -266,6 +344,20 @@ _cache_registry = CacheRegistry(
             fetch=_fetch_festival_resource,
             canonicalize=canonicalize_festival_activities,
             diff=diff_festival_activities,
+        ),
+        CacheResourceSpec(
+            resource="personal-timetable",
+            schema_version=3,
+            revision_algorithm_version=1,
+            account_scope=AccountScope.ACCOUNT,
+            payload_type=PayloadType.JSON,
+            max_age=timedelta(minutes=5),
+            offline_readable=False,
+            sensitivity="private-academic",
+            fetch=_fetch_personal_timetable_resource,
+            canonicalize=canonicalize_personal_timetable,
+            diff=diff_personal_timetable,
+            mutation_invalidations=("personal-timetable",),
         ),
         CacheResourceSpec(
             resource="avatar",

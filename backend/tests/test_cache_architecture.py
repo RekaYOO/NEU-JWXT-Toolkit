@@ -7,6 +7,10 @@ from backend.core.cache.resources import (
     avatar_token,
     canonicalize_research_training,
     canonicalize_scores,
+    canonicalize_personal_timetable,
+    diff_personal_timetable,
+    personal_timetable_term,
+    personal_timetable_variant,
     diff_scores,
     score_key,
 )
@@ -71,6 +75,37 @@ def test_avatar_binary_payload_preserves_token_and_image():
     assert avatar_bytes(payload) == b"\x89PNG-image"
 
 
+def test_personal_timetable_variant_and_revision_payload_are_term_scoped():
+    variant = personal_timetable_variant("2026-2027-1")
+    assert variant == "term:2026-2027-1"
+    assert personal_timetable_term(variant) == "2026-2027-1"
+
+    before = canonicalize_personal_timetable({
+        "term_code": "2026-2027-1",
+        "campuses": [
+            {"code": "02", "name": "示例校区"},
+            {"code": "all", "name": "全部校区"},
+        ],
+        "weeks": [{"number": 2}, {"number": 1}],
+        "sections_by_campus": {"02": [{"number": 2}, {"number": 1}]},
+        "courses": [{"meeting_id": "m1", "course_name": "课程甲"}],
+    })
+    after = canonicalize_personal_timetable({
+        **before,
+        "courses": [
+            {"meeting_id": "m1", "course_name": "课程甲（调整）"},
+            {"meeting_id": "m2", "course_name": "课程乙"},
+        ],
+    })
+
+    assert [week["number"] for week in before["weeks"]] == [1, 2]
+    assert before["campuses"][0]["code"] == "all"
+    assert [section["number"] for section in before["sections_by_campus"]["02"]] == [1, 2]
+    changes = diff_personal_timetable(before, after)
+    assert changes["added_meeting_ids"] == ["m2"]
+    assert changes["changed_meeting_ids"] == ["m1"]
+
+
 def test_auth_session_manager_fences_identity_and_serializes_state_cleanup():
     manager = AuthSessionManager()
     first = type("Client", (), {"username": "a"})()
@@ -133,7 +168,7 @@ def test_remote_routes_use_the_shared_session_dependency():
     )
     assert "Depends(require_auth)" not in all_routes
     assert "Depends(get_auth_client)" not in all_routes
-    for module in ("evaluation.py", "experiment.py", "exam.py"):
+    for module in ("evaluation.py", "experiment.py", "exam.py", "timetable.py"):
         text = (routers / module).read_text(encoding="utf-8")
         assert "Depends(require_serialized_auth)" in text
     research = (routers / "research.py").read_text(encoding="utf-8")

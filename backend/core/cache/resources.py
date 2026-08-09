@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from dataclasses import asdict, is_dataclass
 from typing import Any, Iterable, Mapping
 
@@ -397,4 +398,100 @@ def diff_festival_activities(previous: Any, current: Any) -> dict[str, Any]:
         "added": len(new.keys() - old.keys()),
         "removed": len(old.keys() - new.keys()),
         "updated": sum(old[key] != new[key] for key in old.keys() & new.keys()),
+    }
+
+
+TIMETABLE_TERM_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def personal_timetable_variant(term_code: str) -> str:
+    """Return the controlled cache variant for one personal timetable term."""
+    normalized = str(term_code or "").strip()
+    if not TIMETABLE_TERM_PATTERN.fullmatch(normalized):
+        raise ValueError("invalid timetable term code")
+    return f"term:{normalized}"
+
+
+def personal_timetable_term(variant: str) -> str:
+    prefix = "term:"
+    if not str(variant or "").startswith(prefix):
+        raise ValueError("personal timetable cache requires a term variant")
+    term_code = str(variant)[len(prefix):]
+    personal_timetable_variant(term_code)
+    return term_code
+
+
+def canonicalize_personal_timetable(payload: Any) -> dict[str, Any]:
+    """Keep only stable, user-visible timetable data in cache revisions."""
+    if not isinstance(payload, Mapping):
+        raise TypeError("personal timetable payload must be an object")
+
+    def clean_rows(name: str, *, identity: tuple[str, ...]) -> list[dict[str, Any]]:
+        rows = [
+            _plain(row)
+            for row in payload.get(name) or []
+            if isinstance(row, Mapping)
+        ]
+        rows.sort(key=lambda row: tuple(str(row.get(key) or "") for key in identity))
+        return rows
+
+    sections_by_campus = {
+        str(code): sorted(
+            [_plain(item) for item in items or [] if isinstance(item, Mapping)],
+            key=lambda item: int(item.get("number") or 0),
+        )
+        for code, items in sorted((payload.get("sections_by_campus") or {}).items())
+        if isinstance(items, list)
+    }
+    return {
+        "term_code": str(payload.get("term_code") or ""),
+        "campuses": sorted(
+            [
+                _plain(row)
+                for row in payload.get("campuses") or []
+                if isinstance(row, Mapping)
+            ],
+            key=lambda row: (
+                str(row.get("code") or "") != "all",
+                str(row.get("code") or ""),
+                str(row.get("name") or ""),
+            ),
+        ),
+        "weeks": sorted(
+            [_plain(row) for row in payload.get("weeks") or [] if isinstance(row, Mapping)],
+            key=lambda row: int(row.get("number") or 0),
+        ),
+        "sections_by_campus": sections_by_campus,
+        "courses": clean_rows(
+            "courses",
+            identity=("meeting_id", "id", "weekday", "start_section", "course_code"),
+        ),
+        "unscheduled": clean_rows("unscheduled", identity=("course_code", "course_name")),
+        "practices": clean_rows("practices", identity=("course_code", "course_name")),
+    }
+
+
+def diff_personal_timetable(previous: Any, current: Any) -> dict[str, Any]:
+    previous = previous or {}
+    current = current or {}
+    old_courses = {
+        str(item.get("meeting_id") or item.get("id") or index): item
+        for index, item in enumerate(previous.get("courses") or [])
+    }
+    new_courses = {
+        str(item.get("meeting_id") or item.get("id") or index): item
+        for index, item in enumerate(current.get("courses") or [])
+    }
+    return {
+        "added_meeting_ids": sorted(new_courses.keys() - old_courses.keys()),
+        "removed_meeting_ids": sorted(old_courses.keys() - new_courses.keys()),
+        "changed_meeting_ids": sorted(
+            key
+            for key in old_courses.keys() & new_courses.keys()
+            if old_courses[key] != new_courses[key]
+        ),
+        "context_changed": any(
+            previous.get(key) != current.get(key)
+            for key in ("campuses", "weeks", "sections_by_campus", "unscheduled", "practices")
+        ),
     }

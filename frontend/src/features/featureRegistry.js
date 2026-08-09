@@ -18,6 +18,7 @@ export const FEATURE_REGISTRY = Object.freeze([
   { id: 'scores', path: '/scores', label: '成绩明细', icon: <BookOutlined />, offline: 'has_scores' },
   { id: 'grade-tracking', path: '/grade-tracking', label: '成绩追踪', icon: <BellOutlined /> },
   { id: 'academic-report', path: '/academic-report', label: '培养计划', icon: <ScheduleOutlined />, offline: 'has_report' },
+  { id: 'timetable', path: '/timetable', label: '查询课表', icon: <CalendarOutlined /> },
   { id: 'experiment-courses', path: '/experiment-courses', label: '实验选课', icon: <ExperimentOutlined /> },
   { id: 'research-training', path: '/research-training', label: '科研训练', icon: <ReadOutlined />, offline: 'has_research' },
   { id: 'evaluation', path: '/evaluation', label: '自动评教', icon: <StarOutlined /> },

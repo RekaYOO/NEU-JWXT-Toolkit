@@ -44,10 +44,12 @@ MUTATION_POLICIES = {
         "research.cancel", "research-training"
     ),
     "experiment.select": _policy(
-        "experiment.select", "academic-report", "experiment-courses"
+        "experiment.select", "academic-report", "experiment-courses", "personal-timetable",
+        refetches=("personal-timetable",),
     ),
     "experiment.deselect": _policy(
-        "experiment.deselect", "academic-report", "experiment-courses"
+        "experiment.deselect", "academic-report", "experiment-courses", "personal-timetable",
+        refetches=("personal-timetable",),
     ),
     "evaluation.submit": _policy(
         "evaluation.submit",

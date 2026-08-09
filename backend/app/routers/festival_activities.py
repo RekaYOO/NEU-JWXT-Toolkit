@@ -20,6 +20,7 @@ from backend.app.dependencies import (
 )
 from backend.app.schemas.festival_activities import CertificateArchiveRequest, FestivalActivitiesResponse
 from backend.core.auth import NEUAuthClient
+from backend.core.auth.client import NEULoginError
 from backend.core.festival_activities import fetch_festival_activities
 from backend.app.presenters import festival_cache_response, festival_remote_response
 
@@ -44,6 +45,18 @@ def _username(auth: NEUAuthClient) -> str:
     if not value:
         raise HTTPException(status_code=401, detail="无法确认当前登录账号")
     return value
+
+
+def _authentication_failure(error: NEULoginError) -> HTTPException:
+    return HTTPException(status_code=401, detail="统一认证会话已过期，请重新登录")
+
+
+def _retry_authenticated_read(operation):
+    """Replay one idempotent cxcy read after the client attempted auth recovery."""
+    try:
+        return operation()
+    except NEULoginError:
+        return operation()
 
 
 def _cache_response(username: str, entry, stale: bool, source: str = "cache") -> dict:
@@ -87,7 +100,10 @@ def get_festival_activities(
 ):
     response.headers["Cache-Control"] = "no-store"
     username = _username(auth)
-    payload = fetch_festival_activities(auth)
+    try:
+        payload = _retry_authenticated_read(lambda: fetch_festival_activities(auth))
+    except NEULoginError as error:
+        raise _authentication_failure(error) from error
     return festival_remote_response(username, payload)
 
 
@@ -187,7 +203,10 @@ def download_certificate_archive(
     auth: NEUAuthClient = Depends(require_serialized_auth),
 ):
     _username(auth)
-    payload = fetch_festival_activities(auth)
+    try:
+        payload = _retry_authenticated_read(lambda: fetch_festival_activities(auth))
+    except NEULoginError as error:
+        raise _authentication_failure(error) from error
     candidates = []
     for item in payload.get("activities") or []:
         try:
@@ -206,11 +225,14 @@ def download_certificate_archive(
     successes = 0
     total_bytes = 0
     names: set[str] = set()
+    authentication_error: NEULoginError | None = None
     with zipfile.ZipFile(spool, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for activity_date, item in candidates:
             try:
                 path = _safe_certificate_path(str(item.get("certificate_url") or ""))
-                response = auth.request_service("cxcy", "GET", path, stream=True)
+                response = _retry_authenticated_read(
+                    lambda: auth.request_service("cxcy", "GET", path, stream=True)
+                )
                 try:
                     response.raise_for_status()
                     # The shared service client limits redirect hosts, but a
@@ -243,10 +265,16 @@ def download_certificate_archive(
                 names.add(name)
                 archive.writestr(name, bytes(body))
                 successes += 1
+            except NEULoginError as exc:
+                authentication_error = exc
+                break
             except Exception as exc:
                 failures.append(f"{item.get('name') or '未命名活动'}：{type(exc).__name__}")
         if failures:
             archive.writestr("下载说明.txt", "以下证书下载失败：\n" + "\n".join(failures))
+    if authentication_error is not None:
+        spool.close()
+        raise _authentication_failure(authentication_error) from authentication_error
     if successes == 0:
         spool.close()
         raise HTTPException(status_code=502, detail="证书下载全部失败")

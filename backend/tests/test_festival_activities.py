@@ -238,6 +238,67 @@ def test_service_same_origin_login_trampoline_establishes_session_and_retries(mo
     assert urls[1].startswith("https://pass.neu.edu.cn/tpass/login?service=")
 
 
+def test_service_expired_cas_recovers_primary_login_then_rebuilds_service_session(monkeypatch):
+    client = NEUAuthClient(restore_session=False)
+    client._logged_in = True
+    urls = []
+    recoveries = []
+
+    def response(url):
+        item = requests.Response()
+        item.status_code = 200
+        item.url = url
+        item._content = b"ok"
+        return item
+
+    results = iter([
+        response("https://cxcy.neu.edu.cn/ucenter/index/login"),
+        response("https://pass.neu.edu.cn/tpass/login?service=cxcy"),
+        response("https://cxcy.neu.edu.cn/ucenter/main/index"),
+        response("https://cxcy.neu.edu.cn/popscience/comp/ucenter/main/index"),
+    ])
+
+    def fake_redirects(method, url, **kwargs):
+        urls.append(url)
+        return next(results)
+
+    def recover():
+        recoveries.append(True)
+        client._logged_in = True
+        return True
+
+    monkeypatch.setattr(client, "_request_service_redirects", fake_redirects)
+    monkeypatch.setattr(client, "ensure_login", recover)
+
+    result = client.request_service("cxcy", "GET", "/popscience/comp/ucenter/main/index")
+
+    assert result.url.endswith("/popscience/comp/ucenter/main/index")
+    assert recoveries == [True]
+    assert sum(url.startswith("https://pass.neu.edu.cn/") for url in urls) == 2
+
+
+def test_service_expired_cas_reports_login_failure_after_one_recovery_attempt(monkeypatch):
+    client = NEUAuthClient(restore_session=False)
+    client._logged_in = True
+
+    def response(url):
+        item = requests.Response()
+        item.status_code = 200
+        item.url = url
+        item._content = b"ok"
+        return item
+
+    results = iter([
+        response("https://cxcy.neu.edu.cn/ucenter/index/login"),
+        response("https://pass.neu.edu.cn/tpass/login?service=cxcy"),
+    ])
+    monkeypatch.setattr(client, "_request_service_redirects", lambda *_args, **_kwargs: next(results))
+    monkeypatch.setattr(client, "ensure_login", lambda: False)
+
+    with pytest.raises(NEULoginError, match="统一认证会话已过期"):
+        client.request_service("cxcy", "GET", "/popscience/comp/ucenter/main/index")
+
+
 def test_certificate_path_and_inclusive_range_security():
     assert _safe_certificate_path("https://cxcy.neu.edu.cn/static/uploads/res/popsciencecert/a.png") == "/static/uploads/res/popsciencecert/a.png"
     assert _safe_certificate_path("https://cxcy.neu.edu.cn/static/uploads/res/certificate/17/a.png?t=1") == "/static/uploads/res/certificate/17/a.png?t=1"
@@ -313,6 +374,36 @@ def test_list_fetches_remote_on_every_request(monkeypatch):
     assert first["source"] == second["source"] == "remote"
     assert first_response.headers["Cache-Control"] == "no-store"
     assert second_response.headers["Cache-Control"] == "no-store"
+
+
+def test_list_maps_expired_login_to_recoverable_401(monkeypatch):
+    monkeypatch.setattr(
+        festival_router,
+        "fetch_festival_activities",
+        lambda _auth: (_ for _ in ()).throw(NEULoginError("expired")),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        get_festival_activities(Response(), _ArchiveAuth([]))
+
+    assert error.value.status_code == 401
+
+
+def test_list_retries_once_after_login_expires_mid_fetch(monkeypatch):
+    calls = []
+
+    def fetch(_auth):
+        calls.append(True)
+        if len(calls) == 1:
+            raise NEULoginError("expired")
+        return {"activities": [], "warnings": []}
+
+    monkeypatch.setattr(festival_router, "fetch_festival_activities", fetch)
+
+    result = get_festival_activities(Response(), _ArchiveAuth([]))
+
+    assert result["source"] == "remote"
+    assert len(calls) == 2
 
 
 def test_delete_cache_is_idempotent_and_scoped_to_active_account(monkeypatch):
@@ -484,6 +575,53 @@ def test_archive_rejects_zero_certificates_all_invalid_and_excess_count(monkeypa
     with pytest.raises(HTTPException) as too_many:
         download_certificate_archive(request, _ArchiveAuth([]))
     assert too_many.value.status_code == 413
+
+
+def test_archive_aborts_with_401_when_login_expires_during_certificate_download(monkeypatch):
+    item = _archive_item("/static/uploads/res/popsciencecert/a.png")
+    _mock_fetch(monkeypatch, [item])
+    auth = _ArchiveAuth([])
+    auth.request_service = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        NEULoginError("expired")
+    )
+
+    with pytest.raises(HTTPException) as error:
+        download_certificate_archive(
+            CertificateArchiveRequest(
+                start_date=date(2025, 3, 1), end_date=date(2025, 8, 31)
+            ),
+            auth,
+        )
+
+    assert error.value.status_code == 401
+
+
+def test_archive_retries_the_current_certificate_after_login_recovery(monkeypatch):
+    item = _archive_item("/static/uploads/res/popsciencecert/a.png")
+    _mock_fetch(monkeypatch, [item])
+    png = b"\x89PNG\r\n\x1a\n" + b"data"
+    recovered_response = _CertificateResponse(png)
+    calls = []
+
+    class RecoveringAuth(_ArchiveAuth):
+        def request_service(self, service, method, path, **kwargs):
+            calls.append(path)
+            if len(calls) == 1:
+                raise NEULoginError("expired")
+            return recovered_response
+
+    response = download_certificate_archive(
+        CertificateArchiveRequest(
+            start_date=date(2025, 3, 1), end_date=date(2025, 8, 31)
+        ),
+        RecoveringAuth([]),
+    )
+    body = _read_streaming_response(response)
+
+    assert len(calls) == 2
+    assert response.headers["x-certificate-succeeded"] == "1"
+    assert zipfile.is_zipfile(io.BytesIO(body))
+    assert recovered_response.closed is True
 
 
 def test_archive_rejects_same_origin_redirect_outside_certificate_directories(monkeypatch):

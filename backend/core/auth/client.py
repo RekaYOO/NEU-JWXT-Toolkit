@@ -314,6 +314,7 @@ class NEUAuthClient:
         self._academic = None
         self._academic_report = None  # 学业监测报告 API
         self._evaluation = None       # 教学质量评价系统 API
+        self._timetable = None        # 课表查询 API
         self._webvpn_qr_flow: Optional[Dict[str, Any]] = None
         self._webvpn_sms_flow: Optional[Dict[str, Any]] = None
         
@@ -1112,6 +1113,16 @@ class NEUAuthClient:
         """发送 POST 请求"""
         return self.request("POST", url, **kwargs)
 
+    @staticmethod
+    def _close_response_safely(response: requests.Response) -> None:
+        try:
+            response.close()
+        except AttributeError:
+            # Lightweight response doubles and malformed transports may not
+            # expose a usable raw stream. Authentication recovery must still
+            # preserve the original result instead of failing during cleanup.
+            pass
+
     def request_service(
         self, service: str, method: str, path: str, **kwargs
     ) -> requests.Response:
@@ -1142,6 +1153,7 @@ class NEUAuthClient:
         # WebVPN URL, whereas cxcy is directly reachable in both modes.
         response = self._request_service_redirects(method, url, **kwargs)
         if self._is_service_auth_required(response):
+            self._close_response_safely(response)
             login_url = (
                 f"{CAS_LOGIN_URL}?service="
                 f"{requests.utils.quote(config['service'], safe='')}"
@@ -1149,13 +1161,27 @@ class NEUAuthClient:
             ticket_response = self._request_service_redirects(
                 "GET", login_url, timeout=self.timeout, verify=self.verify_ssl
             )
-            if urlparse(ticket_response.url).hostname != "cxcy.neu.edu.cn":
-                raise NEULoginError("统一认证会话已过期")
+            ticket_established = urlparse(ticket_response.url).hostname == "cxcy.neu.edu.cn"
+            self._close_response_safely(ticket_response)
+            if not ticket_established:
+                logger.info("跨系统 CAS 会话已过期，尝试恢复统一认证后重建业务会话...")
+                self._logged_in = False
+                if not self.ensure_login():
+                    raise NEULoginError("统一认证会话已过期")
+                ticket_response = self._request_service_redirects(
+                    "GET", login_url, timeout=self.timeout, verify=self.verify_ssl
+                )
+                ticket_established = urlparse(ticket_response.url).hostname == "cxcy.neu.edu.cn"
+                self._close_response_safely(ticket_response)
+                if not ticket_established:
+                    raise NEULoginError("统一认证恢复后仍无法建立业务系统会话")
             self._save_cookies()
             response = self._request_service_redirects(method, url, **kwargs)
         if self._is_service_auth_required(response):
+            self._close_response_safely(response)
             raise NEULoginError("业务系统会话建立失败")
         if urlparse(response.url).hostname != "cxcy.neu.edu.cn":
+            self._close_response_safely(response)
             raise NEULoginError("业务系统返回了不受信任的跳转地址")
         return response
 
@@ -1257,6 +1283,14 @@ class NEUAuthClient:
             from backend.core.evaluation.api import EvaluationAPI
             self._evaluation = EvaluationAPI(self)
         return self._evaluation
+
+    @property
+    def timetable(self):
+        """课表查询 API 入口。"""
+        if self._timetable is None:
+            from backend.core.timetable import TimetableAPI
+            self._timetable = TimetableAPI(self)
+        return self._timetable
 
     def get_user_info(self) -> Dict[str, Any]:
         """

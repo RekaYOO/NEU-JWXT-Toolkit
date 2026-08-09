@@ -199,10 +199,17 @@
 }
 
 .round-action {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
   margin-top: 12px;
   text-align: right;
   padding-top: 12px;
   border-top: 1px dashed #f0f0f0;
+}
+
+.experiment-conflict-detail {
+  margin-top: 12px;
 }
 
 /* 加载状态 */

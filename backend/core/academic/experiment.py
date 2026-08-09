@@ -10,6 +10,7 @@ NEU 实验选课 API
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 
@@ -18,6 +19,11 @@ from backend.core.auth import NEUAuthClient
 
 
 logger = logging.getLogger(__name__)
+CHINA_STANDARD_TIME = timezone(timedelta(hours=8), "Asia/Shanghai")
+
+
+class ExperimentCourseError(RuntimeError):
+    """The official experiment service failed or refused a read request."""
 
 
 @dataclass
@@ -81,11 +87,48 @@ class ExperimentRound:
     def is_full(self) -> bool:
         """是否已满"""
         return self.selected_count >= self.capacity
+
+    @staticmethod
+    def _parse_deadline(value: str) -> Optional[datetime]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        normalized = text.replace("/", "-").replace("T", " ")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        return (
+            parsed.replace(tzinfo=CHINA_STANDARD_TIME)
+            if parsed.tzinfo is None
+            else parsed.astimezone(CHINA_STANDARD_TIME)
+        )
+
+    def selection_window_state(self, now: Optional[datetime] = None) -> str:
+        """Return open/not_started/ended/unknown without guessing malformed dates."""
+        current = now or datetime.now(CHINA_STANDARD_TIME)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=CHINA_STANDARD_TIME)
+        else:
+            current = current.astimezone(CHINA_STANDARD_TIME)
+        start = self._parse_deadline(self.select_start)
+        end = self._parse_deadline(self.select_end)
+        if start is None or end is None:
+            return "unknown"
+        if current < start:
+            return "not_started"
+        if current > end:
+            return "ended"
+        return "open"
     
     @property
     def can_select(self) -> bool:
-        """是否可选（未满且无冲突）"""
-        return not self.is_full and not self.conflict
+        """Whether remote metadata permits selection before local conflict checks."""
+        return (
+            not self.is_full
+            and not self.conflict
+            and self.selection_window_state() not in {"not_started", "ended"}
+        )
 
 
 @dataclass
@@ -159,9 +202,9 @@ class ExperimentCourseAPI:
         try:
             resp = self._client.post(url, data={}, headers=self.HEADERS)
             return resp.json().get("datas", {}).get("queryAcademicYearSemester")
-        except Exception:
+        except Exception as error:
             logger.warning("Experiment semester request failed")
-            return None
+            raise ExperimentCourseError("实验选课学期读取失败") from error
 
     def get_courses(self, term_code: str = None) -> List[ExperimentCourse]:
         """
@@ -182,12 +225,15 @@ class ExperimentCourseAPI:
         try:
             resp = self._client.post(url, data={"XNXQDM": term_code}, headers=self.HEADERS)
             data = resp.json()
-            if data.get("code") == "0":
+            if str(data.get("code")) == "0":
                 courses = data.get("datas", {}).get("queryCanSelectedCourses", [])
                 return [ExperimentCourse.from_dict(c) for c in courses]
-        except Exception:
+            raise ExperimentCourseError("实验课程读取被教务系统拒绝")
+        except ExperimentCourseError:
+            raise
+        except Exception as error:
             logger.warning("Experiment course request failed")
-        return []
+            raise ExperimentCourseError("实验课程读取失败") from error
 
     def get_rounds(self, term_code: str, task_id: str, course_no: str, project_code: str) -> List[ExperimentRound]:
         """
@@ -212,12 +258,15 @@ class ExperimentCourseAPI:
                 "SYRW_WID": task_id,
             }, headers=self.HEADERS)
             data = resp.json()
-            if data.get("code") == "0":
+            if str(data.get("code")) == "0":
                 rounds = data.get("datas", {}).get("queryTaskProjectRounds", [])
                 return [ExperimentRound.from_dict(r) for r in rounds]
-        except Exception:
+            raise ExperimentCourseError("实验班读取被教务系统拒绝")
+        except ExperimentCourseError:
+            raise
+        except Exception as error:
             logger.warning("Experiment round request failed")
-        return []
+            raise ExperimentCourseError("实验班读取失败") from error
 
     def select(self, term_code: str, task_id: str, project_code: str, round_id: str) -> Dict:
         """

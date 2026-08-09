@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Card, Table, Tag, Button, message, Spin, Modal, Descriptions,
   Space, Popconfirm, Typography, Empty, Alert, Grid, Collapse
@@ -26,6 +27,7 @@ const StatusTag = ({ isSelected, isComplete, mustDoCount, selectedCount }) => {
 };
 
 const ExperimentCoursePage = () => {
+  const navigate = useNavigate();
   const [courses, setCourses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [term, setTerm] = useState('');
@@ -35,20 +37,22 @@ const ExperimentCoursePage = () => {
   const [roundsLoading, setRoundsLoading] = useState(false);
   const [roundsModalVisible, setRoundsModalVisible] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [coursesError, setCoursesError] = useState('');
+  const actionLockRef = useRef(false);
   const screens = useBreakpoint();
   const isMobile = !screens.md;
 
   // 加载课程列表
   const loadCourses = async () => {
     setLoading(true);
+    setCoursesError('');
     try {
       const data = await getExperimentCourses();
       setCourses(data.courses || []);
       setTerm(data.term || '');
     } catch (error) {
       console.error('加载实验课程失败:', error);
-      // 静默处理错误，因为很多用户可能没有实验选课权限
-      setCourses([]);
+      setCoursesError(error.response?.data?.detail || '实验课程读取失败，请重试；这不代表当前没有实验课程');
     } finally {
       setLoading(false);
     }
@@ -83,7 +87,8 @@ const ExperimentCoursePage = () => {
   };
 
   // 选课
-  const handleSelect = async (round) => {
+  const performSelect = async (round) => {
+    if (!actionLockRef.current) actionLockRef.current = true;
     setActionLoading(true);
     try {
       const result = await selectExperimentRound({
@@ -105,11 +110,30 @@ const ExperimentCoursePage = () => {
       message.error('选课失败');
     } finally {
       setActionLoading(false);
+      actionLockRef.current = false;
     }
+  };
+
+  const handleSelect = (round) => {
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
+    const unknown = round.conflict_status === 'unknown';
+    Modal.confirm({
+      title: unknown ? '课表冲突尚未完全核验' : '确认选择实验班？',
+      content: unknown
+        ? '个人课表缓存陈旧、缺失或该实验班时间信息不完整。继续后仍以教务系统的最终校验结果为准。'
+        : `即将选择“${round.round_name || selectedProject?.project_name || '该实验班'}”，提交后请以教务系统返回结果为准。`,
+      okText: unknown ? '仍要选择' : '确认选择',
+      cancelText: '取消',
+      onOk: () => performSelect(round),
+      onCancel: () => { actionLockRef.current = false; },
+    });
   };
 
   // 退课
   const handleDeselect = async (project) => {
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
     setActionLoading(true);
     try {
       const result = await deselectExperimentRound({
@@ -130,6 +154,7 @@ const ExperimentCoursePage = () => {
       message.error('退课失败');
     } finally {
       setActionLoading(false);
+      actionLockRef.current = false;
     }
   };
 
@@ -242,6 +267,20 @@ const ExperimentCoursePage = () => {
     const pending = courses.filter(c => c.selected_count === 0).length;
     return { total, complete, inProgress, pending };
   }, [courses]);
+  const orderedCourses = useMemo(() => [...courses].sort((left, right) => (
+    Number(left.is_complete) - Number(right.is_complete)
+    || (right.must_do_count - right.selected_count) - (left.must_do_count - left.selected_count)
+    || left.course_name.localeCompare(right.course_name, 'zh-CN')
+  )), [courses]);
+  const orderedRounds = useMemo(() => [...rounds].sort((left, right) => {
+    const rank = round => {
+      if (round.can_select && round.conflict_status === 'clear') return 0;
+      if (round.can_select && round.conflict_status === 'unknown') return 1;
+      if (round.conflict_status === 'conflict') return 2;
+      return 3;
+    };
+    return rank(left) - rank(right) || left.selected_count - right.selected_count;
+  }), [rounds]);
 
   if (loading) {
     return (
@@ -297,6 +336,16 @@ const ExperimentCoursePage = () => {
         style={{ marginBottom: 16 }}
       />
 
+      {coursesError && (
+        <Alert
+          type="error"
+          showIcon
+          message={coursesError}
+          action={<Button size="small" onClick={loadCourses}>重试</Button>}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
       {/* 课程列表 */}
       <Card className="courses-card">
         {courses.length > 0 ? (
@@ -305,7 +354,7 @@ const ExperimentCoursePage = () => {
               className="mobile-course-collapse"
               accordion
               expandIconPosition="end"
-              items={courses.map(course => ({
+              items={orderedCourses.map(course => ({
                 key: course.task_id,
                 label: (
                   <div className="mobile-course-summary">
@@ -326,7 +375,7 @@ const ExperimentCoursePage = () => {
           ) : (
             <Table
               columns={courseColumns}
-              dataSource={courses}
+              dataSource={orderedCourses}
               rowKey="task_id"
               expandable={{ expandedRowRender }}
               pagination={false}
@@ -334,7 +383,7 @@ const ExperimentCoursePage = () => {
             />
           )
         ) : (
-          <Empty description="暂无实验课程" />
+          <Empty description={coursesError ? '实验课程读取失败，重试后显示' : '暂无实验课程'} />
         )}
       </Card>
 
@@ -360,7 +409,7 @@ const ExperimentCoursePage = () => {
                 <Text type="secondary">{selectedProject.project_code}</Text>
               </div>
             )}
-            {rounds.map((round) => (
+            {orderedRounds.map((round) => (
               <Card
                 key={round.wid}
                 size="small"
@@ -371,7 +420,8 @@ const ExperimentCoursePage = () => {
                   <div className="round-capacity">
                     <TeamOutlined /> {round.selected_count} / {round.capacity}
                     {round.is_full && <Tag color="error" size="small">已满</Tag>}
-                    {round.conflict && <Tag color="warning" size="small">冲突</Tag>}
+                    {round.conflict_status === 'conflict' && <Tag color="error" size="small">时间冲突</Tag>}
+                    {round.conflict_status === 'unknown' && <Tag color="warning" size="small">待核验</Tag>}
                   </div>
                 </div>
                 <Descriptions size="small" column={isMobile ? 1 : 2}>
@@ -386,14 +436,33 @@ const ExperimentCoursePage = () => {
                     {round.select_start?.slice(0, 16)} ~ {round.select_end?.slice(0, 16)}
                   </Descriptions.Item>
                 </Descriptions>
+                {round.conflicts?.length > 0 && (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message={`与 ${round.conflicts.map(item => item.course_name).join('、')} 冲突`}
+                    description={round.conflicts.map(item => (
+                      `${item.overlapping_weeks?.length ? `${item.overlapping_weeks.join('、')}周` : '周次待确认'} · ${item.reason}`
+                    )).join('；')}
+                    className="experiment-conflict-detail"
+                  />
+                )}
+                {round.conflict_status === 'unknown' && (
+                  <Alert type="warning" showIcon message="无法完整核验个人课表，选择前会再次确认" className="experiment-conflict-detail" />
+                )}
                 <div className="round-action">
+                  {round.weekday > 0 && (
+                    <Button onClick={() => navigate(`/timetable?term=${encodeURIComponent(term)}&week=${round.weeks?.[0] || ''}&day=${round.weekday}`)}>
+                      在课表中查看
+                    </Button>
+                  )}
                   <Button
                     type="primary"
                     disabled={!round.can_select}
                     onClick={() => handleSelect(round)}
                     loading={actionLoading}
                   >
-                    {round.is_full ? '已满' : round.conflict ? '时间冲突' : '选择此班'}
+                    {round.disabled_reason || (round.conflict_status === 'unknown' ? '确认后选择' : '选择此班')}
                   </Button>
                 </div>
               </Card>

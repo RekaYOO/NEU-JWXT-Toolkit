@@ -86,9 +86,10 @@ export const MobileFilterButton = ({
   activeCount = 0,
   onClick,
   children = '筛选',
+  ...buttonProps
 }) => (
   <Badge count={activeCount} size="small" offset={[-2, 2]}>
-    <Button icon={<FilterOutlined />} onClick={onClick}>
+    <Button {...buttonProps} icon={<FilterOutlined />} onClick={onClick}>
       {children}
     </Button>
   </Badge>

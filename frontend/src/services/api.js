@@ -779,6 +779,40 @@ export const exportExamsICS = async (termCode = '') => {
   return response.data;
 };
 
+// ── 课表查询 API ─────────────────────────────────────────────────────────────
+
+export const getTimetableTerms = async () => {
+  const response = await api.get('/api/timetable/terms');
+  return response.data;
+};
+
+export const getTimetableContext = async (data) => {
+  const response = await api.post('/api/timetable/context', data);
+  return response.data;
+};
+
+export const searchTimetableTargets = async (data) => {
+  const response = await api.post('/api/timetable/targets/search', data);
+  return response.data;
+};
+
+export const getTimetableTargetFilterOptions = async (data) => {
+  const response = await api.post('/api/timetable/targets/filter-options', data);
+  return response.data;
+};
+
+export const getTimetableSchedule = async (data) => {
+  const response = await api.post('/api/timetable/schedule', data);
+  return response.data;
+};
+
+export const getPersonalTimetable = async (termCode, refresh = false) => {
+  const response = await api.get('/api/timetable/personal', {
+    params: { term_code: termCode, refresh },
+  });
+  return response.data;
+};
+
 // ── 教学质量评价 API ─────────────────────────────────────────────────────────
 
 /**

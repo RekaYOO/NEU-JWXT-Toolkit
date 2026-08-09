@@ -446,3 +446,14 @@ export const useCachedResource = (resource, { autoRefresh = true, enabled = true
     reloadCache: () => store.load(resource, { quiet: true }),
   };
 };
+
+export const useResourceMemory = (resource) => {
+  const store = useContext(ResourceContext);
+  if (!store) throw new Error('useResourceMemory 必须在 ResourceProvider 内使用');
+  const state = store.states[resource] || {};
+  return {
+    data: state.availableData || null,
+    publish: useCallback(payload => store.publish(resource, payload), [resource, store.publish]),
+    clear: useCallback(() => store.clear(resource), [resource, store.clear]),
+  };
+};

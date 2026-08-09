@@ -42,6 +42,24 @@ from .course_selection import (
     CourseSelectionOptimizeResponse,
     CourseSelectionPolicyModel,
 )
+from .timetable import (
+    TimetableContextRequest,
+    TimetableContextResponse,
+    TimetableCourseModel,
+    TimetableScheduleRequest,
+    TimetableScheduleResponse,
+    TimetableTargetSearchRequest,
+    TimetableTargetSearchResponse,
+    TimetableTermsResponse,
+    PersonalTimetableResponse,
+)
+from .scheduling import (
+    ScheduleCandidateConflictModel,
+    ScheduleConflictBatchRequest,
+    ScheduleConflictBatchResponse,
+    ScheduleConflictMatchModel,
+    ScheduleMeetingInput,
+)
 
 __all__ = [
     "LoginRequest", "LoginResponse", "WebVPNQRStartRequest", "WebVPNQRStatusRequest",
@@ -60,5 +78,13 @@ __all__ = [
     "CourseMarketModel", "CourseMarketSnapshotModel",
     "CourseSelectionOptimizeRequest", "CourseSelectionOptimizeResponse",
     "CourseSelectionPolicyModel",
+    "TimetableContextRequest", "TimetableContextResponse",
+    "TimetableCourseModel", "TimetableScheduleRequest", "TimetableScheduleResponse",
+    "TimetableTargetSearchRequest", "TimetableTargetSearchResponse",
+    "TimetableTermsResponse",
+    "PersonalTimetableResponse",
+    "ScheduleMeetingInput", "ScheduleConflictBatchRequest",
+    "ScheduleConflictMatchModel", "ScheduleCandidateConflictModel",
+    "ScheduleConflictBatchResponse",
 ]
 from .tracking import GradeTrackingConfigUpdate

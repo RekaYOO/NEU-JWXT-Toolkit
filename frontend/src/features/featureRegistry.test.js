@@ -7,6 +7,8 @@ import {
 describe('feature registry', () => {
   test('online mode exposes every registered feature', () => {
     expect(featureAvailable('evaluation')).toBe(true);
+    expect(featureAvailable('timetable')).toBe(true);
+    expect(visibleMenuItems().find(item => item.key === '/timetable')?.label).toBe('查询课表');
     expect(visibleMenuItems().length).toBeGreaterThan(5);
   });
 
@@ -21,6 +23,10 @@ describe('feature registry', () => {
       offlineCapabilities: capabilities,
     })).toBe(false);
     expect(featureAvailable('export', {
+      offlineMode: true,
+      offlineCapabilities: capabilities,
+    })).toBe(false);
+    expect(featureAvailable('timetable', {
       offlineMode: true,
       offlineCapabilities: capabilities,
     })).toBe(false);
