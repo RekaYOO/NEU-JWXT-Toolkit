@@ -60,6 +60,13 @@ from .scheduling import (
     ScheduleConflictMatchModel,
     ScheduleMeetingInput,
 )
+from .course_outline import (
+    CourseOutlineSearchRequest,
+    CourseOutlineDetailRequest,
+    CourseOutlineSectionsRequest,
+    CourseOutlineAttachmentRequest,
+    CourseOutlineMetadataSyncRequest,
+)
 
 __all__ = [
     "LoginRequest", "LoginResponse", "WebVPNQRStartRequest", "WebVPNQRStatusRequest",
@@ -86,5 +93,8 @@ __all__ = [
     "ScheduleMeetingInput", "ScheduleConflictBatchRequest",
     "ScheduleConflictMatchModel", "ScheduleCandidateConflictModel",
     "ScheduleConflictBatchResponse",
+    "CourseOutlineSearchRequest", "CourseOutlineDetailRequest",
+    "CourseOutlineSectionsRequest", "CourseOutlineAttachmentRequest",
+    "CourseOutlineMetadataSyncRequest",
 ]
 from .tracking import GradeTrackingConfigUpdate

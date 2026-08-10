@@ -227,6 +227,51 @@ export const getScores = async (refresh = false, options = {}) => {
   return response.data;
 };
 
+// Course outlines are intentionally no-store. Only the two normalized metadata
+// fields are read through the dedicated metadata endpoints below.
+export const getCourseOutlineSearchSchema = async () => {
+  const response = await api.get('/api/course-outlines/search-schema');
+  return response.data;
+};
+
+export const searchCourseOutlines = async (payload, config = {}) => {
+  const response = await api.post('/api/course-outlines/search', payload, config);
+  return response.data;
+};
+
+export const getCourseOutlineOverview = async (courseCode, config = {}) => {
+  const response = await api.post('/api/course-outlines/detail/overview', { course_code: courseCode }, config);
+  return response.data;
+};
+
+export const getCourseOutlineSections = async (courseCode, group, config = {}) => {
+  const response = await api.post('/api/course-outlines/detail/sections', {
+    course_code: courseCode,
+    group,
+  }, config);
+  return response.data;
+};
+
+export const getCourseOutlinePlanMetadata = async () => {
+  const response = await api.get('/api/course-outlines/metadata/plan');
+  return response.data;
+};
+
+export const startCourseOutlineMetadataSync = async (courses, force = false) => {
+  const response = await api.post('/api/course-outlines/metadata/sync', { courses, force });
+  return response.data;
+};
+
+export const getCourseOutlineMetadataSyncStatus = async () => {
+  const response = await api.get('/api/course-outlines/metadata/sync/status');
+  return response.data;
+};
+
+export const cancelCourseOutlineMetadataSync = async () => {
+  const response = await api.post('/api/course-outlines/metadata/sync/cancel');
+  return response.data;
+};
+
 // 只读取当前登录账号的本地缓存，不检查教务系统会话
 export const getCachedScores = async () => {
   const response = await api.get('/api/scores/cache', { skipAuthRedirect: true });

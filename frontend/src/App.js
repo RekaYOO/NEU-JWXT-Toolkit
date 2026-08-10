@@ -18,6 +18,7 @@ import LogsPage from './pages/LogsPage';
 import ExportPage from './pages/ExportPage';
 import FestivalActivitiesPage from './pages/FestivalActivitiesPage';
 import TimetablePage from './pages/TimetablePage';
+import CourseOutlinePage from './pages/CourseOutlinePage';
 import AccessLoginPage from './pages/AccessLoginPage';
 import { checkStatus, getAccessStatus, getHealth, getOfflineStatus } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
@@ -391,6 +392,7 @@ function App() {
               <Route path="evaluation" element={featureAvailable('evaluation', { offlineMode, offlineCapabilities }) ? <EvaluationPage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="exams" element={featureAvailable('exams', { offlineMode, offlineCapabilities }) ? <ExamPage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="timetable" element={featureAvailable('timetable', { offlineMode, offlineCapabilities }) ? <TimetablePage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="course-outlines" element={featureAvailable('course-outlines', { offlineMode, offlineCapabilities }) ? <CourseOutlinePage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="logs" element={featureAvailable('logs', { offlineMode, offlineCapabilities }) ? <LogsPage /> : <Navigate to={offlineDefaultPath} />} />
               <Route
                 path="export"

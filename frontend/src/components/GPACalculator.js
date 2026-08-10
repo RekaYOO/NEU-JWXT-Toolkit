@@ -18,7 +18,8 @@ import {
   exportGPASimulation,
   listGPASimulationFiles,
   getGPASimulationFile,
-  deleteGPASimulationFile
+  deleteGPASimulationFile,
+  getCourseOutlinePlanMetadata,
 } from '../services/api';
 import {
   compareAcademicTermsNewestFirst,
@@ -32,6 +33,7 @@ import {
 import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
 import { AdaptiveModal } from './mobile/MobileUX';
 import ResourceUpdateSummary from './ResourceUpdateSummary';
+import CourseOutlineDrawer from './CourseOutlineDrawer';
 import './GPACalculator.css';
 
 const { Text } = Typography;
@@ -177,6 +179,15 @@ const GPACalculator = forwardRef(({
   const [showOnlyDeficit, setShowOnlyDeficit] = useState(false); // 只看差学分
   const [quickFilters, setQuickFilters] = useState([]); // 快速筛选：必修/选修/已选课/未修读
   const [expandedKeys, setExpandedKeys] = useState([]); // 树展开状态
+  const [outlineMetadata, setOutlineMetadata] = useState({});
+  const [outlineCourse, setOutlineCourse] = useState(null);
+
+  useEffect(() => {
+    if (offlineMode) return;
+    getCourseOutlinePlanMetadata()
+      .then(data => setOutlineMetadata(Object.fromEntries((data.items || []).map(item => [item.course_code, item]))))
+      .catch(() => null);
+  }, [importDrawerVisible, offlineMode]);
   
   // 冲突检测
   const [conflictModalVisible, setConflictModalVisible] = useState(false);
@@ -888,9 +899,11 @@ const GPACalculator = forwardRef(({
       isReal: false,
       isCustom: false,
       fromPlan: true,
+      assessmentMethod: outlineMetadata[plan.course_code]?.assessment_method || plan.exam_type || '',
+      gradingScale: outlineMetadata[plan.course_code]?.grading_scale || '',
       _original: plan,
     })).sort((left, right) => compareAcademicTermsNewestFirst(left.term, right.term));
-  }, [academicPlan, realScores, courses, planSearchText, selectedCategoryKey, quickFilters, planCategories]);
+  }, [academicPlan, realScores, courses, planSearchText, selectedCategoryKey, quickFilters, planCategories, outlineMetadata]);
 
   const importFromPlan = () => {
     if (selectedPlanCourses.length === 0) {
@@ -947,6 +960,9 @@ const GPACalculator = forwardRef(({
         courseType: c.courseType,
         isCustom: c.isCustom,
         isReal: c.isReal,
+        fromPlan: c.fromPlan,
+        assessmentMethod: c.assessmentMethod || outlineMetadata[c.code]?.assessment_method || '',
+        gradingScale: c.gradingScale || outlineMetadata[c.code]?.grading_scale || '',
         originalData: c.originalData,
       })),
     };
@@ -1257,7 +1273,7 @@ const GPACalculator = forwardRef(({
               {record.isReal && <Badge status="success" style={{ marginRight: 4 }} />}
               {record.fromPlan && <Badge status="processing" style={{ marginRight: 4 }} />}
               {record.isCustom && <Badge status="warning" style={{ marginRight: 4 }} />}
-              {text}
+              {record.code ? <Button type="link" size="small" className="gpa-outline-link" onClick={() => setOutlineCourse({ course_code: record.code, course_name: text })}>{text}</Button> : text}
               {record.realRemoved && <Tag color="default" style={{ marginLeft: 6 }}>原真实课程已不存在</Tag>}
             </div>
             {record.code && <div className="course-code">{record.code}</div>}
@@ -1361,6 +1377,12 @@ const GPACalculator = forwardRef(({
       },
     },
     {
+      title: '成绩分制',
+      key: 'gradingScale',
+      width: 110,
+      render: (_, record) => record.gradingScale || outlineMetadata[record.code]?.grading_scale || (record.isCustom ? '未设置' : '-'),
+    },
+    {
       title: '绩点',
       dataIndex: 'gpa',
       key: 'gpa',
@@ -1457,7 +1479,7 @@ const GPACalculator = forwardRef(({
         </Space>
       ),
     }] : []),
-  ], [courseFilterOptions, editForm, editingKey, isSimulating]);
+  ], [courseFilterOptions, editForm, editingKey, isSimulating, outlineMetadata]);
 
   // 筛选课程
   const filteredCourses = useMemo(() => {
@@ -2068,6 +2090,24 @@ const GPACalculator = forwardRef(({
                       return <Tag size="small" color={status.color}>{status.text}</Tag>;
                     }
                   },
+                  {
+                    title: '考核方式',
+                    key: 'assessmentMethod',
+                    width: 100,
+                    render: (_, record) => record.assessmentMethod || '-',
+                  },
+                  {
+                    title: '成绩分制',
+                    key: 'gradingScale',
+                    width: 100,
+                    render: (_, record) => record.gradingScale || '-',
+                  },
+                  {
+                    title: '大纲',
+                    key: 'outline',
+                    width: 76,
+                    render: (_, record) => <Button type="link" size="small" onClick={() => setOutlineCourse({ course_code: record.code, course_name: record.name })}>查看</Button>,
+                  },
                 ]}
                 dataSource={getPlannedCourses}
                 rowKey="key"
@@ -2424,6 +2464,7 @@ const GPACalculator = forwardRef(({
           ))}
         </div>
       </Modal>
+      <CourseOutlineDrawer open={Boolean(outlineCourse)} course={outlineCourse} onClose={() => setOutlineCourse(null)} />
     </div>
   );
 });

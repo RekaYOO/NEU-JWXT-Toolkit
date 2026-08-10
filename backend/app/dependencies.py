@@ -61,6 +61,7 @@ from backend.core.cache.resources import (
     score_detail_variant,
     personal_timetable_term,
 )
+from backend.core.course_outline import CourseOutlineAPI, CourseOutlineMetadataSyncService
 
 # ── 全局状态 ──────────────────────────────────────────────────────────────────
 
@@ -277,6 +278,36 @@ def _fetch_avatar_resource(context):
     return avatar_payload(token, image)
 
 
+def _fetch_course_outline_metadata_resource(context):
+    prefix = "course:"
+    if not context.key.variant.startswith(prefix):
+        raise ValueError("invalid course-outline metadata variant")
+    course_code = context.key.variant[len(prefix):]
+    overview = CourseOutlineAPI(_cache_client(context)).overview(course_code)
+    fingerprint = ""
+    if context.reason.startswith("metadata_sync:"):
+        fingerprint = context.reason.split(":", 1)[1][:64]
+    has_outline = bool(
+        overview.get("course_name")
+        or overview.get("assessment_method")
+        or overview.get("grading_scale")
+        or overview.get("version")
+    )
+    # Hard storage boundary: no overview body, textbooks, introduction or
+    # section content may cross into cache.db.
+    return {
+        "course_code": course_code,
+        "course_name": str(overview.get("course_name") or ""),
+        "assessment_method_code": str(overview.get("assessment_method_code") or ""),
+        "assessment_method": str(overview.get("assessment_method") or ""),
+        "grading_scale_code": str(overview.get("grading_scale_code") or ""),
+        "grading_scale": str(overview.get("grading_scale") or ""),
+        "outline_version": str(overview.get("version") or ""),
+        "plan_fingerprint": fingerprint,
+        "status": "success" if has_outline else "not_found",
+    }
+
+
 _cache_registry = CacheRegistry(
     (
         CacheResourceSpec(
@@ -362,6 +393,17 @@ _cache_registry = CacheRegistry(
             mutation_invalidations=("personal-timetable",),
         ),
         CacheResourceSpec(
+            resource="course-outline-metadata",
+            schema_version=1,
+            revision_algorithm_version=1,
+            account_scope=AccountScope.ACCOUNT,
+            payload_type=PayloadType.JSON,
+            max_age=timedelta(days=30),
+            offline_readable=True,
+            sensitivity="private-academic-metadata",
+            fetch=_fetch_course_outline_metadata_resource,
+        ),
+        CacheResourceSpec(
             resource="avatar",
             schema_version=1,
             revision_algorithm_version=1,
@@ -406,6 +448,11 @@ _cache_coordinator = CacheCoordinator(
     remote_guard=remote_session_guard,
     worker_count=2,
     autostart=False,
+)
+_course_outline_sync = CourseOutlineMetadataSyncService(
+    cache_store=_cache_store,
+    cache_coordinator=_cache_coordinator,
+    auth_epoch=get_auth_generation if "get_auth_generation" in globals() else _auth_sessions.epoch,
 )
 
 
@@ -768,6 +815,7 @@ class ApplicationServices:
     grade_tracker: GradeTrackingService
     report_storage: AcademicReportStorage
     research_storage: ResearchTrainingStorage
+    course_outline_sync: CourseOutlineMetadataSyncService | None = None
 
     def start(self) -> None:
         self.cache_coordinator.start()
@@ -819,6 +867,7 @@ _application_services = ApplicationServices(
     grade_tracker=_grade_tracker,
     report_storage=_report_storage,
     research_storage=_research_storage,
+    course_outline_sync=_course_outline_sync,
 )
 
 
@@ -848,6 +897,13 @@ def get_grade_tracker() -> GradeTrackingService:
 
 def get_cache_coordinator() -> CacheCoordinator:
     return _application_services.cache_coordinator
+
+
+def get_course_outline_sync_service() -> CourseOutlineMetadataSyncService:
+    service = _application_services.course_outline_sync
+    if service is None:
+        raise RuntimeError("course-outline synchronization service unavailable")
+    return service
 
 
 def require_auth() -> NEUAuthClient:

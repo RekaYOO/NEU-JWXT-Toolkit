@@ -29,6 +29,13 @@ import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport'
 import dayjs from 'dayjs';
 import { MobileDetailDrawer } from '../components/mobile/MobileUX';
 import ResourceUpdateSummary from '../components/ResourceUpdateSummary';
+import CourseOutlineDrawer from '../components/CourseOutlineDrawer';
+import {
+  cancelCourseOutlineMetadataSync,
+  getCourseOutlineMetadataSyncStatus,
+  getCourseOutlinePlanMetadata,
+  startCourseOutlineMetadataSync,
+} from '../services/api';
 import { summarizeAcademicReportUpdate } from '../utils/resourceUpdateSummary';
 import './AcademicReportPage.css';
 
@@ -47,6 +54,8 @@ const DEFAULT_COLUMNS = [
   { key: 'category_path', title: '类别路径', visible: true, width: 200 },
   { key: 'term_code', title: '学期', visible: false, width: 130 },
   { key: 'is_core', title: '核心课', visible: false, width: 80 },
+  { key: 'assessment_method', title: '考核方式', visible: false, width: 100 },
+  { key: 'grading_scale', title: '成绩分制', visible: false, width: 100 },
 ];
 
 const getDefaultColumns = () => JSON.parse(JSON.stringify(DEFAULT_COLUMNS));
@@ -496,6 +505,10 @@ const AcademicReportPage = ({ offlineMode = false }) => {
   const [courseSearchOpen, setCourseSearchOpen] = useState(false);
   const [courseSearch, setCourseSearch] = useState('');
   const [mobileCourseDetail, setMobileCourseDetail] = useState(null);
+  const [outlineCourse, setOutlineCourse] = useState(null);
+  const [outlineMetadata, setOutlineMetadata] = useState({});
+  const [outlineSyncing, setOutlineSyncing] = useState(false);
+  const [outlineSyncStatus, setOutlineSyncStatus] = useState(null);
   const reportResource = useCachedResource('academic-report');
   const initializedRef = useRef(false);
   const promptedRevisionRef = useRef('');
@@ -544,6 +557,51 @@ const AcademicReportPage = ({ offlineMode = false }) => {
     initializedRef.current = true;
     applyReportPayload(reportResource.data, { initial });
   }, [applyReportPayload, reportResource.data]);
+
+  const reloadOutlineMetadata = useCallback(async () => {
+    if (offlineMode) return;
+    try {
+      const data = await getCourseOutlinePlanMetadata();
+      setOutlineMetadata(Object.fromEntries((data.items || []).map(item => [item.course_code, item])));
+    } catch (_error) {
+      // Metadata is an optional enhancement and never blocks the plan itself.
+    }
+  }, [offlineMode]);
+
+  useEffect(() => {
+    reloadOutlineMetadata();
+  }, [reloadOutlineMetadata, reportResource.data]);
+
+  const outlineColumnsEnabled = columnConfig.some(column => (
+    ['assessment_method', 'grading_scale'].includes(column.key) && column.visible
+  ));
+
+  useEffect(() => {
+    if (!outlineColumnsEnabled || offlineMode || !allCourses.length) {
+      setOutlineSyncing(false);
+      if (!offlineMode) cancelCourseOutlineMetadataSync().catch(() => null);
+      return undefined;
+    }
+    let active = true;
+    setOutlineSyncing(true);
+    startCourseOutlineMetadataSync(allCourses)
+      .then(setOutlineSyncStatus)
+      .catch(() => setOutlineSyncing(false));
+    const timer = window.setInterval(async () => {
+      if (!active) return;
+      await reloadOutlineMetadata();
+      try {
+        const status = await getCourseOutlineMetadataSyncStatus();
+        if (!active) return;
+        setOutlineSyncStatus(status);
+        setOutlineSyncing(Boolean(status.running));
+        if (!status.running) window.clearInterval(timer);
+      } catch (_error) {
+        // Keep the plan usable when the optional progress endpoint is unavailable.
+      }
+    }, 2500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [allCourses, offlineMode, outlineColumnsEnabled, reloadOutlineMetadata]);
 
   useEffect(() => {
     if (reportResource.error) {
@@ -763,10 +821,24 @@ const AcademicReportPage = ({ offlineMode = false }) => {
         if (col.key === 'course_name') {
           column.render = (text, record) => (
             <div>
-              <div className="course-name">{text}</div>
+              <div className="course-name">
+                <Button type="link" size="small" className="academic-outline-link" onClick={() => setOutlineCourse(record)}>
+                  {text}
+                </Button>
+              </div>
               <div className="course-code">{record.course_code}</div>
             </div>
           );
+        }
+
+        if (col.key === 'assessment_method' || col.key === 'grading_scale') {
+          column.render = (_text, record) => {
+            const metadata = outlineMetadata[record.course_code];
+            const value = metadata?.[col.key] || (col.key === 'assessment_method' ? record.exam_type : '');
+            if (metadata?.status === 'not_found') return <Text type="secondary">无大纲</Text>;
+            if (outlineSyncing && !metadata) return <Text type="secondary">加载中…</Text>;
+            return value || <Text type="secondary">-</Text>;
+          };
         }
 
         if (col.key === 'status') {
@@ -895,7 +967,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
 
         return column;
       });
-  }, [allCourses, columnConfig]);
+  }, [allCourses, columnConfig, outlineMetadata, outlineSyncing]);
 
   // 列选择菜单
   const columnMenuItems = [
@@ -910,6 +982,26 @@ const AcademicReportPage = ({ offlineMode = false }) => {
         </Checkbox>
       ),
     })),
+    ...(outlineColumnsEnabled ? [{
+      key: 'outline-sync-status',
+      disabled: true,
+      label: (
+        <Text type="secondary">
+          {outlineSyncing
+            ? `大纲元数据 ${outlineSyncStatus?.completed || 0}/${outlineSyncStatus?.total || allCourses.length}`
+            : `大纲元数据已就绪${outlineSyncStatus?.failed ? `，${outlineSyncStatus.failed} 项失败` : ''}`}
+        </Text>
+      ),
+    }, ...(outlineSyncStatus?.failed ? [{
+      key: 'outline-sync-retry',
+      label: <Button type="link" size="small" onClick={() => {
+        const failedCodes = new Set(outlineSyncStatus.errors || []);
+        return startCourseOutlineMetadataSync(
+          allCourses.filter(course => failedCodes.has(course.course_code)),
+          true,
+        );
+      }}>重试失败项</Button>,
+    }] : [])] : []),
     { type: 'divider' },
     {
       key: 'reset',
@@ -1584,9 +1676,13 @@ const AcademicReportPage = ({ offlineMode = false }) => {
             <Descriptions.Item label="计划学期">{formatTermCode(mobileCourseDetail.term_code)}</Descriptions.Item>
             <Descriptions.Item label="类别路径">{mobileCourseDetail.category_path || '-'}</Descriptions.Item>
             <Descriptions.Item label="核心课程">{mobileCourseDetail.is_core ? '是' : '否'}</Descriptions.Item>
+            <Descriptions.Item label="课程大纲">
+              <Button size="small" type="link" onClick={() => setOutlineCourse(mobileCourseDetail)}>查看课程大纲</Button>
+            </Descriptions.Item>
           </Descriptions>
         )}
       </MobileDetailDrawer>
+      <CourseOutlineDrawer open={Boolean(outlineCourse)} course={outlineCourse} onClose={() => setOutlineCourse(null)} />
     </div>
   );
 };
