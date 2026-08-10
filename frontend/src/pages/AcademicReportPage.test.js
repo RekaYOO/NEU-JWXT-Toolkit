@@ -1,5 +1,15 @@
 import { calcElectiveRemainingCredits } from './AcademicReportPage';
 
+// This test covers the pure credit aggregation rule. Keep the page's remote
+// course-outline integration outside this unit-test boundary so Jest never
+// needs to load Axios' ESM entrypoint in the legacy react-scripts runtime.
+jest.mock('../services/api', () => ({
+  cancelCourseOutlineMetadataSync: jest.fn(),
+  getCourseOutlineMetadataSyncStatus: jest.fn(),
+  getCourseOutlinePlanMetadata: jest.fn(),
+  startCourseOutlineMetadataSync: jest.fn(),
+}));
+
 jest.mock('../resources/ResourceStore', () => ({
   useCachedResource: jest.fn()
 }));
