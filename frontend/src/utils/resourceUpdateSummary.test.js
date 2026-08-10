@@ -93,6 +93,22 @@ test('academic report summary falls back to category requirement changes', () =>
   )).toEqual(['培养计划的类别结构、培养要求或其他内容发生变化']);
 });
 
+test('academic report summary ignores category and course ordering changes', () => {
+  const before = {
+    categories: [
+      { wid: 'b', name: '乙', courses: [{ course_code: 'B', course_name: '乙课' }], children: [] },
+      { wid: 'a', name: '甲', courses: [{ course_code: 'A', course_name: '甲课' }], children: [] },
+    ],
+  };
+  const after = {
+    categories: [
+      { wid: 'a', name: '甲', courses: [{ course_code: 'A', course_name: '甲课' }], children: [] },
+      { wid: 'b', name: '乙', courses: [{ course_code: 'B', course_name: '乙课' }], children: [] },
+    ],
+  };
+  expect(summarizeAcademicReportUpdate(before, after)).toEqual([]);
+});
+
 test('research training summary compares displayed and available snapshots', () => {
   const before = {
     batch: { batch_id: '1' },

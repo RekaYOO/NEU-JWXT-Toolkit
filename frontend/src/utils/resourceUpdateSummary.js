@@ -192,12 +192,58 @@ export const summarizeAcademicReportUpdate = (beforePayload, afterPayload) => {
     },
   );
 
+  const stableCategoryTree = payload => {
+    const sortKey = node => [
+      String(node?.wid || ''), String(node?.course_group_wid || ''),
+      String(node?.category_code || ''), String(node?.path || ''), String(node?.name || ''),
+    ].join('\u001f');
+    const sortCourse = course => [
+      String(course?.course_code || ''), String(course?.course_name || ''),
+      String(course?.term_code || ''),
+    ].join('\u001f');
+    const normalize = node => ({
+      ...node,
+      courses: [...(node?.courses || [])].sort((a, b) => sortCourse(a).localeCompare(sortCourse(b))),
+      children: [...(node?.children || [])]
+        .map(normalize)
+        .sort((a, b) => sortKey(a).localeCompare(sortKey(b))),
+    });
+    return [...(payload?.categories || [])].map(normalize)
+      .sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+  };
+  const stableOutsideCourses = payload => [...(payload?.outside_courses || [])]
+    .sort((a, b) => [
+      String(a?.course_code || ''), String(a?.course_name || ''), String(a?.term_code || ''),
+    ].join('\u001f').localeCompare([
+      String(b?.course_code || ''), String(b?.course_name || ''), String(b?.term_code || ''),
+    ].join('\u001f')));
+  const identityFields = [
+    'student_id', 'program_code', 'program_name', 'grade', 'college', 'major',
+    'class_name', 'expected_graduation',
+  ];
+  const identityChanged = identityFields.some(field => (
+    String(beforePayload?.[field] ?? '') !== String(afterPayload?.[field] ?? '')
+  ));
+
   if (
     !items.length
-    && JSON.stringify(beforePayload?.categories || [])
-      !== JSON.stringify(afterPayload?.categories || [])
+    && JSON.stringify(stableCategoryTree(beforePayload))
+      !== JSON.stringify(stableCategoryTree(afterPayload))
   ) {
     items.push('培养计划的类别结构、培养要求或其他内容发生变化');
+  }
+  // A revision can still differ when an older cache used a different remote
+  // ordering.  Do not turn that normalization-only difference into a user
+  // visible update notification.
+  if (
+    !items.length
+    && JSON.stringify(stableCategoryTree(beforePayload))
+      === JSON.stringify(stableCategoryTree(afterPayload))
+    && JSON.stringify(stableOutsideCourses(beforePayload))
+      === JSON.stringify(stableOutsideCourses(afterPayload))
+    && !identityChanged
+  ) {
+    return [];
   }
   if (!items.length && !courseCounts.added && !courseCounts.removed && !courseCounts.changed) {
     items.push('培养计划内容发生变化');

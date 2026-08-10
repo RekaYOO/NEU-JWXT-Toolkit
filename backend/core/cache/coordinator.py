@@ -467,7 +467,9 @@ class CacheCoordinator:
                 return
             canonical = spec.canonicalize(fetched)
             revision = self._revision(
-                spec.payload_type, canonical, spec.revision_algorithm_version
+                spec.payload_type,
+                spec.revision_payload(canonical),
+                spec.revision_algorithm_version,
             )
             changes = dict(spec.diff(previous_payload, canonical))
             # Logout/switch-account must use this same guard. Validation and

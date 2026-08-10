@@ -39,6 +39,7 @@ class CacheResourceSpec:
     sensitivity: str
     fetch: Fetcher
     canonicalize: Canonicalizer = identity
+    revision_payload: Canonicalizer = identity
     diff: Differ = default_diff
     dependencies: tuple[str, ...] = field(default_factory=tuple)
     mutation_invalidations: tuple[str, ...] = field(default_factory=tuple)
@@ -52,8 +53,15 @@ class CacheResourceSpec:
             raise ValueError("Cache max_age cannot be negative")
         if not self.sensitivity.strip():
             raise ValueError("Cache sensitivity must be declared")
-        if not callable(self.fetch) or not callable(self.canonicalize) or not callable(self.diff):
-            raise TypeError("fetch, canonicalize and diff must be callable")
+        if (
+            not callable(self.fetch)
+            or not callable(self.canonicalize)
+            or not callable(self.revision_payload)
+            or not callable(self.diff)
+        ):
+            raise TypeError(
+                "fetch, canonicalize, revision_payload and diff must be callable"
+            )
         if self.resource in self.dependencies:
             raise ValueError(f"Resource {self.resource!r} cannot depend on itself")
 
@@ -121,4 +129,3 @@ class CacheRegistry:
                     if resource in spec.dependencies
                 )
             )
-

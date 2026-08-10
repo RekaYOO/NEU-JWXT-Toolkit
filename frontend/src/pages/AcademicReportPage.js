@@ -571,6 +571,13 @@ const AcademicReportPage = ({ offlineMode = false }) => {
       reportResource.data,
       reportResource.availableData,
     );
+    if (!updateSummary.length) {
+      // The cache revision changed only because the remote endpoint reordered
+      // equivalent nodes (or changed numeric serialization). Apply silently.
+      reportResource.applyAvailable();
+      applyReportPayload(reportResource.availableData);
+      return undefined;
+    }
     const modal = Modal.confirm({
       title: '培养计划已有更新',
       content: (

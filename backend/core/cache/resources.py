@@ -183,15 +183,97 @@ def canonicalize_academic_report(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise TypeError("academic report payload must be an object")
     result = _plain(payload)
+
+    def number(value: Any) -> Any:
+        # JSON distinguishes 4 and 4.0 even though they have the same
+        # academic meaning.  Normalize calculated credit values so harmless
+        # serializer changes do not manufacture a new cache revision.
+        if isinstance(value, float):
+            value = round(value, 6)
+            return int(value) if value.is_integer() else value
+        return value
+
+    def normalize(value: Any, *, field: str = "") -> Any:
+        if isinstance(value, Mapping):
+            return {
+                str(key): normalize(item, field=str(key))
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if isinstance(value, tuple):
+            return [normalize(item) for item in value]
+        return number(value)
+
+    result = normalize(result)
     # This is the local calculation timestamp, not academic content. Including it
     # would manufacture a new revision on every successful check.
     result["calculated_time"] = ""
     return result
 
 
+def academic_report_revision_payload(payload: Any) -> dict[str, Any]:
+    """Build an order-insensitive projection without changing display order."""
+    result = canonicalize_academic_report(payload)
+
+    def category_key(category: Mapping[str, Any]) -> tuple[str, ...]:
+        return (
+            str(category.get("wid") or ""),
+            str(category.get("course_group_wid") or ""),
+            str(category.get("category_code") or ""),
+            str(category.get("path") or ""),
+            str(category.get("name") or ""),
+        )
+
+    def course_key(course: Mapping[str, Any]) -> tuple[str, ...]:
+        return (
+            str(course.get("course_code") or ""),
+            str(course.get("course_name") or ""),
+            str(course.get("term_code") or ""),
+        )
+
+    def normalize_category(category: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = dict(category)
+        normalized["courses"] = sorted(
+            (dict(course) for course in category.get("courses") or []),
+            key=course_key,
+        )
+        normalized["children"] = sorted(
+            (
+                normalize_category(child)
+                for child in category.get("children") or []
+                if isinstance(child, Mapping)
+            ),
+            key=category_key,
+        )
+        return normalized
+
+    result["categories"] = sorted(
+        (
+            normalize_category(category)
+            for category in result.get("categories") or []
+            if isinstance(category, Mapping)
+        ),
+        key=category_key,
+    )
+    result["outside_courses"] = sorted(
+        (
+            dict(course)
+            for course in result.get("outside_courses") or []
+            if isinstance(course, Mapping)
+        ),
+        key=course_key,
+    )
+    return result
+
+
 def diff_academic_report(previous: Any, current: Any) -> dict[str, Any]:
     if previous is None:
         return {"initial": True}
+    # Compare the same semantic representation used for revisions.  This also
+    # makes old caches tolerant of a changed remote ordering.
+    previous = academic_report_revision_payload(previous)
+    current = academic_report_revision_payload(current)
     before = (previous or {}).get("credit_summary") or {}
     after = (current or {}).get("credit_summary") or {}
     return {

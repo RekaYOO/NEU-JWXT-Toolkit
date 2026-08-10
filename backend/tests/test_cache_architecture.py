@@ -2,6 +2,8 @@ from pathlib import Path
 
 from backend.core.cache.resources import (
     canonicalize_academic_report,
+    academic_report_revision_payload,
+    diff_academic_report,
     avatar_bytes,
     avatar_payload,
     avatar_token,
@@ -66,6 +68,41 @@ def test_canonical_payload_excludes_volatile_or_contact_data():
     assert report["calculated_time"] == ""
     assert "advisor_contact" not in research["topics"][0]
     assert "application_reason" not in research["topics"][0]
+
+
+def test_academic_report_revision_ignores_remote_order_and_numeric_formatting():
+    before = canonicalize_academic_report({
+        "categories": [{
+            "wid": "b", "name": "乙", "courses": [
+                {"course_code": "B", "course_name": "乙课", "credit": 2.0},
+            ], "children": [],
+        }, {
+            "wid": "a", "name": "甲", "courses": [
+                {"course_code": "A", "course_name": "甲课", "credit": 4},
+            ], "children": [],
+        }],
+        "credit_summary": {"total_required": 6.0},
+    })
+    after = canonicalize_academic_report({
+        "categories": [{
+            "wid": "a", "name": "甲", "courses": [
+                {"course_code": "A", "course_name": "甲课", "credit": 4.0000001},
+            ], "children": [],
+        }, {
+            "wid": "b", "name": "乙", "courses": [
+                {"course_code": "B", "course_name": "乙课", "credit": 2},
+            ], "children": [],
+        }],
+        "credit_summary": {"total_required": 6},
+    })
+
+    assert [category["wid"] for category in before["categories"]] == ["b", "a"]
+    assert academic_report_revision_payload(before) == academic_report_revision_payload(after)
+    assert diff_academic_report(before, after) == {
+        "credit_summary_changed": False,
+        "category_tree_changed": False,
+        "outside_courses_changed": False,
+    }
 
 
 def test_avatar_binary_payload_preserves_token_and_image():
