@@ -1,4 +1,4 @@
-import { TrophyOutlined } from '@ant-design/icons';
+import { FileProtectOutlined, TrophyOutlined } from '@ant-design/icons';
 
 const resourceAvailable = (capabilities, resource) => {
   if (!resource) return false;
@@ -13,6 +13,16 @@ const resourceAvailable = (capabilities, resource) => {
 };
 
 export const exportTools = [
+  {
+    id: 'academic-documents',
+    title: '学籍证明与成绩单',
+    description: '实时生成中英文成绩单、均分证明和中英文学籍证明',
+    icon: FileProtectOutlined,
+    path: '/export/academic-documents',
+    resource: 'academic-documents',
+    offlineReadable: false,
+    offlineReason: '证明文件需要连接教务系统实时生成',
+  },
   {
     id: 'festival-activities',
     title: '四节活动',
@@ -33,7 +43,7 @@ export const getExportToolAvailability = (
     && resourceAvailable(offlineCapabilities, tool.resource);
   return {
     available,
-    reason: available ? '' : '当前账号没有可读取的本地缓存',
+    reason: available ? '' : (tool.offlineReason || '当前账号没有可读取的本地缓存'),
   };
 };
 

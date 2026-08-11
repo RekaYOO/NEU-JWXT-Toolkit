@@ -19,6 +19,7 @@ import ExportPage from './pages/ExportPage';
 import FestivalActivitiesPage from './pages/FestivalActivitiesPage';
 import TimetablePage from './pages/TimetablePage';
 import CourseOutlinePage from './pages/CourseOutlinePage';
+import AcademicDocumentsPage from './pages/AcademicDocumentsPage';
 import AccessLoginPage from './pages/AccessLoginPage';
 import { checkStatus, getAccessStatus, getHealth, getOfflineStatus } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
@@ -407,6 +408,15 @@ function App() {
                   offlineCapabilities,
                 })
                   ? <FestivalActivitiesPage offlineMode={offlineMode} />
+                  : <Navigate to="/export" />}
+              />
+              <Route
+                path="export/academic-documents"
+                element={isExportToolAvailable('academic-documents', {
+                  offlineMode,
+                  offlineCapabilities,
+                })
+                  ? <AcademicDocumentsPage />
                   : <Navigate to="/export" />}
               />
             </Route>

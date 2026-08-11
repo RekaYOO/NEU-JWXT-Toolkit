@@ -35,6 +35,7 @@ from .festival_activities import (
     FestivalActivitiesResponse,
     FestivalActivityModel,
 )
+from .academic_documents import AcademicDocumentGenerateRequest
 from .course_selection import (
     CourseMarketModel,
     CourseMarketSnapshotModel,

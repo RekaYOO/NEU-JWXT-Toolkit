@@ -1,0 +1,69 @@
+.academic-documents-page {
+  width: 100%;
+  max-width: var(--content-max);
+  margin-inline: auto;
+  min-width: 0;
+}
+
+.academic-documents-page > .ant-breadcrumb { margin-bottom: 14px; }
+.academic-documents-page > .ant-alert { margin-bottom: 18px; }
+
+.academic-documents-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.academic-documents-page__header h3 { margin: 0 0 4px; }
+.academic-documents-loading {
+  padding: 22px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line-soft);
+  border-radius: var(--radius-lg);
+}
+
+.academic-document-group { margin-top: 22px; }
+.academic-document-group__heading {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 10px;
+}
+.academic-document-group__heading h4 { margin: 0; }
+.academic-document-group__icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  color: var(--color-brand);
+  background: #eaf2ff;
+  border-radius: 9px;
+  font-size: 18px;
+}
+.academic-document-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.academic-document-card__body {
+  min-height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.academic-document-card__body h5 { margin: 0 0 10px; }
+.academic-documents-confirm p { margin-bottom: 8px; }
+
+@media (max-width: 767px) {
+  .academic-documents-page > .ant-breadcrumb { margin-top: -4px; }
+  .academic-documents-page__header { align-items: flex-start; }
+  .academic-documents-page__header h3 { font-size: 20px; }
+  .academic-documents-page__header .ant-btn { min-height: 40px; }
+  .academic-document-grid { grid-template-columns: 1fr; }
+  .academic-document-card .ant-card-body { padding: 16px; }
+  .academic-document-card__body { min-height: 0; align-items: stretch; flex-direction: column; }
+  .academic-document-card__body > .ant-btn { width: 100%; min-height: 42px; }
+}

@@ -376,12 +376,12 @@ const decodeBlobError = async (error) => {
   }
 };
 
-const filenameFromDisposition = (value = '') => {
+const filenameFromDisposition = (value = '', fallback = '四节活动证书.zip') => {
   const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
   if (encoded) {
     try { return decodeURIComponent(encoded); } catch (error) { return encoded; }
   }
-  return value.match(/filename="?([^";]+)"?/i)?.[1] || '四节活动证书.zip';
+  return value.match(/filename="?([^";]+)"?/i)?.[1] || fallback;
 };
 
 export const downloadFestivalCertificates = async ({ startDate, endDate }) => {
@@ -396,6 +396,35 @@ export const downloadFestivalCertificates = async ({ startDate, endDate }) => {
       filename: filenameFromDisposition(response.headers['content-disposition']),
       succeeded: Number(response.headers['x-certificate-succeeded'] || 0),
       failed: Number(response.headers['x-certificate-failed'] || 0),
+    };
+  } catch (error) {
+    throw await decodeBlobError(error);
+  }
+};
+
+export const getAcademicDocuments = async () => {
+  const response = await api.get('/api/export/academic-documents', {
+    timeout: 60000,
+  });
+  return response.data;
+};
+
+export const generateAcademicDocument = async (documentId) => {
+  try {
+    const response = await api.post(
+      '/api/export/academic-documents/generate',
+      { document_id: documentId },
+      { responseType: 'blob', timeout: 180000 },
+    );
+    const format = response.headers['x-academic-document-format']
+      || (response.data?.type?.includes('pdf') ? 'pdf' : 'html');
+    return {
+      blob: response.data,
+      format,
+      filename: filenameFromDisposition(
+        response.headers['content-disposition'],
+        `教务证明.${format}`,
+      ),
     };
   } catch (error) {
     throw await decodeBlobError(error);
