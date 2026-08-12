@@ -373,6 +373,12 @@ class TimetableAPI:
                         name=self._text(row.get("name") or row.get("MC") or row.get("XQMC")) or code,
                     )
                 )
+        # The official service may publish a future personal timetable before
+        # getMyScheduledCampus starts returning its campus classification.  The
+        # schedule endpoint already accepts an empty XQDM and returns the full
+        # timetable, so an empty campus catalog is not evidence of "no class".
+        if mode == "personal" and not campuses:
+            campuses.append(TimetableCampus(code=ALL_CAMPUSES_CODE, name="全部校区"))
         needs_all_campuses = mode == "personal" and bool(campuses)
         if (needs_all_campuses or len(campuses) > 1) and not any(
             campus.code == ALL_CAMPUSES_CODE for campus in campuses

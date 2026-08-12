@@ -222,6 +222,14 @@ def test_personal_single_reported_campus_still_offers_all_campuses_view():
     assert [campus["code"] for campus in campuses] == ["all", "01"]
 
 
+def test_future_personal_term_without_campus_catalog_still_offers_all_view():
+    client = Client({"code": "0", "datas": []})
+
+    campuses = TimetableAPI(client).get_campuses("2026-2027-1", mode="personal")
+
+    assert campuses == [{"code": "all", "name": "全部校区"}]
+
+
 def test_target_search_uses_bounded_emap_query_and_maps_public_metadata():
     client = Client(
         {

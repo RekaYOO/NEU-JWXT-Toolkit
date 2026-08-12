@@ -77,7 +77,12 @@ const numericRangeFilterDropdown = (minPlaceholder, maxPlaceholder) => (
         />
         <Space>
           <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
-          <Button size="small" onClick={() => { clearFilters?.(); confirm(); }}>重置</Button>
+          <Button
+            size="small"
+            onClick={() => clearFilters?.({ confirm: true, closeDropdown: true })}
+          >
+            重置
+          </Button>
         </Space>
       </Space>
     </div>
@@ -679,11 +684,11 @@ const GPACalculator = forwardRef(({
         const color = CATEGORY_COLORS[depth % CATEGORY_COLORS.length];
         
         // 确保数值有效，默认为0
-        const earnedCredits = node.earned_credits ?? 0;
-        const takenCredits = node.taken_credits ?? 0;
+        // 后端 earned_credits 已经包含“已通过 + 已选课”，不能再叠加旧字段
+        // taken_credits，否则旧缓存或兼容响应会把修读学分重复计算。
+        const earnedCredits = Number(node.earned_credits ?? 0);
         const requiredCredits = node.required_credits ?? 0;
-        // 已修学分 = 已通过学分 + 已选学分（已选课也算已修）
-        const totalEarned = earnedCredits + takenCredits;
+        const totalEarned = earnedCredits;
         const hasDeficit = requiredCredits > totalEarned;
         const remainingCredits = Math.max(0, requiredCredits - totalEarned);
         
@@ -1245,7 +1250,12 @@ const GPACalculator = forwardRef(({
           />
           <Space>
             <Button type="primary" onClick={() => confirm()} size="small">搜索</Button>
-            <Button onClick={() => { clearFilters?.(); confirm(); }} size="small">重置</Button>
+            <Button
+              onClick={() => clearFilters?.({ confirm: true, closeDropdown: true })}
+              size="small"
+            >
+              重置
+            </Button>
           </Space>
         </div>
       ),
@@ -1465,6 +1475,9 @@ const GPACalculator = forwardRef(({
             <>
               <Button type="text" size="small" icon={<CheckCircleOutlined />} onClick={() => saveEdit(record.key)} />
               <Button type="text" size="small" icon={<CloseOutlined />} onClick={cancelEdit} />
+              <Popconfirm title="确认删除？" onConfirm={() => deleteCourse(record.key)} okText="删除" cancelText="取消">
+                <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+              </Popconfirm>
             </>
           ) : (
             <>
@@ -1698,10 +1711,20 @@ const GPACalculator = forwardRef(({
                   step={0.1}
                   addonAfter="绩点"
                 />
-                <Space.Compact block>
-                  <Button block onClick={cancelEdit}>取消</Button>
-                  <Button block type="primary" onClick={() => saveEdit(course.key)}>保存</Button>
-                </Space.Compact>
+                <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                  <Space.Compact block>
+                    <Button block onClick={cancelEdit}>取消</Button>
+                    <Button block type="primary" onClick={() => saveEdit(course.key)}>保存</Button>
+                  </Space.Compact>
+                  <Popconfirm
+                    title="确认删除？"
+                    onConfirm={() => deleteCourse(course.key)}
+                    okText="删除"
+                    cancelText="取消"
+                  >
+                    <Button block danger icon={<DeleteOutlined />}>删除课程</Button>
+                  </Popconfirm>
+                </Space>
               </div>
             ) : (
               <>
@@ -2009,7 +2032,12 @@ const GPACalculator = forwardRef(({
                         />
                         <Space>
                           <Button type="primary" onClick={() => confirm()} size="small">搜索</Button>
-                          <Button onClick={() => { clearFilters?.(); confirm(); }} size="small">重置</Button>
+                          <Button
+                            onClick={() => clearFilters?.({ confirm: true, closeDropdown: true })}
+                            size="small"
+                          >
+                            重置
+                          </Button>
                         </Space>
                       </div>
                     ),

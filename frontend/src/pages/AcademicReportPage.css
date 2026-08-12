@@ -5,6 +5,15 @@
   position: relative;
 }
 
+/*
+ * 只使用 workspace-content 内、培养计划根节点因全局 1440px 上限留下的两侧空白。
+ * 100% 是直接父容器的内容宽度，不侵占工作区 padding，也不改变外层导航布局。
+ */
+.workspace-content > .academic-report-page {
+  width: min(100%, var(--academic-page-target-width, var(--content-max)));
+  max-width: none !important;
+}
+
 /* 学分统计摘要：挂载到全局顶栏中部，不参与页面内容布局 */
 .credit-summary-float {
   position: relative;
@@ -359,15 +368,39 @@
 /* 表格容器 - 内部滚动 */
 .table-scroll-container {
   flex: 1;
-  overflow: auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: auto;
 }
 
 .courses-table-card .ant-table-wrapper {
   height: 100%;
+  min-width: 0;
+}
+
+.courses-table-card .ant-table,
+.courses-table-card .ant-table-container {
+  width: 100%;
+}
+
+/*
+ * 表格先占满右栏已有空间；列宽总和更大时再扩到内容宽度，并只在右栏内部滚动。
+ * 这样利用的是右栏空白，不需要压缩左侧类别树，也不会让整个页面横向溢出。
+ */
+.courses-table-card .ant-table-content > table {
+  width: max(100%, var(--academic-table-content-width)) !important;
+  min-width: var(--academic-table-content-width) !important;
+  table-layout: fixed !important;
 }
 
 .courses-table-card .ant-table-thead > tr > th,
 .courses-table-card .ant-table-column-title {
+  white-space: nowrap;
+}
+
+.courses-table-card .ant-table-tbody > tr > td,
+.academic-outline-link,
+.academic-category-path {
   white-space: nowrap;
 }
 
@@ -468,10 +501,24 @@
   color: #262626;
 }
 
+.academic-course-identity {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+/* Ant Design link button 默认有横向 padding；清零后名称与第二行代码同一起点。 */
+.academic-course-identity .academic-outline-link {
+  height: auto;
+  padding-inline: 0;
+  line-height: inherit;
+  text-align: left;
+}
+
 .course-code {
   font-size: 11px;
   color: #8c8c8c;
   margin-top: 2px;
+  white-space: nowrap;
 }
 
 /* 加载和空状态 */

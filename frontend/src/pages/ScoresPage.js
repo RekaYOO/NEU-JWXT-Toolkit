@@ -29,6 +29,7 @@ import {
   uniqueFilterOptions,
 } from '../utils/tableFilters';
 import { summarizeScoreUpdate } from '../utils/resourceUpdateSummary';
+import { cloneDefaultColumns, SCORE_DEFAULT_COLUMNS } from '../utils/defaultColumnConfigs';
 import {
   MobileDetailDrawer,
   MobileFilterButton,
@@ -38,24 +39,7 @@ import {
 import dayjs from 'dayjs';
 import './ScoresPage.css';
 
-const DEFAULT_COLUMNS = [
-  { key: 'name', title: '课程名称', visible: true, width: 200 },
-  { key: 'code', title: '课程代码', visible: true, width: 120 },
-  { key: 'score', title: '成绩', visible: true, width: 80 },
-  { key: 'gpa', title: '绩点', visible: true, width: 80 },
-  { key: 'credit', title: '学分', visible: true, width: 80 },
-  { key: 'term_display', title: '学期', visible: true, width: 180 },
-  { key: 'course_type', title: '课程性质', visible: true, width: 100 },
-  { key: 'course_category', title: '课程类别', visible: false, width: 150 },
-  { key: 'general_category', title: '通识类别', visible: false, width: 150 },
-  { key: 'exam_type', title: '考核方式', visible: false, width: 100 },
-  { key: 'exam_status', title: '考试状态', visible: false, width: 100 },
-  { key: 'is_passed', title: '状态', visible: true, width: 80 },
-  { key: 'mean_adjust_delta', title: '均分贡献', visible: false, width: 100 },
-  { key: 'exclude_delta', title: '保留贡献', visible: false, width: 100 },
-];
-
-const getDefaultColumns = () => JSON.parse(JSON.stringify(DEFAULT_COLUMNS));
+const getDefaultColumns = () => cloneDefaultColumns(SCORE_DEFAULT_COLUMNS);
 
 const NUMERIC_COLUMN_KEYS = ['score', 'gpa', 'credit'];
 const IMPACT_COLUMN_KEYS = ['mean_adjust_delta', 'exclude_delta'];
@@ -708,10 +692,7 @@ const ScoresPage = ({ offlineMode = false }) => {
                     <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
                     <Button
                       size="small"
-                      onClick={() => {
-                        clearFilters?.();
-                        confirm();
-                      }}
+                      onClick={() => clearFilters?.({ confirm: true, closeDropdown: true })}
                     >
                       重置
                     </Button>
@@ -753,10 +734,7 @@ const ScoresPage = ({ offlineMode = false }) => {
                     <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
                     <Button
                       size="small"
-                      onClick={() => {
-                        clearFilters?.();
-                        confirm();
-                      }}
+                      onClick={() => clearFilters?.({ confirm: true, closeDropdown: true })}
                     >
                       重置
                     </Button>
@@ -841,8 +819,14 @@ const ScoresPage = ({ offlineMode = false }) => {
   const columnMenuItems = [
     ...columnConfig.map(col => ({
       key: col.key,
+      className: 'column-settings-menu-item',
+      onClick: () => toggleColumn(col.key),
       label: (
-        <Checkbox checked={col.visible} onChange={() => toggleColumn(col.key)}>
+        <Checkbox
+          className="column-setting-toggle"
+          checked={col.visible}
+          tabIndex={-1}
+        >
           {col.title}
         </Checkbox>
       ),
@@ -850,11 +834,9 @@ const ScoresPage = ({ offlineMode = false }) => {
     { type: 'divider' },
     {
       key: 'reset',
-      label: (
-        <Button type="link" size="small" onClick={resetColumnConfig} style={{ padding: 0 }}>
-          恢复默认
-        </Button>
-      ),
+      className: 'column-settings-menu-item column-settings-reset-item',
+      onClick: resetColumnConfig,
+      label: '恢复默认',
     },
   ];
 
@@ -1246,7 +1228,10 @@ const ScoresPage = ({ offlineMode = false }) => {
                 <Dropdown
                   menu={{ items: columnMenuItems }}
                   open={columnMenuOpen}
-                  onOpenChange={setColumnMenuOpen}
+                  onOpenChange={(open, info) => {
+                    if (!open && info?.source === 'menu') return;
+                    setColumnMenuOpen(open);
+                  }}
                   placement="bottomLeft"
                   arrow
                 >

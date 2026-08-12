@@ -25,7 +25,12 @@ import {
   compareTextValues,
   uniqueFilterOptions,
 } from '../utils/tableFilters';
-import { isElectiveCategory, isRequiredCategory } from '../utils/academicReport';
+import {
+  calculateContentAwareColumnWidths,
+  getAcademicRuleDeficitText,
+  isElectiveCategory,
+  isRequiredCategory,
+} from '../utils/academicReport';
 import dayjs from 'dayjs';
 import { MobileDetailDrawer } from '../components/mobile/MobileUX';
 import ResourceUpdateSummary from '../components/ResourceUpdateSummary';
@@ -37,28 +42,16 @@ import {
   startCourseOutlineMetadataSync,
 } from '../services/api';
 import { summarizeAcademicReportUpdate } from '../utils/resourceUpdateSummary';
+import {
+  ACADEMIC_REPORT_DEFAULT_COLUMNS,
+  cloneDefaultColumns,
+} from '../utils/defaultColumnConfigs';
 import './AcademicReportPage.css';
 
 const { Title, Text } = Typography;
 const { useBreakpoint } = Grid;
 
-// 列配置 - 添加is_passed列（默认隐藏）
-const DEFAULT_COLUMNS = [
-  { key: 'course_name', title: '课程名称', visible: true, width: 240 },
-  { key: 'course_code', title: '课程代码', visible: true, width: 120 },
-  { key: 'credit', title: '学分', visible: true, width: 70 },
-  { key: 'status', title: '状态', visible: true, width: 100 },
-  { key: 'score', title: '成绩', visible: false, width: 80 },
-  { key: 'course_nature', title: '性质', visible: true, width: 80 },
-  { key: 'is_passed', title: '通过', visible: false, width: 80 },
-  { key: 'category_path', title: '类别路径', visible: true, width: 200 },
-  { key: 'term_code', title: '学期', visible: false, width: 130 },
-  { key: 'is_core', title: '核心课', visible: false, width: 80 },
-  { key: 'assessment_method', title: '考核方式', visible: false, width: 100 },
-  { key: 'grading_scale', title: '成绩分制', visible: false, width: 100 },
-];
-
-const getDefaultColumns = () => JSON.parse(JSON.stringify(DEFAULT_COLUMNS));
+const getDefaultColumns = () => cloneDefaultColumns(ACADEMIC_REPORT_DEFAULT_COLUMNS);
 
 const parseRangeFilter = (value) => {
   try {
@@ -104,7 +97,12 @@ const numericRangeFilterDropdown = (minimumLabel, maximumLabel) => (
         />
         <Space>
           <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
-          <Button size="small" onClick={() => { clearFilters?.(); confirm(); }}>重置</Button>
+          <Button
+            size="small"
+            onClick={() => clearFilters?.({ confirm: true, closeDropdown: true })}
+          >
+            重置
+          </Button>
         </Space>
       </Space>
     </div>
@@ -124,7 +122,12 @@ const textSearchFilterDropdown = (placeholder) => (
     />
     <Space>
       <Button type="primary" size="small" onClick={() => confirm()}>搜索</Button>
-      <Button size="small" onClick={() => { clearFilters?.(); confirm(); }}>重置</Button>
+      <Button
+        size="small"
+        onClick={() => clearFilters?.({ confirm: true, closeDropdown: true })}
+      >
+        重置
+      </Button>
     </Space>
   </div>
 );
@@ -261,11 +264,11 @@ const buildTreeData = (categories, expandedKeys = []) => {
       const isExpanded = expandedKeys.includes(node.wid);
       
       // 确保数值有效，默认为0
-      const earnedCredits = node.earned_credits ?? 0;
-      const takenCredits = node.taken_credits ?? 0;
+      // earned_credits 已由后端统一为“已通过 + 已选课”。taken_credits 是旧响应
+      // 兼容字段，不能在页面再次相加。
+      const earnedCredits = Number(node.earned_credits ?? 0);
       const requiredCredits = node.required_credits ?? 0;
-      // 已修学分 = 已通过学分 + 已选学分（已选课也算已修）
-      const totalEarned = earnedCredits + takenCredits;
+      const totalEarned = earnedCredits;
       const isCompleted = node.is_completed ?? (totalEarned >= requiredCredits);
       const hasDeficit = requiredCredits > totalEarned;
       
@@ -338,35 +341,31 @@ const getCategoryDisplayName = (node) => {
   return node.name;
 };
 
-const getRuleDeficitText = (category) => {
-  const deficits = [];
-  if ((category.remaining_credits || 0) > 0) {
-    deficits.push(`${category.remaining_credits} 学分`);
-  }
-  if ((category.missing_course_count || 0) > 0) {
-    deficits.push(`${category.missing_course_count} 门课程`);
-  }
-  if ((category.missing_group_count || 0) > 0) {
-    deficits.push(`${category.missing_group_count} 个类别`);
-  }
-  return deficits.length > 0 ? `还差 ${deficits.join('、')}` : '培养规则尚未满足';
-};
-
 // 找到所有需要统计的类别（叶节点或要求学分>0的节点）
 const findLeafCategories = (categories, filterFn) => {
-  const toSummaryItem = (node, remainingCredits) => ({
-    wid: node.wid,
-    name: getCategoryDisplayName(node),
-    originalName: node.name,
-    path: node.path,
-    path_array: node.path_array,
-    required_credits: node.required_credits,
-    earned_credits: node.earned_credits,
-    remaining_credits: remainingCredits,
-    missing_course_count: node.missing_course_count || 0,
-    missing_group_count: node.missing_group_count || 0,
-    is_completed: node.is_completed
-  });
+  const toSummaryItem = (node, remainingCredits) => {
+    const pendingCourses = (node.courses || []).filter(course =>
+      course.is_selected && !course.is_passed
+    );
+    return {
+      wid: node.wid,
+      name: getCategoryDisplayName(node),
+      originalName: node.name,
+      path: node.path,
+      path_array: node.path_array,
+      required_credits: node.required_credits,
+      earned_credits: node.earned_credits,
+      remaining_credits: remainingCredits,
+      missing_course_count: node.missing_course_count || 0,
+      missing_group_count: node.missing_group_count || 0,
+      pending_course_count: pendingCourses.length,
+      pending_credits: pendingCourses.reduce(
+        (sum, course) => sum + Number(course.credit || 0),
+        0
+      ),
+      is_completed: node.is_completed
+    };
+  };
 
   const collect = (nodes, parentNode = null) => {
     const result = [];
@@ -419,7 +418,10 @@ const findLeafCategories = (categories, filterFn) => {
       const shouldShowParentRule =
         (node.remaining_credits || 0) === 0 && hasCountRuleDeficit;
       if (!node.children || node.children.length === 0 || childrenAllZero || shouldShowParentRule) {
-        if (node.remaining_credits > 0 || hasCountRuleDeficit || node.is_completed === false) {
+        // “缺学分”用于回答还需要选什么课。后端 remaining_credits 已把
+        // 已选课计入；仅有教务系统最终完成状态为 false（例如课程尚未通过）
+        // 时，不应继续把该类别列为选课缺口。
+        if (node.remaining_credits > 0 || hasCountRuleDeficit) {
           result.push(toSummaryItem(node, node.remaining_credits || 0));
         }
       }
@@ -512,6 +514,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
   const reportResource = useCachedResource('academic-report');
   const initializedRef = useRef(false);
   const promptedRevisionRef = useRef('');
+  const [pendingPlanUpdate, setPendingPlanUpdate] = useState(null);
 
   const applyReportPayload = useCallback((reportData, { initial = false } = {}) => {
     if (!reportData) return;
@@ -636,24 +639,12 @@ const AcademicReportPage = ({ offlineMode = false }) => {
       applyReportPayload(reportResource.availableData);
       return undefined;
     }
-    const modal = Modal.confirm({
-      title: '培养计划已有更新',
-      content: (
-        <div>
-          <ResourceUpdateSummary items={updateSummary} />
-          <Text type="secondary">
-            刷新后，你的搜索、分类和展开状态会尽量保留。
-          </Text>
-        </div>
-      ),
-      okText: '刷新当前显示',
-      cancelText: '稍后',
-      onOk: () => {
-        reportResource.applyAvailable();
-        applyReportPayload(reportResource.availableData);
-      },
+    setPendingPlanUpdate({
+      revision: reportResource.availableRevision,
+      data: reportResource.availableData,
+      summary: updateSummary,
     });
-    return () => modal.destroy();
+    return undefined;
   }, [
     applyReportPayload,
     reportResource.data,
@@ -681,6 +672,14 @@ const AcademicReportPage = ({ offlineMode = false }) => {
     } finally {
       setRefreshing(false);
     }
+  };
+
+  const applyPendingPlanUpdate = () => {
+    const update = pendingPlanUpdate;
+    setPendingPlanUpdate(null);
+    if (!update?.data) return;
+    reportResource.applyData(update.data);
+    applyReportPayload(update.data);
   };
 
   // 处理树节点选择
@@ -770,8 +769,54 @@ const AcademicReportPage = ({ offlineMode = false }) => {
 
   // 构建表格列
   const tableColumns = useMemo(() => {
-    return columnConfig
+    // 类别路径属于补充定位信息；开启后始终置于最后，兼容旧账号保存的列顺序。
+    const visibleConfig = columnConfig
       .filter(col => col.visible)
+      .sort((left, right) => Number(left.key === 'category_path') - Number(right.key === 'category_path'));
+    const displayValue = (key, course) => {
+      if (key === 'status') {
+        const status = courseStatusValue(course);
+        return { passed: '已通过', selected: '已选课', planned: '未修读' }[status] || course.status || '-';
+      }
+      if (key === 'category_path') return categoryPathText(course.category_path) || '-';
+      if (key === 'term_code') return formatTermCode(course.term_code);
+      if (key === 'is_passed') return course.is_passed ? '是' : '否';
+      if (key === 'is_core') return course.is_core ? '核心' : '-';
+      if (key === 'assessment_method' || key === 'grading_scale') {
+        const metadata = outlineMetadata[course.course_code];
+        return metadata?.[key] || (key === 'assessment_method' ? course.exam_type : '') || '-';
+      }
+      if (key === 'course_name') {
+        // 名称和代码分两行显示，列宽取较长的一行，不把两行长度相加。
+        return [course.course_name || '-', course.course_code || '无课程代码'];
+      }
+      return course[key] ?? '-';
+    };
+    const canMeasureWithCanvas = typeof document !== 'undefined'
+      && !String(globalThis.navigator?.userAgent || '').toLowerCase().includes('jsdom');
+    const measurementContext = !canMeasureWithCanvas
+      ? null
+      : document.createElement('canvas').getContext?.('2d');
+    if (measurementContext) {
+      measurementContext.font = '14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    }
+    const measureText = (value) => {
+      const context = measurementContext;
+      if (!context) return String(value ?? '').length * 14;
+      return context.measureText(String(value ?? '')).width;
+    };
+    const measuredConfig = calculateContentAwareColumnWidths(
+      visibleConfig.map(col => ({
+        ...col,
+        hasControls: ['course_name', 'course_code', 'credit', 'status', 'score', 'course_nature',
+          'is_passed', 'category_path', 'term_code', 'is_core'].includes(col.key),
+      })),
+      allCourses,
+      displayValue,
+      measureText,
+    );
+
+    return measuredConfig
       .map(col => {
         const column = {
           title: col.title,
@@ -820,13 +865,13 @@ const AcademicReportPage = ({ offlineMode = false }) => {
 
         if (col.key === 'course_name') {
           column.render = (text, record) => (
-            <div>
+            <div className="academic-course-identity">
               <div className="course-name">
                 <Button type="link" size="small" className="academic-outline-link" onClick={() => setOutlineCourse(record)}>
                   {text}
                 </Button>
               </div>
-              <div className="course-code">{record.course_code}</div>
+              <div className="course-code">{record.course_code || '无课程代码'}</div>
             </div>
           );
         }
@@ -939,11 +984,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
           );
           column.render = (text) => {
             const pathStr = Array.isArray(text) ? text.join(' > ') : (text || '-');
-            return (
-              <Text ellipsis style={{ maxWidth: 180 }} title={pathStr}>
-                {pathStr}
-              </Text>
-            );
+            return <span className="academic-category-path" title={pathStr}>{pathStr}</span>;
           };
         }
 
@@ -969,14 +1010,23 @@ const AcademicReportPage = ({ offlineMode = false }) => {
       });
   }, [allCourses, columnConfig, outlineMetadata, outlineSyncing]);
 
+  const preferredTableWidth = useMemo(
+    () => tableColumns.reduce((total, column) => total + (Number(column.width) || 100), 0),
+    [tableColumns],
+  );
+  const preferredPageWidth = Math.max(1440, preferredTableWidth + 448);
+
   // 列选择菜单
   const columnMenuItems = [
     ...columnConfig.map(col => ({
       key: col.key,
+      className: 'column-settings-menu-item',
+      onClick: () => toggleColumn(col.key),
       label: (
-        <Checkbox 
+        <Checkbox
+          className="column-setting-toggle"
           checked={col.visible}
-          onChange={() => toggleColumn(col.key)}
+          tabIndex={-1}
         >
           {col.title}
         </Checkbox>
@@ -1005,16 +1055,9 @@ const AcademicReportPage = ({ offlineMode = false }) => {
     { type: 'divider' },
     {
       key: 'reset',
-      label: (
-        <Button 
-          type="link" 
-          size="small" 
-          onClick={resetColumnConfig}
-          style={{ padding: 0 }}
-        >
-          恢复默认
-        </Button>
-      ),
+      className: 'column-settings-menu-item column-settings-reset-item',
+      onClick: resetColumnConfig,
+      label: '恢复默认',
     },
   ];
 
@@ -1151,7 +1194,10 @@ const AcademicReportPage = ({ offlineMode = false }) => {
   }
 
   return (
-    <div className="academic-report-page">
+    <div
+      className="academic-report-page"
+      style={{ '--academic-page-target-width': `${preferredPageWidth}px` }}
+    >
       {headerPortalTarget && createPortal(
         <div
           className={`credit-summary-float ${summaryExpanded ? 'expanded' : ''}`}
@@ -1349,7 +1395,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                       >
                         <span className="name">{cat.name}</span>
                         <span className="credits" style={{ color: '#f5222d' }}>
-                          {getRuleDeficitText(cat)}
+                          {getAcademicRuleDeficitText(cat)}
                         </span>
                       </div>
                     ))}
@@ -1401,7 +1447,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                       >
                         <span className="name">{cat.name}</span>
                         <span className="credits" style={{ color: '#f5222d' }}>
-                          {getRuleDeficitText(cat)}
+                          {getAcademicRuleDeficitText(cat)}
                         </span>
                       </div>
                     ))}
@@ -1473,7 +1519,10 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                 {!isMobile && <Dropdown
                   menu={{ items: columnMenuItems }}
                   open={columnMenuOpen}
-                  onOpenChange={setColumnMenuOpen}
+                  onOpenChange={(open, info) => {
+                    if (!open && info?.source === 'menu') return;
+                    setColumnMenuOpen(open);
+                  }}
                   placement="bottomRight"
                   arrow
                 >
@@ -1635,14 +1684,18 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                 />
               </>
             ) : (
-              <div className="table-scroll-container">
+              <div
+                className="table-scroll-container"
+                style={{ '--academic-table-content-width': `${preferredTableWidth}px` }}
+              >
                 <Table
                   columns={tableColumns}
                   dataSource={orderedFilteredCourses}
                   rowKey="_id"
                   pagination={pagination}
                   onChange={handleTableChange}
-                  scroll={{ x: 'max-content' }}
+                  scroll={{ x: preferredTableWidth }}
+                  tableLayout="fixed"
                   bordered={false}
                   size="middle"
                   className="data-table"
@@ -1683,6 +1736,22 @@ const AcademicReportPage = ({ offlineMode = false }) => {
         )}
       </MobileDetailDrawer>
       <CourseOutlineDrawer open={Boolean(outlineCourse)} course={outlineCourse} onClose={() => setOutlineCourse(null)} />
+      <Modal
+        title="培养计划已有更新"
+        open={Boolean(pendingPlanUpdate)}
+        okText="刷新当前显示"
+        cancelText="稍后"
+        maskClosable={false}
+        keyboard={false}
+        closable={false}
+        onOk={applyPendingPlanUpdate}
+        onCancel={() => setPendingPlanUpdate(null)}
+      >
+        <ResourceUpdateSummary items={pendingPlanUpdate?.summary || []} />
+        <Text type="secondary">
+          刷新后，你的搜索、分类和展开状态会尽量保留。
+        </Text>
+      </Modal>
     </div>
   );
 };

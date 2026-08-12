@@ -67,6 +67,28 @@ select {
   outline-offset: 2px;
 }
 
+/* 数据表统一使用整行可点的列设置菜单。 */
+.column-settings-menu-item {
+  min-width: 168px;
+  padding-block: 7px !important;
+}
+
+.column-settings-menu-item .ant-dropdown-menu-title-content,
+.column-setting-toggle {
+  width: 100%;
+}
+
+.column-setting-toggle {
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+
+.column-settings-reset-item {
+  color: var(--color-brand);
+  font-weight: 600;
+}
+
 .app-layout,
 .app-content {
   min-height: 100vh;
