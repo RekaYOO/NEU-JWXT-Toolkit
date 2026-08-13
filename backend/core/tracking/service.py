@@ -18,6 +18,7 @@ from email.utils import formatdate, make_msgid
 from pathlib import Path
 from typing import Any, Callable
 
+
 from backend.core.runtime.config import secure_file
 from backend.core.cache.resources import SCORE_FIELDS, diff_scores, score_key
 
@@ -318,8 +319,8 @@ class GradeTrackingService:
         self._validate_config(config, require_complete=True)
         self._send_email(
             config,
-            "[NEU 教务工具箱] 成绩追踪邮件测试",
-            "邮件配置有效。\n\n成绩发生变化后，NEU 教务工具箱会通过此地址发送通知。",
+            "[NEU 教务工具箱] 系统邮件配置测试",
+            "这是一封系统邮件配置测试邮件。\n\n如果你能收到这封邮件，说明当前 SMTP 服务器、端口、安全方式和账号配置可以正常发送邮件。\n\n此测试不代表任何具体业务功能，仅用于验证系统邮件通道。",
         )
 
     def check_now(self) -> dict[str, Any]:
@@ -518,7 +519,7 @@ class GradeTrackingService:
                     )
                 self._state.update(
                     stage="monitoring",
-                    message="成绩检查完成，追踪正在运行",
+                    message="tracking check completed",
                     last_success_at=_iso(),
                     next_check_at=(
                         _now() + timedelta(minutes=int(config["interval_minutes"]))

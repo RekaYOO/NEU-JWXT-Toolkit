@@ -470,6 +470,9 @@ export const testGradeTrackingEmail = async () => {
   return response.data;
 };
 
+export const getSystemCacheSettings = async () => (await api.get('/api/system-settings/cache')).data;
+export const updateSystemCacheSettings = async (payload) => (await api.put('/api/system-settings/cache', payload)).data;
+
 export const getGradeTrackingRecoveryStatus = async (token) => {
   const response = await api.get(
     `/api/grade-tracking/recovery/${encodeURIComponent(token)}/status`

@@ -10,6 +10,7 @@ import {
   ScheduleOutlined,
   StarOutlined,
   ThunderboltOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import { hasOfflineExportData } from '../export/exportTools';
 
@@ -27,7 +28,7 @@ export const FEATURE_REGISTRY = Object.freeze([
   { id: 'evaluation', path: '/evaluation', label: '自动评教', icon: <StarOutlined /> },
   { id: 'exams', path: '/exams', label: '我的考试', icon: <CalendarOutlined /> },
   { id: 'export', path: '/export', label: '导出下载', icon: <ExportOutlined />, offline: 'export' },
-  { id: 'logs', path: '/logs', label: '系统日志', icon: <FileTextOutlined /> },
+  { id: 'system-settings', path: '/system-settings', label: '系统设置', icon: <SettingOutlined /> },
 ]);
 
 const FEATURES_BY_ID = Object.freeze(Object.fromEntries(

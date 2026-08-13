@@ -1,0 +1,8 @@
+.system-settings-page { max-width: var(--content-max); margin: 0 auto; }
+.system-settings-heading { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; }
+.system-settings-heading > svg { font-size: 28px; color: var(--color-brand); }
+.system-settings-heading h2 { margin: 0; }
+.system-cache-list { display: grid; gap: 10px; margin-top: 18px; }
+.system-settings-card { margin-top: 16px; }
+.system-cache-resource-key { color: var(--color-text-tertiary, #999); font-size: 11px; margin-top: 2px; }
+.system-cache-list .ant-typography-secondary { display: block; margin-top: 4px; line-height: 1.45; }

@@ -84,6 +84,7 @@ class CacheCoordinator:
         self._sequence = 0
         self._accepting = False
         self._threads: list[threading.Thread] = []
+        self._policies: dict[str, dict[str, Any]] = {}
         if autostart:
             self.start()
 
@@ -110,13 +111,24 @@ class CacheCoordinator:
     def _is_stale(
         self, entry: Any, spec: Any, now: datetime, key: CacheKey
     ) -> bool:
+        policy = self._policies.get(spec.resource, {})
+        if policy.get("enabled") is False:
+            return True
+        max_age = policy.get("interval_seconds")
+        if max_age is not None:
+            try:
+                effective_max_age = timedelta(seconds=max(1, int(max_age)))
+            except (TypeError, ValueError):
+                effective_max_age = spec.max_age
+        else:
+            effective_max_age = spec.max_age
         structurally_stale = (
             entry is None
             or entry.schema_version != spec.schema_version
             or entry.revision_algorithm_version != spec.revision_algorithm_version
             or entry.payload_type != spec.payload_type
             or entry.last_checked_at is None
-            or now - entry.last_checked_at >= spec.max_age
+            or now - entry.last_checked_at >= effective_max_age
         )
         if structurally_stale:
             return True
@@ -131,6 +143,22 @@ class CacheCoordinator:
             ):
                 return True
         return False
+
+    def set_policies(self, policies: Mapping[str, Mapping[str, Any]]) -> None:
+        """Apply user cache preferences without replacing resource definitions."""
+        with self._lock:
+            self._policies = {
+                str(resource): {
+                    "enabled": bool(value.get("enabled", True)),
+                    "interval_seconds": max(1, int(value.get("interval_seconds", 300))),
+                }
+                for resource, value in policies.items()
+                if isinstance(value, Mapping)
+            }
+
+    def policy(self, resource: str) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._policies.get(resource, {"enabled": True}))
 
     @staticmethod
     def _revision(payload_type: PayloadType, canonical: Any, algorithm: int) -> str:

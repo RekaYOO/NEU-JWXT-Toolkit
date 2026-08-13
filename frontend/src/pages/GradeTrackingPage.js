@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Alert,
   Button,
@@ -14,6 +15,7 @@ import {
   Switch,
   Tag,
   message,
+  notification,
 } from 'antd';
 import {
   BellOutlined,
@@ -73,9 +75,8 @@ const GradeTrackingPage = () => {
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState({ stage: 'disabled', enabled: false });
-  const [passwordConfigured, setPasswordConfigured] = useState(false);
+  const navigate = useNavigate();
 
   const loadStatus = useCallback(async () => {
     try {
@@ -94,12 +95,7 @@ const GradeTrackingPage = () => {
           getGradeTrackingConfig(),
           getGradeTrackingStatus(),
         ]);
-        const {
-          smtp_password_configured: hasPassword,
-          enabled: configuredEnabled,
-          ...fields
-        } = config;
-        setPasswordConfigured(hasPassword);
+        const { enabled: configuredEnabled, ...fields } = config;
         setEnabled(configuredEnabled);
         form.setFieldsValue(fields);
         setStatus(currentStatus);
@@ -120,14 +116,12 @@ const GradeTrackingPage = () => {
   const saveConfig = async () => {
     try {
       const values = await form.validateFields();
+      const trackingValues = (({ interval_minutes, start_hour, end_hour, site_url }) => ({
+        interval_minutes, start_hour, end_hour, site_url,
+      }))(values);
       setSaving(true);
-      const result = await updateGradeTrackingConfig(values);
-      const {
-        smtp_password_configured: hasPassword,
-        enabled: configuredEnabled,
-        ...fields
-      } = result.config;
-      setPasswordConfigured(hasPassword);
+      const result = await updateGradeTrackingConfig(trackingValues);
+      const { enabled: configuredEnabled, ...fields } = result.config;
       setEnabled(configuredEnabled);
       form.setFieldsValue({ ...fields, smtp_password: undefined });
       await loadStatus();
@@ -153,6 +147,16 @@ const GradeTrackingPage = () => {
           : '成绩追踪已关闭'
       );
     } catch (error) {
+      const detail = String(error?.response?.data?.detail || '');
+      if (nextEnabled && detail.includes('SMTP')) {
+        notification.warning({
+          message: '无法启用成绩追踪',
+          description: '请先在系统设置中完善 SMTP 服务器、发件地址和收件地址。',
+          duration: 0,
+          btn: <Button size="small" type="primary" onClick={() => navigate('/system-settings?tab=config')}>去系统设置</Button>,
+        });
+        return;
+      }
       message.error(errorText(
         error,
         nextEnabled ? '开启失败，请先保存完整配置' : '关闭成绩追踪失败'
@@ -172,18 +176,6 @@ const GradeTrackingPage = () => {
       message.error(errorText(error, '成绩检查失败，请确认教务登录状态'));
     } finally {
       setChecking(false);
-    }
-  };
-
-  const testEmail = async () => {
-    setTesting(true);
-    try {
-      await testGradeTrackingEmail();
-      message.success('测试邮件已发送');
-    } catch (error) {
-      message.error(errorText(error, '测试邮件发送失败，请先保存配置'));
-    } finally {
-      setTesting(false);
     }
   };
 
@@ -268,8 +260,6 @@ const GradeTrackingPage = () => {
           interval_minutes: 30,
           start_hour: 9,
           end_hour: 21,
-          smtp_port: 465,
-          smtp_security: 'ssl',
         }}
       >
         <Card title="检查策略" className="tracking-config-card">
@@ -315,77 +305,10 @@ const GradeTrackingPage = () => {
           </div>
         </Card>
 
-        <Card
-          title="邮件通知"
-          className="tracking-config-card"
-          extra={passwordConfigured ? <Tag color="success">密码已保存</Tag> : null}
-        >
-          <Row gutter={[16, 0]}>
-            <Col xs={24} md={16}>
-              <Form.Item name="smtp_host" label="SMTP 服务器">
-                <Input placeholder="例如 smtp.qq.com" autoComplete="off" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item name="smtp_port" label="端口">
-                <InputNumber min={1} max={65535} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12}>
-              <Form.Item name="smtp_security" label="连接安全">
-                <Select
-                  options={[
-                    { value: 'ssl', label: 'SSL/TLS' },
-                    { value: 'starttls', label: 'STARTTLS' },
-                    { value: 'none', label: '无加密（不推荐）' },
-                  ]}
-                />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12}>
-              <Form.Item name="smtp_username" label="SMTP 用户名">
-                <Input autoComplete="username" placeholder="通常为完整邮箱地址" />
-              </Form.Item>
-            </Col>
-            <Col xs={24}>
-              <Form.Item
-                name="smtp_password"
-                label={passwordConfigured ? 'SMTP 密码（留空则保持不变）' : 'SMTP 密码或授权码'}
-              >
-                <Input.Password autoComplete="new-password" placeholder="推荐使用邮箱授权码" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12}>
-              <Form.Item name="from_email" label="发件地址">
-                <Input type="email" placeholder="sender@example.com" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12}>
-              <Form.Item name="to_email" label="接收地址">
-                <Input type="email" placeholder="me@example.com" />
-              </Form.Item>
-            </Col>
-            <Col xs={24}>
-              <Form.Item
-                name="site_url"
-                label="重新登录地址（可选）"
-                extra="填写时发送随机的一次性登录页面，打开页面后才生成二维码；留空时直接发送五分钟有效的微信扫码认证链接。"
-              >
-                <Input
-                  type="url"
-                  inputMode="url"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  placeholder="https://jwxt.example.com"
-                />
-              </Form.Item>
-            </Col>
-          </Row>
-          <div className="tracking-card-actions">
-            <Button icon={<MailOutlined />} loading={testing} onClick={testEmail}>
-              发送测试邮件
-            </Button>
-          </div>
+        <Card title="登录恢复" className="tracking-config-card">
+          <Form.Item name="site_url" label="重新登录地址（可选）" extra="填写时发送随机的一次性登录页面，打开页面后才生成二维码；留空时直接发送五分钟有效的微信扫码认证链接。">
+            <Input type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" placeholder="https://jwxt.example.com" />
+          </Form.Item>
         </Card>
       </Form>
 

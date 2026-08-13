@@ -33,7 +33,10 @@ def update_tracking_config(
         return {
             "success": True,
             "config": tracker.update_config(
-                payload.model_dump(exclude_none=True)
+                # This endpoint is also used by the tracking page, which only
+                # edits schedule/login fields. Do not let schema defaults for
+                # SMTP fields overwrite the system mail configuration.
+                payload.model_dump(exclude_unset=True, exclude_none=True)
             ),
         }
     except ValueError as error:

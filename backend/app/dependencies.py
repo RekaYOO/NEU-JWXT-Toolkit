@@ -449,6 +449,16 @@ _cache_coordinator = CacheCoordinator(
     worker_count=2,
     autostart=False,
 )
+_saved_cache_settings = _storage.load_config().get("cache_settings", {})
+if isinstance(_saved_cache_settings, dict):
+    _cache_coordinator.set_policies({
+        resource: {
+            "enabled": value.get("enabled", True),
+            "interval_seconds": int(value.get("interval_minutes", 5)) * 60,
+        }
+        for resource, value in _saved_cache_settings.items()
+        if isinstance(value, dict)
+    })
 _course_outline_sync = CourseOutlineMetadataSyncService(
     cache_store=_cache_store,
     cache_coordinator=_cache_coordinator,

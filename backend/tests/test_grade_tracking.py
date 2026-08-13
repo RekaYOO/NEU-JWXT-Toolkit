@@ -123,7 +123,12 @@ def test_config_never_returns_password_and_blank_preserves_it(tmp_path):
         logger=logging.getLogger("grade-tracking-reload-test"),
     )
     assert reloaded.get_config()["smtp_password_configured"] is True
-    assert reloaded.get_config()["interval_minutes"] == 30
+
+
+def test_tracking_update_payload_does_not_materialize_unset_smtp_defaults():
+    payload = GradeTrackingConfigUpdate(interval_minutes=45, start_hour=8, end_hour=22)
+    values = payload.model_dump(exclude_unset=True, exclude_none=True)
+    assert values == {"interval_minutes": 45, "start_hour": 8, "end_hour": 22}
 
 
 def test_default_interval_is_thirty_minutes(tmp_path):
@@ -713,6 +718,18 @@ def test_tracking_interval_cannot_be_shorter_than_five_minutes(tmp_path):
         assert "5–1440" in str(error)
     else:
         raise AssertionError("interval shorter than five minutes must be rejected")
+
+
+def test_test_email_is_a_general_system_mail_check(tmp_path, monkeypatch):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config())
+    sent = []
+    monkeypatch.setattr(service, "_send_email", lambda config, subject, body: sent.append((subject, body)))
+    service.test_email()
+    assert sent[0][0] == "[NEU 教务工具箱] 系统邮件配置测试"
+    assert "SMTP" in sent[0][1]
+    assert "成绩发生变化" not in sent[0][1]
+    assert "具体业务功能" in sent[0][1]
 
 
 def test_configured_site_uses_one_time_page_before_starting_qr(tmp_path, monkeypatch):

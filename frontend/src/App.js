@@ -21,6 +21,7 @@ import TimetablePage from './pages/TimetablePage';
 import CourseOutlinePage from './pages/CourseOutlinePage';
 import AcademicDocumentsPage from './pages/AcademicDocumentsPage';
 import CourseSelectionPage from './pages/CourseSelectionPage';
+import SystemSettingsPage from './pages/SystemSettingsPage';
 import AccessLoginPage from './pages/AccessLoginPage';
 import { checkStatus, getAccessStatus, getHealth, getOfflineStatus } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
@@ -396,7 +397,8 @@ function App() {
               <Route path="timetable" element={featureAvailable('timetable', { offlineMode, offlineCapabilities }) ? <TimetablePage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="course-selection" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionPage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="course-outlines" element={featureAvailable('course-outlines', { offlineMode, offlineCapabilities }) ? <CourseOutlinePage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="logs" element={featureAvailable('logs', { offlineMode, offlineCapabilities }) ? <LogsPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="logs" element={<Navigate to="/system-settings?tab=logs" replace />} />
+              <Route path="system-settings" element={featureAvailable('system-settings', { offlineMode, offlineCapabilities }) ? <SystemSettingsPage /> : <Navigate to={offlineDefaultPath} />} />
               <Route
                 path="export"
                 element={featureAvailable('export', { offlineMode, offlineCapabilities })
