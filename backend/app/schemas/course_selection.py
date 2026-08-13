@@ -130,3 +130,36 @@ class CourseSelectionOptimizeResponse(StrictModel):
     scenario_multipliers: dict[str, float]
     diagnostics: list[ScenarioDiagnosticModel]
     strategies: list[CourseSelectionStrategyModel]
+
+
+class JwxkSettingsUpdate(StrictModel):
+    network_mode: Literal["follow", "direct", "webvpn"]
+
+
+class JwxkBatchModel(StrictModel):
+    code: str
+    name: str
+    term_code: str
+    term_name: str
+    begin_time: str
+    end_time: str
+    selection_type: str
+    selection_type_code: str
+    tactic_name: str
+    course_types: list[str]
+    need_confirm: bool
+    notice: str
+    state: Literal["not_started", "active", "ended", "unknown"]
+    can_enter: bool
+
+
+class JwxkStatusResponse(StrictModel):
+    available: bool
+    network_mode: Literal["follow", "direct", "webvpn"]
+    effective_network_mode: Literal["direct", "webvpn"]
+    cas_service: str
+    primary_authenticated: bool = False
+    service_authenticated: bool = False
+    authenticated: bool = False
+    batches: list[JwxkBatchModel]
+    message: str = ""

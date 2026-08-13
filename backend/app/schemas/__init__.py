@@ -42,6 +42,7 @@ from .course_selection import (
     CourseSelectionOptimizeRequest,
     CourseSelectionOptimizeResponse,
     CourseSelectionPolicyModel,
+    JwxkBatchModel, JwxkSettingsUpdate, JwxkStatusResponse,
 )
 from .timetable import (
     TimetableContextRequest,
@@ -87,6 +88,7 @@ __all__ = [
     "CourseMarketModel", "CourseMarketSnapshotModel",
     "CourseSelectionOptimizeRequest", "CourseSelectionOptimizeResponse",
     "CourseSelectionPolicyModel",
+    "JwxkBatchModel", "JwxkSettingsUpdate", "JwxkStatusResponse",
     "TimetableContextRequest", "TimetableContextResponse",
     "TimetableCourseModel", "TimetableScheduleRequest", "TimetableScheduleResponse",
     "TimetableTargetSearchRequest", "TimetableTargetSearchResponse",

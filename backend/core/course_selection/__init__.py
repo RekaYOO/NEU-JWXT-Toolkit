@@ -9,6 +9,14 @@ from .model import (
     optimize_course_weights,
 )
 from .provider import CourseSelectionProvider
+from .jwxk import (
+    JWXK_CAS_SERVICE,
+    JwxkBatch,
+    JwxkError,
+    JwxkPublicClient,
+    parse_public_batches,
+    resolve_network_mode,
+)
 
 __all__ = [
     "MODEL_VERSION",
@@ -18,4 +26,10 @@ __all__ = [
     "MarketSnapshot",
     "SelectionPolicy",
     "optimize_course_weights",
+    "JWXK_CAS_SERVICE",
+    "JwxkBatch",
+    "JwxkError",
+    "JwxkPublicClient",
+    "parse_public_batches",
+    "resolve_network_mode",
 ]

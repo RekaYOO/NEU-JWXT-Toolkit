@@ -22,8 +22,9 @@
 
 `NEUAuthClient` 在 `webvpn` 模式下通常会将 `*.neu.edu.cn` 教务业务请求改写为 WebVPN
 URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控服务请求是例外：
-`request_service("cxcy", ...)` 始终直连 `cxcy.neu.edu.cn`，只复用当前 CAS 身份建立该
-系统自己的业务会话，不把路径改写到 WebVPN。
+`request_service(...)` 统一复用当前 CAS 身份和底层 Session，为登记过的校园业务系统建立
+各自的业务会话。`cxcy` 始终直连；`jwxk` 可按服务级设置跟随、直连或使用 WebVPN。服务级
+线路覆盖不会修改教务系统的 `active_mode`，也不会创建第二份凭据或 Cookie 文件。
 
 ## 登录流程
 

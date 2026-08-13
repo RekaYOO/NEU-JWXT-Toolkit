@@ -899,6 +899,20 @@ export const checkScheduleConflicts = async (data) => {
   return response.data;
 };
 
+// ── 新版选课系统（jwxk）──────────────────────────────────────────────────────
+
+export const getJwxkStatus = async () => {
+  const response = await api.get('/api/course-selection/jwxk/status');
+  return response.data;
+};
+
+export const updateJwxkSettings = async (networkMode) => {
+  const response = await api.put('/api/course-selection/jwxk/settings', {
+    network_mode: networkMode,
+  });
+  return response.data;
+};
+
 // ── 教学质量评价 API ─────────────────────────────────────────────────────────
 
 /**

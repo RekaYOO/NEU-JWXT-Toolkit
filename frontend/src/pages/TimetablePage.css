@@ -500,6 +500,20 @@
   font-size: 12px;
 }
 
+.timetable-detail-conflicts {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+  border-left: 3px solid var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 6%, var(--color-surface));
+  border-radius: var(--radius-sm);
+}
+
+.timetable-detail-conflicts > strong { color: var(--color-danger); }
+.timetable-detail-conflicts > div { display: grid; gap: 2px; }
+.timetable-detail-conflicts span { color: var(--color-muted); font-size: 12px; }
+
 .course-weeks,
 .mobile-course-weeks {
   flex: 0 0 auto;
@@ -869,11 +883,25 @@
 
   .timetable-mobile-context {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 72px 48px;
+    grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
     gap: var(--space-2);
     min-height: 48px;
     margin-bottom: var(--space-3);
+  }
+
+  /* 移动端三行控制区使用同一组轨道宽度，避免不同页面出现半宽按钮。 */
+  .timetable-mobile-context .timetable-target-search-row {
+    grid-template-columns: minmax(0, 1fr) 72px;
+    width: 100%;
+    margin-bottom: 0;
+  }
+
+  .timetable-mobile-context .timetable-target-search-row > .ant-btn {
+    width: 100%;
+    min-width: 0;
+    height: 48px;
+    padding-inline: 8px;
   }
 
   .timetable-context-copy {
@@ -923,6 +951,38 @@
     display: block;
     width: 48px;
     height: 48px;
+  }
+
+  .timetable-mobile-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+    width: 100%;
+  }
+
+  .timetable-mobile-actions.has-conflict-action {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .timetable-mobile-term-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 72px;
+    gap: var(--space-2);
+    width: 100%;
+  }
+
+  .timetable-mobile-term-row > .ant-btn {
+    width: 100%;
+    min-width: 0;
+    height: 48px;
+    padding-inline: 8px;
+  }
+
+  .timetable-mobile-actions .ant-btn {
+    width: 100%;
+    min-width: 0;
+    height: 48px;
+    padding-inline: 8px;
   }
 
   .timetable-mobile-view-toggle {

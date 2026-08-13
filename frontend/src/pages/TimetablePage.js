@@ -1942,38 +1942,40 @@ function TimetablePage() {
 
       {isMobile ? (
         <>
-          {targetSelector}
+          <div className="timetable-mobile-target-row">{targetSelector}</div>
           <div className="timetable-mobile-context">
-            <button type="button" className="timetable-context-copy" onClick={openMobileFilters}>
-              <strong>{selectedTerm?.name || '正在识别学期'}</strong>
-              <span>
-                {viewMode === 'week' ? (selectedWeek?.name || '正在识别教学周') : '全学期'}
-                {selectedCampus?.name ? ` · ${selectedCampus.name}` : ''}
-              </span>
-            </button>
-            <Segmented
-              aria-label="课表显示范围"
-              className="timetable-mobile-view-toggle"
-              value={viewMode}
-              onChange={switchViewMode}
-              options={[{ label: '周', value: 'week' }, { label: '总', value: 'term' }]}
-            />
-            <Tooltip title={schedule?.last_update
-              ? `最后保存: ${new Date(schedule.last_update).toLocaleString('zh-CN', { hour12: false })}`
-              : '点击刷新课表'}>
-              <Button aria-label="刷新课表" icon={<ReloadOutlined />} onClick={loadSchedule} disabled={!context || !campusCode} loading={loading} />
-            </Tooltip>
-            {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
-              ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
-              : '检测与“我的课表”的时间冲突'}>
+            <div className="timetable-mobile-term-row">
+              <button type="button" className="timetable-context-copy" onClick={openMobileFilters}>
+                <strong>{selectedTerm?.name || '正在识别学期'}</strong>
+                <span>
+                  {viewMode === 'week' ? (selectedWeek?.name || '正在识别教学周') : '全学期'}
+                  {selectedCampus?.name ? ` · ${selectedCampus.name}` : ''}
+                </span>
+              </button>
+              <Tooltip title={schedule?.last_update
+                ? `最后保存: ${new Date(schedule.last_update).toLocaleString('zh-CN', { hour12: false })}`
+                : '点击刷新课表'}>
+                <Button aria-label="刷新课表" icon={<ReloadOutlined />} onClick={loadSchedule} disabled={!context || !campusCode} loading={loading}>刷新</Button>
+              </Tooltip>
+            </div>
+            <div className={`timetable-mobile-actions${mode !== 'personal' ? ' has-conflict-action' : ''}`}>
+              {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
+                ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
+                : '检测与“我的课表”的时间冲突'}>
+                <Button
+                  aria-label="冲突检测"
+                  className={conflictDetectionEnabled ? 'is-active timetable-conflict-toggle' : 'timetable-conflict-toggle'}
+                  onClick={toggleConflictDetection}
+                  loading={conflictDetectionLoading}
+                  disabled={!schedule?.courses?.length}
+                >冲突检测</Button>
+              </Tooltip>}
               <Button
-                aria-label="冲突检测"
-                className={conflictDetectionEnabled ? 'is-active timetable-conflict-toggle' : 'timetable-conflict-toggle'}
-                onClick={toggleConflictDetection}
-                loading={conflictDetectionLoading}
-                disabled={!schedule?.courses?.length}
-              >冲突</Button>
-            </Tooltip>}
+                className="timetable-mobile-view-switch"
+                aria-label="切换周课表或学期课表"
+                onClick={() => switchViewMode(viewMode === 'term' ? 'week' : 'term')}
+              >{viewMode === 'term' ? '学期课表' : '每周课表'}</Button>
+            </div>
           </div>
           {viewMode === 'week' && context?.weeks?.length > 0 && (
             <MobileWeekTimeline
@@ -2030,7 +2032,7 @@ function TimetablePage() {
           {hasArrangedCourses ? (
             <>
               <div className={isMobile ? '' : 'timetable-screen-mobile-hidden'}>
-                <MobileTimetable
+              <MobileTimetable
                   coursesByDay={coursesByDay}
                   selectedDay={mobileDay}
                   viewMode={viewMode}
@@ -2071,7 +2073,7 @@ function TimetablePage() {
         </>
       ) : null}
 
-      <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} />
+      <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} conflictMap={personalConflictMap} />
 
       <Modal
         open={targetFilterOpen}
@@ -2618,7 +2620,6 @@ function MobileTimetable({
           const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber });
           const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
           return (
-            <PersonalConflictPopover course={course} conflictMap={personalConflictMap}>
             <Card
               key={`${course.id}-${course.start_section}-${index}`}
               size="small"
@@ -2643,7 +2644,6 @@ function MobileTimetable({
               <span className="mobile-course-location"><EnvironmentOutlined /> {content.location}</span>
               {content.type && <span className="mobile-course-type">{content.type}</span>}
             </Card>
-            </PersonalConflictPopover>
           );
         }) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这一天没有课程，可切换其他日期" />}
       </div>
@@ -2675,7 +2675,7 @@ function OtherCourses({ schedule }) {
   );
 }
 
-function CourseDetailContent({ course }) {
+function CourseDetailContent({ course, conflictMap = {} }) {
   if (!course) return null;
   const content = courseCardContent(course);
   const details = uniqueTexts(course.title_details?.length ? course.title_details : course.cell_details || []);
@@ -2686,6 +2686,7 @@ function CourseDetailContent({ course }) {
     course.grading_scheme,
   ].filter(Boolean));
   const detailTags = uniqueTexts(course.tags || []).filter(tag => !repeatedTags.has(tag));
+  const conflictMatches = personalConflictForCourse(course, conflictMap)?.matches || [];
   return (
     <div className="timetable-course-detail">
       <div className="timetable-detail-lead">
@@ -2704,6 +2705,17 @@ function CourseDetailContent({ course }) {
         <Descriptions.Item label="上课周次">{formatWeekNumbers(course.weeks) || '周次待确认'}</Descriptions.Item>
         {detailTags.length > 0 && <Descriptions.Item label="课程标记"><Space size={[4, 4]} wrap>{detailTags.map(tag => <Tag key={tag}>{tag}</Tag>)}</Space></Descriptions.Item>}
       </Descriptions>
+      {conflictMatches.length > 0 && (
+        <section className="timetable-detail-conflicts" aria-label="与我的课表冲突">
+          <strong>与我的课表冲突</strong>
+          {conflictMatches.map((match, index) => (
+            <div key={`${match.baseline_meeting_id || match.baseline_course_name}-${index}`}>
+              <b>{match.baseline_course_name || '我的课表课程'}</b>
+              <span>{conflictWeeksText(match.overlapping_weeks)} · 周{SHORT_WEEKDAY_NAMES[(match.weekday || 1) - 1]} · 第{match.start_section}–{match.end_section}节</span>
+            </div>
+          ))}
+        </section>
+      )}
       {details.length > 0 && (
         <section className="timetable-detail-official">
           <strong>完整安排</strong>
@@ -2714,18 +2726,18 @@ function CourseDetailContent({ course }) {
   );
 }
 
-function CourseDetail({ course, onClose, isMobile }) {
+function CourseDetail({ course, onClose, isMobile, conflictMap }) {
   const title = course?.course_name || '课程详情';
   if (isMobile) {
     return (
       <MobileDetailDrawer open={Boolean(course)} onClose={onClose} title={title}>
-        <CourseDetailContent course={course} />
+        <CourseDetailContent course={course} conflictMap={conflictMap} />
       </MobileDetailDrawer>
     );
   }
   return (
     <Modal open={Boolean(course)} onCancel={onClose} footer={null} title={title} width={560}>
-      <CourseDetailContent course={course} />
+      <CourseDetailContent course={course} conflictMap={conflictMap} />
     </Modal>
   );
 }

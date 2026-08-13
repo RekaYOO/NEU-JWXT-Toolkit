@@ -44,6 +44,8 @@ SERVICE_CONFIGS = {
     "cxcy": {
         "origin": "https://cxcy.neu.edu.cn",
         "service": "https://cxcy.neu.edu.cn/ucenter/auth/caslogin?type=student",
+        "host": "cxcy.neu.edu.cn",
+        "network_modes": ("direct",),
         "allowed_prefixes": (
             "/popscience/comp/ucenter/",
             "/originality/comp/ucenter/",
@@ -55,6 +57,19 @@ SERVICE_CONFIGS = {
             "/business/comp/front/comp/info",
             "/static/uploads/",
         ),
+        "login_paths": (
+            "/ucenter/index/login",
+            "/ucenter/auth/cas",
+            "/ucenter/auth/caslogin",
+        ),
+    },
+    "jwxk": {
+        "origin": "https://jwxk.neu.edu.cn",
+        "service": "https://jwxk.neu.edu.cn/xsxk/auth/cas",
+        "host": "jwxk.neu.edu.cn",
+        "network_modes": ("direct", "webvpn"),
+        "allowed_prefixes": ("/xsxk/",),
+        "login_paths": ("/xsxk/auth/cas",),
     },
 }
 
@@ -1124,14 +1139,20 @@ class NEUAuthClient:
             pass
 
     def request_service(
-        self, service: str, method: str, path: str, **kwargs
+        self,
+        service: str,
+        method: str,
+        path: str,
+        *,
+        network_mode_override: Optional[str] = None,
+        **kwargs,
     ) -> requests.Response:
         """Request one explicitly supported campus service on the shared session.
 
-        Service requests always use the public service origin, including while
-        the primary JWXT session is accessed through WebVPN.  A final CAS page
-        means the service session is missing; it is established once and the
-        original request is retried exactly once.
+        Every service reuses this client's single requests.Session and CAS
+        identity.  A service may choose its own direct/WebVPN route without
+        mutating the primary JWXT ``active_mode``.  A missing business-system
+        session is established once and the original request is retried once.
         """
         config = SERVICE_CONFIGS.get(service)
         if config is None:
@@ -1142,62 +1163,140 @@ class NEUAuthClient:
         normalized_path = parsed.path or "/"
         if not any(normalized_path.startswith(prefix) for prefix in config["allowed_prefixes"]):
             raise ValueError("service path is not allowed")
+        network_mode = self._service_network_mode(config, network_mode_override)
         if not self._logged_in and not self.ensure_login():
             raise NEULoginError("未登录或登录已过期")
         if "timeout" not in kwargs:
             kwargs["timeout"] = self.timeout
         if "verify" not in kwargs:
             kwargs["verify"] = self.verify_ssl
-        url = urljoin(config["origin"], path)
-        # Deliberately bypass _session_request: it rewrites *.neu.edu.cn to a
-        # WebVPN URL, whereas cxcy is directly reachable in both modes.
-        response = self._request_service_redirects(method, url, **kwargs)
-        if self._is_service_auth_required(response):
+        url = self._service_route_url(urljoin(config["origin"], path), network_mode)
+        response = self._request_service_redirects(
+            method, url, service_config=config, network_mode=network_mode, **kwargs
+        )
+        if self._is_service_auth_required(response, config, network_mode):
             self._close_response_safely(response)
-            login_url = (
-                f"{CAS_LOGIN_URL}?service="
-                f"{requests.utils.quote(config['service'], safe='')}"
+            self.ensure_service_session(
+                service, network_mode_override=network_mode_override
             )
-            ticket_response = self._request_service_redirects(
-                "GET", login_url, timeout=self.timeout, verify=self.verify_ssl
+            response = self._request_service_redirects(
+                method, url, service_config=config, network_mode=network_mode, **kwargs
             )
-            ticket_established = urlparse(ticket_response.url).hostname == "cxcy.neu.edu.cn"
-            self._close_response_safely(ticket_response)
-            if not ticket_established:
-                logger.info("跨系统 CAS 会话已过期，尝试恢复统一认证后重建业务会话...")
-                self._logged_in = False
-                if not self.ensure_login():
-                    raise NEULoginError("统一认证会话已过期")
-                ticket_response = self._request_service_redirects(
-                    "GET", login_url, timeout=self.timeout, verify=self.verify_ssl
-                )
-                ticket_established = urlparse(ticket_response.url).hostname == "cxcy.neu.edu.cn"
-                self._close_response_safely(ticket_response)
-                if not ticket_established:
-                    raise NEULoginError("统一认证恢复后仍无法建立业务系统会话")
-            self._save_cookies()
-            response = self._request_service_redirects(method, url, **kwargs)
-        if self._is_service_auth_required(response):
+        if self._is_service_auth_required(response, config, network_mode):
             self._close_response_safely(response)
             raise NEULoginError("业务系统会话建立失败")
-        if urlparse(response.url).hostname != "cxcy.neu.edu.cn":
+        if not self._is_service_destination(response.url, config, network_mode):
             self._close_response_safely(response)
             raise NEULoginError("业务系统返回了不受信任的跳转地址")
         return response
 
-    def _is_service_auth_required(self, response: requests.Response) -> bool:
-        """Recognize both CAS and cxcy's same-origin login trampoline."""
-        if self._is_auth_redirect(str(getattr(response, "url", "") or "")):
+    def ensure_service_session(
+        self, service: str, *, network_mode_override: Optional[str] = None
+    ) -> bool:
+        """Establish one business-system session from the shared CAS identity."""
+        config = SERVICE_CONFIGS.get(service)
+        if config is None:
+            raise ValueError(f"unsupported service: {service}")
+        network_mode = self._service_network_mode(config, network_mode_override)
+        if not self._logged_in and not self.ensure_login():
+            raise NEULoginError("未登录或登录已过期")
+        service_callback = self._service_route_url(config["service"], network_mode)
+        login_url = (
+            f"{CAS_LOGIN_URL}?service="
+            f"{requests.utils.quote(service_callback, safe='')}"
+        )
+
+        def establish() -> bool:
+            routed_login_url = self._service_route_url(login_url, network_mode)
+            ticket_response = self._request_service_redirects(
+                "GET",
+                routed_login_url,
+                service_config=config,
+                network_mode=network_mode,
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+            )
+            established = (
+                self._is_service_destination(ticket_response.url, config, network_mode)
+                and not self._is_service_auth_required(ticket_response, config, network_mode)
+            )
+            self._close_response_safely(ticket_response)
+            return established
+
+        if not establish():
+            logger.info("跨系统 CAS 会话已过期，尝试恢复统一认证后重建业务会话...")
+            self._logged_in = False
+            if not self.ensure_login():
+                raise NEULoginError("统一认证会话已过期")
+            if not establish():
+                raise NEULoginError("统一认证恢复后仍无法建立业务系统会话")
+        self._save_cookies()
+        return True
+
+    @staticmethod
+    def _service_network_mode(config: Dict[str, Any], override: Optional[str]) -> str:
+        mode = override or "direct"
+        if mode not in {"direct", "webvpn"}:
+            raise ValueError("service network mode must be direct or webvpn")
+        if mode not in config["network_modes"]:
+            raise ValueError("service does not support the requested network mode")
+        return mode
+
+    @staticmethod
+    def _service_route_url(url: str, network_mode: str) -> str:
+        return WebVPNUrlCodec.convert_url(url) if network_mode == "webvpn" else url
+
+    @staticmethod
+    def _webvpn_targets_host(url: str, hostname: str) -> bool:
+        parsed = urlparse(url)
+        if parsed.hostname != "webvpn.neu.edu.cn":
+            return False
+        marker = f"{WebVPNUrlCodec.encrypt_hostname(hostname)}/"
+        return marker in f"{parsed.path}/"
+
+    def _is_service_destination(
+        self, url: str, config: Dict[str, Any], network_mode: str
+    ) -> bool:
+        if network_mode == "webvpn":
+            return self._webvpn_targets_host(url, config["host"])
+        parsed = urlparse(str(url or ""))
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == config["host"]
+            and parsed.port in {None, 443}
+            and parsed.username is None
+            and parsed.password is None
+        )
+
+    def _is_service_auth_required(
+        self,
+        response: requests.Response,
+        config: Dict[str, Any],
+        network_mode: str,
+    ) -> bool:
+        """Recognize CAS and a service's same-origin login trampoline."""
+        response_url = str(getattr(response, "url", "") or "")
+        if self._is_auth_redirect(response_url):
             return True
-        parsed = urlparse(str(getattr(response, "url", "") or ""))
-        return parsed.hostname == "cxcy.neu.edu.cn" and parsed.path in {
-            "/ucenter/index/login",
-            "/ucenter/auth/cas",
-            "/ucenter/auth/caslogin",
-        }
+        if network_mode == "webvpn":
+            if self._webvpn_targets_host(response_url, "pass.neu.edu.cn"):
+                return True
+            return any(
+                self._webvpn_targets_host(response_url, config["host"])
+                and urlparse(response_url).path.endswith(path)
+                for path in config["login_paths"]
+            )
+        parsed = urlparse(response_url)
+        return parsed.hostname == config["host"] and parsed.path in config["login_paths"]
 
     def _request_service_redirects(
-        self, method: str, url: str, **kwargs
+        self,
+        method: str,
+        url: str,
+        *,
+        service_config: Optional[Dict[str, Any]] = None,
+        network_mode: str = "direct",
+        **kwargs,
     ) -> requests.Response:
         """Follow a small trusted redirect chain without contacting other hosts."""
         options = dict(kwargs)
@@ -1211,13 +1310,29 @@ class NEUAuthClient:
                 port = parsed_current.port
             except ValueError as exc:
                 raise NEULoginError("业务系统返回了不受信任的跳转地址") from exc
-            if (
-                parsed_current.scheme != "https"
-                or host not in {"cxcy.neu.edu.cn", "pass.neu.edu.cn"}
-                or port not in {None, 443}
-                or parsed_current.username is not None
-                or parsed_current.password is not None
-            ):
+            config = service_config or SERVICE_CONFIGS["cxcy"]
+            allowed = False
+            if network_mode == "webvpn":
+                allowed = (
+                    parsed_current.scheme == "https"
+                    and host == "webvpn.neu.edu.cn"
+                    and port in {None, 443}
+                    and parsed_current.username is None
+                    and parsed_current.password is None
+                    and (
+                        self._webvpn_targets_host(current_url, config["host"])
+                        or self._webvpn_targets_host(current_url, "pass.neu.edu.cn")
+                    )
+                )
+            else:
+                allowed = (
+                    parsed_current.scheme == "https"
+                    and host in {config["host"], "pass.neu.edu.cn"}
+                    and port in {None, 443}
+                    and parsed_current.username is None
+                    and parsed_current.password is None
+                )
+            if not allowed:
                 raise NEULoginError("业务系统返回了不受信任的跳转地址")
             response = self._session.request(
                 current_method, current_url, allow_redirects=False, **options

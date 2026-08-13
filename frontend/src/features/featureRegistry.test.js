@@ -9,6 +9,7 @@ describe('feature registry', () => {
     expect(featureAvailable('evaluation')).toBe(true);
     expect(featureAvailable('timetable')).toBe(true);
     expect(visibleMenuItems().find(item => item.key === '/timetable')?.label).toBe('查询课表');
+    expect(visibleMenuItems().find(item => item.key === '/course-selection')?.label).toBe('选课系统');
     expect(visibleMenuItems().length).toBeGreaterThan(5);
   });
 
