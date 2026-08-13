@@ -36,6 +36,7 @@ import {
   markManualLogout,
 } from './utils/authSessionPolicy';
 import './App.css';
+import { loadSetting } from './utils/settings';
 
 const { Content } = Layout;
 dayjs.locale('zh-cn');
@@ -371,7 +372,7 @@ function App() {
                   <Navigate to="/login" />
               }
             >
-              <Route index element={<Navigate to={offlineMode ? offlineDefaultPath : '/scores'} />} />
+              <Route index element={<Navigate to={offlineMode ? offlineDefaultPath : (loadSetting('defaultTimetableOnOpen', false) ? '/timetable' : '/scores')} />} />
               <Route
                 path="scores"
                 element={featureAvailable('scores', { offlineMode, offlineCapabilities })

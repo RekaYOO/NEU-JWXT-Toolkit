@@ -14,6 +14,7 @@ import {
   Select,
   Skeleton,
   Space,
+  Switch,
   Tabs,
   Tag,
   Tooltip,
@@ -39,6 +40,7 @@ import {
 } from '../services/api';
 import { useResourceMemory } from '../resources/ResourceStore';
 import { compareAcademicTermsNewestFirst } from '../utils/termSort';
+import { loadSetting, saveSetting } from '../utils/settings';
 import './TimetablePage.css';
 
 const { useBreakpoint } = Grid;
@@ -764,11 +766,12 @@ export const personalScheduleView = (payload, campusCode, viewMode, weekNumber) 
 export const restorePersonalTimetableMemory = (memory, requestedTerm = '') => {
   const payload = memory?.payload;
   const currentTermCode = memory?.currentTermCode || payload?.term_code || '';
+  const nextTermCode = immediateNextTerm(memory?.terms || [], currentTermCode);
   if (
     !payload
     || !currentTermCode
-    || payload.term_code !== currentTermCode
-    || (requestedTerm && requestedTerm !== currentTermCode)
+    || ![currentTermCode, nextTermCode].includes(payload.term_code)
+    || (requestedTerm && requestedTerm !== payload.term_code)
   ) return null;
   const campuses = payload.campuses || [];
   const campusCode = campuses.some(item => item.code === memory.campusCode)
@@ -776,9 +779,10 @@ export const restorePersonalTimetableMemory = (memory, requestedTerm = '') => {
     : campuses[0]?.code || '';
   const viewMode = memory.viewMode === 'term' ? 'term' : 'week';
   const weeks = payload.weeks || [];
+  const isCurrentTerm = payload.term_code === currentTermCode;
   const weekNumber = weeks.some(item => item.number === memory.weekNumber)
     ? memory.weekNumber
-    : selectDefaultWeek(weeks, { currentTerm: true });
+    : selectDefaultWeek(weeks, { currentTerm: isCurrentTerm });
   const sectionsByCampus = payload.sections_by_campus || {};
   const sections = sectionsByCampus[campusCode]
     || Object.values(sectionsByCampus).find(rows => Array.isArray(rows) && rows.length)
@@ -786,7 +790,7 @@ export const restorePersonalTimetableMemory = (memory, requestedTerm = '') => {
   return {
     terms: memory.terms || [],
     currentTermCode,
-    termCode: currentTermCode,
+    termCode: payload.term_code,
     context: { campuses, weeks, sections },
     campusCode,
     viewMode,
@@ -867,8 +871,10 @@ export const requestErrorText = (error, fallback, timeoutFallback = fallback) =>
   return fallback;
 };
 
-export const shouldUsePersonalTimetableCache = (mode, termCode, currentTermCode) => (
-  mode === 'personal' && Boolean(termCode) && termCode === currentTermCode
+export const shouldUsePersonalTimetableCache = (mode, termCode, currentTermCode, nextTermCode = '') => (
+  mode === 'personal'
+  && Boolean(termCode)
+  && (termCode === currentTermCode || termCode === nextTermCode)
 );
 
 const getRealtimePersonalTerm = async termCode => {
@@ -944,6 +950,13 @@ function TimetablePage() {
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [filterDraft, setFilterDraft] = useState({ termCode: '', campusCode: '', viewMode: 'week' });
   const [contextRetry, setContextRetry] = useState(0);
+  const nextTermCode = useMemo(
+    () => immediateNextTerm(terms, currentTermCode),
+    [currentTermCode, terms],
+  );
+  const [defaultTimetableOnOpen, setDefaultTimetableOnOpen] = useState(
+    () => loadSetting('defaultTimetableOnOpen', false),
+  );
   const contextGeneration = useRef(0);
   const scheduleGeneration = useRef(0);
   const targetGeneration = useRef(0);
@@ -1034,7 +1047,7 @@ function TimetablePage() {
       : payload.campuses?.[0]?.code || '';
     const nextWeek = (payload.weeks || []).some(item => item.number === viewState.weekNumber)
       ? viewState.weekNumber
-      : selectDefaultWeek(payload.weeks || [], { currentTerm: true });
+      : selectDefaultWeek(payload.weeks || [], { currentTerm: payload.term_code === currentTermCode });
     setPersonalContext(payload, nextCampus, nextWeek);
   }, [setPersonalContext]);
 
@@ -1100,7 +1113,7 @@ function TimetablePage() {
           const nextTermCode = immediateNextTerm(terms, requestedTerm);
           if (nextTermCode) {
             try {
-              const nextPayload = await getRealtimePersonalTerm(nextTermCode);
+              const nextPayload = await getPersonalTimetable(nextTermCode, false);
               if (generation !== personalGeneration.current) return;
               if ((nextPayload.courses || []).length) {
                 const nextCampus = nextPayload.campuses?.[0]?.code || '';
@@ -1139,9 +1152,9 @@ function TimetablePage() {
   }, [currentTermCode, setPersonalContext, terms, watchPersonalRefresh]);
 
   useEffect(() => {
-    if (!shouldUsePersonalTimetableCache(mode, termCode, currentTermCode)) return;
+    if (!shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)) return;
     loadPersonalTimetable(termCode, { autoDetect: !autoDefaultResolved.current });
-  }, [currentTermCode, loadPersonalTimetable, mode, termCode]);
+  }, [currentTermCode, loadPersonalTimetable, mode, nextTermCode, termCode]);
 
   const saveModeSession = useCallback((next = {}) => {
     if (mode === 'personal') return;
@@ -1366,7 +1379,7 @@ function TimetablePage() {
   }, []);
 
   useEffect(() => {
-    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode)) return;
+    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)) return;
     const targetId = target?.id || '';
     if (!termCode || (mode !== 'personal' && !targetId)) {
       setContext(null);
@@ -1404,7 +1417,7 @@ function TimetablePage() {
   }, [contextRetry, currentTermCode, mode, target, termCode]);
 
   const loadSchedule = useCallback(async () => {
-    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode)) {
+    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)) {
       await loadPersonalTimetable(termCode, { refresh: true });
       return;
     }
@@ -1432,7 +1445,7 @@ function TimetablePage() {
   }, [campusCode, context, currentTermCode, loadPersonalTimetable, mode, target, termCode, viewMode, weekNumber]);
 
   useEffect(() => {
-    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode)) return;
+    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)) return;
     if (context && campusCode && (viewMode === 'term' || weekNumber)) loadSchedule();
   }, [campusCode, context, currentTermCode, loadSchedule, mode, termCode, viewMode, weekNumber]);
 
@@ -1470,7 +1483,7 @@ function TimetablePage() {
 
   useEffect(() => {
     if (
-      !shouldUsePersonalTimetableCache(mode, termCode, currentTermCode)
+      !shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)
       || !personalPayload
       || !campusCode
     ) return;
@@ -1486,8 +1499,8 @@ function TimetablePage() {
     if (
       mode !== 'personal'
       || !currentTermCode
-      || termCode !== currentTermCode
-      || personalPayload?.term_code !== currentTermCode
+      || ![currentTermCode, nextTermCode].includes(termCode)
+      || personalPayload?.term_code !== termCode
     ) return;
     timetableMemory.publish({
       terms,
@@ -1502,6 +1515,7 @@ function TimetablePage() {
     currentTermCode,
     mode,
     personalPayload,
+    nextTermCode,
     termCode,
     terms,
     timetableMemory.publish,
@@ -1526,6 +1540,11 @@ function TimetablePage() {
 
   const toggleConflictDetection = () => {
     setConflictDetectionEnabled(enabled => !enabled);
+  };
+
+  const toggleDefaultTimetable = checked => {
+    setDefaultTimetableOnOpen(checked);
+    saveSetting('defaultTimetableOnOpen', checked);
   };
 
   const switchMode = nextMode => {
@@ -1710,7 +1729,7 @@ function TimetablePage() {
 
   const switchCampus = async nextCampusCode => {
     if (nextCampusCode === campusCode) return;
-    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode)) {
+    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)) {
       setCampusCode(nextCampusCode);
       setDetailCourse(null);
       setError(null);
@@ -1932,6 +1951,7 @@ function TimetablePage() {
         placeholder="选择周次"
       /></label>}
       <Space className="timetable-control-actions">
+        {mode === 'personal' && <label className="timetable-default-open-toggle"><Switch size="small" checked={defaultTimetableOnOpen} onChange={toggleDefaultTimetable} /> <span>打开时默认课表</span></label>}
         {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
           ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
           : '按同学期、同星期、相交周次和重叠节次检测冲突'}>
@@ -1977,6 +1997,7 @@ function TimetablePage() {
               </Tooltip>
             </div>
             <div className={`timetable-mobile-actions${mode !== 'personal' ? ' has-conflict-action' : ''}`}>
+              {mode === 'personal' && <label className="timetable-default-open-toggle"><Switch size="small" checked={defaultTimetableOnOpen} onChange={toggleDefaultTimetable} /> <span>打开时默认课表</span></label>}
               {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
                 ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
                 : '检测与“我的课表”的时间冲突'}>

@@ -1,6 +1,7 @@
 """Read-only timetable API routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+import re
 
 from backend.app.cache_support import wait_for_job
 from backend.app.dependencies import (
@@ -32,6 +33,13 @@ from backend.core.timetable import TimetableError
 
 
 router = APIRouter(prefix="/timetable", tags=["timetable"])
+
+
+def _term_order_key(code: str):
+    match = re.search(r"(20\d{2})[^0-9]+(20\d{2})[^0-9]+([12])", str(code or ""))
+    if match:
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    return (0, 0, 0)
 
 
 def _require_target(mode: str, target_id: str) -> None:
@@ -98,10 +106,24 @@ def _require_current_personal_term(auth: NEUAuthClient, requested_term: str) -> 
     )
     if not current_term:
         raise HTTPException(status_code=503, detail="教务系统未提供明确的当前学期，无法使用课表缓存")
-    if requested_term != current_term:
+    term_codes = [str(item.get("code") or "") for item in terms if item.get("code")]
+    try:
+        current_index = term_codes.index(current_term)
+    except ValueError:
+        current_index = -1
+    allowed_terms = {current_term}
+    ordered_terms = sorted(set(term_codes), key=_term_order_key)
+    try:
+        ordered_current_index = ordered_terms.index(current_term)
+    except ValueError:
+        ordered_current_index = -1
+    if ordered_current_index >= 0 and ordered_current_index + 1 < len(ordered_terms):
+        # 只允许紧邻下一学期进入个人课表缓存，用于学期末无课周的预热。
+        allowed_terms.add(ordered_terms[ordered_current_index + 1])
+    if requested_term not in allowed_terms:
         raise HTTPException(
             status_code=409,
-            detail="个人课表缓存仅用于当前学期；其他学期请使用实时课表查询",
+            detail="个人课表缓存仅用于当前学期或紧邻的下一学期；其他学期请使用实时课表查询",
         )
     return current_term
 
@@ -127,20 +149,36 @@ def get_personal_timetable(
     auth: NEUAuthClient = Depends(require_cached_auth_identity),
 ):
     """Read/refresh the official current personal term through shared cache."""
-    _require_current_personal_term(auth, term_code)
     coordinator = get_cache_coordinator()
     account = str(auth.username)
     variant = personal_timetable_variant(term_code)
     try:
+        spec = coordinator.registry.get("personal-timetable")
+        # Local-first: an existing compatible entry is returned immediately. The
+        # current/next-term authorization check and refresh are then performed by
+        # the coordinator in the background, so a browser reload never waits for
+        # the teaching-system term endpoint before showing the timetable.
         entry, stale = coordinator.read(
             account_id=account,
             resource="personal-timetable",
             variant=variant,
         )
-        spec = coordinator.registry.get("personal-timetable")
         if entry is not None and not _cache_entry_is_compatible(entry, spec):
             entry = None
             stale = True
+        if entry is not None and not refresh:
+            if stale:
+                coordinator.submit(
+                    account_id=account,
+                    resource="personal-timetable",
+                    variant=variant,
+                    identity_epoch=get_auth_generation(),
+                    force=False,
+                    reason="page_swr",
+                )
+            return _personal_response(entry, stale)
+
+        _require_current_personal_term(auth, term_code)
         submission = None
         if refresh or stale:
             submission = coordinator.submit(

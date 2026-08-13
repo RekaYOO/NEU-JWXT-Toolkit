@@ -76,6 +76,7 @@ describe('TimetablePage helpers', () => {
   test('uses timetable cache only for the personal current term', () => {
     expect(shouldUsePersonalTimetableCache('personal', '2026-2027-1', '2026-2027-1')).toBe(true);
     expect(shouldUsePersonalTimetableCache('personal', '2025-2026-2', '2026-2027-1')).toBe(false);
+    expect(shouldUsePersonalTimetableCache('personal', '2027-2028-1', '2026-2027-1', '2027-2028-1')).toBe(true);
     expect(shouldUsePersonalTimetableCache('class', '2026-2027-1', '2026-2027-1')).toBe(false);
   });
 

@@ -125,7 +125,46 @@
 
 .timetable-control-actions {
   justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   padding-bottom: 1px;
+}
+
+.timetable-default-open-toggle {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex !important;
+  flex: 0 0 auto;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  padding: 0 11px;
+  color: var(--color-muted) !important;
+  background: var(--color-surface-raised, #f8fafc);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  font-size: 12px !important;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .16s ease, border-color .16s ease, background .16s ease;
+}
+
+.timetable-default-open-toggle:hover {
+  color: var(--color-brand-strong) !important;
+  border-color: color-mix(in srgb, var(--color-brand) 55%, var(--color-line));
+  background: color-mix(in srgb, var(--color-brand) 5%, var(--color-surface));
+}
+
+.timetable-default-open-toggle:has(.ant-switch-checked) {
+  color: var(--color-brand-strong) !important;
+  border-color: color-mix(in srgb, var(--color-brand) 48%, var(--color-line));
+  background: color-mix(in srgb, var(--color-brand) 8%, var(--color-surface));
+}
+
+.timetable-default-open-toggle .ant-switch {
+  flex: 0 0 auto;
 }
 
 .timetable-conflict-toggle.is-active {
@@ -958,6 +997,13 @@
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-2);
     width: 100%;
+  }
+
+  .timetable-mobile-actions .timetable-default-open-toggle {
+    width: 100%;
+    justify-content: center;
+    min-height: 48px;
+    padding-inline: 10px;
   }
 
   .timetable-mobile-actions.has-conflict-action {

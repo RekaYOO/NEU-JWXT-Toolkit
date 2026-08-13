@@ -14,7 +14,7 @@ const CACHE_RESOURCE_META = {
   'academic-report': { name: '培养计划', summary: '培养方案、课程要求和完成情况，用于培养计划与 GPA 模拟。' },
   'research-training': { name: '科研训练', summary: '科研训练项目和报名记录。' },
   'festival-activities': { name: '四节活动', summary: '四节活动、报名状态和可导出活动数据。' },
-  timetable: { name: '我的课表', summary: '当前账号的个人课表，支持快速打开和后台更新。' },
+  'personal-timetable': { name: '我的课表', summary: '当前及紧邻下一学期的个人课表，优先显示本地数据并在后台更新。' },
   avatar: { name: '用户头像', summary: '登录后显示的个人头像资源。' },
   'course-outline-metadata': { name: '大纲元数据', summary: '课程大纲中的考核方式和成绩分制，不保存完整大纲正文。' },
 };
