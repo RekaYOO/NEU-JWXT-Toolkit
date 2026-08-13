@@ -120,7 +120,7 @@ class TimetableAPI:
         self._client = auth_client
         self._terms_cache: Optional[tuple[float, List[Dict[str, Any]]]] = None
         self._filter_catalog_cache: OrderedDict[
-            tuple[str, str], tuple[float, Dict[str, Any]]
+            tuple[Any, ...], tuple[float, Dict[str, Any]]
         ] = OrderedDict()
 
     @staticmethod
@@ -560,6 +560,9 @@ class TimetableAPI:
         self,
         mode: str,
         term_code: str,
+        *,
+        keys: Optional[List[str]] = None,
+        filters: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Return a complete, short-lived classification catalog for one target mode.
 
@@ -569,7 +572,18 @@ class TimetableAPI:
         official list once and cache only the de-identified category pairs in memory.
         """
         self._mode_config(mode)
-        cache_key = (mode, term_code)
+        requested_keys = [key for key in (keys or []) if key in TARGET_FILTER_FIELDS[mode]]
+        active_filters = {
+            key: value for key, value in (filters or {}).items()
+            if value not in (None, "") and key in TARGET_FILTER_FIELDS[mode]
+        }
+        # Without an explicit key list retain compatibility with the old endpoint.
+        # The UI now requests only the next dependent level(s).
+        option_keys = requested_keys or [
+            key for key in TARGET_FILTER_FIELDS[mode]
+            if key not in {"has_schedule", "min_capacity", "max_capacity"}
+        ]
+        cache_key = (mode, term_code, tuple(sorted(option_keys)), tuple(sorted(active_filters.items())))
         now = time.monotonic()
         expired_keys = [
             key
@@ -585,7 +599,7 @@ class TimetableAPI:
 
         option_maps: Dict[str, Dict[str, str]] = {
             key: {}
-            for key in TARGET_FILTER_FIELDS[mode]
+            for key in option_keys
             if key not in {"has_schedule", "min_capacity", "max_capacity"}
         }
         relation_keys: set[tuple[tuple[str, str], ...]] = set()
@@ -598,6 +612,7 @@ class TimetableAPI:
                 term_code,
                 page=page,
                 page_size=self.FILTER_CATALOG_PAGE_SIZE,
+                filters=active_filters,
             )
             returned_page = max(self._integer(payload.get("page"), page), 1)
             if returned_page != page:
@@ -609,10 +624,13 @@ class TimetableAPI:
             if scanned_rows > self.FILTER_CATALOG_MAX_ROWS:
                 raise TimetableError("课表查询对象数量超过安全分类目录上限")
             for target in payload["items"]:
+                # 选项可以按需返回，但级联筛选关系必须保留完整字段。
+                # 例如请求 building 时仍要保留 campus，前端才能判断
+                # “浑南校区 -> 对应教学楼”，否则会把所有教学楼误判为空。
                 relation = {
                     key: str(value)
                     for key, value in target.get("filter_values", {}).items()
-                    if key in option_maps and value
+                    if key in TARGET_FILTER_FIELDS[mode] and value
                 }
                 if relation:
                     relation_keys.add(tuple(sorted(relation.items())))

@@ -1161,24 +1161,42 @@ function TimetablePage() {
     };
   }, [mode, target, targetFilterOptions, targetFilterRelations, targetFilters, targetOptions]);
 
-  const loadTargetFilterOptions = useCallback(async ({ force = false } = {}) => {
+  const loadTargetFilterOptions = useCallback(async ({ force = false, keys, filters } = {}) => {
     if (mode === 'personal' || !termCode || targetFilterOptionsLoading) return;
-    const catalogKey = `${mode}:${termCode}`;
+    // 分类目录一次性加载，避免选择过程中出现“下级选项暂不可用”的错觉。
+    // 加载期间控件保持可见，完成后再按关系过滤可选值。
+    const requestedKeys = keys?.length ? keys : undefined;
+    const activeFilters = filters || {};
+    const catalogKey = `${mode}:${termCode}:all`;
     if (!force && targetFilterOptionsLoadedFor.current === catalogKey) return;
     const generation = ++targetFilterGeneration.current;
     setTargetFilterOptionsLoading(true);
     setTargetFilterOptionsError('');
     try {
-      const payload = await getTimetableTargetFilterOptions({ mode, term_code: termCode });
+      const payload = await getTimetableTargetFilterOptions({
+        mode,
+        term_code: termCode,
+        ...(requestedKeys ? { keys: requestedKeys } : {}),
+        filters: activeFilters,
+      });
       if (generation !== targetFilterGeneration.current) return;
       const options = payload.options || {};
       const relations = payload.relations || [];
       targetFilterOptionsLoadedFor.current = catalogKey;
-      setTargetFilterOptions(options);
-      setTargetFilterRelations(relations);
+      setTargetFilterOptions(previous => ({ ...previous, ...options }));
+      setTargetFilterRelations(previous => {
+        const merged = [...previous, ...relations];
+        const seen = new Set();
+        return merged.filter(relation => {
+          const identity = JSON.stringify(relation);
+          if (seen.has(identity)) return false;
+          seen.add(identity);
+          return true;
+        });
+      });
       modeSessions.current[mode] = {
         ...modeSessions.current[mode],
-        filterOptions: options,
+        filterOptions: { ...(modeSessions.current[mode]?.filterOptions || {}), ...options },
         filterRelations: relations,
         filterOptionsLoadedFor: catalogKey,
       };
@@ -1199,7 +1217,7 @@ function TimetablePage() {
     setTargetPreviewLoading(true);
     setTargetPreviewError('');
     setTargetFilterOpen(true);
-    if (targetFilterOptionsLoadedFor.current !== `${mode}:${termCode}`) loadTargetFilterOptions();
+    if (targetFilterOptionsLoadedFor.current !== `${mode}:${termCode}:all`) loadTargetFilterOptions();
   };
 
   const closeTargetFilters = () => {
@@ -1329,12 +1347,12 @@ function TimetablePage() {
       !targetFilterOpen
       || mode === 'personal'
       || !termCode
-      || targetFilterOptionsLoadedFor.current === `${mode}:${termCode}`
+      || targetFilterOptionsLoadedFor.current === `${mode}:${termCode}:all`
       || targetFilterOptionsLoading
       || targetFilterOptionsError
     ) return;
     loadTargetFilterOptions();
-  }, [loadTargetFilterOptions, mode, targetFilterOpen, targetFilterOptionsError, targetFilterOptionsLoading, termCode]);
+  }, [loadTargetFilterOptions, mode, targetFilterOpen, targetFilterOptions, targetFilterOptionsError, targetFilterOptionsLoading, termCode]);
 
   useEffect(() => () => {
     clearTimeout(targetTimer.current);
@@ -2145,7 +2163,8 @@ function TimetablePage() {
                 <Select
                   allowClear
                   showSearch
-                  disabled={Boolean(missingParent) || targetFilterOptionsLoading || unavailable}
+                  disabled={Boolean(missingParent) || unavailable}
+                  loading={targetFilterOptionsLoading}
                   value={targetFilterDraft[key] || undefined}
                   options={options}
                   onChange={value => changeTargetFilter(key, value)}

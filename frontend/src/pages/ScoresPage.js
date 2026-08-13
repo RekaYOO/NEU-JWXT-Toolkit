@@ -899,17 +899,17 @@ const ScoresPage = ({ offlineMode = false }) => {
 
   // 统计
   const stats = useMemo(() => {
-    if (!allScores.length) return { totalCourses: 0, passedCount: 0, failedCount: 0, totalCredits: 0 };
+    if (!displayScores.length) return { totalCourses: 0, passedCount: 0, failedCount: 0, totalCredits: 0 };
     
-    const totalCredits = allScores.reduce((sum, s) => sum + (s.credit || 0), 0);
+    const totalCredits = displayScores.reduce((sum, s) => sum + (Number(s.credit) || 0), 0);
     
     return {
-      totalCourses: allScores.length,
-      passedCount: allScores.filter(s => s.is_passed).length,
-      failedCount: allScores.filter(s => !s.is_passed).length,
+      totalCourses: displayScores.length,
+      passedCount: displayScores.filter(s => s.is_passed).length,
+      failedCount: displayScores.filter(s => !s.is_passed).length,
       totalCredits: totalCredits,
     };
-  }, [allScores]);
+  }, [displayScores]);
 
   const filteredGpaSummary = useMemo(() => {
     const gpaCourses = displayScores

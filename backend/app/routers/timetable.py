@@ -244,7 +244,12 @@ def get_timetable_target_filter_options(
 ):
     try:
         return TimetableTargetFilterOptionsResponse(
-            **auth.timetable.get_target_filter_options(request.mode, request.term_code)
+            **auth.timetable.get_target_filter_options(
+                request.mode,
+                request.term_code,
+                keys=request.keys,
+                filters=request.filters.model_dump(exclude_none=True, exclude_defaults=True),
+            )
         )
     except NEULoginError as error:
         raise _authentication_failure() from error

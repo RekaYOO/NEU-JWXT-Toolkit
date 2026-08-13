@@ -132,6 +132,25 @@ class TimetableTargetFilterOptionsRequest(BaseModel):
 
     mode: TargetMode
     term_code: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
+    # 只加载当前筛选层级需要的字段，避免打开筛选器时扫描完整对象目录。
+    keys: List[str] = Field(default_factory=list, max_length=20)
+    filters: "TimetableTargetFilters" = Field(default_factory=lambda: TimetableTargetFilters())
+
+    @model_validator(mode="after")
+    def validate_filter_options(self):
+        allowed_by_mode = {
+            "class": {"grade", "college", "major", "direction", "campus", "has_schedule"},
+            "teacher": {"department", "title", "gender", "external", "has_schedule"},
+            "room": {"campus", "building", "floor", "room_type", "department", "use_scope", "lab_center", "min_capacity", "max_capacity", "has_schedule"},
+        }
+        allowed = allowed_by_mode[self.mode]
+        requested = set(self.keys)
+        if requested and not requested <= allowed:
+            raise ValueError(f"unsupported filter option keys: {sorted(requested - allowed)}")
+        supplied = set(self.filters.model_dump(exclude_none=True, exclude_defaults=True))
+        if not supplied <= allowed:
+            raise ValueError(f"unsupported filter options: {sorted(supplied - allowed)}")
+        return self
 
 
 class TimetableTargetFilterOption(BaseModel):
