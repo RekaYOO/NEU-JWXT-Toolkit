@@ -583,7 +583,13 @@ class TimetableAPI:
             key for key in TARGET_FILTER_FIELDS[mode]
             if key not in {"has_schedule", "min_capacity", "max_capacity"}
         ]
-        cache_key = (mode, term_code, tuple(sorted(option_keys)), tuple(sorted(active_filters.items())))
+        # 保留无条件全量目录的旧键格式，兼容已有缓存与测试；只有按字段/条件
+        # 请求的目录才使用扩展键，避免不同级联结果互相覆盖。
+        cache_key = (
+            (mode, term_code)
+            if not requested_keys and not active_filters
+            else (mode, term_code, tuple(sorted(option_keys)), tuple(sorted(active_filters.items())))
+        )
         now = time.monotonic()
         expired_keys = [
             key
