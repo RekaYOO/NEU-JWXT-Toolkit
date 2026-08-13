@@ -278,6 +278,83 @@ def test_target_search_uses_bounded_emap_query_and_maps_public_metadata():
     }]
 
 
+def test_teacher_name_search_uses_real_xm_field_and_maps_teacher_number():
+    client = Client({
+        "code": "0",
+        "datas": {"lslb": {
+            "rows": [{"JGH": "TEACHER-1", "XM": "示例教师", "SZDWDM_DISPLAY": "示例学院"}],
+            "totalSize": 1,
+            "pageNumber": 1,
+            "pageSize": 20,
+        }},
+    })
+
+    result = TimetableAPI(client).search_targets(
+        "teacher", "2025-2026-2", keyword="示例教师", page=1, page_size=20
+    )
+
+    rules = json.loads(client.calls[0][1]["data"]["querySetting"])
+    assert rules[0]["name"] == "XM"
+    assert result["items"] == [{
+        "id": "TEACHER-1",
+        "name": "示例教师",
+        "has_schedule": "",
+        "details": {"department": "示例学院"},
+        "filter_values": {},
+    }]
+
+
+def test_teacher_name_search_retries_legacy_jsmc_when_xm_is_ignored():
+    ignored = {
+        "code": "0",
+        "datas": {"lslb": {
+            "rows": [{"CODE": "OTHER", "JSMC": "其他教师"}],
+            "totalSize": 200,
+            "pageNumber": 1,
+            "pageSize": 20,
+        }},
+    }
+    matched = {
+        "code": "0",
+        "datas": {"lslb": {
+            "rows": [{"CODE": "TEACHER-1", "JSMC": "示例教师"}],
+            "totalSize": 1,
+            "pageNumber": 1,
+            "pageSize": 20,
+        }},
+    }
+    client = Client(ignored, matched)
+
+    result = TimetableAPI(client).search_targets(
+        "teacher", "2025-2026-2", keyword="示例教师"
+    )
+
+    assert len(client.calls) == 2
+    assert json.loads(client.calls[0][1]["data"]["querySetting"])[0]["name"] == "XM"
+    assert json.loads(client.calls[1][1]["data"]["querySetting"])[0]["name"] == "JSMC"
+    assert [item["name"] for item in result["items"]] == ["示例教师"]
+
+
+def test_target_search_does_not_expose_an_unfiltered_page_as_keyword_results():
+    ignored = {
+        "code": "0",
+        "datas": {"lslb": {
+            "rows": [{"CODE": "OTHER", "XM": "其他教师"}],
+            "totalSize": 200,
+            "pageNumber": 1,
+            "pageSize": 20,
+        }},
+    }
+    client = Client(ignored, ignored)
+
+    result = TimetableAPI(client).search_targets(
+        "teacher", "2025-2026-2", keyword="不存在的教师"
+    )
+
+    assert result["items"] == []
+    assert result["total"] == 0
+
+
 def test_target_search_maps_mode_filters_to_fixed_official_fields():
     client = Client({
         "code": "0",

@@ -436,6 +436,51 @@ class TimetableAPI:
     def _query_rule(name: str, value: str, builder: str = "include") -> Dict[str, str]:
         return {"name": name, "builder": builder, "linkOpt": "AND", "value": value}
 
+    @staticmethod
+    def _keyword_fields(mode: str, keyword: str) -> List[str]:
+        """Return bounded official model fields in lookup order.
+
+        The teacher list returned by different kbapp deployments uses ``XM``
+        for the searchable name even though some responses expose the same
+        value as ``JSMC``.  EMap may silently ignore an unknown query field, so
+        a single hard-coded field can look successful while merely returning
+        the unfiltered first page.
+        """
+        code_like = bool(re.fullmatch(r"[A-Za-z0-9_-]+", keyword))
+        name_fields = {
+            "class": ["BJMC"],
+            "teacher": ["XM", "JSMC"],
+            "room": ["JASMC"],
+        }[mode]
+        if code_like and mode != "room":
+            return ["CODE", *name_fields]
+        if code_like:
+            return [*name_fields, "CODE"]
+        return name_fields
+
+    @staticmethod
+    def _target_matches_keyword(
+        mode: str,
+        row: Mapping[str, Any],
+        target: Mapping[str, Any],
+        keyword: str,
+    ) -> bool:
+        needle = keyword.strip().casefold()
+        if not needle:
+            return True
+        row_values = {
+            "class": (row.get("CODE"), row.get("BJMC"), row.get("MC")),
+            "teacher": (
+                row.get("CODE"), row.get("JGH"), row.get("JSBH"),
+                row.get("XM"), row.get("JSMC"), row.get("MC"),
+            ),
+            "room": (row.get("CODE"), row.get("JASMC"), row.get("MC")),
+        }[mode]
+        return any(
+            needle in str(value or "").casefold()
+            for value in (*row_values, target.get("id"), target.get("name"))
+        )
+
     def search_targets(
         self,
         mode: str,
@@ -447,35 +492,24 @@ class TimetableAPI:
         filters: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         config = self._mode_config(mode)
-        rules = []
-        fallback_keyword_field = ""
-        if keyword.strip():
-            normalized_keyword = keyword.strip()
-            code_like = bool(re.fullmatch(r"[A-Za-z0-9_-]+", normalized_keyword))
-            name_field = {"class": "BJMC", "teacher": "JSMC", "room": "JASMC"}[mode]
-            primary_field = "CODE" if code_like and mode != "room" else name_field
-            fallback_keyword_field = name_field if primary_field == "CODE" else ("CODE" if code_like else "")
-            rules.append(self._query_rule(primary_field, normalized_keyword))
+        normalized_keyword = keyword.strip()
+        filter_rules = []
         for key, value in (filters or {}).items():
             if value in (None, "") or key not in TARGET_FILTER_FIELDS[mode]:
                 continue
             field_name, builder = TARGET_FILTER_FIELDS[mode][key]
             normalized = {"yes": "1", "no": "0"}.get(str(value), str(value))
-            rules.append(self._query_rule(field_name, normalized, builder))
+            filter_rules.append(self._query_rule(field_name, normalized, builder))
         action = config["action"]
-        body = self._post(
-            f"{self.TARGET_MODEL_URL}/{action}.do",
-            {
-                "XNXQDM": term_code,
-                "querySetting": json.dumps(rules, ensure_ascii=False),
-                "pageNumber": page,
-                "pageSize": page_size,
-            },
-            "搜索课表对象",
-        )
-        rows = self._find_rows(body, action)
-        if not rows and fallback_keyword_field:
-            rules[0] = self._query_rule(fallback_keyword_field, keyword.strip())
+        keyword_fields = self._keyword_fields(mode, normalized_keyword) if normalized_keyword else [""]
+        body: Mapping[str, Any] = {}
+        rows: List[Mapping[str, Any]] = []
+        targets: List[Dict[str, Any]] = []
+        all_rows_match = True
+        for keyword_field in keyword_fields:
+            rules = list(filter_rules)
+            if keyword_field:
+                rules.insert(0, self._query_rule(keyword_field, normalized_keyword))
             body = self._post(
                 f"{self.TARGET_MODEL_URL}/{action}.do",
                 {
@@ -487,12 +521,37 @@ class TimetableAPI:
                 "搜索课表对象",
             )
             rows = self._find_rows(body, action)
+            row_targets = [
+                (row, target)
+                for row in rows
+                for target in [self._target_from_row(mode, row)]
+                if target["id"]
+            ]
+            targets = [target for _, target in row_targets]
+            if not normalized_keyword:
+                break
+            matching_targets = [
+                target for row, target in row_targets
+                if self._target_matches_keyword(mode, row, target, normalized_keyword)
+            ]
+            if matching_targets:
+                all_rows_match = len(matching_targets) == len(targets)
+                targets = matching_targets
+                break
+            # An empty response may be a valid miss; a non-empty response with
+            # no public match means EMap ignored this field.  In both cases try
+            # the next documented response-field variant when one exists.
+            targets = []
         container = self._container(body, action)
-        targets = [self._target_from_row(mode, row) for row in rows]
-        targets = [target for target in targets if target["id"]]
+        remote_total = self._integer(container.get("totalSize"), len(targets))
+        if normalized_keyword and not targets:
+            remote_total = 0
         return {
             "items": targets,
-            "total": self._integer(container.get("totalSize"), len(targets)),
+            # When EMap mixed unrelated rows into a fuzzy result, expose only
+            # the verified matches and do not invite endless pagination through
+            # an unfiltered list.
+            "total": remote_total if all_rows_match else len(targets),
             "page": self._integer(container.get("pageNumber"), page),
             "page_size": self._integer(container.get("pageSize"), page_size),
         }
@@ -598,7 +657,13 @@ class TimetableAPI:
 
     @classmethod
     def _target_from_row(cls, mode: str, row: Mapping[str, Any]) -> Dict[str, Any]:
-        target_id = cls._text(row.get("CODE") or row.get("DM") or row.get("WID"))
+        target_id = cls._text(
+            row.get("CODE")
+            or (row.get("JGH") if mode == "teacher" else None)
+            or (row.get("JSBH") if mode == "teacher" else None)
+            or row.get("DM")
+            or row.get("WID")
+        )
         if mode == "room":
             name = cls._text(row.get("JASMC") or row.get("MC") or target_id)
             details = {
