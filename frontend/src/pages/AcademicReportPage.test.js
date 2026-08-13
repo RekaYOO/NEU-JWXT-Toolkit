@@ -5,24 +5,30 @@ import AcademicReportPage, {
   calcElectiveRemainingCredits,
   calcRequiredRemainingCredits,
 } from './AcademicReportPage';
+import { columnSettings, loadSetting } from '../utils/settings';
 import { useCachedResource } from '../resources/ResourceStore';
-import {
-  cancelCourseOutlineMetadataSync,
-  getCourseOutlinePlanMetadata,
-} from '../services/api';
 
 // This test covers the pure credit aggregation rule. Keep the page's remote
 // course-outline integration outside this unit-test boundary so Jest never
 // needs to load Axios' ESM entrypoint in the legacy react-scripts runtime.
 jest.mock('../services/api', () => ({
-  cancelCourseOutlineMetadataSync: jest.fn(),
+  getCourseOutlineMetadata: jest.fn().mockResolvedValue({ items: [] }),
   getCourseOutlineMetadataSyncStatus: jest.fn(),
-  getCourseOutlinePlanMetadata: jest.fn(),
   startCourseOutlineMetadataSync: jest.fn(),
 }));
 
 jest.mock('../resources/ResourceStore', () => ({
   useCachedResource: jest.fn()
+}));
+
+jest.mock('../utils/settings', () => ({
+  columnSettings: {
+    load: jest.fn(defaults => defaults),
+    save: jest.fn(),
+    reset: jest.fn(),
+  },
+  loadSetting: jest.fn(),
+  saveSetting: jest.fn(),
 }));
 
 const electiveNode = (overrides = {}) => ({
@@ -37,6 +43,11 @@ const electiveNode = (overrides = {}) => ({
   is_completed: true,
   children: [],
   ...overrides
+});
+
+beforeEach(() => {
+  columnSettings.load.mockImplementation(defaults => defaults);
+  loadSetting.mockReturnValue(true);
 });
 
 test('双重约束按子类最低差额和父类总量差额自底向上去重', () => {
@@ -121,8 +132,6 @@ test('存在选修学分缺口时培养计划页面可以正常渲染', async ()
     unobserve() {}
     disconnect() {}
   };
-  cancelCourseOutlineMetadataSync.mockResolvedValue({});
-  getCourseOutlinePlanMetadata.mockResolvedValue({ items: [] });
   useCachedResource.mockReturnValue({
     data: {
       categories: [electiveNode({

@@ -15,6 +15,7 @@ from backend.app.dependencies import (
 from backend.app.schemas.course_outline import (
     CourseOutlineAttachmentRequest,
     CourseOutlineDetailRequest,
+    CourseOutlineMetadataReadRequest,
     CourseOutlineMetadataSyncRequest,
     CourseOutlineSearchRequest,
     CourseOutlineSectionsRequest,
@@ -120,6 +121,27 @@ def plan_metadata(auth: NEUAuthClient = Depends(require_cached_auth_identity)):
     items = []
     for code in sorted(codes):
         entry = coordinator.store.get(CacheKey(auth.username, "course-outline-metadata", course_variant(code)))
+        if entry:
+            items.append(entry.payload)
+    return {"items": items}
+
+
+@router.post("/metadata/read")
+def read_metadata(
+    request: CourseOutlineMetadataReadRequest,
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+):
+    """Read only the requested account-local outline metadata variants.
+
+    Unlike the plan endpoint, this also supports courses that appear in the
+    score history but are absent from the current training plan.
+    """
+    coordinator = get_cache_coordinator()
+    items = []
+    for code in request.course_codes:
+        entry = coordinator.store.get(
+            CacheKey(auth.username, "course-outline-metadata", course_variant(code))
+        )
         if entry:
             items.append(entry.payload)
     return {"items": items}

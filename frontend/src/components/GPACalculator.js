@@ -25,7 +25,8 @@ import {
   compareAcademicTermsNewestFirst,
   compareAcademicTermsOldestFirst,
 } from '../utils/termSort';
-import { academicTermFilterOptions, compareTextValues } from '../utils/tableFilters';
+import { academicTermFilterOptions, compareTextValues, uniqueFilterOptions } from '../utils/tableFilters';
+import { SCORE_DEFAULT_COLUMNS } from '../utils/defaultColumnConfigs';
 import {
   summarizeAcademicReportSnapshot,
   summarizeAcademicReportUpdate,
@@ -105,6 +106,13 @@ const getCourseSource = (record) => {
   return '模拟';
 };
 
+export const selectGpaBusinessColumnKeys = (scoreColumnConfig, availableKeys) => {
+  const supported = new Set(availableKeys);
+  return (scoreColumnConfig || [])
+    .filter(column => column.visible && supported.has(column.key))
+    .map(column => column.key);
+};
+
 const stableCourseKey = (course) => [
   course?.code || '',
   course?.term_code || course?.originalData?.term || course?.term || '',
@@ -120,6 +128,14 @@ const simulationCourseFromScore = (score) => ({
   term: score.term_display || score.term,
   term_code: score.term,
   courseType: score.course_type,
+  courseCategory: score.course_category,
+  generalCategory: score.general_category,
+  assessmentMethod: score.exam_type,
+  gradingScale: score.grading_scale,
+  examStatus: score.exam_status,
+  isPassed: score.is_passed,
+  meanAdjustDelta: score.mean_adjust_delta,
+  excludeDelta: score.exclude_delta,
   isReal: true,
   isCustom: false,
   originalData: { ...score },
@@ -154,6 +170,7 @@ const GPACalculator = forwardRef(({
   onCoursesChange = null,
   onSimulatingChange = null,
   offlineMode = false,
+  scoreColumnConfig = SCORE_DEFAULT_COLUMNS,
 }, ref) => {
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
@@ -497,7 +514,8 @@ const GPACalculator = forwardRef(({
       score: '',
       gpa: 0,
       term: '自定义',
-      courseType: '自定义',
+      // “来源”由 isCustom 单独表达；不能把“自定义”冒充课程性质。
+      courseType: '',
       isReal: false,
       isCustom: true,
     };
@@ -963,6 +981,12 @@ const GPACalculator = forwardRef(({
         gpa: c.gpa,
         term: c.term,
         courseType: c.courseType,
+        courseCategory: c.courseCategory,
+        generalCategory: c.generalCategory,
+        examStatus: c.examStatus,
+        isPassed: c.isPassed,
+        meanAdjustDelta: c.meanAdjustDelta,
+        excludeDelta: c.excludeDelta,
         isCustom: c.isCustom,
         isReal: c.isReal,
         fromPlan: c.fromPlan,
@@ -1222,17 +1246,26 @@ const GPACalculator = forwardRef(({
   const courseFilterOptions = useMemo(() => {
     return {
       term: academicTermFilterOptions(courses.map(course => course.term)),
-      type: [
+      source: [
         { text: '真实', value: '真实' },
         { text: '计划', value: '计划' },
         { text: '模拟', value: '模拟' },
         { text: '自定义', value: '自定义' },
       ].filter(option => courses.some(course => getCourseSource(course) === option.value)),
+      courseType: uniqueFilterOptions(courses.map(course => course.courseType)),
+      courseCategory: uniqueFilterOptions(courses.map(course => course.courseCategory || course.category)),
+      generalCategory: uniqueFilterOptions(courses.map(course => course.generalCategory)),
+      assessmentMethod: uniqueFilterOptions(courses.map(course => course.assessmentMethod)),
+      gradingScale: uniqueFilterOptions(courses.map(course => (
+        course.gradingScale || outlineMetadata[course.code]?.grading_scale
+      ))),
+      examStatus: uniqueFilterOptions(courses.map(course => course.examStatus)),
     };
-  }, [courses]);
+  }, [courses, outlineMetadata]);
 
   // ===== 表格列 =====
-  const columns = useMemo(() => [
+  const columns = useMemo(() => {
+    const availableColumns = [
     {
       title: '课程',
       dataIndex: 'name',
@@ -1290,6 +1323,17 @@ const GPACalculator = forwardRef(({
           </div>
         );
       },
+    },
+    {
+      title: '课程代码',
+      dataIndex: 'code',
+      key: 'code',
+      width: 120,
+      sorter: (a, b) => compareTextValues(a.code, b.code),
+      filters: uniqueFilterOptions(courses.map(course => course.code)),
+      filterSearch: true,
+      onFilter: (value, record) => record.code === value,
+      render: value => value || '-',
     },
     {
       title: '学分',
@@ -1388,9 +1432,14 @@ const GPACalculator = forwardRef(({
     },
     {
       title: '成绩分制',
-      key: 'gradingScale',
+      key: 'grading_scale',
       width: 110,
       render: (_, record) => record.gradingScale || outlineMetadata[record.code]?.grading_scale || (record.isCustom ? '未设置' : '-'),
+      filters: courseFilterOptions.gradingScale,
+      filterSearch: true,
+      onFilter: (value, record) => (
+        (record.gradingScale || outlineMetadata[record.code]?.grading_scale) === value
+      ),
     },
     {
       title: '绩点',
@@ -1440,7 +1489,7 @@ const GPACalculator = forwardRef(({
     {
       title: '学期',
       dataIndex: 'term',
-      key: 'term',
+      key: 'term_display',
       width: 150,
       sorter: (a, b) => compareAcademicTermsOldestFirst(a.term, b.term),
       filters: courseFilterOptions.term,
@@ -1449,22 +1498,117 @@ const GPACalculator = forwardRef(({
       render: (text) => <span className="term-text">{text || '-'}</span>,
     },
     {
-      title: '类型',
+      title: '课程性质',
       dataIndex: 'courseType',
-      key: 'courseType',
+      key: 'course_type',
+      width: 100,
+      sorter: (a, b) => compareTextValues(a.courseType, b.courseType),
+      filters: courseFilterOptions.courseType,
+      filterSearch: true,
+      onFilter: (value, record) => record.courseType === value,
+      render: value => value || '-',
+    },
+    {
+      title: '课程类别',
+      key: 'course_category',
+      width: 150,
+      sorter: (a, b) => compareTextValues(a.courseCategory || a.category, b.courseCategory || b.category),
+      filters: courseFilterOptions.courseCategory,
+      filterSearch: true,
+      onFilter: (value, record) => (record.courseCategory || record.category) === value,
+      render: (_, record) => record.courseCategory || record.category || '-',
+    },
+    {
+      title: '通识类别',
+      dataIndex: 'generalCategory',
+      key: 'general_category',
+      width: 150,
+      sorter: (a, b) => compareTextValues(a.generalCategory, b.generalCategory),
+      filters: courseFilterOptions.generalCategory,
+      filterSearch: true,
+      onFilter: (value, record) => record.generalCategory === value,
+      render: value => value || '-',
+    },
+    {
+      title: '考核方式',
+      dataIndex: 'assessmentMethod',
+      key: 'exam_type',
+      width: 100,
+      sorter: (a, b) => compareTextValues(a.assessmentMethod, b.assessmentMethod),
+      filters: courseFilterOptions.assessmentMethod,
+      filterSearch: true,
+      onFilter: (value, record) => record.assessmentMethod === value,
+      render: value => value || '-',
+    },
+    {
+      title: '考试状态',
+      dataIndex: 'examStatus',
+      key: 'exam_status',
+      width: 100,
+      sorter: (a, b) => compareTextValues(a.examStatus, b.examStatus),
+      filters: courseFilterOptions.examStatus,
+      filterSearch: true,
+      onFilter: (value, record) => record.examStatus === value,
+      render: value => value || '-',
+    },
+    {
+      title: '状态',
+      dataIndex: 'isPassed',
+      key: 'is_passed',
+      width: 80,
+      sorter: (a, b) => Number(Boolean(a.isPassed)) - Number(Boolean(b.isPassed)),
+      filters: [{ text: '通过', value: true }, { text: '未通过', value: false }],
+      onFilter: (value, record) => Boolean(record.isPassed) === value,
+      render: value => <Tag color={value ? 'success' : 'error'}>{value ? '通过' : '未通过'}</Tag>,
+    },
+    {
+      title: '均分贡献',
+      dataIndex: 'meanAdjustDelta',
+      key: 'mean_adjust_delta',
+      width: 100,
+      sorter: (a, b) => Number(a.meanAdjustDelta || 0) - Number(b.meanAdjustDelta || 0),
+      filterDropdown: numericRangeFilterDropdown('最小值', '最大值'),
+      onFilter: (value, record) => matchesNumericRange(value, record.meanAdjustDelta),
+      render: value => value ?? '-',
+    },
+    {
+      title: '保留贡献',
+      dataIndex: 'excludeDelta',
+      key: 'exclude_delta',
+      width: 100,
+      sorter: (a, b) => Number(a.excludeDelta || 0) - Number(b.excludeDelta || 0),
+      filterDropdown: numericRangeFilterDropdown('最小值', '最大值'),
+      onFilter: (value, record) => matchesNumericRange(value, record.excludeDelta),
+      render: value => value ?? '-',
+    },
+    ];
+    const availableByKey = new Map(availableColumns.map(column => [column.key, column]));
+    const configuredByKey = new Map(scoreColumnConfig.map(column => [column.key, column]));
+    const businessColumns = selectGpaBusinessColumnKeys(scoreColumnConfig, availableByKey.keys())
+      .map(key => {
+        const available = availableByKey.get(key);
+        const configured = configuredByKey.get(key);
+        return {
+          ...available,
+          title: configured.title,
+          width: configured.width || available.width,
+        };
+      });
+    const sourceColumn = {
+      title: '来源',
+      key: 'source',
       width: 90,
       sorter: (a, b) => compareTextValues(getCourseSource(a), getCourseSource(b)),
-      filters: courseFilterOptions.type,
+      filters: courseFilterOptions.source,
       onFilter: (value, record) => getCourseSource(record) === value,
-      render: (text, record) => {
+      render: (_, record) => {
         if (record.isReal) return <Tag size="small" color="success">真实</Tag>;
         if (record.fromPlan) return <Tag size="small" color="processing">计划</Tag>;
         if (record.isCustom) return <Tag size="small" color="warning">自定义</Tag>;
-        // isReal=false 且不是计划/自定义的 = 模拟（被修改过的真实课程）
         return <Tag size="small" color="default">模拟</Tag>;
       },
-    },
-    ...(isSimulating ? [{
+    };
+    const actionColumn = {
       title: '操作',
       key: 'action',
       width: 80,
@@ -1491,8 +1635,9 @@ const GPACalculator = forwardRef(({
           )}
         </Space>
       ),
-    }] : []),
-  ], [courseFilterOptions, editForm, editingKey, isSimulating, outlineMetadata]);
+    };
+    return [...businessColumns, sourceColumn, ...(isSimulating ? [actionColumn] : [])];
+  }, [courseFilterOptions, courses, editForm, editingKey, isSimulating, outlineMetadata, scoreColumnConfig]);
 
   // 筛选课程
   const filteredCourses = useMemo(() => {

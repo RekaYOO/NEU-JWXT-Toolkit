@@ -43,3 +43,13 @@ class CourseOutlineAttachmentRequest(BaseModel):
 class CourseOutlineMetadataSyncRequest(BaseModel):
     courses: list[dict[str, Any]] = Field(default_factory=list, max_length=800)
     force: bool = False
+
+
+class CourseOutlineMetadataReadRequest(BaseModel):
+    course_codes: list[str] = Field(default_factory=list, max_length=800)
+
+    @field_validator("course_codes")
+    @classmethod
+    def validate_codes(cls, values: list[str]) -> list[str]:
+        # Preserve request order while preventing duplicate cache reads.
+        return list(dict.fromkeys(normalize_course_code(value) for value in values))

@@ -18,6 +18,7 @@ import {
   getScoreDetailCache,
   queryScoreDetail,
 } from '../services/api';
+import useCourseOutlineMetadata from '../hooks/useCourseOutlineMetadata';
 import { columnSettings } from '../utils/settings';
 import {
   compareAcademicTermsNewestFirst,
@@ -117,6 +118,7 @@ const EMPTY_MOBILE_FILTERS = {
   courseTypes: [],
   courseCategories: [],
   examTypes: [],
+  gradingScales: [],
   passed: 'all',
   scoreMin: null,
   scoreMax: null,
@@ -228,6 +230,18 @@ const getImpactSign = (value) => {
   return 'zero';
 };
 
+const buildScoreFilterOptions = scores => ({
+  name: uniqueFilterOptions(scores.map(score => score.name)),
+  code: uniqueFilterOptions(scores.map(score => score.code)),
+  term_display: academicTermFilterOptions(scores.map(score => score.term_display)),
+  course_type: uniqueFilterOptions(scores.map(score => score.course_type)),
+  course_category: uniqueFilterOptions(scores.map(score => score.course_category)),
+  general_category: uniqueFilterOptions(scores.map(score => score.general_category)),
+  exam_type: uniqueFilterOptions(scores.map(score => score.exam_type)),
+  grading_scale: uniqueFilterOptions(scores.map(score => score.grading_scale)),
+  exam_status: uniqueFilterOptions(scores.map(score => score.exam_status)),
+});
+
 const compareNullableNumbers = (a, b, order) => {
   const aNumber = Number(a);
   const bNumber = Number(b);
@@ -285,6 +299,9 @@ const ScoresPage = ({ offlineMode = false }) => {
     outcome: 'idle',
   });
   const scoreDetailRequestRef = useRef(0);
+  const openTableFiltersRef = useRef(new Set());
+  const pendingFilterOptionsRef = useRef(null);
+  const [tableFilterOptions, setTableFilterOptions] = useState({});
 
   // GPA计算器
   const [isSimulating, setIsSimulating] = useState(false);
@@ -429,6 +446,39 @@ const ScoresPage = ({ offlineMode = false }) => {
     if (scoreResource.data) applyScorePayload(scoreResource.data);
   }, [applyScorePayload, scoreResource.data]);
 
+  const gradingScaleColumnEnabled = columnConfig.some(column => (
+    column.key === 'grading_scale' && column.visible
+  ));
+  const gradingScaleRequested = gradingScaleColumnEnabled
+    || (isMobile && mobileFilterOpen)
+    || mobileFilters.gradingScales.length > 0;
+
+  const { metadata: outlineMetadata, syncing: outlineSyncing } = useCourseOutlineMetadata({
+    courses: allScores, enabled: gradingScaleRequested, offlineMode,
+  });
+  const scoresWithOutlineMetadata = useMemo(() => allScores.map(score => ({
+    ...score,
+    grading_scale: outlineMetadata[score.code]?.grading_scale || '',
+    outline_metadata_status: outlineMetadata[score.code]?.status || '',
+  })), [allScores, outlineMetadata]);
+  const displayScoresWithOutlineMetadata = useMemo(() => displayScores.map(score => ({
+    ...score,
+    grading_scale: outlineMetadata[score.code]?.grading_scale || score.grading_scale || '',
+    outline_metadata_status: outlineMetadata[score.code]?.status
+      || score.outline_metadata_status
+      || '',
+  })), [displayScores, outlineMetadata]);
+
+  useEffect(() => {
+    const nextOptions = buildScoreFilterOptions(scoresWithOutlineMetadata);
+    if (openTableFiltersRef.current.size > 0) {
+      pendingFilterOptionsRef.current = nextOptions;
+      return;
+    }
+    pendingFilterOptionsRef.current = null;
+    setTableFilterOptions(nextOptions);
+  }, [scoresWithOutlineMetadata]);
+
   useEffect(() => {
     if (scoreResource.error) {
       message.error(`获取成绩失败: ${scoreResource.error.message}`);
@@ -521,9 +571,9 @@ const ScoresPage = ({ offlineMode = false }) => {
     message.success('已恢复默认列设置');
   };
 
-  // 筛选选项
+  // 手机筛选抽屉读取当前数据；桌面列头筛选使用打开期间冻结的快照。
   const getFilterOptions = (key) => {
-    const values = allScores.map(score => score[key]);
+    const values = scoresWithOutlineMetadata.map(score => score[key]);
     return key === 'term_display'
       ? academicTermFilterOptions(values)
       : uniqueFilterOptions(values);
@@ -552,6 +602,7 @@ const ScoresPage = ({ offlineMode = false }) => {
       courseTypes: readList('course_type', mobileFilters.courseTypes),
       courseCategories: readList('course_category', mobileFilters.courseCategories),
       examTypes: readList('exam_type', mobileFilters.examTypes),
+      gradingScales: readList('grading_scale', mobileFilters.gradingScales),
       passed: hasFilter('is_passed')
         ? (newFilters.is_passed?.length
           ? (newFilters.is_passed[0] ? 'passed' : 'failed')
@@ -616,52 +667,30 @@ const ScoresPage = ({ offlineMode = false }) => {
             if (col.key === 'is_passed') {
               return Number(left.is_passed) - Number(right.is_passed);
             }
+            if (col.key === 'grading_scale') {
+              return compareTextValues(left.grading_scale, right.grading_scale);
+            }
             return compareTextValues(left[col.key], right[col.key]);
           },
+          onFilterDropdownOpenChange: open => {
+            if (open) {
+              openTableFiltersRef.current.add(col.key);
+              return;
+            }
+            openTableFiltersRef.current.delete(col.key);
+            if (openTableFiltersRef.current.size === 0 && pendingFilterOptionsRef.current) {
+              const pending = pendingFilterOptionsRef.current;
+              pendingFilterOptionsRef.current = null;
+              setTableFilterOptions(pending);
+            }
+          },
         };
-        const filterValues = {
-          term_display: mobileFilters.terms,
-          course_type: mobileFilters.courseTypes,
-          course_category: mobileFilters.courseCategories,
-          exam_type: mobileFilters.examTypes,
-          is_passed: mobileFilters.passed === 'all'
-            ? []
-            : [mobileFilters.passed === 'passed'],
-          score: (() => {
-            const { scoreMin: min, scoreMax: max } = mobileFilters;
-            return min !== null || max !== null ? [JSON.stringify({ min, max })] : [];
-          })(),
-          gpa: (() => {
-            const { gpaMin: min, gpaMax: max } = mobileFilters;
-            return min !== null || max !== null ? [JSON.stringify({ min, max })] : [];
-          })(),
-          credit: (() => {
-            const { creditMin: min, creditMax: max } = mobileFilters;
-            return min !== null || max !== null ? [JSON.stringify({ min, max })] : [];
-          })(),
-          mean_adjust_delta: (() => {
-            const { meanImpactMin: min, meanImpactMax: max } = mobileFilters;
-            return min !== null || max !== null ? [JSON.stringify({ min, max })] : [];
-          })(),
-          exclude_delta: (() => {
-            const { excludeImpactMin: min, excludeImpactMax: max } = mobileFilters;
-            return min !== null || max !== null ? [JSON.stringify({ min, max })] : [];
-          })(),
-        };
-        if (Object.prototype.hasOwnProperty.call(filterValues, col.key)) {
-          column.filteredValue = filterValues[col.key];
-        }
-
-        const sortMatch = mobileFilters.sort.match(/^(.*)_(asc|desc)$/);
-        const activeSortKey = sortMatch?.[1] === 'term' ? 'term_display' : sortMatch?.[1];
-        if (activeSortKey === col.key) {
-          column.sortOrder = sortMatch[2] === 'asc' ? 'ascend' : 'descend';
-        }
-
         if (!NUMERIC_COLUMN_KEYS.includes(col.key) && !IMPACT_COLUMN_KEYS.includes(col.key)) {
-          column.filters = getFilterOptions(col.key);
+          column.filters = tableFilterOptions[col.key] || [];
           column.filterSearch = true;
-          column.onFilter = (value, record) => record[col.key] === value;
+          column.onFilter = (value, record) => (
+            record[col.key] === value
+          );
         }
 
         if (NUMERIC_COLUMN_KEYS.includes(col.key)) {
@@ -791,6 +820,15 @@ const ScoresPage = ({ offlineMode = false }) => {
           };
         }
 
+        if (col.key === 'grading_scale') {
+          column.render = (_value, record) => {
+            if (record.outline_metadata_status === 'not_found') {
+              return <span className="score-metadata-muted">无大纲</span>;
+            }
+            return record.grading_scale || <span className="score-metadata-muted">-</span>;
+          };
+        }
+
         if (col.key === 'gpa') {
           column.render = (gpa, record) => (
             <button
@@ -813,7 +851,11 @@ const ScoresPage = ({ offlineMode = false }) => {
 
         return column;
       });
-  }, [columnConfig, allScores, mobileFilters, openScoreDetail]);
+  }, [
+    columnConfig,
+    openScoreDetail,
+    tableFilterOptions,
+  ]);
 
   // 列选择菜单
   const columnMenuItems = [
@@ -924,6 +966,7 @@ const ScoresPage = ({ offlineMode = false }) => {
       filters.courseTypes.length > 0,
       filters.courseCategories.length > 0,
       filters.examTypes.length > 0,
+      filters.gradingScales.length > 0,
       filters.passed !== 'all',
       filters.scoreMin !== null || filters.scoreMax !== null,
       filters.gpaMin !== null || filters.gpaMax !== null,
@@ -935,7 +978,7 @@ const ScoresPage = ({ offlineMode = false }) => {
   }, [mobileFilters]);
 
   const applyMobileFilters = useCallback((nextFilters) => {
-    let filtered = [...allScores];
+    let filtered = [...scoresWithOutlineMetadata];
     const includes = (selected, value) => !selected.length || selected.includes(value);
     const inRange = (value, min, max) => {
       const numeric = Number(value);
@@ -948,6 +991,7 @@ const ScoresPage = ({ offlineMode = false }) => {
       && includes(nextFilters.courseTypes, score.course_type)
       && includes(nextFilters.courseCategories, score.course_category)
       && includes(nextFilters.examTypes, score.exam_type)
+      && includes(nextFilters.gradingScales, score.grading_scale)
       && (nextFilters.passed === 'all'
         || score.is_passed === (nextFilters.passed === 'passed'))
       && inRange(score.score_value ?? score.score, nextFilters.scoreMin, nextFilters.scoreMax)
@@ -1000,6 +1044,7 @@ const ScoresPage = ({ offlineMode = false }) => {
       nextFilters.courseTypes.length,
       nextFilters.courseCategories.length,
       nextFilters.examTypes.length,
+      nextFilters.gradingScales.length,
       nextFilters.passed !== 'all',
       nextFilters.scoreMin !== null || nextFilters.scoreMax !== null,
       nextFilters.gpaMin !== null || nextFilters.gpaMax !== null,
@@ -1011,10 +1056,16 @@ const ScoresPage = ({ offlineMode = false }) => {
     setDisplayScores(filtered);
     setHasActiveFilters(active);
     setMobilePage(1);
-  }, [allScores]);
+  }, [scoresWithOutlineMetadata]);
 
   useEffect(() => {
     if (isMobile && allScores.length > 0) {
+      applyMobileFilters(mobileFilters);
+    }
+  }, [allScores, applyMobileFilters, isMobile, mobileFilters]);
+
+  useEffect(() => {
+    if (!isMobile && allScores.length > 0) {
       applyMobileFilters(mobileFilters);
     }
   }, [allScores, applyMobileFilters, isMobile, mobileFilters]);
@@ -1028,6 +1079,7 @@ const ScoresPage = ({ offlineMode = false }) => {
     list('courseTypes', '性质', mobileFilters.courseTypes);
     list('courseCategories', '类别', mobileFilters.courseCategories);
     list('examTypes', '考核', mobileFilters.examTypes);
+    list('gradingScales', '成绩分制', mobileFilters.gradingScales);
     if (mobileFilters.passed !== 'all') {
       tags.push({
         key: 'passed',
@@ -1215,6 +1267,7 @@ const ScoresPage = ({ offlineMode = false }) => {
         scoresRevision={scoreResource.displayedRevision}
         onSimulatingChange={handleSimulatingChange}
         offlineMode={offlineMode}
+        scoreColumnConfig={columnConfig}
       />
 
       {/* 成绩表格 */}
@@ -1360,7 +1413,7 @@ const ScoresPage = ({ offlineMode = false }) => {
           ) : (
             <Table
               columns={tableColumns}
-              dataSource={displayScores}
+              dataSource={displayScoresWithOutlineMetadata}
               rowKey="_id"
               scroll={{ x: 'max-content' }}
               pagination={pagination}
@@ -1424,6 +1477,23 @@ const ScoresPage = ({ offlineMode = false }) => {
                 label: option.text, value: option.value,
               }))}
               onChange={examTypes => setMobileFilterDraft(current => ({ ...current, examTypes }))}
+            />
+          </Form.Item>
+          <Form.Item label="成绩分制">
+            <Select
+              mode="multiple"
+              allowClear
+              loading={outlineSyncing}
+              placeholder={outlineSyncing ? '正在补全成绩分制…' : '选择成绩分制'}
+              notFoundContent={outlineSyncing ? <Spin size="small" /> : '暂无成绩分制数据'}
+              value={mobileFilterDraft.gradingScales}
+              options={getFilterOptions('grading_scale').map(option => ({
+                label: option.text, value: option.value,
+              }))}
+              onChange={gradingScales => setMobileFilterDraft(current => ({
+                ...current,
+                gradingScales,
+              }))}
             />
           </Form.Item>
           <Form.Item label="通过状态">
@@ -1604,6 +1674,9 @@ const ScoresPage = ({ offlineMode = false }) => {
                 <Descriptions.Item label="课程类别">{mobileDetail.course_category || '-'}</Descriptions.Item>
                 <Descriptions.Item label="通识类别">{mobileDetail.general_category || '-'}</Descriptions.Item>
                 <Descriptions.Item label="考核方式">{mobileDetail.exam_type || '-'}</Descriptions.Item>
+                <Descriptions.Item label="成绩分制">
+                  {outlineMetadata[mobileDetail.code]?.grading_scale || '-'}
+                </Descriptions.Item>
                 <Descriptions.Item label="考试状态">{mobileDetail.exam_status || '-'}</Descriptions.Item>
                 <Descriptions.Item label="均分贡献">{formatSignedDelta(mobileDetail.mean_adjust_delta)}</Descriptions.Item>
                 <Descriptions.Item label="保留贡献">{formatSignedDelta(mobileDetail.exclude_delta)}</Descriptions.Item>

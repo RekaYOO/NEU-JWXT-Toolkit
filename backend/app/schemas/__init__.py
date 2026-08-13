@@ -66,6 +66,7 @@ from .course_outline import (
     CourseOutlineDetailRequest,
     CourseOutlineSectionsRequest,
     CourseOutlineAttachmentRequest,
+    CourseOutlineMetadataReadRequest,
     CourseOutlineMetadataSyncRequest,
 )
 
@@ -96,6 +97,6 @@ __all__ = [
     "ScheduleConflictBatchResponse",
     "CourseOutlineSearchRequest", "CourseOutlineDetailRequest",
     "CourseOutlineSectionsRequest", "CourseOutlineAttachmentRequest",
-    "CourseOutlineMetadataSyncRequest",
+    "CourseOutlineMetadataReadRequest", "CourseOutlineMetadataSyncRequest",
 ]
 from .tracking import GradeTrackingConfigUpdate

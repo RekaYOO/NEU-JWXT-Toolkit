@@ -4,7 +4,10 @@ import pytest
 from fastapi import Response
 
 from backend.app.routers import course_outline as router
-from backend.app.schemas.course_outline import CourseOutlineSearchRequest
+from backend.app.schemas.course_outline import (
+    CourseOutlineMetadataReadRequest,
+    CourseOutlineSearchRequest,
+)
 from backend.core.course_outline import CourseOutlineAPI, extract_rows
 
 
@@ -127,6 +130,40 @@ def test_assessment_sections_join_relation_ids_into_a_readable_matrix():
 def test_search_request_rejects_unknown_filters():
     with pytest.raises(ValueError):
         CourseOutlineSearchRequest(filters={"COOKIE": "secret"})
+
+
+def test_metadata_read_request_normalizes_and_deduplicates_codes():
+    request = CourseOutlineMetadataReadRequest(
+        course_codes=[" A100 ", "A100", "B-200"],
+    )
+    assert request.course_codes == ["A100", "B-200"]
+
+
+def test_metadata_read_reuses_cached_plan_items_and_ignores_missing(monkeypatch):
+    from types import SimpleNamespace
+
+    payload = {
+        "course_code": "A100",
+        "assessment_method": "考试",
+        "grading_scale": "百分制",
+        "status": "success",
+    }
+
+    class Store:
+        def get(self, key):
+            return SimpleNamespace(payload=payload) if key.variant == "course:A100" else None
+
+    monkeypatch.setattr(
+        router,
+        "get_cache_coordinator",
+        lambda: SimpleNamespace(store=Store()),
+    )
+    result = router.read_metadata(
+        CourseOutlineMetadataReadRequest(course_codes=["A100", "B200"]),
+        SimpleNamespace(username="student"),
+    )
+
+    assert result == {"items": [payload]}
 
 
 def test_search_and_detail_routes_mark_responses_no_store(monkeypatch):

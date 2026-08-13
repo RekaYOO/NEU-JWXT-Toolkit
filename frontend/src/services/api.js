@@ -257,6 +257,13 @@ export const getCourseOutlinePlanMetadata = async () => {
   return response.data;
 };
 
+export const getCourseOutlineMetadata = async (courseCodes) => {
+  const response = await api.post('/api/course-outlines/metadata/read', {
+    course_codes: courseCodes,
+  });
+  return response.data;
+};
+
 export const startCourseOutlineMetadataSync = async (courses, force = false) => {
   const response = await api.post('/api/course-outlines/metadata/sync', { courses, force });
   return response.data;

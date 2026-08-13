@@ -199,6 +199,11 @@
   gap: 4px;
 }
 
+.score-metadata-muted {
+  color: var(--color-text-secondary);
+}
+
+
 .filter-active-icon {
   color: var(--color-brand);
   font-size: 12px;

@@ -8,8 +8,8 @@ export const ACADEMIC_REPORT_DEFAULT_COLUMNS = [
   { key: 'is_passed', title: '通过', visible: false, width: 80 },
   { key: 'term_code', title: '学期', visible: true, width: 130 },
   { key: 'is_core', title: '核心课', visible: false, width: 80 },
-  { key: 'assessment_method', title: '考核方式', visible: false, width: 100 },
-  { key: 'grading_scale', title: '成绩分制', visible: false, width: 100 },
+  { key: 'assessment_method', title: '考核方式', visible: true, width: 100 },
+  { key: 'grading_scale', title: '成绩分制', visible: true, width: 100 },
   { key: 'category_path', title: '类别路径', visible: false, width: 200 },
 ];
 
@@ -24,6 +24,7 @@ export const SCORE_DEFAULT_COLUMNS = [
   { key: 'course_category', title: '课程类别', visible: false, width: 150 },
   { key: 'general_category', title: '通识类别', visible: false, width: 150 },
   { key: 'exam_type', title: '考核方式', visible: true, width: 100 },
+  { key: 'grading_scale', title: '成绩分制', visible: false, width: 100 },
   { key: 'exam_status', title: '考试状态', visible: false, width: 100 },
   { key: 'is_passed', title: '状态', visible: true, width: 80 },
   { key: 'mean_adjust_delta', title: '均分贡献', visible: false, width: 100 },

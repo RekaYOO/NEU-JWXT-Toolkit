@@ -15,7 +15,7 @@ import {
   CheckSquareOutlined, SearchOutlined
 } from '@ant-design/icons';
 import { useCachedResource } from '../resources/ResourceStore';
-import { columnSettings } from '../utils/settings';
+import { columnSettings, loadSetting, saveSetting } from '../utils/settings';
 import {
   compareAcademicTermsNewestFirst,
   compareAcademicTermsOldestFirst,
@@ -35,12 +35,7 @@ import dayjs from 'dayjs';
 import { MobileDetailDrawer } from '../components/mobile/MobileUX';
 import ResourceUpdateSummary from '../components/ResourceUpdateSummary';
 import CourseOutlineDrawer from '../components/CourseOutlineDrawer';
-import {
-  cancelCourseOutlineMetadataSync,
-  getCourseOutlineMetadataSyncStatus,
-  getCourseOutlinePlanMetadata,
-  startCourseOutlineMetadataSync,
-} from '../services/api';
+import useCourseOutlineMetadata from '../hooks/useCourseOutlineMetadata';
 import { summarizeAcademicReportUpdate } from '../utils/resourceUpdateSummary';
 import {
   ACADEMIC_REPORT_DEFAULT_COLUMNS,
@@ -52,6 +47,7 @@ const { Title, Text } = Typography;
 const { useBreakpoint } = Grid;
 
 const getDefaultColumns = () => cloneDefaultColumns(ACADEMIC_REPORT_DEFAULT_COLUMNS);
+const OUTLINE_DEFAULT_COLUMNS_MIGRATION_KEY = 'academicReportOutlineColumnsDefaultV1';
 
 const parseRangeFilter = (value) => {
   try {
@@ -489,10 +485,26 @@ const AcademicReportPage = ({ offlineMode = false }) => {
   
   // 列配置
   const [columnConfig, setColumnConfig] = useState(() => {
-    const saved = columnSettings.load(getDefaultColumns(), 'academicReportColumnConfig');
-    return saved;
+    const defaults = getDefaultColumns();
+    const loaded = columnSettings.load(defaults, 'academicReportColumnConfig');
+    const saved = Array.isArray(loaded) ? loaded : defaults;
+    if (loadSetting(OUTLINE_DEFAULT_COLUMNS_MIGRATION_KEY, false)) return saved;
+    const migrated = saved.map(column => (
+      ['assessment_method', 'grading_scale'].includes(column.key)
+        ? { ...column, visible: true }
+        : column
+    ));
+    columnSettings.save(migrated, 'academicReportColumnConfig');
+    saveSetting(OUTLINE_DEFAULT_COLUMNS_MIGRATION_KEY, true);
+    return migrated;
   });
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
+  const openTableFiltersRef = useRef(new Set());
+  const pendingOutlineFilterOptionsRef = useRef(null);
+  const [outlineFilterOptions, setOutlineFilterOptions] = useState({
+    assessment_method: [],
+    grading_scale: [],
+  });
   
   // 分页
   const [pagination, setPagination] = useState({
@@ -508,9 +520,6 @@ const AcademicReportPage = ({ offlineMode = false }) => {
   const [courseSearch, setCourseSearch] = useState('');
   const [mobileCourseDetail, setMobileCourseDetail] = useState(null);
   const [outlineCourse, setOutlineCourse] = useState(null);
-  const [outlineMetadata, setOutlineMetadata] = useState({});
-  const [outlineSyncing, setOutlineSyncing] = useState(false);
-  const [outlineSyncStatus, setOutlineSyncStatus] = useState(null);
   const reportResource = useCachedResource('academic-report');
   const initializedRef = useRef(false);
   const promptedRevisionRef = useRef('');
@@ -561,50 +570,36 @@ const AcademicReportPage = ({ offlineMode = false }) => {
     applyReportPayload(reportResource.data, { initial });
   }, [applyReportPayload, reportResource.data]);
 
-  const reloadOutlineMetadata = useCallback(async () => {
-    if (offlineMode) return;
-    try {
-      const data = await getCourseOutlinePlanMetadata();
-      setOutlineMetadata(Object.fromEntries((data.items || []).map(item => [item.course_code, item])));
-    } catch (_error) {
-      // Metadata is an optional enhancement and never blocks the plan itself.
-    }
-  }, [offlineMode]);
-
-  useEffect(() => {
-    reloadOutlineMetadata();
-  }, [reloadOutlineMetadata, reportResource.data]);
-
   const outlineColumnsEnabled = columnConfig.some(column => (
     ['assessment_method', 'grading_scale'].includes(column.key) && column.visible
   ));
+  const {
+    metadata: outlineMetadata,
+    syncing: outlineSyncing,
+    status: outlineSyncStatus,
+    retryFailed: retryOutlineMetadata,
+  } = useCourseOutlineMetadata({
+    courses: allCourses,
+    enabled: outlineColumnsEnabled,
+    offlineMode,
+  });
 
   useEffect(() => {
-    if (!outlineColumnsEnabled || offlineMode || !allCourses.length) {
-      setOutlineSyncing(false);
-      if (!offlineMode) cancelCourseOutlineMetadataSync().catch(() => null);
-      return undefined;
+    const nextOptions = {
+      assessment_method: uniqueFilterOptions(allCourses.map(course => (
+        outlineMetadata[course.course_code]?.assessment_method || course.exam_type
+      ))),
+      grading_scale: uniqueFilterOptions(allCourses.map(course => (
+        outlineMetadata[course.course_code]?.grading_scale
+      ))),
+    };
+    if (openTableFiltersRef.current.size > 0) {
+      pendingOutlineFilterOptionsRef.current = nextOptions;
+      return;
     }
-    let active = true;
-    setOutlineSyncing(true);
-    startCourseOutlineMetadataSync(allCourses)
-      .then(setOutlineSyncStatus)
-      .catch(() => setOutlineSyncing(false));
-    const timer = window.setInterval(async () => {
-      if (!active) return;
-      await reloadOutlineMetadata();
-      try {
-        const status = await getCourseOutlineMetadataSyncStatus();
-        if (!active) return;
-        setOutlineSyncStatus(status);
-        setOutlineSyncing(Boolean(status.running));
-        if (!status.running) window.clearInterval(timer);
-      } catch (_error) {
-        // Keep the plan usable when the optional progress endpoint is unavailable.
-      }
-    }, 2500);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [allCourses, offlineMode, outlineColumnsEnabled, reloadOutlineMetadata]);
+    pendingOutlineFilterOptionsRef.current = null;
+    setOutlineFilterOptions(nextOptions);
+  }, [allCourses, outlineMetadata]);
 
   useEffect(() => {
     if (reportResource.error) {
@@ -839,12 +834,33 @@ const AcademicReportPage = ({ offlineMode = false }) => {
             if (col.key === 'category_path') {
               return compareTextValues(categoryPathText(a.category_path), categoryPathText(b.category_path));
             }
+            if (col.key === 'assessment_method' || col.key === 'grading_scale') {
+              const leftMetadata = outlineMetadata[a.course_code];
+              const rightMetadata = outlineMetadata[b.course_code];
+              const leftValue = leftMetadata?.[col.key]
+                || (col.key === 'assessment_method' ? a.exam_type : '');
+              const rightValue = rightMetadata?.[col.key]
+                || (col.key === 'assessment_method' ? b.exam_type : '');
+              return compareTextValues(leftValue, rightValue);
+            }
             if (col.key === 'score') {
               const left = Number(a.score);
               const right = Number(b.score);
               if (Number.isFinite(left) && Number.isFinite(right)) return left - right;
             }
             return compareTextValues(a[col.key], b[col.key]);
+          },
+          onFilterDropdownOpenChange: open => {
+            if (open) {
+              openTableFiltersRef.current.add(col.key);
+              return;
+            }
+            openTableFiltersRef.current.delete(col.key);
+            if (openTableFiltersRef.current.size === 0 && pendingOutlineFilterOptionsRef.current) {
+              const pending = pendingOutlineFilterOptionsRef.current;
+              pendingOutlineFilterOptionsRef.current = null;
+              setOutlineFilterOptions(pending);
+            }
           },
         };
 
@@ -877,6 +893,14 @@ const AcademicReportPage = ({ offlineMode = false }) => {
         }
 
         if (col.key === 'assessment_method' || col.key === 'grading_scale') {
+          column.filters = outlineFilterOptions[col.key] || [];
+          column.filterSearch = true;
+          column.onFilter = (value, record) => {
+            const metadata = outlineMetadata[record.course_code];
+            const current = metadata?.[col.key]
+              || (col.key === 'assessment_method' ? record.exam_type : '');
+            return current === value;
+          };
           column.render = (_text, record) => {
             const metadata = outlineMetadata[record.course_code];
             const value = metadata?.[col.key] || (col.key === 'assessment_method' ? record.exam_type : '');
@@ -1008,7 +1032,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
 
         return column;
       });
-  }, [allCourses, columnConfig, outlineMetadata, outlineSyncing]);
+  }, [allCourses, columnConfig, outlineFilterOptions, outlineMetadata, outlineSyncing]);
 
   const preferredTableWidth = useMemo(
     () => tableColumns.reduce((total, column) => total + (Number(column.width) || 100), 0),
@@ -1045,11 +1069,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
     }, ...(outlineSyncStatus?.failed ? [{
       key: 'outline-sync-retry',
       label: <Button type="link" size="small" onClick={() => {
-        const failedCodes = new Set(outlineSyncStatus.errors || []);
-        return startCourseOutlineMetadataSync(
-          allCourses.filter(course => failedCodes.has(course.course_code)),
-          true,
-        );
+        return retryOutlineMetadata();
       }}>重试失败项</Button>,
     }] : [])] : []),
     { type: 'divider' },
