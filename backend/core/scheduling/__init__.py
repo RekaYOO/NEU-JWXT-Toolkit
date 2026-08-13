@@ -1,6 +1,6 @@
 """Shared scheduling normalization and conflict detection domain."""
 
-from .conflicts import check_conflicts, compare_meetings
+from .conflicts import check_conflicts, compare_meetings, same_course
 from .models import (
     CandidateConflictResult,
     ConflictMatch,
@@ -17,6 +17,7 @@ __all__ = [
     "ScheduleMeeting",
     "check_conflicts",
     "compare_meetings",
+    "same_course",
     "meeting_extension",
     "normalize_activity_type",
     "normalize_meeting",

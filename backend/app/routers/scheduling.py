@@ -1,8 +1,12 @@
 """Local, deterministic scheduling services shared across feature pages."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
-from backend.app.dependencies import get_cache_coordinator, require_cached_auth_identity
+from backend.app.dependencies import (
+    get_cache_coordinator,
+    remote_session_guard,
+    require_cached_auth_identity,
+)
 from backend.app.schemas.scheduling import (
     ScheduleCandidateConflictModel,
     ScheduleConflictBatchRequest,
@@ -12,6 +16,8 @@ from backend.app.schemas.scheduling import (
 from backend.core.scheduling import check_conflicts, normalize_meeting
 from backend.core.cache.resources import personal_timetable_variant
 from backend.core.auth import NEUAuthClient
+from backend.core.auth.client import NEULoginError
+from backend.core.timetable import TimetableError
 from backend.core.scheduling.models import (
     CandidateConflictResult,
     ConflictStatus,
@@ -26,7 +32,7 @@ def check_schedule_conflicts(
     request: ScheduleConflictBatchRequest,
     auth: NEUAuthClient = Depends(require_cached_auth_identity),
 ) -> ScheduleConflictBatchResponse:
-    """Compare candidates with this account's cached personal timetable."""
+    """Compare candidates with this account's personal timetable."""
 
     entry, baseline_stale = get_cache_coordinator().read(
         account_id=str(auth.username),
@@ -53,6 +59,41 @@ def check_schedule_conflicts(
         if baseline_available
         else []
     )
+    used_live_baseline = False
+    if request.resolve_personal_timetable:
+        try:
+            with remote_session_guard():
+                live_payload = auth.timetable.get_schedule(
+                    mode="personal",
+                    term_code=request.term_code,
+                    campus_code="all",
+                    week=None,
+                )
+            live_courses = live_payload.get("courses") if isinstance(live_payload, dict) else None
+            if isinstance(live_courses, list):
+                baseline = [
+                    normalize_meeting(
+                        row,
+                        term_code=request.term_code,
+                        default_source="personal_timetable",
+                    )
+                    for row in live_courses
+                    if isinstance(row, dict)
+                ]
+                baseline_available = True
+                baseline_stale = False
+                used_live_baseline = True
+        except NEULoginError as error:
+            raise HTTPException(status_code=401, detail="统一认证会话已过期") from error
+        except TimetableError:
+            # Interactive timetable preview checks must never show conflicts
+            # from an older cached schedule when the authoritative same-term
+            # personal timetable cannot be read.  Existing non-interactive
+            # callers keep the original cache-only behavior because they do
+            # not set resolve_personal_timetable.
+            baseline = []
+            baseline_available = False
+            baseline_stale = True
     candidates = [
         normalize_meeting(
             row.model_dump(),
@@ -63,7 +104,11 @@ def check_schedule_conflicts(
         for row in request.candidates
     ]
     results = (
-        check_conflicts(baseline, candidates)
+        check_conflicts(
+            baseline,
+            candidates,
+            ignore_same_course=request.ignore_same_course,
+        )
         if baseline_available
         else tuple(
             CandidateConflictResult(
@@ -89,7 +134,7 @@ def check_schedule_conflicts(
         week=request.week,
         baseline_count=len(baseline),
         baseline_available=baseline_available,
-        baseline_revision=entry.revision if baseline_available else None,
+        baseline_revision=entry.revision if baseline_available and not used_live_baseline else None,
         baseline_stale=bool(baseline_stale or not baseline_available),
         candidate_count=len(candidates),
         results=[

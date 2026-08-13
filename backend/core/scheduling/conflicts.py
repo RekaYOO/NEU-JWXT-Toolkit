@@ -16,6 +16,26 @@ from .models import (
 _CLOCK = re.compile(r"^(\d{1,2}):(\d{2})$")
 
 
+def _normalized_course_name(value: str) -> str:
+    return re.sub(r"\s+", "", value).casefold()
+
+
+def same_course(baseline: ScheduleMeeting, candidate: ScheduleMeeting) -> bool:
+    """Match course identity without conflating similarly named courses.
+
+    A shared official course code is authoritative.  Exact normalized names
+    are used only when either side lacks a course code, because older timetable
+    payloads do not always expose it.
+    """
+    baseline_code = baseline.course_code.strip().casefold()
+    candidate_code = candidate.course_code.strip().casefold()
+    if baseline_code and candidate_code:
+        return baseline_code == candidate_code
+    baseline_name = _normalized_course_name(baseline.course_name)
+    candidate_name = _normalized_course_name(candidate.course_name)
+    return bool(baseline_name and baseline_name == candidate_name)
+
+
 def _minutes(value: str) -> int | None:
     match = _CLOCK.fullmatch(value.strip())
     if not match:
@@ -106,6 +126,8 @@ def compare_meetings(
 def check_conflicts(
     baseline: Iterable[ScheduleMeeting],
     candidates: Iterable[ScheduleMeeting],
+    *,
+    ignore_same_course: bool = False,
 ) -> tuple[CandidateConflictResult, ...]:
     """Evaluate candidates in order; conflict dominates unknown, then clear."""
 
@@ -125,7 +147,11 @@ def check_conflicts(
             or not candidate.weekday
             or not (sections_known or clock_known)
         )
-        comparisons = tuple(compare_meetings(row, candidate) for row in baseline_rows)
+        comparisons = tuple(
+            compare_meetings(row, candidate)
+            for row in baseline_rows
+            if not (ignore_same_course and same_course(row, candidate))
+        )
         relevant = tuple(
             comparison
             for comparison in comparisons

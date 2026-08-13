@@ -30,6 +30,8 @@ import {
   selectDefaultWeek,
   shouldLoadMoreTargets,
   capacityRangeInvalid,
+  conflictCandidateFromCourse,
+  personalConflictMapFromResponse,
   requestErrorText,
   restorePersonalTimetableMemory,
   usableTargetFilterDefinitions,
@@ -44,6 +46,7 @@ jest.mock('../services/api', () => ({
   getTimetableTargetFilterOptions: jest.fn(),
   getTimetableTerms: jest.fn(),
   searchTimetableTargets: jest.fn(),
+  checkScheduleConflicts: jest.fn(),
 }));
 
 
@@ -74,6 +77,32 @@ describe('TimetablePage helpers', () => {
     expect(shouldUsePersonalTimetableCache('personal', '2026-2027-1', '2026-2027-1')).toBe(true);
     expect(shouldUsePersonalTimetableCache('personal', '2025-2026-2', '2026-2027-1')).toBe(false);
     expect(shouldUsePersonalTimetableCache('class', '2026-2027-1', '2026-2027-1')).toBe(false);
+  });
+
+  test('builds a bounded conflict candidate from the displayed meeting', () => {
+    expect(conflictCandidateFromCourse({
+      id: 'row-1', meeting_id: 'meeting-1', course_name: '软件工程', course_code: 'C-1',
+      weeks: [1, 3], weekday: 2, start_section: 3, end_section: 4,
+      teachers: ['不应传输'], title_details: ['不应传输'],
+    })).toEqual(expect.objectContaining({
+      candidate_id: 'meeting-1', course_name: '软件工程', course_code: 'C-1',
+      weeks: [1, 3], weekday: 2, start_section: 3, end_section: 4,
+    }));
+    expect(conflictCandidateFromCourse({ id: 'row-1', course_name: '课程' })).not.toHaveProperty('teachers');
+  });
+
+  test('keeps only hard personal-timetable matches for red conflict markers', () => {
+    const mapped = personalConflictMapFromResponse({ results: [{
+      candidate_id: 'meeting-1',
+      status: 'conflict',
+      matches: [
+        { status: 'conflict', baseline_course_name: '高等数学' },
+        { status: 'unknown', baseline_course_name: '周次不完整课程' },
+      ],
+    }] });
+    expect(mapped['meeting-1'].matches).toEqual([
+      { status: 'conflict', baseline_course_name: '高等数学' },
+    ]);
   });
 
   test('restores the current personal timetable from identity-scoped memory on remount', () => {

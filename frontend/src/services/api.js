@@ -887,6 +887,11 @@ export const getPersonalTimetable = async (termCode, refresh = false) => {
   return response.data;
 };
 
+export const checkScheduleConflicts = async (data) => {
+  const response = await api.post('/api/schedule/conflicts/check', data);
+  return response.data;
+};
+
 // ── 教学质量评价 API ─────────────────────────────────────────────────────────
 
 /**

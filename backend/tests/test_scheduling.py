@@ -165,6 +165,44 @@ def test_conflict_detection_uses_clock_time_when_sections_are_unavailable():
     assert results[1].matches[0].reason == "time_overlap"
 
 
+def test_preview_conflict_detection_ignores_the_same_course_only_when_requested():
+    baseline = meeting(
+        course_name="软件 工程",
+        course_code="C-1",
+        weeks=[2],
+        weekday=1,
+        start_section=1,
+        end_section=2,
+    )
+    same_course = meeting(
+        candidate_id="same",
+        course_name="软件工程",
+        course_code="C-1",
+        weeks=[2],
+        weekday=1,
+        start_section=2,
+        end_section=3,
+    )
+    other_course = meeting(
+        candidate_id="other",
+        course_name="操作系统",
+        course_code="C-2",
+        weeks=[2],
+        weekday=1,
+        start_section=2,
+        end_section=3,
+    )
+
+    ordinary = check_conflicts([baseline], [same_course])[0]
+    preview = check_conflicts(
+        [baseline], [same_course, other_course], ignore_same_course=True
+    )
+
+    assert ordinary.status is ConflictStatus.CONFLICT
+    assert preview[0].status is ConflictStatus.CLEAR
+    assert preview[1].status is ConflictStatus.CONFLICT
+
+
 def test_batch_conflict_route_uses_current_account_term_cache(monkeypatch):
     entry = SimpleNamespace(
         revision="v1:cached",
@@ -239,6 +277,63 @@ def test_batch_conflict_route_returns_unknown_when_cache_is_missing(monkeypatch)
     assert response.results[0].status == "unknown"
 
 
+def test_preview_conflict_check_always_prefers_live_personal_timetable_over_fresh_cache(monkeypatch):
+    cached_entry = SimpleNamespace(
+        revision="v1:old",
+        payload={
+            "term_code": "2025-2026-2",
+            "courses": [{
+                "course_name": "缓存中已不存在的课程",
+                "course_code": "OLD-1",
+                "weeks": [2],
+                "weekday": 1,
+                "start_section": 1,
+                "end_section": 2,
+            }],
+        },
+    )
+    coordinator = SimpleNamespace(read=lambda **_kwargs: (cached_entry, False))
+    monkeypatch.setattr(scheduling_router, "get_cache_coordinator", lambda: coordinator)
+    monkeypatch.setattr(
+        scheduling_router,
+        "remote_session_guard",
+        lambda: __import__("contextlib").nullcontext(),
+    )
+    timetable = SimpleNamespace(get_schedule=lambda **kwargs: {
+        "courses": [{
+            "course_name": "实时个人课程",
+            "course_code": "LIVE-1",
+            "weeks": [2],
+            "weekday": 1,
+            "start_section": 3,
+            "end_section": 4,
+        }],
+    })
+    request = ScheduleConflictBatchRequest(
+        term_code="2025-2026-2",
+        resolve_personal_timetable=True,
+        candidates=[ScheduleMeetingInput(
+            candidate_id="candidate-1",
+            course_name="候选课程",
+            weeks=[2],
+            weekday=1,
+            start_section=1,
+            end_section=2,
+        )],
+    )
+
+    response = scheduling_router.check_schedule_conflicts(
+        request,
+        auth=SimpleNamespace(username="account-a", timetable=timetable),
+    )
+
+    assert response.baseline_available is True
+    assert response.baseline_revision is None
+    assert response.baseline_stale is False
+    assert response.results[0].status == "clear"
+    assert response.results[0].matches == []
+
+
 def test_batch_conflict_route_does_not_treat_malformed_cache_as_an_empty_schedule(monkeypatch):
     entry = SimpleNamespace(
         revision="v1:bad",
@@ -268,7 +363,7 @@ def test_scheduling_contract_bounds_batches_and_rejects_partial_time_ranges():
             term_code="2025-2026-2",
             candidates=[
                 ScheduleMeetingInput(course_name=f"课程{i}")
-                for i in range(101)
+                for i in range(501)
             ],
         )
     with pytest.raises(ValidationError):

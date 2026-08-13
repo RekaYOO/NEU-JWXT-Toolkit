@@ -64,7 +64,9 @@ class ScheduleConflictBatchRequest(BaseModel):
         min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$"
     )
     week: Optional[int] = Field(default=None, ge=1, le=30)
-    candidates: List[ScheduleMeetingInput] = Field(min_length=1, max_length=100)
+    candidates: List[ScheduleMeetingInput] = Field(min_length=1, max_length=500)
+    ignore_same_course: bool = False
+    resolve_personal_timetable: bool = False
 
 
 class ScheduleConflictMatchModel(BaseModel):

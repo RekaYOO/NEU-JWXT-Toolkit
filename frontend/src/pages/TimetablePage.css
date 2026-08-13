@@ -128,6 +128,16 @@
   padding-bottom: 1px;
 }
 
+.timetable-conflict-toggle.is-active {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 9%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-danger) 62%, var(--color-line));
+}
+
+.timetable-conflict-notice {
+  margin-bottom: var(--space-3);
+}
+
 .timetable-target-option {
   min-width: 0;
   display: grid;
@@ -447,6 +457,47 @@
   font-weight: 700;
   line-height: 1.28;
   overflow-wrap: anywhere;
+}
+
+.timetable-course-block.has-personal-conflict .course-title,
+.timetable-cluster-stack-card.has-personal-conflict > strong,
+.timetable-mobile-card.has-personal-conflict .mobile-course-title,
+.timetable-cluster-dialog-item.has-personal-conflict > strong {
+  color: var(--color-danger);
+}
+
+.timetable-course-block.has-personal-conflict,
+.timetable-cluster-stack-card.has-personal-conflict,
+.timetable-mobile-card.has-personal-conflict {
+  border-color: color-mix(in srgb, var(--color-danger) 68%, var(--color-line));
+}
+
+.timetable-personal-conflict-popover {
+  width: min(300px, calc(100vw - 48px));
+  display: grid;
+  gap: 8px;
+}
+
+.timetable-personal-conflict-popover > strong {
+  color: var(--color-danger);
+  font-size: 13px;
+}
+
+.timetable-personal-conflict-popover > div {
+  display: grid;
+  gap: 2px;
+  padding-top: 7px;
+  border-top: 1px solid var(--color-line-soft);
+}
+
+.timetable-personal-conflict-popover b {
+  color: var(--color-ink);
+  font-size: 13px;
+}
+
+.timetable-personal-conflict-popover span {
+  color: var(--color-muted);
+  font-size: 12px;
 }
 
 .course-weeks,

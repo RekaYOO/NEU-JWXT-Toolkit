@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popover,
   Segmented,
   Select,
   Skeleton,
@@ -29,6 +30,7 @@ import {
 } from '../components/mobile/MobileUX';
 import {
   getTimetableContext,
+  checkScheduleConflicts,
   getPersonalTimetable,
   getTimetableSchedule,
   getTimetableTargetFilterOptions,
@@ -69,6 +71,67 @@ const DETAIL_LABELS = {
   major: '专业',
   direction: '专业方向',
 };
+
+export const conflictCandidateFromCourse = course => ({
+  id: String(course.id || ''),
+  meeting_id: String(course.meeting_id || ''),
+  candidate_id: String(course.meeting_id || course.id || ''),
+  course_name: String(course.course_name || '未命名课程'),
+  course_code: String(course.course_code || ''),
+  teaching_class_id: String(course.teaching_class_id || ''),
+  weeks: Array.isArray(course.weeks) ? course.weeks : [],
+  weekday: Number(course.weekday || 0),
+  start_section: Number(course.start_section || 0),
+  end_section: Number(course.end_section || 0),
+  start_time: String(course.start_time || ''),
+  end_time: String(course.end_time || ''),
+  location: String(course.location || ''),
+  campus: String(course.campus || ''),
+});
+
+export const personalConflictMapFromResponse = payload => Object.fromEntries(
+  (payload?.results || []).map(result => [
+    result.candidate_id || result.candidate_meeting_id,
+    {
+      status: result.status,
+      matches: (result.matches || []).filter(match => match.status === 'conflict'),
+    },
+  ]),
+);
+
+const personalConflictForCourse = (course, conflictMap) => (
+  conflictMap[course.meeting_id || course.id] || null
+);
+
+const conflictWeeksText = weeks => formatWeekNumbers(weeks) || '周次待确认';
+
+function PersonalConflictPopover({ course, conflictMap, controlledOpen, children }) {
+  const result = personalConflictForCourse(course, conflictMap);
+  const matches = result?.status === 'conflict' ? result.matches || [] : [];
+  if (!matches.length) return children;
+  const content = (
+    <div className="timetable-personal-conflict-popover">
+      <strong>与我的课表冲突</strong>
+      {matches.map((match, index) => (
+        <div key={`${match.baseline_meeting_id}-${index}`}>
+          <b>{match.baseline_course_name}</b>
+          <span>{conflictWeeksText(match.overlapping_weeks)} · 周{SHORT_WEEKDAY_NAMES[(match.weekday || 1) - 1]}</span>
+          <span>第{match.start_section}–{match.end_section}节</span>
+        </div>
+      ))}
+    </div>
+  );
+  return (
+    <Popover
+      content={content}
+      placement="right"
+      trigger={['hover', 'focus']}
+      {...(controlledOpen == null ? {} : { open: controlledOpen })}
+    >
+      {children}
+    </Popover>
+  );
+}
 
 const TARGET_FILTER_DEFINITIONS = {
   class: [
@@ -873,6 +936,10 @@ function TimetablePage() {
   const [error, setError] = useState(null);
   const [autoNotice, setAutoNotice] = useState('');
   const [detailCourse, setDetailCourse] = useState(null);
+  const [conflictDetectionEnabled, setConflictDetectionEnabled] = useState(false);
+  const [conflictDetectionLoading, setConflictDetectionLoading] = useState(false);
+  const [conflictDetectionError, setConflictDetectionError] = useState('');
+  const [personalConflictMap, setPersonalConflictMap] = useState({});
   const [mobileDay, setMobileDay] = useState(todayWeekday());
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [filterDraft, setFilterDraft] = useState({ termCode: '', campusCode: '', viewMode: 'week' });
@@ -885,6 +952,7 @@ function TimetablePage() {
   const termsGeneration = useRef(0);
   const termsRequestRef = useRef(null);
   const personalGeneration = useRef(0);
+  const conflictGeneration = useRef(0);
   const autoDefaultResolved = useRef(false);
   const targetTimer = useRef(null);
   const targetFilterTimer = useRef(null);
@@ -1351,6 +1419,38 @@ function TimetablePage() {
   }, [campusCode, context, currentTermCode, loadSchedule, mode, termCode, viewMode, weekNumber]);
 
   useEffect(() => {
+    conflictGeneration.current += 1;
+    setPersonalConflictMap({});
+    setConflictDetectionError('');
+    if (!conflictDetectionEnabled || mode === 'personal' || !schedule?.courses?.length || !termCode) {
+      setConflictDetectionLoading(false);
+      return;
+    }
+    const generation = conflictGeneration.current;
+    setConflictDetectionLoading(true);
+    checkScheduleConflicts({
+      term_code: termCode,
+      week: viewMode === 'week' ? weekNumber : null,
+      candidates: schedule.courses.map(conflictCandidateFromCourse),
+      ignore_same_course: true,
+      resolve_personal_timetable: true,
+    }).then(payload => {
+      if (generation !== conflictGeneration.current) return;
+      setPersonalConflictMap(personalConflictMapFromResponse(payload));
+      if (!payload.baseline_available) {
+        setConflictDetectionError('无法读取该学期“我的课表”，暂不能完成冲突检测');
+      } else if (payload.baseline_stale) {
+        setConflictDetectionError('个人课表数据尚未完成核验，暂不把结果标记为确定冲突');
+      }
+    }).catch(requestError => {
+      if (generation !== conflictGeneration.current) return;
+      setConflictDetectionError(requestErrorText(requestError, '冲突检测失败，请重试'));
+    }).finally(() => {
+      if (generation === conflictGeneration.current) setConflictDetectionLoading(false);
+    });
+  }, [conflictDetectionEnabled, mode, schedule, termCode, viewMode, weekNumber]);
+
+  useEffect(() => {
     if (
       !shouldUsePersonalTimetableCache(mode, termCode, currentTermCode)
       || !personalPayload
@@ -1402,6 +1502,12 @@ function TimetablePage() {
     setSchedule(null);
     setDetailCourse(null);
     setError(null);
+    setPersonalConflictMap({});
+    setConflictDetectionError('');
+  };
+
+  const toggleConflictDetection = () => {
+    setConflictDetectionEnabled(enabled => !enabled);
   };
 
   const switchMode = nextMode => {
@@ -1808,6 +1914,16 @@ function TimetablePage() {
         placeholder="选择周次"
       /></label>}
       <Space className="timetable-control-actions">
+        {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
+          ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
+          : '按同学期、同星期、相交周次和重叠节次检测冲突'}>
+          <Button
+            className={conflictDetectionEnabled ? 'is-active timetable-conflict-toggle' : 'timetable-conflict-toggle'}
+            onClick={toggleConflictDetection}
+            loading={conflictDetectionLoading}
+            disabled={!schedule?.courses?.length}
+          >冲突检测</Button>
+        </Tooltip>}
         <Tooltip title={schedule?.last_update
           ? `最后保存: ${new Date(schedule.last_update).toLocaleString('zh-CN', { hour12: false })}`
           : '点击刷新课表'}>
@@ -1847,6 +1963,17 @@ function TimetablePage() {
               : '点击刷新课表'}>
               <Button aria-label="刷新课表" icon={<ReloadOutlined />} onClick={loadSchedule} disabled={!context || !campusCode} loading={loading} />
             </Tooltip>
+            {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
+              ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
+              : '检测与“我的课表”的时间冲突'}>
+              <Button
+                aria-label="冲突检测"
+                className={conflictDetectionEnabled ? 'is-active timetable-conflict-toggle' : 'timetable-conflict-toggle'}
+                onClick={toggleConflictDetection}
+                loading={conflictDetectionLoading}
+                disabled={!schedule?.courses?.length}
+              >冲突</Button>
+            </Tooltip>}
           </div>
           {viewMode === 'week' && context?.weeks?.length > 0 && (
             <MobileWeekTimeline
@@ -1861,6 +1988,10 @@ function TimetablePage() {
 
       {mode === 'personal' && autoNotice && (
         <Alert type="info" showIcon message={autoNotice} className="timetable-auto-notice" />
+      )}
+
+      {mode !== 'personal' && conflictDetectionEnabled && conflictDetectionError && (
+        <Alert type="warning" showIcon message={conflictDetectionError} className="timetable-conflict-notice" />
       )}
 
       {target && mode !== 'personal' && !isMobile && (
@@ -1907,6 +2038,7 @@ function TimetablePage() {
                   currentWeekNumber={effectiveCurrentWeekNumber}
                   onDayChange={setMobileDay}
                   onCourseClick={setDetailCourse}
+                  personalConflictMap={personalConflictMap}
                 />
               </div>
               <div className={isMobile ? 'timetable-screen-desktop-hidden' : ''}>
@@ -1925,6 +2057,7 @@ function TimetablePage() {
                     currentWeekNumber: effectiveCurrentWeekNumber,
                   })}
                   onCourseClick={setDetailCourse}
+                  personalConflictMap={personalConflictMap}
                 />
               </div>
             </>
@@ -2148,6 +2281,7 @@ function DesktopTimetable({
   currentWeekNumber,
   showToday,
   onCourseClick,
+  personalConflictMap,
 }) {
   const [expandedCluster, setExpandedCluster] = useState(null);
   const [activeClusterCourse, setActiveClusterCourse] = useState(null);
@@ -2206,11 +2340,13 @@ function DesktopTimetable({
                 const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber });
                 const contextText = courseContextText(course, mode);
                 const sectionText = `第${course.start_section}${course.end_section !== course.start_section ? `–${course.end_section}` : ''}节`;
+                const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
                 return (
+                  <PersonalConflictPopover course={course} conflictMap={personalConflictMap}>
                   <button
                     type="button"
                     key={`${course.id}-${course.start_section}-${groupIndex}`}
-                    className={`timetable-course-block${course.hasActualConflict ? ' has-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
+                    className={`timetable-course-block${course.hasActualConflict ? ' has-conflict' : ''}${hasPersonalConflict ? ' has-personal-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
                     style={{ top, height, left: 3, width: 'calc(100% - 6px)', '--course-color': course.color }}
                     onClick={() => onCourseClick(course)}
                     aria-label={`${content.name}，${content.location}，${name}${sectionText}${viewMode === 'term' ? `，${formatWeekNumbers(course.weeks) || '周次待确认'}` : ''}`}
@@ -2221,6 +2357,7 @@ function DesktopTimetable({
                     {contextText && <span className="course-context">{contextText}</span>}
                     <span className="course-secondary">{uniqueTexts([content.type, sectionText]).join(' · ')}</span>
                   </button>
+                  </PersonalConflictPopover>
                 );
               }
               const metrics = clusterLayoutMetrics(
@@ -2255,11 +2392,11 @@ function DesktopTimetable({
                     const hovered = stackLayout.courses.slice().reverse().find(item => (
                       localY >= item.top && localY <= item.top + item.height
                     ));
-                    if (hovered && hovered.courseIndex !== activeIndex) {
+                    if (hovered) {
                       setActiveClusterCourse({ groupKey, courseIndex: hovered.courseIndex });
                     }
                   }}
-                  onMouseLeave={() => setActiveClusterCourse({ groupKey, courseIndex: 0 })}
+                  onMouseLeave={() => setActiveClusterCourse(null)}
                   onClick={event => {
                     const localY = event.clientY - event.currentTarget.getBoundingClientRect().top;
                     const selected = stackLayout.courses.slice().reverse().find(item => (
@@ -2289,10 +2426,20 @@ function DesktopTimetable({
                     const lowerReserve = firstLowerItem
                       ? Math.max(itemLayout.top + itemLayout.height - firstLowerItem.top, 0)
                       : 0;
+                    const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
                     return (
+                      <PersonalConflictPopover
+                        course={course}
+                        conflictMap={personalConflictMap}
+                        controlledOpen={Boolean(
+                          hasPersonalConflict
+                          && activeClusterCourse?.groupKey === groupKey
+                          && activeClusterCourse?.courseIndex === courseIndex
+                        )}
+                      >
                       <button
                         type="button"
-                        className={`timetable-cluster-stack-card${isExpanded ? ' is-expanded' : ' is-folded'}${course.hasActualConflict ? ' has-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
+                        className={`timetable-cluster-stack-card${isExpanded ? ' is-expanded' : ' is-folded'}${course.hasActualConflict ? ' has-conflict' : ''}${hasPersonalConflict ? ' has-personal-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
                         style={{
                           top: itemLayout.top,
                           height: itemLayout.height,
@@ -2318,6 +2465,7 @@ function DesktopTimetable({
                         {content.type && <span className="timetable-cluster-stack-detail">{content.type}</span>}
                         {course.hasActualConflict && <small>{isExpanded ? '同周时间冲突' : '冲突'}</small>}
                       </button>
+                      </PersonalConflictPopover>
                     );
                   })}
                   {hasHiddenCourses && (
@@ -2355,10 +2503,12 @@ function DesktopTimetable({
         {(expandedCluster?.courses || []).map((course, index) => {
           const content = courseCardContent(course);
           const sectionText = `第${course.start_section}${course.end_section !== course.start_section ? `–${course.end_section}` : ''}节`;
+          const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
           return (
+            <PersonalConflictPopover course={course} conflictMap={personalConflictMap}>
             <button
               type="button"
-              className="timetable-cluster-dialog-item"
+              className={`timetable-cluster-dialog-item${hasPersonalConflict ? ' has-personal-conflict' : ''}`}
               key={`${course.id}-${index}`}
               onClick={() => { setExpandedCluster(null); onCourseClick(course); }}
             >
@@ -2366,6 +2516,7 @@ function DesktopTimetable({
               <span>{sectionText} · {formatWeekNumbers(course.weeks) || '周次待确认'}</span>
               <span>{content.location}</span>
             </button>
+            </PersonalConflictPopover>
           );
         })}
       </div>
@@ -2442,6 +2593,7 @@ function MobileTimetable({
   currentWeekNumber,
   onDayChange,
   onCourseClick,
+  personalConflictMap,
 }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -2464,11 +2616,13 @@ function MobileTimetable({
         {courses.length ? courses.map((course, index) => {
           const content = courseCardContent(course);
           const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber });
+          const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
           return (
+            <PersonalConflictPopover course={course} conflictMap={personalConflictMap}>
             <Card
               key={`${course.id}-${course.start_section}-${index}`}
               size="small"
-              className={`timetable-mobile-card${happeningNow ? ' is-course-now' : ''}`}
+              className={`timetable-mobile-card${hasPersonalConflict ? ' has-personal-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
               style={{ '--course-color': course.color }}
               onClick={() => onCourseClick(course)}
               role="button"
@@ -2489,6 +2643,7 @@ function MobileTimetable({
               <span className="mobile-course-location"><EnvironmentOutlined /> {content.location}</span>
               {content.type && <span className="mobile-course-type">{content.type}</span>}
             </Card>
+            </PersonalConflictPopover>
           );
         }) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这一天没有课程，可切换其他日期" />}
       </div>
