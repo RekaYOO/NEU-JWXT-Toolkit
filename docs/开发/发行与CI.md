@@ -93,10 +93,7 @@ SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Acti
      单实例、关闭浏览器后再次启动恢复页面，以及关闭；
    - Linux tar 包解压后，从解压目录启动服务，验证健康检查、首页、未授权状态和
      命令行健康检查；
-5. 选择 Defender Platform 目录中的最新扫描器、更新安全智能，以禁用自动处置的方式
-   扫描最终 Windows ZIP 和解压目录；禁用处置后检出会返回非零并显示在命令输出中，工作流
-   同时核对扫描前后文件摘要。检测、文件变化、扫描器/服务不可用、安全智能过期或扫描失败
-   都会使 Windows 任务失败，不上传该候选包；
+5. 生成 Windows 安全状态说明，明确未签名、未发布安装器且自动杀毒扫描不作为发行门禁；
 6. 生成排序稳定的 `SHA256SUMS.txt`，为所有发行文件生成 GitHub artifact
    attestation，并上传到同一个 GitHub Release。
 
@@ -115,15 +112,11 @@ Windows 版本、企业安全策略、代理配置和真实升级场景的人工
 普通 ZIP 中发布；无签名安装器暂停发布。文本版 CompanyName/ProductName 只便于识别，
 不能建立 Windows 发布者信誉。
 
-每次 Windows 构建都会附带 `WINDOWS-SECURITY-STATUS.txt`，明确记录 standalone 打包策略和本次
-Defender 状态。`passed` 只表示最终 ZIP 与解压目录在当时 runner 上以禁用自动处置方式
-扫描、MpCmdRun 返回 0 且文件摘要未变化。扫描器不可用不会降级发布；校验和、GitHub
-构建来源证明和安全软件检测分别回答不同问题，不能互相替代，也不作长期“无病毒”声明。
-
-Defender 检测记录包括 `WINDOWS-SECURITY-STATUS.txt` 中的结果，以及 Release Actions
-中“Scan final Windows artifacts with Microsoft Defender”步骤的日志和结论。后者还记录
-引擎与安全智能版本。它只是当时 runner 上一个引擎版本的扫描结果；某次扫描为 `passed`，
-不能扩展解释为所有环境、所有时间均无风险。
+每次 Windows 构建都会附带 `WINDOWS-SECURITY-STATUS.txt`，明确记录 standalone 打包策略、
+未签名状态和安全验证边界。自动杀毒扫描不再作为发行门禁：GitHub 托管 runner 上的云端
+启发式结果可能随安全智能和文件信誉变化，同一份可信源码的构建也可能得到不稳定结论。
+发行流程继续验证程序结构、敏感文件排除、真实启动链、SHA-256 和 GitHub artifact
+attestation；这些验证与终端安全软件检测回答不同问题，不能互相替代，也不作“无病毒”声明。
 
 收到 Defender/SmartScreen 告警时：
 
@@ -174,8 +167,8 @@ GitHub Actions 构建身份的关联，不审计源码逻辑、不提供 Authent
 - Windows 自动化必须验收解压后的便携包、PE 版本资源和真实启动链；正式发布仍应在
   未安装 Python/Node.js 的干净 Windows 10/11 环境，从浏览器下载后抽查保留、解压和启动。
 - Linux 应验证安装、重启、升级成功、健康检查失败回滚和两种反向代理。
-- 检查 Actions 中 Windows standalone 打包声明和 Defender 步骤的实际结论；扫描器、
-  服务或新鲜安全智能不可用时必须阻止 Windows 产物发布。
+- 检查 Actions 中 Windows standalone 构建、便携包启动验收、敏感文件排除、校验和与
+  artifact attestation 的实际结论。
 - 下载 Release 成品后复核 `SHA256SUMS.txt` 和 artifact attestation，不能只校验
   Actions 中间产物。
 - 正式模式只绑定 `127.0.0.1`，不启用跨域白名单以外的访问，也不公开 Swagger/OpenAPI。

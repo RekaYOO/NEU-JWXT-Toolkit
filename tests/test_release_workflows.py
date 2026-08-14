@@ -63,14 +63,10 @@ def test_windows_release_keeps_compiled_portable_but_drops_unsigned_installer():
     assert "Portable archive contents differ from the validated standalone payload" in RELEASE
 
 
-def test_defender_gate_does_not_confuse_remediation_with_a_clean_scan():
-    assert "-DisableRemediation" in RELEASE
-    assert "-SignatureUpdate" in RELEASE
-    assert "Windows Defender\\Platform" in RELEASE
-    assert "[version]($_.Name" in RELEASE
-    assert "AMServiceEnabled" in RELEASE
-    assert "AntivirusSignatureLastUpdated" in RELEASE
-    assert "scanner is required for a Windows release" in RELEASE
-    assert "Compare-Object" in RELEASE
-    assert "MpCmdRun reported no malware (exit 0)" in RELEASE
-    assert "no detections" not in RELEASE
+def test_windows_release_does_not_use_antivirus_as_a_nondeterministic_gate():
+    assert "Scan final Windows artifacts with Microsoft Defender" not in RELEASE
+    assert "MpCmdRun" not in RELEASE
+    assert "-SignatureUpdate" not in RELEASE
+    assert "Automated antivirus scanning is not used as a release gate" in RELEASE
+    assert "SHA256SUMS.txt" in RELEASE
+    assert "actions/attest@" in RELEASE

@@ -42,10 +42,9 @@ gh attestation verify .\NEU-JWXT-Toolkit-<版本>-windows-x64-portable.zip `
 ```
 
 发行物还包含 `WINDOWS-SECURITY-STATUS.txt`，记录 compiled standalone 打包策略、
-安装器暂停状态以及 Defender 验证状态。扫描会先更新安全智能并确认服务正常，随后禁用
-自动处置、保留完整命令输出并核对扫描前后文件摘要；扫描器、服务或新鲜安全智能不可用时，
-Windows 发行任务会直接失败，不会上传该候选包。即使门禁通过，文件也不会声称“无病毒”。
-SHA-256、GitHub 来源证明和 Defender 检测含义不同；任何一项都不能单独证明软件绝对安全。
+安装器暂停状态以及安全验证边界。由于未签名程序的云端启发式检测结果会随安全智能和文件
+信誉变化，自动杀毒扫描不再作为发行门禁。发行流程仍会验证程序结构、启动与关闭流程、
+敏感文件排除、SHA-256 清单和 GitHub 构建来源证明，但这些验证都不能单独证明软件绝对安全。
 
 如果 Defender 或 SmartScreen 告警，不要关闭实时防护，也不要添加整个目录到排除项。
 先停止运行并记录版本、下载地址、SHA-256、检测名称和截图，再核对校验和与 GitHub
@@ -53,7 +52,7 @@ SHA-256、GitHub 来源证明和 Defender 检测含义不同；任何一项都�
 保持文件隔离，并通过
 [Microsoft Security Intelligence 样本提交入口](https://www.microsoft.com/en-us/wdsi/filesubmission)
 申报疑似误报。
-不要因为 CI 曾扫描通过就绕过单位安全策略或强行运行。
+不要因为文件来自 GitHub Actions 就绕过单位安全策略或强行运行。
 
 ## 启动与退出
 

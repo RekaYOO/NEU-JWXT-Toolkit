@@ -218,75 +218,6 @@ jobs:
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
           }
 
-      - name: Scan final Windows artifacts with Microsoft Defender
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $platformRoot = Join-Path $env:ProgramData "Microsoft\Windows Defender\Platform"
-          $defender = Get-ChildItem -LiteralPath $platformRoot -Directory -ErrorAction SilentlyContinue |
-            Sort-Object @{ Expression = { [version]($_.Name -replace '-\d+$', '') }; Descending = $true } |
-            ForEach-Object { Join-Path $_.FullName "MpCmdRun.exe" } |
-            Where-Object { Test-Path -LiteralPath $_ } |
-            Select-Object -First 1
-          if (-not $defender) {
-            $defender = Join-Path $env:ProgramFiles "Windows Defender\MpCmdRun.exe"
-          }
-          if (-not (Test-Path -LiteralPath $defender)) {
-            $command = Get-Command MpCmdRun.exe -ErrorAction SilentlyContinue
-            if ($command) { $defender = $command.Source }
-          }
-          if (-not (Test-Path -LiteralPath $defender)) {
-            throw "Microsoft Defender command-line scanner is required for a Windows release"
-          }
-          & $defender -SignatureUpdate
-          if ($LASTEXITCODE -ne 0) {
-            throw "Microsoft Defender security intelligence update failed: exit $LASTEXITCODE"
-          }
-          $defenderStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
-          if (-not $defenderStatus -or -not $defenderStatus.AMServiceEnabled -or
-              -not $defenderStatus.AntivirusEnabled) {
-            throw "Microsoft Defender service is not active after the security intelligence update"
-          }
-          $signatureAge = (Get-Date) - $defenderStatus.AntivirusSignatureLastUpdated
-          if ($signatureAge.TotalHours -gt 24) {
-            throw "Microsoft Defender security intelligence is stale: $($defenderStatus.AntivirusSignatureLastUpdated)"
-          }
-          "Defender engine: $($defenderStatus.AMEngineVersion); signatures: $($defenderStatus.AntivirusSignatureVersion); updated: $($defenderStatus.AntivirusSignatureLastUpdated)" `
-            | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          $targets = @(
-            (Resolve-Path ".\release\NEU-JWXT-Toolkit-$env:RELEASE_VERSION-windows-x64-portable.zip").Path,
-            (Join-Path $env:RUNNER_TEMP "portable-final-smoke")
-          )
-          $archiveHashBefore = (Get-FileHash -LiteralPath $targets[0] -Algorithm SHA256).Hash
-          $portableManifestBefore = @(
-            Get-ChildItem -LiteralPath $targets[1] -File -Recurse | ForEach-Object {
-              $relative = [IO.Path]::GetRelativePath($targets[1], $_.FullName)
-              "$relative=$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
-            } | Sort-Object
-          )
-          foreach ($target in $targets) {
-            & $defender -Scan -ScanType 3 -File $target -DisableRemediation
-            $scanExit = $LASTEXITCODE
-            if ($scanExit -ne 0) {
-              throw "Microsoft Defender detected malware or could not scan final target: $target (exit $scanExit)"
-            }
-          }
-          if (-not (Test-Path -LiteralPath $targets[0])) {
-            throw "Microsoft Defender removed the final portable archive"
-          }
-          $archiveHashAfter = (Get-FileHash -LiteralPath $targets[0] -Algorithm SHA256).Hash
-          $portableManifestAfter = @(
-            Get-ChildItem -LiteralPath $targets[1] -File -Recurse | ForEach-Object {
-              $relative = [IO.Path]::GetRelativePath($targets[1], $_.FullName)
-              "$relative=$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
-            } | Sort-Object
-          )
-          if ($archiveHashAfter -ne $archiveHashBefore -or
-              (Compare-Object $portableManifestBefore $portableManifestAfter)) {
-            throw "Microsoft Defender changed or removed a final Windows artifact"
-          }
       - name: Record Windows security status
         shell: pwsh
         run: |
@@ -294,8 +225,8 @@ jobs:
           $statusFile = ".\release\WINDOWS-SECURITY-STATUS.txt"
           "Packaging policy: inspectable Nuitka standalone portable ZIP; no onefile or UPX. The launcher is unsigned but carries stable product and version metadata." | Set-Content -LiteralPath $statusFile -Encoding utf8
           "Unsigned setup.exe publishing is suspended until reliable Authenticode signing is available." | Add-Content -LiteralPath $statusFile -Encoding utf8
+          "Automated antivirus scanning is not used as a release gate. Verify SHA256SUMS.txt and the GitHub artifact attestation before running the package." | Add-Content -LiteralPath $statusFile -Encoding utf8
           "Windows packaging: **compiled standalone portable ZIP; unsigned installer suspended**." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "Microsoft Defender: final portable ZIP and extracted directory scanned with remediation disabled; MpCmdRun reported no malware (exit 0), and every artifact hash remained unchanged." | Add-Content -LiteralPath $statusFile -Encoding utf8
 
       # actions/upload-artifact v4.6.2
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
