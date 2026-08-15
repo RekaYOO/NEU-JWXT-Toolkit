@@ -1017,7 +1017,7 @@ class JwxkSessionClient:
         step = _find_named_number(context, {
             "weightStep", "bidStep", "QZBC",
         }) or 1
-        selected = self.get_selected(batch_code=batch_code)
+        selected = self.get_selected(batch_code=batch_code, include_withdrawal=False)
         devoted = sum(
             int(row.get("devoted_weight") or 0)
             for row in selected.get("volunteered") or []
@@ -1249,17 +1249,19 @@ class JwxkSessionClient:
         course_code: str,
         weight: int | None,
         confirm_risk: bool,
+        skip_preflight_checks: bool = False,
     ) -> dict[str, Any]:
         batch = self._batch_for_mutation(batch_code)
-        official = self.get_selected(batch_code=batch_code)
-        duplicate = next((
-            row for row in [*(official.get("selected") or []), *(official.get("volunteered") or [])]
-            if course_code and _text(row.get("course_code")).casefold() == _text(course_code).casefold()
-        ), None)
-        if duplicate is not None:
-            raise JwxkError(
-                f"已选课程中已存在同课程代码“{_text(duplicate.get('course_name')) or course_code}”，不能重复选择"
-            )
+        if not skip_preflight_checks:
+            official = self.get_selected(batch_code=batch_code, include_withdrawal=False)
+            duplicate = next((
+                row for row in [*(official.get("selected") or []), *(official.get("volunteered") or [])]
+                if course_code and _text(row.get("course_code")).casefold() == _text(course_code).casefold()
+            ), None)
+            if duplicate is not None:
+                raise JwxkError(
+                    f"已选课程中已存在同课程代码“{_text(duplicate.get('course_name')) or course_code}”，不能重复选择"
+                )
         item, mutation_class_type = self._resolve_mutation_class(
             batch=batch,
             batch_code=batch_code,
@@ -1269,15 +1271,16 @@ class JwxkSessionClient:
         )
         if _text(item.get("hasTest")) == "1":
             raise JwxkError("该课程必须同时选择实验班，请刷新后在实验班选择器中完成")
-        eligibility = self._check_one_course_eligibility(
-            batch_code=batch_code,
-            class_id=class_id,
-            secret_val=_text(item.get("secretVal")),
-        )
-        if eligibility["status"] == "unavailable":
-            raise JwxkError(eligibility["reason"] or "当前轮次不可选择该教学班")
-        if eligibility["status"] != "selectable":
-            raise JwxkError("暂时无法确认该教学班是否可选，请稍后重新核验")
+        if not skip_preflight_checks:
+            eligibility = self._check_one_course_eligibility(
+                batch_code=batch_code,
+                class_id=class_id,
+                secret_val=_text(item.get("secretVal")),
+            )
+            if eligibility["status"] == "unavailable":
+                raise JwxkError(eligibility["reason"] or "当前轮次不可选择该教学班")
+            if eligibility["status"] != "selectable":
+                raise JwxkError("暂时无法确认该教学班是否可选，请稍后重新核验")
         data = {
             "clazzType": mutation_class_type,
             "clazzId": class_id,
@@ -1314,17 +1317,21 @@ class JwxkSessionClient:
         *,
         batch_code: str,
         class_id: str,
+        selection_source: str = "",
         confirm_risk: bool,
     ) -> dict[str, Any]:
         batch = self._batch_for_mutation(batch_code)
         self._activate_batch(batch_code)
         item = None
         source = ""
-        for path, source_name in (
+        feeds = [
             ("/xsxk/elective/select", "yxkcyx"),
             ("/xsxk/volunteer/select", "fakcyx"),
             ("/xsxk/volunteer/xgxk/select", "xgxkyx"),
-        ):
+        ]
+        if selection_source:
+            feeds.sort(key=lambda feed: feed[1] != selection_source)
+        for path, source_name in feeds:
             try:
                 rows = self._post_form(path).get("data") or []
             except JwxkError:
@@ -1419,14 +1426,15 @@ class JwxkSessionClient:
             "courses": normalize_course_rows(data.get("rows")),
         }
 
-    def get_selected(self, *, batch_code: str) -> dict[str, Any]:
+    def get_selected(self, *, batch_code: str, include_withdrawal: bool = True) -> dict[str, Any]:
         self._activate_batch(batch_code)
         feeds = (
             ("selected", "/xsxk/elective/select"),
             ("volunteered", "/xsxk/volunteer/select"),
             ("general_volunteered", "/xsxk/volunteer/xgxk/select"),
-            ("withdrawal", "/xsxk/elective/neu/deselect"),
         )
+        if include_withdrawal:
+            feeds = (*feeds, ("withdrawal", "/xsxk/elective/neu/deselect"))
         rows_by_feed: dict[str, list[dict[str, Any]]] = {}
         failures: list[tuple[str, Exception]] = []
         for name, path in feeds:
@@ -1451,7 +1459,7 @@ class JwxkSessionClient:
         selected = rows_by_feed["selected"]
         volunteered = rows_by_feed["volunteered"]
         general_volunteered = rows_by_feed["general_volunteered"]
-        withdrawal = rows_by_feed["withdrawal"]
+        withdrawal = rows_by_feed.get("withdrawal", [])
         def tagged(rows, source):
             return [
                 {**row, "_selection_source": source}
@@ -1477,8 +1485,7 @@ class JwxkSessionClient:
         if batch is None:
             raise JwxkError("选课轮次不存在或当前账号不可见")
         menu_codes = [str(item.get("code") or "") for item in batch.menus if str(item.get("code") or "")]
-        round_scopes = [code for code in menu_codes if code != "ALLKC"] or (["ALLKC"] if "ALLKC" in menu_codes else [])
-        all_scopes = list(dict.fromkeys(menu_codes or round_scopes))
+        round_scopes = [code for code in menu_codes if code != "ALLKC"]
         effective_scope = scope if scope in menu_codes or scope in {"ALL", "ROUND"} else "ALL"
         campus = normalize_jwxk_campus_code(campus)
         self._activate_batch(batch_code)
@@ -1558,7 +1565,9 @@ class JwxkSessionClient:
             merged_courses: list[dict[str, Any]] = []
             round_tags_by_code: dict[str, set[str]] = {}
             merged_total = 0
-            aggregate_scopes = all_scopes if effective_scope == "ALL" else round_scopes
+            # “所有课程”是本轮业务入口的聚合，不包含官方的全校课程查询。
+            # ALLKC 仍可通过独立分类查询并进入完整轮次归档。
+            aggregate_scopes = round_scopes
             for round_scope in aggregate_scopes:
                 scope_total, scope_courses = scan_scope(round_scope)
                 merged_total += scope_total

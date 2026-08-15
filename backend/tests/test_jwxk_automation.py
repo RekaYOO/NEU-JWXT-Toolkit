@@ -359,8 +359,20 @@ def test_union_catalog_archive_merges_sources_filters_and_paginates(tmp_path):
 
     assert result["total"] == 1
     assert result["groups"][0]["course_code"] == "A"
-    assert result["groups"][0]["source_tags"] == ["全校课程查询", "培养方案内课"]
+    assert result["groups"][0]["source_tags"] == ["培养方案内课"]
     assert result["groups"][0]["classes"][0]["teaching_class_type"] == "FANKC"
+
+    merged = service.query_catalog_archive(
+        "student", batch_code="batch", page_number=1, page_size=20, scope="ALL",
+    )
+    assert {group["course_code"] for group in merged["groups"]} == {"A"}
+    assert merged["groups"][0]["source_tags"] == ["培养方案内课"]
+    assert merged["groups"][0]["classes"][0]["source_scopes"] == ["FANKC"]
+
+    all_school = service.query_catalog_archive(
+        "student", batch_code="batch", page_number=1, page_size=20, scope="ALLKC",
+    )
+    assert {group["course_code"] for group in all_school["groups"]} == {"A", "B"}
 
 
 def test_archive_filters_match_campus_code_name_and_category_aliases(tmp_path):

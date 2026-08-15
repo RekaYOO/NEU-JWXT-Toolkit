@@ -11,10 +11,13 @@ import {
   mergeCatalogFilterLayers,
   matchesCatalogAvailability,
   sameSelectionCourse,
+  patchCatalogSelection,
+  removeSelectionRecord,
   selectionParticipantCount,
   selectionParticipantLabel,
   sortCatalogGroupsBySelectability,
   summarizeSelectionConflictsByClass,
+  upsertSelectionRecord,
 } from './jwxkSchedule';
 
 test('participant metric follows grab and weight round semantics', () => {
@@ -84,6 +87,34 @@ test('same course is ignored by code and normalized name fallback', () => {
     meeting({ course_code: '', course_name: '课程 A' }),
     meeting({ course_code: '', course_name: '课程A' }),
   )).toBe(true);
+});
+
+test('manual mutations patch only the affected selected record and course group', () => {
+  const original = [{ class_id: 'A-1', course_code: 'A', course_name: '课程A' }, {
+    class_id: 'B-1', course_code: 'B', course_name: '课程B',
+  }];
+  const updated = upsertSelectionRecord(original, {
+    class_id: 'A-1', course_code: 'A', course_name: '课程A', devoted_weight: 20,
+  });
+  expect(updated).toHaveLength(2);
+  expect(updated.find(item => item.class_id === 'A-1').devoted_weight).toBe(20);
+  expect(removeSelectionRecord(updated, { class_id: 'A-1', course_code: 'A' })).toEqual([
+    expect.objectContaining({ class_id: 'B-1' }),
+  ]);
+
+  const groups = patchCatalogSelection([{
+    group_id: 'A', course_code: 'A', classes: [
+      { class_id: 'A-1', course_code: 'A' },
+      { class_id: 'A-2', course_code: 'A' },
+    ],
+  }, {
+    group_id: 'B', course_code: 'B', classes: [{ class_id: 'B-1', course_code: 'B' }],
+  }], { class_id: 'A-1', course_code: 'A' }, { selected: true, devotedWeight: 20 });
+  expect(groups[0].classes).toEqual([
+    expect.objectContaining({ class_id: 'A-1', selected: true, course_already_selected: true, devoted_weight: 20 }),
+    expect.objectContaining({ class_id: 'A-2', selected: false, course_already_selected: true }),
+  ]);
+  expect(groups[1].classes[0].course_already_selected).toBeUndefined();
 });
 
 test('selection mutation is only confirmed by the official selected record', () => {
@@ -179,6 +210,28 @@ test('catalog keeps unavailable courses but places them after selectable courses
   }]);
   expect(sorted.map(group => group.group_id)).toEqual(['mixed', 'pending', 'unavailable']);
   expect(sorted[0].classes.map(course => course.class_id)).toEqual(['open', 'full']);
+});
+
+test('catalog places task-recommended courses first within the same availability state', () => {
+  const sorted = sortCatalogGroupsBySelectability([{
+    group_id: 'ordinary',
+    classes: [{ class_id: 'ordinary-class', eligibility_status: 'selectable', source_scopes: ['ALLKC'] }],
+  }, {
+    group_id: 'recommended-by-scope',
+    classes: [{ class_id: 'recommended-class', eligibility_status: 'selectable', source_scopes: ['TJKC', 'ALLKC'] }],
+  }, {
+    group_id: 'recommended-by-tag',
+    source_tags: ['任务推荐班课程', '全校课程查询'],
+    classes: [{ class_id: 'tagged-class', eligibility_status: 'selectable', source_scopes: ['ALLKC'] }],
+  }, {
+    group_id: 'recommended-but-unavailable',
+    source_tags: ['任务推荐班课程'],
+    classes: [{ class_id: 'unavailable-class', eligibility_status: 'unavailable', source_scopes: ['TJKC'] }],
+  }]);
+
+  expect(sorted.map(group => group.group_id)).toEqual([
+    'recommended-by-scope', 'recommended-by-tag', 'ordinary', 'recommended-but-unavailable',
+  ]);
 });
 
 test('academic-plan gaps map to official task category and nature filters', () => {

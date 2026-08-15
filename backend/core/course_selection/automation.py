@@ -323,16 +323,18 @@ class CourseSelectionAutomationService:
         remote_filters = filters or {}
 
         def matches(course: dict[str, Any]) -> bool:
+            provenance_scopes = {
+                str(value or "") for value in course.get("source_scopes") or []
+            } or {str(course.get("teaching_class_type") or "")}
             course_scopes = {
                 str(course.get("teaching_class_type") or ""),
-                *(str(value or "") for value in course.get("source_scopes") or []),
+                *provenance_scopes,
             }
-            if scope not in {"", "ALL"}:
-                if scope == "ROUND":
-                    if not any(value not in {"", "ALL", "ALLKC"} for value in course_scopes):
-                        return False
-                elif scope not in course_scopes:
+            if scope in {"", "ALL", "ROUND"}:
+                if not any(value not in {"", "ALL", "ROUND", "ALLKC"} for value in provenance_scopes):
                     return False
+            elif scope not in course_scopes:
+                return False
             if query and query not in " ".join((
                 str(course.get("course_code") or ""),
                 str(course.get("course_name") or ""),
@@ -392,6 +394,18 @@ class CourseSelectionAutomationService:
             return True
 
         courses = [course for course in archive.get("courses") or [] if matches(course)]
+        if scope in {"", "ALL", "ROUND"}:
+            courses = [{
+                **course,
+                "source_scopes": [
+                    value for value in course.get("source_scopes") or []
+                    if str(value or "") != "ALLKC"
+                ],
+                "source_tags": [
+                    value for value in course.get("source_tags") or []
+                    if str(value or "") not in {"ALLKC", "全校课程查询"}
+                ],
+            } for course in courses]
         if scope not in {"", "ALL", "ROUND"}:
             courses = [
                 {

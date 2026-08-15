@@ -288,6 +288,7 @@ def search_jwxk_courses(
 def get_jwxk_selected(
     request: JwxkBatchRequest,
     response: Response,
+    include_market: bool = Query(default=True),
     storage: Storage = Depends(get_storage),
 ) -> JwxkSelectedResponse:
     response.headers["Cache-Control"] = "no-store"
@@ -297,6 +298,8 @@ def get_jwxk_selected(
             item for key in ("selected", "volunteered", "withdrawal")
             for item in result.get(key) or [] if isinstance(item, dict)
         ]
+        if not include_market:
+            return result
         live_by_class: dict[str, dict] = {}
         seen: set[tuple[str, str]] = set()
         for item in rows:
@@ -1122,6 +1125,7 @@ def select_jwxk_course(
             course_code=request.course_code,
             weight=request.weight,
             confirm_risk=request.confirm_risk,
+            skip_preflight_checks=request.preflight_verified,
         )
         term_code = str(result.pop("_term_code", ""))
         if result.get("success"):
@@ -1148,6 +1152,7 @@ def deselect_jwxk_course(
         result = _jwxk_mutation_client(auth, storage).deselect_course(
             batch_code=request.batch_code,
             class_id=request.class_id,
+            selection_source=request.selection_source,
             confirm_risk=request.confirm_risk,
         )
         term_code = str(result.pop("_term_code", ""))

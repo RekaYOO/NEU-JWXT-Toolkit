@@ -113,6 +113,7 @@ function App() {
     : null;
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [initialAuthSlow, setInitialAuthSlow] = useState(false);
   const [userInfo, setUserInfo] = useState(null);
   const [accessState, setAccessState] = useState({
     required: false,
@@ -185,11 +186,14 @@ function App() {
         console.log('后端服务未就绪，以未登录状态启动');
       } finally {
         setIsLoading(false);
+        setInitialAuthSlow(false);
       }
     };
-    // 即使请求卡住，最多等3秒就强制显示页面
+    // 认证状态请求可能正在等待共享教务 Session 锁。三秒后只更新提示，
+    // 不能在状态尚未返回时按初始 false 渲染登录路由，否则刷新业务页会
+    // 被错误导航到 /login，并丢失原始深链接。
     const timer = setTimeout(() => {
-      setIsLoading(false);
+      setInitialAuthSlow(true);
     }, 3000);
     
     init();
@@ -307,7 +311,7 @@ function App() {
     return (
       <div className="loading" role="status" aria-live="polite">
         <Spin size="large" />
-        <span>正在连接教务服务</span>
+        <span>{initialAuthSlow ? '正在恢复登录状态，请稍候' : '正在连接教务服务'}</span>
       </div>
     );
   }

@@ -275,10 +275,12 @@ class JwxkCourseSelectRequest(JwxkBatchRequest):
     course_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     weight: int | None = Field(default=None, ge=5, le=150)
     confirm_risk: bool = False
+    preflight_verified: bool = False
 
 
 class JwxkCourseDeselectRequest(JwxkBatchRequest):
     class_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    selection_source: Literal["yxkcyx", "fakcyx", "xgxkyx", ""] = ""
     confirm_risk: bool = False
 
 

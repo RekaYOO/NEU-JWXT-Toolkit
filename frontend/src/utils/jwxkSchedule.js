@@ -136,12 +136,26 @@ const catalogClassRank = course => {
   return 0;
 };
 
+const isTaskRecommendedCourse = course => (
+  (course?.source_scopes || []).some(value => String(value || '').toUpperCase() === 'TJKC')
+  || (course?.source_tags || []).some(value => (
+    String(value || '').toUpperCase() === 'TJKC'
+    || String(value || '').includes('任务推荐班')
+  ))
+);
+
+const isTaskRecommendedGroup = group => (
+  isTaskRecommendedCourse(group)
+  || (group?.classes || []).some(isTaskRecommendedCourse)
+);
+
 /** 保留所有课程，只把不可选教学班和只含不可选班的课程组放到末尾。 */
 export const sortCatalogGroupsBySelectability = groups => [...(groups || [])]
   .map(group => ({
     ...group,
     classes: [...(group.classes || [])].sort((left, right) => (
       catalogClassRank(left) - catalogClassRank(right)
+      || Number(isTaskRecommendedCourse(right)) - Number(isTaskRecommendedCourse(left))
       || Number(selectionParticipantCount(left) || 0) - Number(selectionParticipantCount(right) || 0)
       || String(left.teacher || '').localeCompare(String(right.teacher || ''), 'zh-CN')
     )),
@@ -149,6 +163,7 @@ export const sortCatalogGroupsBySelectability = groups => [...(groups || [])]
   .sort((left, right) => (
     Math.min(...(left.classes || []).map(catalogClassRank), 4)
     - Math.min(...(right.classes || []).map(catalogClassRank), 4)
+    || Number(isTaskRecommendedGroup(right)) - Number(isTaskRecommendedGroup(left))
   ));
 
 export const sameSelectionCourse = (left, right) => {
@@ -157,6 +172,40 @@ export const sameSelectionCourse = (left, right) => {
   if (leftCode && rightCode) return leftCode === rightCode;
   return Boolean(normalizedName(left.course_name) && normalizedName(left.course_name) === normalizedName(right.course_name));
 };
+
+const sameSelectionRecord = (left, right) => {
+  const leftClassId = String(left?.class_id || '').trim();
+  const rightClassId = String(right?.class_id || '').trim();
+  if (leftClassId && rightClassId) return leftClassId === rightClassId;
+  return sameSelectionCourse(left || {}, right || {});
+};
+
+export const upsertSelectionRecord = (records = [], record = {}) => [
+  ...(records || []).filter(item => !sameSelectionRecord(item, record)),
+  record,
+];
+
+export const removeSelectionRecord = (records = [], target = {}) => (
+  (records || []).filter(item => !sameSelectionRecord(item, target))
+);
+
+export const patchCatalogSelection = (groups = [], target = {}, {
+  selected = false,
+  devotedWeight = null,
+} = {}) => (groups || []).map(group => {
+  const groupMatches = sameSelectionCourse(group, target)
+    || (group.classes || []).some(course => sameSelectionCourse(course, target));
+  if (!groupMatches) return group;
+  return {
+    ...group,
+    classes: (group.classes || []).map(course => ({
+      ...course,
+      selected: selected && sameSelectionRecord(course, target),
+      course_already_selected: selected,
+      devoted_weight: selected && sameSelectionRecord(course, target) ? devotedWeight : null,
+    })),
+  };
+});
 
 /**
  * 官方写接口的 code=200 只代表请求被受理。只有已选/已投列表中出现

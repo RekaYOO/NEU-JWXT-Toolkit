@@ -663,6 +663,42 @@ def test_deselect_uses_the_official_source_for_each_selection_result(
     )]
 
 
+def test_deselect_prefers_the_known_selection_source():
+    calls = []
+
+    class Auth:
+        timeout = 10
+
+    class Client(JwxkSessionClient):
+        def get_context(self):
+            return {"batches": [JwxkBatch(
+                code="batch", name="权重轮次", term_code="2026-2027-1", term_name="秋季",
+                begin_time="", end_time="", selection_type="权重", selection_type_code="04",
+                tactic_name="可选可退", course_types=("FANKC",), need_confirm=False,
+                notice="", state="active", can_enter=True, account_selectable=True,
+                confirmed=True,
+            )]}
+
+        def _post_form(self, path, data=None):
+            calls.append(path)
+            if path == "/xsxk/volunteer/select":
+                return {"data": [{
+                    "JXBID": "CLASS-1", "KCH": "COURSE-1", "teachingClassType": "FANKC",
+                    "secretVal": "server-secret",
+                }]}
+            return {"data": []}
+
+        def _post_mutation(self, path, data, *, confirm_risk):
+            return {"success": True, "message": "退选成功"}
+
+    result = Client(Auth()).deselect_course(
+        batch_code="batch", class_id="CLASS-1", selection_source="fakcyx", confirm_risk=True,
+    )
+
+    assert result["success"] is True
+    assert calls[:2] == ["/xsxk/elective/user", "/xsxk/volunteer/select"]
+
+
 def test_deselect_does_not_submit_when_class_is_absent_from_official_results():
     class Auth:
         timeout = 10
@@ -920,6 +956,7 @@ def test_catalog_time_slot_matches_classes_covering_the_selected_section():
 
     result = Client(type("Auth", (), {})()).search_catalog(
         batch_code="batch", page_number=1, page_size=20,
+        scope="ALLKC",
         time_slot={"weekday": 1, "section": 2},
     )
 
@@ -964,7 +1001,7 @@ def test_round_catalog_uses_real_menu_scopes_and_merges_plan_courses():
     assert result["scope_options"][0] == {"code": "ALL", "name": "所有课程"}
 
 
-def test_all_catalog_merges_every_official_scope_and_deduplicates_classes():
+def test_all_catalog_excludes_the_all_school_query_scope():
     batch = JwxkBatch(
         code="batch", name="选课", term_code="2026-2027-1", term_name="秋季",
         begin_time="", end_time="", selection_type="抢选", selection_type_code="02",
@@ -1001,14 +1038,11 @@ def test_all_catalog_merges_every_official_scope_and_deduplicates_classes():
         batch_code="batch", page_number=1, page_size=20, scope="ALL",
     )
 
-    assert calls == ["FANKC", "ALLKC"]
-    assert {group["course_code"] for group in result["groups"]} == {"A", "B"}
+    assert calls == ["FANKC"]
+    assert {group["course_code"] for group in result["groups"]} == {"A"}
     shared = next(group for group in result["groups"] if group["course_code"] == "A")
     assert shared["classes"][0]["teaching_class_type"] == "FANKC"
-    assert shared["source_tags"] == ["全校课程查询", "培养方案内课"]
-    all_only = next(group for group in result["groups"] if group["course_code"] == "B")
-    assert all_only["classes"][0]["teaching_class_type"] == "TJKC"
-    assert all_only["classes"][0]["source_scopes"] == ["ALLKC"]
+    assert shared["source_tags"] == ["培养方案内课"]
 
 
 def test_scope_category_and_campus_filters_use_codes_without_losing_alias_matches():

@@ -36,6 +36,7 @@ import {
   capacityRangeInvalid,
   conflictCandidateFromCourse,
   personalConflictMapFromResponse,
+  mergeScheduleWithSelectionOverlays,
   requestErrorText,
   restorePersonalTimetableMemory,
   usableTargetFilterDefinitions,
@@ -106,6 +107,37 @@ describe('TimetablePage helpers', () => {
     expect(TIMETABLE_MODES.map(item => item.key)).toEqual([
       'personal', 'class', 'teacher', 'room',
     ]);
+  });
+
+  test('removes an already selected overlay from the first timetable frame', () => {
+    const personal = [{
+      id: 'personal-1', course_code: 'A100', course_name: '物流与供应链管理',
+      weekday: 1, start_section: 1, end_section: 2,
+    }];
+    const overlays = [{
+      id: 'selected-1', course_code: 'A100', course_name: '物流与供应链管理',
+      weekday: 1, start_section: 1, end_section: 2, layer: 'selected',
+    }, {
+      id: 'candidate-1', course_code: 'B200', course_name: '候选课程',
+      weekday: 2, start_section: 3, end_section: 4, layer: 'candidate',
+    }];
+
+    expect(mergeScheduleWithSelectionOverlays(personal, overlays).map(item => item.id)).toEqual([
+      'personal-1', 'candidate-1',
+    ]);
+  });
+
+  test('does not mark duplicate representations of the same course as a conflict', () => {
+    const grouped = groupDayCourses([{
+      id: 'personal-1', course_code: 'A100', course_name: '物流与供应链管理',
+      weekday: 1, weeks: [1, 2], start_section: 1, end_section: 2,
+    }, {
+      id: 'selected-1', course_code: 'A100', course_name: '物流与供应链管理',
+      weekday: 1, weeks: [1, 2], start_section: 1, end_section: 2, layer: 'selected',
+    }]);
+
+    expect(grouped[0].courses.every(course => course.hasActualConflict === false)).toBe(true);
+    expect(layoutDayCourses(grouped[0].courses).every(course => course.hasActualConflict === false)).toBe(true);
   });
 
   test('uses timetable cache only for the personal current term', () => {

@@ -30,11 +30,14 @@ import {
   matchAcademicGapCatalogFilters,
   mergeCatalogFilterLayers,
   matchesCatalogAvailability,
+  patchCatalogSelection,
+  removeSelectionRecord,
   sameSelectionCourse,
   selectionParticipantCount,
   selectionParticipantLabel,
   sortCatalogGroupsBySelectability,
   summarizeSelectionConflictsByClass,
+  upsertSelectionRecord,
 } from '../utils/jwxkSchedule';
 import {
   collectAcademicPlanDeficits,
@@ -197,6 +200,19 @@ const selectionScheduleFromRecords = courses => ({
   }))),
 });
 
+const selectionRecordsFromResponse = result => {
+  const confirmed = (result?.selected || []).map(item => ({
+    ...item, selection_record_type: 'selected',
+  }));
+  const volunteered = (result?.volunteered || []).map(item => ({
+    ...item, selection_record_type: 'volunteered',
+  }));
+  const merged = [...new Map([...confirmed, ...volunteered].map(item => [
+    item.class_id || `${item.course_code}:${item.course_name}`, item,
+  ])).values()];
+  return { confirmed, volunteered, merged };
+};
+
 const CourseSelectionWorkspacePage = () => {
   const { batchCode } = useParams();
   const navigate = useNavigate();
@@ -210,6 +226,7 @@ const CourseSelectionWorkspacePage = () => {
   const focusInProgressRef = useRef(false);
   const capacityRefreshInFlightRef = useRef(false);
   const tasksRefreshInFlightRef = useRef(false);
+  const selectedRef = useRef([]);
   const [status, setStatus] = useState(null);
   const [localBatch, setLocalBatch] = useState(null);
   const [savedTermCode, setSavedTermCode] = useState('');
@@ -463,20 +480,51 @@ const CourseSelectionWorkspacePage = () => {
     }
   };
 
-  const loadSelected = async ({ silent = false, propagateError = false } = {}) => {
+  const commitSelectedRecords = records => {
+    selectedRef.current = records;
+    setSelected(records);
+    setSchedule(selectionScheduleFromRecords(records));
+  };
+
+  const removeSelectedCourseLocally = course => {
+    commitSelectedRecords(removeSelectionRecord(selectedRef.current, course));
+    setConfirmedSelected(previous => removeSelectionRecord(previous, course));
+    setGroups(previous => patchCatalogSelection(previous, course, { selected: false }));
+  };
+
+  const upsertSelectedCourseLocally = (record, { confirmed = false } = {}) => {
+    commitSelectedRecords(upsertSelectionRecord(selectedRef.current, record));
+    setConfirmedSelected(previous => confirmed
+      ? upsertSelectionRecord(previous, record)
+      : removeSelectionRecord(previous, record));
+    setGroups(previous => patchCatalogSelection(previous, record, {
+      selected: true,
+      devotedWeight: record.devoted_weight ?? null,
+    }));
+  };
+
+  const optimisticSelectionRecord = (group, course, weight) => ({
+    ...course,
+    course_name: group.course_name || course.course_name,
+    course_code: group.course_code || course.course_code,
+    devoted_weight: weight,
+    selected: batch?.selection_type_code !== '04',
+    course_already_selected: true,
+    selection_record_type: batch?.selection_type_code === '04' ? 'volunteered' : 'selected',
+    selection_source: batch?.selection_type_code === '04' ? 'fakcyx' : 'yxkcyx',
+  });
+
+  const loadSelected = async ({ silent = false, propagateError = false, includeMarket = true } = {}) => {
     if (silent) setSelectedRefreshing(true);
     else setLoading(true);
     try {
       const result = await getJwxkSelected(
         batchCode,
-        silent ? { skipAuthRedirect: true } : {},
+        { ...(silent ? { skipAuthRedirect: true } : {}), includeMarket },
       );
-      const confirmed = (result.selected || []).map(item => ({ ...item, selection_record_type: 'selected' }));
-      const volunteered = (result.volunteered || []).map(item => ({ ...item, selection_record_type: 'volunteered' }));
-      const merged = [...confirmed, ...volunteered];
+      const { confirmed, merged } = selectionRecordsFromResponse(result);
       setConfirmedSelected(confirmed);
-      setSelected([...new Map(merged.map(item => [item.class_id || `${item.course_code}:${item.course_name}`, item])).values()]);
-      setSchedule(selectionScheduleFromRecords(merged));
+      commitSelectedRecords(merged);
       setSelectedUpdatedAt(new Date());
       return merged;
     } catch (error) {
@@ -489,27 +537,24 @@ const CourseSelectionWorkspacePage = () => {
     }
   };
 
-  const verifySubmittedSelection = async (group, course, acknowledgement) => {
+  const verifySubmittedSelection = async (group, course) => {
     const generation = workspaceGeneration.current;
-    const messageKey = `jwxk-selection-${course.class_id}`;
     const actionName = batch?.selection_type_code === '04' ? '投权' : '选课';
-    message.loading({
-      key: messageKey,
-      content: `官方已返回“${acknowledgement.message || '操作成功'}”，正在核验${actionName}结果…`,
-      duration: 0,
-    });
     setPendingVerificationClassIds(previous => [...new Set([...previous, course.class_id])]);
     try {
-      let records = null;
+      let snapshot = null;
       let matched = null;
       let lastError = null;
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        if (attempt) await new Promise(resolve => window.setTimeout(resolve, 1200));
+        await new Promise(resolve => window.setTimeout(resolve, attempt === 0 ? 250 : 1200));
         try {
-          records = await loadSelected({ silent: true, propagateError: true });
+          const result = await getJwxkSelected(batchCode, {
+            includeMarket: false, skipAuthRedirect: true,
+          });
+          snapshot = selectionRecordsFromResponse(result);
           lastError = null;
           if (generation !== workspaceGeneration.current) return;
-          matched = records && findMatchingSelectionRecord(records, {
+          matched = findMatchingSelectionRecord(snapshot.merged, {
             ...course,
             course_name: group.course_name || course.course_name,
             course_code: group.course_code || course.course_code,
@@ -521,24 +566,68 @@ const CourseSelectionWorkspacePage = () => {
       }
       if (generation !== workspaceGeneration.current) return;
       if (matched) {
-        message.success({
-          key: messageKey,
-          content: `${actionName}已在官方结果中确认`,
-          duration: 3,
+        upsertSelectedCourseLocally(matched, {
+          confirmed: matched.selection_record_type === 'selected',
+        });
+      } else if (lastError) {
+        message.warning({
+          content: `${actionName}已收到官方成功响应，但后台暂时无法读取结果；前台不会因此阻塞`,
+          duration: 7,
         });
       } else {
+        removeSelectedCourseLocally(course);
         message.warning({
-          key: messageKey,
-          content: lastError
-            ? `官方已受理，但暂时无法读取${actionName}结果，请稍后在“已选结果”核对`
-            : `官方虽返回“${acknowledgement.message || '操作成功'}”，但已投结果中没有这门课，本次不能视为成功`,
+          content: `后台核验未在官方结果中找到“${group.course_name || course.course_name}”，已纠正本地显示`,
           duration: 7,
         });
       }
     } finally {
       if (generation === workspaceGeneration.current) {
         setPendingVerificationClassIds(previous => previous.filter(value => value !== course.class_id));
-        void loadCatalog(page, keyword, scope, timeSlot, effectiveCatalogFilters, weekday, { silent: true });
+      }
+    }
+  };
+
+  const verifyDeselectedCourse = async (course, { optimisticRemoved = false } = {}) => {
+    const generation = workspaceGeneration.current;
+    setPendingVerificationClassIds(previous => [...new Set([...previous, course.class_id])]);
+    try {
+      let matched = null;
+      let lastError = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await new Promise(resolve => window.setTimeout(resolve, attempt === 0 ? 250 : 1200));
+        try {
+          const result = await getJwxkSelected(batchCode, {
+            includeMarket: false, skipAuthRedirect: true,
+          });
+          const snapshot = selectionRecordsFromResponse(result);
+          if (generation !== workspaceGeneration.current) return;
+          matched = findMatchingSelectionRecord(snapshot.merged, course);
+          lastError = null;
+          if (!matched) {
+            if (!optimisticRemoved) removeSelectedCourseLocally(course);
+            return;
+          }
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (generation !== workspaceGeneration.current) return;
+      if (matched) {
+        if (optimisticRemoved) {
+          upsertSelectedCourseLocally(matched, {
+            confirmed: matched.selection_record_type === 'selected',
+          });
+          message.warning(`后台核验发现“${course.course_name}”仍在官方结果中，已恢复本地显示`);
+        } else {
+          message.info(`“${course.course_name}”仍在官方处理中，稍后会继续按实时结果更新`);
+        }
+      } else if (lastError) {
+        message.warning('退选已收到官方成功响应，但后台结果暂时无法读取；前台不会因此阻塞');
+      }
+    } finally {
+      if (generation === workspaceGeneration.current) {
+        setPendingVerificationClassIds(previous => previous.filter(value => value !== course.class_id));
       }
     }
   };
@@ -591,6 +680,7 @@ const CourseSelectionWorkspacePage = () => {
     setPlan([]);
     setPlanGroupConfigs([]);
     setSelected([]);
+    selectedRef.current = [];
     setConfirmedSelected([]);
     setSchedule(null);
     setTasks([]);
@@ -652,12 +742,9 @@ const CourseSelectionWorkspacePage = () => {
     }).catch(error => message.warning(error.message || '暂时无法刷新选课轮次状态，已继续显示本地数据'));
     getJwxkSelected(batchCode).then(result => {
       if (generation !== workspaceGeneration.current) return;
-      const confirmed = (result.selected || []).map(item => ({ ...item, selection_record_type: 'selected' }));
-      const volunteered = (result.volunteered || []).map(item => ({ ...item, selection_record_type: 'volunteered' }));
-      const merged = [...confirmed, ...volunteered];
+      const { confirmed, merged } = selectionRecordsFromResponse(result);
       setConfirmedSelected(confirmed);
-      setSelected([...new Map(merged.map(item => [item.class_id || `${item.course_code}:${item.course_name}`, item])).values()]);
-      setSchedule(selectionScheduleFromRecords(merged));
+      commitSelectedRecords(merged);
     }).catch(() => {
       // 已选结果暂不可用时仍允许浏览目录；后端提交前仍会执行同课程代码防重。
     });
@@ -921,11 +1008,22 @@ const CourseSelectionWorkspacePage = () => {
         }
         const key = course.class_id; setActionLoading(key);
         try {
-          const result = await selectJwxkCourse({ batch_code: batchCode, teaching_class_type: course.teaching_class_type || scope, class_id: course.class_id, course_code: course.course_code, weight, confirm_risk: true });
+          const result = await selectJwxkCourse({ batch_code: batchCode, teaching_class_type: course.teaching_class_type || scope, class_id: course.class_id, course_code: course.course_code, weight, confirm_risk: true, preflight_verified: course.eligibility_status === 'selectable' });
           if (!result.success) {
             message.warning(result.message || '官方没有受理本次提交');
             return;
           }
+          if (!result.queued) {
+            const record = optimisticSelectionRecord(group, course, weight);
+            upsertSelectedCourseLocally(record, {
+              confirmed: record.selection_record_type === 'selected',
+            });
+          }
+          message[result.queued ? 'info' : 'success'](
+            result.queued
+              ? (result.message || '已提交至官方队列，后台将继续核验')
+              : (result.message || (batch?.selection_type_code === '04' ? '投权成功' : '选课成功')),
+          );
           void verifySubmittedSelection(group, course, result);
         } catch (error) {
           message.error(error.message || '提交失败');
@@ -960,10 +1058,6 @@ const CourseSelectionWorkspacePage = () => {
     manualSelect(group, verifiedCourse);
   };
 
-  const refreshAfterCourseMutation = async () => {
-    await Promise.all([loadSelected(), loadCatalog(page)]);
-  };
-
   const confirmDeselect = course => {
     if (!isCurrentBatchSelectionRecord(course, batch?.selection_type_code)) {
       message.warning('这不是当前轮次的课程记录，不能在本轮执行退选');
@@ -973,7 +1067,7 @@ const CourseSelectionWorkspacePage = () => {
       title: `确认退选“${course.course_name}”吗？`,
       content: batch?.selection_type_code === '04' && course.selection_record_type === 'volunteered'
         ? `当前投入 ${course.devoted_weight ?? 0} 点权重。退选确认后，官方通常会返还本轮投入的权重。`
-        : '提交后请等待官方结果刷新；结果不明确时不会自动重复退选。',
+        : '官方明确返回成功后会立即从当前页面移除，后台再静默核验最终结果。',
       okButtonProps: { danger: true },
       okText: '确认退选',
       cancelText: '取消',
@@ -981,10 +1075,17 @@ const CourseSelectionWorkspacePage = () => {
         setActionLoading(course.class_id);
         try {
           const result = await deselectJwxkCourse({
-            batch_code: batchCode, class_id: course.class_id, confirm_risk: true,
+            batch_code: batchCode, class_id: course.class_id, selection_source: course.selection_source || '', confirm_risk: true,
           });
-          message[result.success ? 'success' : 'warning'](result.message);
-          await refreshAfterCourseMutation();
+          if (!result.success) {
+            message.warning(result.message || '官方没有受理本次退选');
+            return;
+          }
+          if (!result.queued) removeSelectedCourseLocally(course);
+          message[result.queued ? 'info' : 'success'](
+            result.queued ? (result.message || '退选已进入官方队列') : (result.message || '退选成功'),
+          );
+          void verifyDeselectedCourse(course, { optimisticRemoved: !result.queued });
         } finally {
           setActionLoading('');
         }
@@ -1043,27 +1144,25 @@ const CourseSelectionWorkspacePage = () => {
         setActionLoading(course.class_id);
         try {
           const removed = await deselectJwxkCourse({
-            batch_code: batchCode, class_id: selectedRecord.class_id, confirm_risk: true,
+            batch_code: batchCode, class_id: selectedRecord.class_id, selection_source: selectedRecord.selection_source || '', confirm_risk: true,
           });
           if (!removed.success) {
             message.warning(removed.message || '退选未成功，未执行重新投权');
             return;
           }
-          let removalConfirmed = false;
-          for (let attempt = 0; attempt < 8; attempt += 1) {
-            await new Promise(resolve => window.setTimeout(resolve, 750));
-            const result = await getJwxkSelected(batchCode);
+          let removalConfirmed = removed.success && !removed.queued;
+          for (let attempt = 0; !removalConfirmed && attempt < 3; attempt += 1) {
+            await new Promise(resolve => window.setTimeout(resolve, attempt === 0 ? 200 : 500));
+            const result = await getJwxkSelected(batchCode, { includeMarket: false });
             const remaining = [...(result.selected || []), ...(result.volunteered || [])];
-            if (!remaining.some(item => item.class_id === selectedRecord.class_id)) {
-              removalConfirmed = true;
-              break;
-            }
+            removalConfirmed = !remaining.some(item => item.class_id === selectedRecord.class_id);
           }
           if (!removalConfirmed) {
             message.warning('退选已提交，但官方尚未确认移除；为避免重复占用权重，本次没有继续重投，请刷新后重试调整。');
-            await refreshAfterCourseMutation();
+            void verifyDeselectedCourse(selectedRecord);
             return;
           }
+          removeSelectedCourseLocally(selectedRecord);
           const reapplied = await selectJwxkCourse({
             batch_code: batchCode,
             teaching_class_type: course.teaching_class_type || selectedRecord.teaching_class_type || scope,
@@ -1071,11 +1170,22 @@ const CourseSelectionWorkspacePage = () => {
             course_code: course.course_code || group.course_code,
             weight: nextWeight,
             confirm_risk: true,
+            preflight_verified: true,
           });
-          message[reapplied.success ? 'success' : 'warning'](
-            reapplied.success ? `已按 ${nextWeight} 点重新投放，等待官方结果确认` : (reapplied.message || '重新投权失败'),
+          if (!reapplied.success) {
+            message.warning(reapplied.message || '重新投权失败');
+            return;
+          }
+          if (!reapplied.queued) {
+            const record = optimisticSelectionRecord(group, course, nextWeight);
+            upsertSelectedCourseLocally(record);
+          }
+          message[reapplied.queued ? 'info' : 'success'](
+            reapplied.queued
+              ? `已按 ${nextWeight} 点提交至官方队列，后台将继续核验`
+              : `已按 ${nextWeight} 点重新投放`,
           );
-          await refreshAfterCourseMutation();
+          void verifySubmittedSelection(group, course, reapplied);
         } finally {
           setActionLoading('');
         }

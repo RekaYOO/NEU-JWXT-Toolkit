@@ -40,6 +40,7 @@ import {
 } from '../services/api';
 import { useResourceMemory } from '../resources/ResourceStore';
 import { compareAcademicTermsNewestFirst } from '../utils/termSort';
+import { sameSelectionCourse } from '../utils/jwxkSchedule';
 import { loadSetting, saveSetting } from '../utils/settings';
 import './TimetablePage.css';
 
@@ -333,7 +334,11 @@ export const layoutDayCourses = (courses = []) => {
       ...course,
       lane,
       laneCount,
-      hasActualConflict: group.some(other => other !== course && courseIntersects(course, other)),
+      hasActualConflict: group.some(other => (
+        other !== course
+        && !sameSelectionCourse(course, other)
+        && courseIntersects(course, other)
+      )),
     }));
   });
 };
@@ -367,10 +372,23 @@ export const groupDayCourses = (courses = []) => {
       ...group,
       courses: orderedCourses.map(course => ({
       ...course,
-      hasActualConflict: group.courses.some(other => other !== course && courseIntersects(course, other)),
+      hasActualConflict: group.courses.some(other => (
+        other !== course
+        && !sameSelectionCourse(course, other)
+        && courseIntersects(course, other)
+      )),
       })),
     };
   });
+};
+
+export const mergeScheduleWithSelectionOverlays = (scheduleCourses = [], overlayCourses = []) => {
+  const baseline = Array.isArray(scheduleCourses) ? scheduleCourses : [];
+  const overlays = (Array.isArray(overlayCourses) ? overlayCourses : []).filter(overlay => (
+    overlay?.layer !== 'selected'
+    || !baseline.some(course => sameSelectionCourse(course, overlay))
+  ));
+  return [...baseline, ...overlays];
 };
 
 export const clusterLayoutMetrics = (
@@ -1939,7 +1957,7 @@ function TimetablePage({
       || !course.weeks.length
       || course.weeks.includes(weekNumber)
     )) : [];
-    [...(schedule?.courses || []), ...visibleOverlayCourses].forEach(course => {
+    mergeScheduleWithSelectionOverlays(schedule?.courses || [], visibleOverlayCourses).forEach(course => {
       if (result[course.weekday]) result[course.weekday].push(course);
     });
     return result;

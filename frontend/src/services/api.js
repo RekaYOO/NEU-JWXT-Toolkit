@@ -944,11 +944,13 @@ export const searchJwxkCourses = async (payload, config = {}) => {
 };
 
 export const getJwxkSelected = async (batchCode, config = {}) => {
+  const { includeMarket, ...requestConfig } = config;
   const response = await api.post('/api/course-selection/jwxk/selected', {
     batch_code: batchCode,
   }, {
+    params: includeMarket === false ? { include_market: false } : undefined,
     authRecoveryScope: 'jwxk',
-    ...config,
+    ...requestConfig,
   });
   return response.data;
 };
