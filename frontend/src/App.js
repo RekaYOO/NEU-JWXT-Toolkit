@@ -21,6 +21,8 @@ import TimetablePage from './pages/TimetablePage';
 import CourseOutlinePage from './pages/CourseOutlinePage';
 import AcademicDocumentsPage from './pages/AcademicDocumentsPage';
 import CourseSelectionPage from './pages/CourseSelectionPage';
+import CourseSelectionWorkspacePage from './pages/CourseSelectionWorkspacePage';
+import CourseSelectionArchivePage from './pages/CourseSelectionArchivePage';
 import SystemSettingsPage from './pages/SystemSettingsPage';
 import AccessLoginPage from './pages/AccessLoginPage';
 import { checkStatus, getAccessStatus, getHealth, getOfflineStatus } from './services/api';
@@ -397,6 +399,8 @@ function App() {
               <Route path="exams" element={featureAvailable('exams', { offlineMode, offlineCapabilities }) ? <ExamPage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="timetable" element={featureAvailable('timetable', { offlineMode, offlineCapabilities }) ? <TimetablePage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="course-selection" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="course-selection/archive/:archiveId" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionArchivePage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="course-selection/:batchCode/*" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionWorkspacePage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="course-outlines" element={featureAvailable('course-outlines', { offlineMode, offlineCapabilities }) ? <CourseOutlinePage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="logs" element={<Navigate to="/system-settings?tab=logs" replace />} />
               <Route path="system-settings" element={featureAvailable('system-settings', { offlineMode, offlineCapabilities }) ? <SystemSettingsPage /> : <Navigate to={offlineDefaultPath} />} />

@@ -59,6 +59,18 @@ MUTATION_POLICIES = {
         "evaluation.batch",
         refetches=("evaluation-tasks", "evaluation-courses"),
     ),
+    "jwxk.confirm": _policy(
+        "jwxk.confirm",
+        refetches=("jwxk-context",),
+    ),
+    "jwxk.select": _policy(
+        "jwxk.select", "personal-timetable",
+        refetches=("jwxk-selected",),
+    ),
+    "jwxk.deselect": _policy(
+        "jwxk.deselect", "personal-timetable",
+        refetches=("jwxk-selected",),
+    ),
 }
 
 

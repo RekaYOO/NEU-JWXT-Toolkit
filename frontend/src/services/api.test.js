@@ -200,3 +200,40 @@ describe('API silent authentication recovery', () => {
     expect(client.request).not.toHaveBeenCalled();
   });
 });
+
+describe('JWXK mutation authentication boundary', () => {
+  test('write requests opt out of frontend replay because backend recovers before mutation', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.post.mockResolvedValue({ data: { success: true } });
+
+    await apiModule.confirmJwxkBatch('BATCH-1');
+    await apiModule.selectJwxkCourse({ batch_code: 'BATCH-1' });
+    await apiModule.deselectJwxkCourse({ batch_code: 'BATCH-1' });
+    await apiModule.applyJwxkWeights({ batch_code: 'BATCH-1', items: [] });
+
+    expect(client.post).toHaveBeenNthCalledWith(
+      1,
+      '/api/course-selection/jwxk/batches/confirm',
+      { batch_code: 'BATCH-1', acknowledged: true },
+      { skipAuthRedirect: true },
+    );
+    expect(client.post).toHaveBeenNthCalledWith(
+      2,
+      '/api/course-selection/jwxk/courses/select',
+      { batch_code: 'BATCH-1' },
+      { skipAuthRedirect: true },
+    );
+    expect(client.post).toHaveBeenNthCalledWith(
+      3,
+      '/api/course-selection/jwxk/courses/deselect',
+      { batch_code: 'BATCH-1' },
+      { skipAuthRedirect: true },
+    );
+    expect(client.post).toHaveBeenNthCalledWith(
+      4,
+      '/api/course-selection/jwxk/weights/apply',
+      { batch_code: 'BATCH-1', items: [] },
+      { skipAuthRedirect: true },
+    );
+  });
+});

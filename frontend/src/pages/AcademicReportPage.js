@@ -27,6 +27,7 @@ import {
 } from '../utils/tableFilters';
 import {
   calculateContentAwareColumnWidths,
+  collectAcademicPlanDeficits,
   getAcademicRuleDeficitText,
   isElectiveCategory,
   isRequiredCategory,
@@ -321,116 +322,11 @@ const buildTreeData = (categories, expandedKeys = []) => {
   return traverse(categories);
 };
 
-// 获取显示名称（如果是"选修"或"必修"，则往上取一层）
-const getCategoryDisplayName = (node) => {
-  // 如果当前不是"选修"或"必修"，直接返回当前名称
-  if (node.name !== '选修' && node.name !== '必修') {
-    return node.name;
-  }
-  
-  // 如果当前是"选修"或"必修"，取父节点名称
-  if (node.path_array && node.path_array.length >= 2) {
-    // 倒数第二个就是父节点名称
-    return node.path_array[node.path_array.length - 2];
-  }
-  
-  return node.name;
-};
-
-// 找到所有需要统计的类别（叶节点或要求学分>0的节点）
-const findLeafCategories = (categories, filterFn) => {
-  const toSummaryItem = (node, remainingCredits) => {
-    const pendingCourses = (node.courses || []).filter(course =>
-      course.is_selected && !course.is_passed
-    );
-    return {
-      wid: node.wid,
-      name: getCategoryDisplayName(node),
-      originalName: node.name,
-      path: node.path,
-      path_array: node.path_array,
-      required_credits: node.required_credits,
-      earned_credits: node.earned_credits,
-      remaining_credits: remainingCredits,
-      missing_course_count: node.missing_course_count || 0,
-      missing_group_count: node.missing_group_count || 0,
-      pending_course_count: pendingCourses.length,
-      pending_credits: pendingCourses.reduce(
-        (sum, course) => sum + Number(course.credit || 0),
-        0
-      ),
-      is_completed: node.is_completed
-    };
-  };
-
-  const collect = (nodes, parentNode = null) => {
-    const result = [];
-    nodes.forEach(node => {
-      const childItems = node.children
-        ? collect(node.children, node)
-        : [];
-
-      const isDirectDoubleConstraintChild =
-        Boolean(parentNode?.requires_child_minimums_and_total);
-      if (!filterFn(node) && !isDirectDoubleConstraintChild) {
-        result.push(...childItems);
-        return;
-      }
-
-      if (node.required_credits <= 0) {
-        result.push(...childItems);
-        return;
-      }
-
-      const childrenAllZero = node.children && node.children.every(child =>
-        child.required_credits === 0 && (!child.children || child.children.length === 0)
-      );
-      const hasCountRuleDeficit =
-        (node.missing_course_count || 0) > 0 ||
-        (node.missing_group_count || 0) > 0;
-      const childCreditDeficit = childItems.reduce(
-        (sum, item) => sum + (item.remaining_credits || 0),
-        0
-      );
-
-      // 双重约束父组及其直接子类采用自底向上的增量差额：孙类先
-      // 计入，当前层只补尚未覆盖的部分，从而既不遗漏非叶子子类的
-      // 最低要求，也不会与父级总量要求重复累计。
-      const isDoubleConstraintLevel =
-        node.requires_child_minimums_and_total ||
-        isDirectDoubleConstraintChild;
-      if (isDoubleConstraintLevel) {
-        const ownCreditDeficit = node.requires_child_minimums_and_total
-          ? (node.aggregate_remaining_credits || 0)
-          : (node.remaining_credits || 0);
-        const incrementalDeficit = Math.max(0, ownCreditDeficit - childCreditDeficit);
-        if (incrementalDeficit > 0 || hasCountRuleDeficit) {
-          result.push(toSummaryItem(node, incrementalDeficit));
-        }
-        result.push(...childItems);
-        return;
-      }
-
-      const shouldShowParentRule =
-        (node.remaining_credits || 0) === 0 && hasCountRuleDeficit;
-      if (!node.children || node.children.length === 0 || childrenAllZero || shouldShowParentRule) {
-        // “缺学分”用于回答还需要选什么课。后端 remaining_credits 已把
-        // 已选课计入；仅有教务系统最终完成状态为 false（例如课程尚未通过）
-        // 时，不应继续把该类别列为选课缺口。
-        if (node.remaining_credits > 0 || hasCountRuleDeficit) {
-          result.push(toSummaryItem(node, node.remaining_credits || 0));
-        }
-      }
-      result.push(...childItems);
-    });
-    return result;
-  };
-
-  const result = collect(categories);
-  return result.sort((a, b) => b.remaining_credits - a.remaining_credits);
-};
-
 // 找到所有需要统计的选修类别
+const findLeafCategories = (categories, filterFn) => (
+  collectAcademicPlanDeficits(categories, filterFn)
+);
+
 const findElectiveLeafCategories = (categories) => {
   return findLeafCategories(categories, isElectiveCategory);
 };

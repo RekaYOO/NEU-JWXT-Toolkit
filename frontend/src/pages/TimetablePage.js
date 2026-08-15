@@ -111,9 +111,10 @@ function PersonalConflictPopover({ course, conflictMap, controlledOpen, children
   const result = personalConflictForCourse(course, conflictMap);
   const matches = result?.status === 'conflict' ? result.matches || [] : [];
   if (!matches.length) return children;
+  const hasPersonal = matches.some(match => !match.source || String(match.source).includes('personal'));
   const content = (
     <div className="timetable-personal-conflict-popover">
-      <strong>与我的课表冲突</strong>
+      <strong>{hasPersonal ? '与我的课表冲突' : '候选课程之间冲突'}</strong>
       {matches.map((match, index) => (
         <div key={`${match.baseline_meeting_id}-${index}`}>
           <b>{match.baseline_course_name}</b>
@@ -372,12 +373,17 @@ export const groupDayCourses = (courses = []) => {
   });
 };
 
-export const clusterLayoutMetrics = (height, courseCount, requestedFoldedHeights = []) => {
+export const clusterLayoutMetrics = (
+  height,
+  courseCount,
+  requestedFoldedHeights = [],
+  layoutOptions = {},
+) => {
   const headerHeight = 3;
   const availableHeight = Math.max(height - headerHeight - 3, 64);
   const gap = -3;
-  const minimumFoldedHeight = 40;
-  const minimumExpandedHeight = 96;
+  const minimumFoldedHeight = Number(layoutOptions.minimumFoldedHeight || 40);
+  const minimumExpandedHeight = Number(layoutOptions.minimumExpandedHeight || 96);
   const capacity = Math.max(2, 1 + Math.floor(
     Math.max(availableHeight - minimumExpandedHeight + gap, 0) / (minimumFoldedHeight + gap),
   ));
@@ -477,6 +483,28 @@ export const estimatedCourseCardHeight = (course, viewMode = 'term', mode = 'per
   return Math.max(76, 14 + titleLines * 19 + informationLines * 16 + Math.max(informationLines, 1) * 2);
 };
 
+export const selectionCompactCourseHeight = course => Math.max(
+  44,
+  10 + Math.min(estimatedTextLines(courseCardContent(course).name, 7), 3) * 17,
+);
+
+const SELECTION_CLUSTER_LAYOUT_OPTIONS = Object.freeze({
+  minimumFoldedHeight: 44,
+  minimumExpandedHeight: 56,
+});
+
+export const selectionClusterRequiredHeight = courses => {
+  const foldedHeights = courses.map(course => selectionCompactCourseHeight(course));
+  if (foldedHeights.length < 2) return foldedHeights[0] || 48;
+  return Math.max(...foldedHeights.map((activeHeight, activeIndex) => (
+    Math.max(SELECTION_CLUSTER_LAYOUT_OPTIONS.minimumExpandedHeight, activeHeight)
+    + foldedHeights.reduce((total, foldedHeight, foldedIndex) => (
+      total + (foldedIndex === activeIndex ? 0 : foldedHeight)
+    ), 0)
+    - 3 * (foldedHeights.length - 1)
+  ))) + 15;
+};
+
 export const adaptiveSectionHeights = (sections, coursesByDay, viewMode = 'term', mode = 'personal') => {
   const heights = Array.from({ length: sections.length }, () => 64);
   const constraints = [];
@@ -496,6 +524,37 @@ export const adaptiveSectionHeights = (sections, coursesByDay, viewMode = 'term'
           - 3 * (group.courses.length - 1)
         )));
       constraints.push({ start, end, required: required + 6 });
+    });
+  });
+  constraints
+    .sort((left, right) => (left.end - left.start) - (right.end - right.start))
+    .forEach(({ start, end, required }) => {
+      if (end <= start) return;
+      const current = heights.slice(start, end).reduce((total, value) => total + value, 0);
+      const deficit = Math.max(required - current, 0);
+      if (!deficit) return;
+      const addition = deficit / (end - start);
+      for (let index = start; index < end; index += 1) heights[index] += addition;
+    });
+  return heights.map(value => Math.ceil(value));
+};
+
+export const selectionSectionHeights = (sections, coursesByDay) => {
+  const heights = Array.from({ length: sections.length }, () => 48);
+  const constraints = [];
+  TIMETABLE_DAY_ORDER.forEach(day => {
+    groupDayCourses(coursesByDay[day] || []).forEach(group => {
+      if (group.courses.length < 2) return;
+      const start = Math.max(Number(group.start_section || 1) - 1, 0);
+      const end = Math.min(
+        Math.max(Number(group.end_section || group.start_section || 1), start + 1),
+        sections.length,
+      );
+      // Selection mode reuses the normal timetable's stacked course cluster:
+      // one active card stays expanded while every concurrent course keeps a
+      // complete folded title and hit target above or below it.
+      const required = selectionClusterRequiredHeight(group.courses);
+      constraints.push({ start, end, required });
     });
   });
   constraints
@@ -564,6 +623,13 @@ const courseContextText = (course, mode) => {
   if (mode === 'room') return uniqueTexts([classes, teachers]).join(' · ');
   return teachers || classes;
 };
+
+const courseLayerClass = course => (
+  course.layer === 'candidate' ? ' is-plan-candidate'
+    : course.layer === 'preview' ? ' is-selection-preview'
+      : course.layer === 'selected' ? ' is-selection-selected'
+        : ''
+);
 
 // Compatibility helper retained for callers/tests; card rendering no longer trusts official line order.
 export const courseVisibleLines = course => {
@@ -903,21 +969,32 @@ const getRealtimePersonalTerm = async termCode => {
   };
 };
 
-function TimetablePage() {
+function TimetablePage({
+  embedded = false,
+  preferredTermCode = '',
+  initialViewMode = 'week',
+  overlayCourses = [],
+  presentation = 'default',
+  externalConflictMap = {},
+  onSlotSelect,
+  onPersonalCoursesChange,
+} = {}) {
   const screens = useBreakpoint();
   const isMobile = !screens.lg;
   const timetableMemory = useResourceMemory('timetable-current-personal');
-  const requestedTerm = typeof window === 'undefined'
+  const requestedTerm = preferredTermCode || (typeof window === 'undefined'
     ? ''
-    : new URLSearchParams(window.location.search).get('term') || '';
-  const restored = restorePersonalTimetableMemory(timetableMemory.data, requestedTerm);
+    : new URLSearchParams(window.location.search).get('term') || '');
+  const restored = embedded ? null : restorePersonalTimetableMemory(timetableMemory.data, requestedTerm);
   const [mode, setMode] = useState('personal');
   const [terms, setTerms] = useState(() => restored?.terms || []);
   const [currentTermCode, setCurrentTermCode] = useState(() => restored?.currentTermCode || '');
   const [termCode, setTermCode] = useState(() => restored?.termCode || '');
   const [context, setContext] = useState(() => restored?.context || null);
   const [campusCode, setCampusCode] = useState(() => restored?.campusCode || '');
-  const [viewMode, setViewMode] = useState(() => restored?.viewMode || 'week');
+  const [viewMode, setViewMode] = useState(() => (
+    restored?.viewMode || (initialViewMode === 'term' ? 'term' : 'week')
+  ));
   const [weekNumber, setWeekNumber] = useState(() => restored?.weekNumber || null);
   const [target, setTarget] = useState(null);
   const [targetOptions, setTargetOptions] = useState([]);
@@ -978,12 +1055,12 @@ function TimetablePage() {
   const targetSearchState = useRef({ keyword: '', page: 0, total: 0, loading: false, requestKey: '' });
   const modeSessions = useRef(createModeSessions());
   const deepLink = useRef((() => {
-    if (typeof window === 'undefined') return { term: '', week: null, day: null };
+    if (typeof window === 'undefined') return { term: preferredTermCode, week: null, day: null };
     const params = new URLSearchParams(window.location.search);
     const week = Number(params.get('week'));
     const day = Number(params.get('day'));
     return {
-      term: params.get('term') || '',
+      term: preferredTermCode || params.get('term') || '',
       week: Number.isInteger(week) && week >= 1 && week <= 30 ? week : null,
       day: Number.isInteger(day) && day >= 1 && day <= 7 ? day : null,
     };
@@ -1497,6 +1574,8 @@ function TimetablePage() {
 
   useEffect(() => {
     if (
+      embedded
+      ||
       mode !== 'personal'
       || !currentTermCode
       || ![currentTermCode, nextTermCode].includes(termCode)
@@ -1513,6 +1592,7 @@ function TimetablePage() {
   }, [
     campusCode,
     currentTermCode,
+    embedded,
     mode,
     personalPayload,
     nextTermCode,
@@ -1824,11 +1904,31 @@ function TimetablePage() {
 
   const coursesByDay = useMemo(() => {
     const result = Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]));
-    (schedule?.courses || []).forEach(course => {
+    const visibleOverlayCourses = termCode === preferredTermCode ? (overlayCourses || []).filter(course => (
+      viewMode === 'term'
+      || course.recurrence_unknown
+      || !Array.isArray(course.weeks)
+      || !course.weeks.length
+      || course.weeks.includes(weekNumber)
+    )) : [];
+    [...(schedule?.courses || []), ...visibleOverlayCourses].forEach(course => {
       if (result[course.weekday]) result[course.weekday].push(course);
     });
     return result;
-  }, [schedule]);
+  }, [overlayCourses, preferredTermCode, schedule, termCode, viewMode, weekNumber]);
+  const effectiveConflictMap = useMemo(
+    () => ({ ...personalConflictMap, ...(externalConflictMap || {}) }),
+    [externalConflictMap, personalConflictMap],
+  );
+
+  useEffect(() => {
+    if (mode !== 'personal' || !schedule || typeof onPersonalCoursesChange !== 'function') return;
+    onPersonalCoursesChange(personalPayload?.courses || schedule.courses || [], {
+      termCode,
+      weekNumber,
+      viewMode,
+    });
+  }, [mode, onPersonalCoursesChange, personalPayload, schedule, termCode, viewMode, weekNumber]);
 
   const selectedTerm = terms.find(item => item.code === termCode);
   const selectedCampus = context?.campuses?.find(item => item.code === campusCode);
@@ -1951,7 +2051,7 @@ function TimetablePage() {
         placeholder="选择周次"
       /></label>}
       <Space className="timetable-control-actions">
-        {mode === 'personal' && <label className="timetable-default-open-toggle"><Switch size="small" checked={defaultTimetableOnOpen} onChange={toggleDefaultTimetable} /> <span>打开时默认课表</span></label>}
+        {mode === 'personal' && !embedded && <label className="timetable-default-open-toggle"><Switch size="small" checked={defaultTimetableOnOpen} onChange={toggleDefaultTimetable} /> <span>打开时默认课表</span></label>}
         {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
           ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
           : '按同学期、同星期、相交周次和重叠节次检测冲突'}>
@@ -1971,11 +2071,12 @@ function TimetablePage() {
     </div>
   );
 
-  const hasArrangedCourses = Boolean(schedule?.courses?.length);
+  const overlayVisibleForTerm = termCode === preferredTermCode && Boolean(overlayCourses?.length);
+  const hasArrangedCourses = Boolean(schedule?.courses?.length || overlayVisibleForTerm);
   const hasOtherCourses = Boolean(schedule?.unscheduled?.length || schedule?.practices?.length);
 
   return (
-    <div className="timetable-page">
+    <div className={`timetable-page${embedded ? ' is-embedded' : ''}${presentation === 'selection' ? ' is-selection-presentation' : ''}`}>
       <Tabs activeKey={mode} onChange={switchMode} items={TIMETABLE_MODES} className="timetable-mode-tabs" />
 
       {isMobile ? (
@@ -1997,7 +2098,7 @@ function TimetablePage() {
               </Tooltip>
             </div>
             <div className={`timetable-mobile-actions${mode !== 'personal' ? ' has-conflict-action' : ''}`}>
-              {mode === 'personal' && <label className="timetable-default-open-toggle"><Switch size="small" checked={defaultTimetableOnOpen} onChange={toggleDefaultTimetable} /> <span>打开时默认课表</span></label>}
+              {mode === 'personal' && !embedded && <label className="timetable-default-open-toggle"><Switch size="small" checked={defaultTimetableOnOpen} onChange={toggleDefaultTimetable} /> <span>打开时默认课表</span></label>}
               {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
                 ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
                 : '检测与“我的课表”的时间冲突'}>
@@ -2070,16 +2171,24 @@ function TimetablePage() {
         <>
           {hasArrangedCourses ? (
             <>
+              {overlayVisibleForTerm && (
+                <div className="timetable-overlay-legend" aria-label="课表叠加说明">
+                  <span><i />已选、待选和当前预览课程已叠加，可切换我的、班级、教师或教室课表进行比较</span>
+                </div>
+              )}
               <div className={isMobile ? '' : 'timetable-screen-mobile-hidden'}>
               <MobileTimetable
                   coursesByDay={coursesByDay}
+                  sections={sections}
                   selectedDay={mobileDay}
                   viewMode={viewMode}
                   currentTerm={termCode === currentTermCode}
                   currentWeekNumber={effectiveCurrentWeekNumber}
                   onDayChange={setMobileDay}
                   onCourseClick={setDetailCourse}
-                  personalConflictMap={personalConflictMap}
+                  personalConflictMap={effectiveConflictMap}
+                  presentation={presentation}
+                  onSlotSelect={onSlotSelect}
                 />
               </div>
               <div className={isMobile ? 'timetable-screen-desktop-hidden' : ''}>
@@ -2098,7 +2207,9 @@ function TimetablePage() {
                     currentWeekNumber: effectiveCurrentWeekNumber,
                   })}
                   onCourseClick={setDetailCourse}
-                  personalConflictMap={personalConflictMap}
+                  personalConflictMap={effectiveConflictMap}
+                  presentation={presentation}
+                  onSlotSelect={onSlotSelect}
                 />
               </div>
             </>
@@ -2112,7 +2223,7 @@ function TimetablePage() {
         </>
       ) : null}
 
-      <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} conflictMap={personalConflictMap} />
+      <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} conflictMap={effectiveConflictMap} />
 
       <Modal
         open={targetFilterOpen}
@@ -2324,10 +2435,15 @@ function DesktopTimetable({
   showToday,
   onCourseClick,
   personalConflictMap,
+  presentation = 'default',
+  onSlotSelect,
 }) {
   const [expandedCluster, setExpandedCluster] = useState(null);
   const [activeClusterCourse, setActiveClusterCourse] = useState(null);
-  const sectionHeights = adaptiveSectionHeights(sections, coursesByDay, viewMode, mode);
+  const compact = presentation === 'selection';
+  const sectionHeights = compact
+    ? selectionSectionHeights(sections, coursesByDay)
+    : adaptiveSectionHeights(sections, coursesByDay, viewMode, mode);
   const sectionOffsets = sectionHeights.reduce((offsets, value) => (
     [...offsets, offsets[offsets.length - 1] + value]
   ), [0]);
@@ -2347,7 +2463,7 @@ function DesktopTimetable({
   };
   return (
     <>
-    <section className="timetable-desktop" aria-label="周课表">
+    <section className={`timetable-desktop${compact ? ' is-selection-compact' : ''}`} aria-label="周课表">
       <div className="timetable-grid-header" style={gridStyle}>
         <div className="timetable-axis-heading">节次</div>
         {TIMETABLE_DAY_ORDER.map(day => {
@@ -2366,8 +2482,30 @@ function DesktopTimetable({
         </div>
         {TIMETABLE_DAY_ORDER.map(day => {
           const name = WEEKDAY_NAMES[day - 1];
+          const dayCourses = coursesByDay[day] || [];
           return (
           <div className={`timetable-day-column${today === day ? ' is-today' : ''}`} key={day} aria-label={name}>
+            {compact && sections.map((section, sectionIndex) => {
+              const sectionNumber = Number(section.number);
+              const occupied = dayCourses.some(course => (
+                Number(course.start_section) <= sectionNumber
+                && Number(course.end_section || course.start_section) >= sectionNumber
+              ));
+              if (occupied) return null;
+              return (
+              <button
+                type="button"
+                className="timetable-slot-search"
+                style={{ top: sectionOffsets[sectionIndex], height: sectionHeights[sectionIndex] }}
+                key={`slot-${day}-${section.number}`}
+                onClick={event => {
+                  event.stopPropagation();
+                  onSlotSelect?.({ weekday: day, section: Number(section.number) });
+                }}
+                aria-label={`查找${name}第${section.number}节可选课程`}
+              ><span>找课程</span></button>
+              );
+            })}
             {sectionOffsets.slice(1, -1).map((offset, lineIndex) => (
               <span className="timetable-section-grid-line" style={{ top: offset }} key={`line-${lineIndex}`} aria-hidden="true" />
             ))}
@@ -2388,16 +2526,17 @@ function DesktopTimetable({
                   <button
                     type="button"
                     key={`${course.id}-${course.start_section}-${groupIndex}`}
-                    className={`timetable-course-block${course.hasActualConflict ? ' has-conflict' : ''}${hasPersonalConflict ? ' has-personal-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
+                    className={`timetable-course-block${courseLayerClass(course)}${course.hasActualConflict ? ' has-conflict' : ''}${hasPersonalConflict ? ' has-personal-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
                     style={{ top, height, left: 3, width: 'calc(100% - 6px)', '--course-color': course.color }}
                     onClick={() => onCourseClick(course)}
                     aria-label={`${content.name}，${content.location}，${name}${sectionText}${viewMode === 'term' ? `，${formatWeekNumbers(course.weeks) || '周次待确认'}` : ''}`}
                   >
                     <strong className="course-title">{content.name}</strong>
-                    {viewMode === 'term' && <span className="course-weeks">{formatWeekNumbers(course.weeks) || '周次待确认'}</span>}
-                    <span className="course-location"><EnvironmentOutlined /> {content.location}</span>
-                    {contextText && <span className="course-context">{contextText}</span>}
-                    <span className="course-secondary">{uniqueTexts([content.type, sectionText]).join(' · ')}</span>
+                    {!compact && viewMode === 'term' && <span className="course-weeks">{formatWeekNumbers(course.weeks) || '周次待确认'}</span>}
+                    {!compact && <span className="course-location"><EnvironmentOutlined /> {content.location}</span>}
+                    {!compact && contextText && <span className="course-context">{contextText}</span>}
+                    {!compact && <span className="course-secondary">{uniqueTexts([content.type, sectionText]).join(' · ')}</span>}
+                    {compact && course.layer && <small className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'selected' ? '已选' : '待选方案'}</small>}
                   </button>
                   </PersonalConflictPopover>
                 );
@@ -2405,7 +2544,12 @@ function DesktopTimetable({
               const metrics = clusterLayoutMetrics(
                 height,
                 group.courses.length,
-                group.courses.map(course => estimatedFoldedCourseHeight(course, viewMode)),
+                group.courses.map(course => (
+                  compact
+                    ? selectionCompactCourseHeight(course)
+                    : estimatedFoldedCourseHeight(course, viewMode)
+                )),
+                compact ? SELECTION_CLUSTER_LAYOUT_OPTIONS : undefined,
               );
               const { hasHiddenCourses } = metrics;
               const visibleCourses = group.courses.slice(0, metrics.visibleCourseCount);
@@ -2481,7 +2625,7 @@ function DesktopTimetable({
                       >
                       <button
                         type="button"
-                        className={`timetable-cluster-stack-card${isExpanded ? ' is-expanded' : ' is-folded'}${course.hasActualConflict ? ' has-conflict' : ''}${hasPersonalConflict ? ' has-personal-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
+                        className={`timetable-cluster-stack-card${courseLayerClass(course)}${isExpanded ? ' is-expanded' : ' is-folded'}${course.hasActualConflict ? ' has-conflict' : ''}${hasPersonalConflict ? ' has-personal-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
                         style={{
                           top: itemLayout.top,
                           height: itemLayout.height,
@@ -2498,13 +2642,14 @@ function DesktopTimetable({
                         aria-label={`${content.name}，${sectionText}，${viewMode === 'term' ? formatWeekNumbers(course.weeks) : content.location}${course.hasActualConflict ? '，同周时间冲突' : ''}，悬停展开，点击查看详情`}
                       >
                         <strong>{content.name}</strong>
-                        <span className={`timetable-cluster-stack-summary${viewMode === 'term' ? ' is-week-text' : ''}`}>{viewMode === 'term'
+                        {!compact && <span className={`timetable-cluster-stack-summary${viewMode === 'term' ? ' is-week-text' : ''}`}>{viewMode === 'term'
                           ? formatWeekNumbers(course.weeks) || '周次待确认'
-                          : sectionText}</span>
-                        <span className="timetable-cluster-stack-detail">{sectionText}</span>
-                        <span className="timetable-cluster-stack-detail"><EnvironmentOutlined /> {content.location}</span>
-                        {contextText && <span className="timetable-cluster-stack-detail">{contextText}</span>}
-                        {content.type && <span className="timetable-cluster-stack-detail">{content.type}</span>}
+                          : sectionText}</span>}
+                        {!compact && <span className="timetable-cluster-stack-detail">{sectionText}</span>}
+                        {!compact && <span className="timetable-cluster-stack-detail"><EnvironmentOutlined /> {content.location}</span>}
+                        {!compact && contextText && <span className="timetable-cluster-stack-detail">{contextText}</span>}
+                        {!compact && content.type && <span className="timetable-cluster-stack-detail">{content.type}</span>}
+                        {compact && course.layer && <small className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'selected' ? '已选' : '待选方案'}</small>}
                         {course.hasActualConflict && <small>{isExpanded ? '同周时间冲突' : '冲突'}</small>}
                       </button>
                       </PersonalConflictPopover>
@@ -2550,7 +2695,7 @@ function DesktopTimetable({
             <PersonalConflictPopover course={course} conflictMap={personalConflictMap}>
             <button
               type="button"
-              className={`timetable-cluster-dialog-item${hasPersonalConflict ? ' has-personal-conflict' : ''}`}
+              className={`timetable-cluster-dialog-item${courseLayerClass(course)}${hasPersonalConflict ? ' has-personal-conflict' : ''}`}
               key={`${course.id}-${index}`}
               onClick={() => { setExpandedCluster(null); onCourseClick(course); }}
             >
@@ -2629,6 +2774,7 @@ function MobileWeekTimeline({ weeks, selectedWeek, currentWeek, onChange }) {
 
 function MobileTimetable({
   coursesByDay,
+  sections = [],
   selectedDay,
   viewMode,
   currentTerm,
@@ -2636,6 +2782,8 @@ function MobileTimetable({
   onDayChange,
   onCourseClick,
   personalConflictMap,
+  presentation = 'default',
+  onSlotSelect,
 }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -2643,8 +2791,44 @@ function MobileTimetable({
     return () => window.clearInterval(timer);
   }, []);
   const courses = [...(coursesByDay[selectedDay] || [])].sort((a, b) => a.start_section - b.start_section);
+  const compact = presentation === 'selection';
+  const sectionNumbers = sections.length
+    ? sections.map(item => Number(item.number))
+    : Array.from({ length: 12 }, (_, index) => index + 1);
+  const renderCourseCard = (course, index) => {
+    const content = courseCardContent(course);
+    const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber });
+    const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
+    return (
+      <Card
+        key={`${course.id}-${course.start_section}-${index}`}
+        size="small"
+        className={`timetable-mobile-card${courseLayerClass(course)}${hasPersonalConflict ? ' has-personal-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
+        style={{ '--course-color': course.color }}
+        onClick={() => onCourseClick(course)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onCourseClick(course);
+          }
+        }}
+      >
+        <div className="mobile-course-time">
+          <strong>第{course.start_section}–{course.end_section}节</strong>
+          {(course.start_time || course.end_time) && <span>{course.start_time || '?'}–{course.end_time || '?'}</span>}
+        </div>
+        <strong className="mobile-course-title">{content.name}</strong>
+        {!compact && viewMode === 'term' && <span className="mobile-course-weeks">{formatWeekNumbers(course.weeks) || '周次待确认'}</span>}
+        {!compact && <span className="mobile-course-location"><EnvironmentOutlined /> {content.location}</span>}
+        {!compact && content.type && <span className="mobile-course-type">{content.type}</span>}
+        {compact && course.layer && <span className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'selected' ? '已选' : '待选方案'}</span>}
+      </Card>
+    );
+  };
   return (
-    <section className="timetable-mobile" aria-label="手机课表">
+    <section className={`timetable-mobile${compact ? ' is-selection-compact' : ''}`} aria-label="手机课表">
       <Segmented
         block
         value={selectedDay}
@@ -2655,37 +2839,26 @@ function MobileTimetable({
         }))}
       />
       <div className="timetable-mobile-list">
-        {courses.length ? courses.map((course, index) => {
-          const content = courseCardContent(course);
-          const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber });
-          const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
-          return (
-            <Card
-              key={`${course.id}-${course.start_section}-${index}`}
-              size="small"
-              className={`timetable-mobile-card${hasPersonalConflict ? ' has-personal-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
-              style={{ '--course-color': course.color }}
-              onClick={() => onCourseClick(course)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={event => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  onCourseClick(course);
-                }
-              }}
+        {compact ? sectionNumbers.flatMap(section => {
+          const startingCourses = courses.filter(course => Number(course.start_section) === section);
+          if (startingCourses.length) return startingCourses.map(renderCourseCard);
+          const occupied = courses.some(course => (
+            Number(course.start_section) <= section
+            && Number(course.end_section || course.start_section) >= section
+          ));
+          if (occupied) return [];
+          return [(
+            <button
+              type="button"
+              className="timetable-mobile-empty-slot"
+              key={`empty-${selectedDay}-${section}`}
+              onClick={() => onSlotSelect?.({ weekday: selectedDay, section })}
             >
-              <div className="mobile-course-time">
-                <strong>第{course.start_section}–{course.end_section}节</strong>
-                {(course.start_time || course.end_time) && <span>{course.start_time || '?'}–{course.end_time || '?'}</span>}
-              </div>
-              <strong className="mobile-course-title">{content.name}</strong>
-              {viewMode === 'term' && <span className="mobile-course-weeks">{formatWeekNumbers(course.weeks) || '周次待确认'}</span>}
-              <span className="mobile-course-location"><EnvironmentOutlined /> {content.location}</span>
-              {content.type && <span className="mobile-course-type">{content.type}</span>}
-            </Card>
-          );
-        }) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这一天没有课程，可切换其他日期" />}
+              <strong>第{section}节</strong>
+              <span>无课 · 查找这个时段的可选课程</span>
+            </button>
+          )];
+        }) : courses.length ? courses.map(renderCourseCard) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="这一天没有课程，可切换其他日期" />}
       </div>
     </section>
   );
@@ -2732,6 +2905,9 @@ function CourseDetailContent({ course, conflictMap = {} }) {
       <div className="timetable-detail-lead">
         <span>{WEEKDAY_NAMES[course.weekday - 1] || '未安排'} · 第{course.start_section}–{course.end_section}节</span>
         <strong><EnvironmentOutlined /> {content.location}</strong>
+        {course.layer === 'candidate' && <Tag color="orange">待选方案</Tag>}
+        {course.layer === 'preview' && <Tag color="blue">正在预览</Tag>}
+        {course.layer === 'selected' && <Tag color="green">已选课程</Tag>}
         {content.type && <Tag>{content.type}</Tag>}
       </div>
       <Descriptions size="small" column={1} colon={false}>
@@ -2747,7 +2923,7 @@ function CourseDetailContent({ course, conflictMap = {} }) {
       </Descriptions>
       {conflictMatches.length > 0 && (
         <section className="timetable-detail-conflicts" aria-label="与我的课表冲突">
-          <strong>与我的课表冲突</strong>
+          <strong>{conflictMatches.some(match => !match.source || String(match.source).includes('personal')) ? '与我的课表冲突' : '候选课程之间冲突'}</strong>
           {conflictMatches.map((match, index) => (
             <div key={`${match.baseline_meeting_id || match.baseline_course_name}-${index}`}>
               <b>{match.baseline_course_name || '我的课表课程'}</b>

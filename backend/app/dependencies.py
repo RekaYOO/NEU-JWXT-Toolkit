@@ -62,6 +62,11 @@ from backend.core.cache.resources import (
     personal_timetable_term,
 )
 from backend.core.course_outline import CourseOutlineAPI, CourseOutlineMetadataSyncService
+from backend.core.course_selection import (
+    CourseSelectionAutomationService,
+    JwxkSessionClient,
+    resolve_network_mode,
+)
 
 # ── 全局状态 ──────────────────────────────────────────────────────────────────
 
@@ -100,6 +105,29 @@ _api_logger = get_logger("api", LogCategory.SYSTEM, _log_config)
 # 初始化培养计划存储
 _report_storage = AcademicReportStorage(_storage)
 _research_storage = ResearchTrainingStorage(_storage.config.data_dir)
+
+
+def _jwxk_automation_client(client: NEUAuthClient) -> JwxkSessionClient:
+    config = _storage.load_config()
+    selection = config.get("course_selection") if isinstance(config, dict) else None
+    preference = selection.get("network_mode") if isinstance(selection, dict) else "follow"
+    effective = resolve_network_mode(
+        preference if preference in {"follow", "direct", "webvpn"} else "follow",
+        str(getattr(client, "active_mode", "direct") or "direct"),
+    )
+    return JwxkSessionClient(client, network_mode=effective)
+
+
+_course_selection_automation = CourseSelectionAutomationService(
+    _storage.config.data_dir,
+    auth_provider=lambda: _auth_sessions.peek_client(),
+    # Called only while the automation service holds remote_session_guard.
+    # It reuses the same AuthSessionManager and the normal cookie/password
+    # recovery chain; no second account or cookie store is created.
+    auth_recover_provider=lambda: _get_auth_client_unlocked(),
+    client_builder=_jwxk_automation_client,
+    remote_guard=remote_session_guard,
+)
 
 
 def _cache_client(context):
@@ -826,11 +854,14 @@ class ApplicationServices:
     report_storage: AcademicReportStorage
     research_storage: ResearchTrainingStorage
     course_outline_sync: CourseOutlineMetadataSyncService | None = None
+    course_selection_automation: CourseSelectionAutomationService | None = None
 
     def start(self) -> None:
         self.cache_coordinator.start()
         try:
             self.grade_tracker.start()
+            if self.course_selection_automation is not None:
+                self.course_selection_automation.start()
         except Exception:
             self.cache_coordinator.shutdown(
                 wait=True,
@@ -843,6 +874,8 @@ class ApplicationServices:
         tracker_error: Exception | None = None
         cache_error: Exception | None = None
         try:
+            if self.course_selection_automation is not None:
+                self.course_selection_automation.stop()
             self.grade_tracker.stop()
         except Exception as exc:
             tracker_error = exc
@@ -878,6 +911,7 @@ _application_services = ApplicationServices(
     report_storage=_report_storage,
     research_storage=_research_storage,
     course_outline_sync=_course_outline_sync,
+    course_selection_automation=_course_selection_automation,
 )
 
 
@@ -913,6 +947,13 @@ def get_course_outline_sync_service() -> CourseOutlineMetadataSyncService:
     service = _application_services.course_outline_sync
     if service is None:
         raise RuntimeError("course-outline synchronization service unavailable")
+    return service
+
+
+def get_course_selection_automation_service() -> CourseSelectionAutomationService:
+    service = _application_services.course_selection_automation
+    if service is None:
+        raise RuntimeError("course-selection automation service unavailable")
     return service
 
 

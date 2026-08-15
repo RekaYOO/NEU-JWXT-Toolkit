@@ -10,6 +10,9 @@ import {
   clusterStackLayout,
   clusterDisplayCapacity,
   adaptiveSectionHeights,
+  selectionSectionHeights,
+  selectionCompactCourseHeight,
+  selectionClusterRequiredHeight,
   estimatedCourseCardHeight,
   estimatedFoldedCourseHeight,
   shouldUsePersonalTimetableCache,
@@ -250,6 +253,39 @@ describe('TimetablePage helpers', () => {
     expect(heights[1]).toBe(64);
     expect(heights[0]).toBeGreaterThanOrEqual(estimatedCourseCardHeight(longSingleSection, 'term', 'personal'));
     expect(heights[0] + heights[1]).toBeGreaterThanOrEqual(estimatedCourseCardHeight(shortTwoSection, 'term', 'personal'));
+  });
+
+  test('selection timetable sizes concurrent courses as one expanded card plus folded cards', () => {
+    const concurrentCourses = [
+      { id: 'a', start_section: 1, end_section: 1, weeks: [1] },
+      { id: 'b', start_section: 1, end_section: 1, weeks: [2] },
+      { id: 'c', start_section: 1, end_section: 1, weeks: [3] },
+    ];
+    const heights = selectionSectionHeights(
+      [{ number: 1 }, { number: 2 }],
+      {
+        1: concurrentCourses,
+        2: [{ id: 'single', start_section: 2, end_section: 2, weeks: [1] }],
+      },
+    );
+
+    expect(heights[0]).toBeGreaterThanOrEqual(selectionClusterRequiredHeight(concurrentCourses));
+    expect(heights[1]).toBe(48);
+    expect(selectionCompactCourseHeight({ course_name: '短课名' })).toBe(44);
+    expect(selectionCompactCourseHeight({ course_name: '非常非常长的课程名称用于验证多行标题高度' })).toBeGreaterThan(44);
+
+    const metrics = clusterLayoutMetrics(
+      heights[0] - 6,
+      concurrentCourses.length,
+      concurrentCourses.map(selectionCompactCourseHeight),
+      { minimumFoldedHeight: 44, minimumExpandedHeight: 56 },
+    );
+    expect(metrics.visibleCourseCount).toBe(concurrentCourses.length);
+    expect(metrics.hasHiddenCourses).toBe(false);
+    const stack = clusterStackLayout(metrics, concurrentCourses.length, 1, false);
+    expect(stack.courses.map(item => item.expanded)).toEqual([false, true, false]);
+    expect(stack.courses[0].top).toBeLessThan(stack.courses[1].top);
+    expect(stack.courses[2].top).toBeGreaterThan(stack.courses[1].top);
   });
 
   test('gives folded cards enough height to show the complete course title', () => {

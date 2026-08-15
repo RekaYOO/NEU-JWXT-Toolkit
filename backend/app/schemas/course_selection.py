@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -151,6 +151,12 @@ class JwxkBatchModel(StrictModel):
     notice: str
     state: Literal["not_started", "active", "ended", "unknown"]
     can_enter: bool
+    account_selectable: bool = False
+    confirmed: bool = False
+    week_range: str = ""
+    allow_conflict: bool = False
+    allow_cross_campus: bool = False
+    menus: list[dict[str, str]] = Field(default_factory=list)
 
 
 class JwxkStatusResponse(StrictModel):
@@ -161,5 +167,306 @@ class JwxkStatusResponse(StrictModel):
     primary_authenticated: bool = False
     service_authenticated: bool = False
     authenticated: bool = False
+    official_time: str = ""
+    online_count: int | None = None
+    current_campus: str = ""
+    current_campus_name: str = ""
     batches: list[JwxkBatchModel]
     message: str = ""
+
+
+class JwxkBatchRequest(StrictModel):
+    batch_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class JwxkCourseSearchRequest(JwxkBatchRequest):
+    teaching_class_type: str = Field(min_length=1, max_length=24, pattern=r"^[A-Z0-9_]+$")
+    page_number: int = Field(default=1, ge=1, le=1000)
+    page_size: int = Field(default=20, ge=1, le=50)
+    keyword: str = Field(default="", max_length=100)
+    campus: str = Field(default="", max_length=40)
+    order_by: str = Field(default="", max_length=34)
+    filters: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_filters(self):
+        if len(self.filters) > 16:
+            raise ValueError("too many course filters")
+        for key, value in self.filters.items():
+            if len(key) > 32 or len(value) > 100:
+                raise ValueError("course filter is too long")
+        return self
+
+
+class JwxkCourseItem(StrictModel):
+    group_id: str = ""
+    course_code: str = ""
+    course_name: str = ""
+    class_id: str = ""
+    class_number: str = ""
+    teaching_class_type: str = ""
+    credits: str = ""
+    hours: str = ""
+    teacher: str = ""
+    location: str = ""
+    official_schedule: str = ""
+    campus: str = ""
+    campus_name: str = ""
+    department: str = ""
+    course_nature: str = ""
+    course_category: str = ""
+    course_categories: list[str] = Field(default_factory=list)
+    normalized_course_category: str = ""
+    general_elective_category_code: str = ""
+    general_elective_category: str = ""
+    exam_type_code: str = ""
+    exam_type: str = ""
+    score_scale_code: str = ""
+    score_scale: str = ""
+    teaching_mode: str = ""
+    teacher_details: list[dict[str, str]] = Field(default_factory=list)
+    teacher_titles: str = ""
+    target_classes: list[str] = Field(default_factory=list)
+    capacity: int | None = None
+    selected_count: int | None = None
+    first_choice_count: int | None = None
+    weight_participant_count: int | None = None
+    selection_type_code: str = ""
+    market_participant_count: int | None = None
+    market_participant_label: str = ""
+    capacity_updated_at: str = ""
+    devoted_weight: int | None = None
+    selection_source: str = ""
+    conflict: bool = False
+    conflict_description: str = ""
+    restricted: bool = False
+    eligibility_status: Literal["unknown", "selectable", "unavailable"] = "unknown"
+    eligibility_reason: str = ""
+    full: bool = False
+    selected: bool = False
+    course_already_selected: bool = False
+    has_test: bool = False
+    has_book: bool = False
+    notice: str = ""
+    source_tags: list[str] = Field(default_factory=list)
+    campuses: list[str] = Field(default_factory=list)
+    source_scopes: list[str] = Field(default_factory=list)
+    schedules: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class JwxkCourseSearchResponse(StrictModel):
+    total: int = Field(ge=0)
+    courses: list[JwxkCourseItem]
+
+
+class JwxkSelectedResponse(StrictModel):
+    selected: list[JwxkCourseItem]
+    volunteered: list[JwxkCourseItem]
+    withdrawal: list[JwxkCourseItem]
+
+
+class JwxkBatchConfirmRequest(JwxkBatchRequest):
+    acknowledged: Literal[True]
+
+
+class JwxkCourseSelectRequest(JwxkBatchRequest):
+    teaching_class_type: str = Field(min_length=1, max_length=24, pattern=r"^[A-Z0-9_]+$")
+    class_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    course_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    weight: int | None = Field(default=None, ge=5, le=150)
+    confirm_risk: bool = False
+
+
+class JwxkCourseDeselectRequest(JwxkBatchRequest):
+    class_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    confirm_risk: bool = False
+
+
+class JwxkMutationResponse(StrictModel):
+    success: bool
+    queued: bool
+    requires_confirmation: bool
+    code: str
+    message: str
+
+
+class JwxkTimeSlot(StrictModel):
+    weekday: int = Field(ge=1, le=7)
+    section: int = Field(ge=1, le=30)
+
+
+class JwxkCatalogSearchRequest(JwxkBatchRequest):
+    page_number: int = Field(default=1, ge=1, le=1000)
+    page_size: int = Field(default=20, ge=1, le=50)
+    keyword: str = Field(default="", max_length=100)
+    scope: str = Field(default="ALL", min_length=1, max_length=24, pattern=r"^[A-Z0-9_]+$")
+    campus: str = Field(default="", max_length=40)
+    order_by: str = Field(default="", max_length=34)
+    filters: dict[str, str] = Field(default_factory=dict)
+    time_slot: JwxkTimeSlot | None = None
+
+
+class JwxkCatalogDetailRequest(JwxkBatchRequest):
+    teaching_class_type: str = Field(min_length=1, max_length=24, pattern=r"^[A-Z0-9_]+$")
+    course_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    class_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class JwxkEligibilityRequest(JwxkBatchRequest):
+    class_ids: list[str] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_class_ids(self):
+        if any(
+            not value or len(value) > 64 or not value.replace("-", "").replace("_", "").isalnum()
+            for value in self.class_ids
+        ):
+            raise ValueError("invalid teaching class id")
+        return self
+
+
+class JwxkEligibilityResult(StrictModel):
+    class_id: str
+    status: Literal["unknown", "selectable", "unavailable"]
+    reason: str = ""
+
+
+class JwxkEligibilityResponse(StrictModel):
+    results: list[JwxkEligibilityResult] = Field(default_factory=list)
+
+
+class JwxkCourseGroup(StrictModel):
+    group_id: str
+    course_code: str = ""
+    course_name: str
+    credits: str = ""
+    hours: str = ""
+    department: str = ""
+    course_nature: str = ""
+    course_category: str = ""
+    course_categories: list[str] = Field(default_factory=list)
+    normalized_course_category: str = ""
+    general_elective_category_code: str = ""
+    general_elective_category: str = ""
+    exam_type_code: str = ""
+    exam_type: str = ""
+    score_scale_code: str = ""
+    score_scale: str = ""
+    campuses: list[str] = Field(default_factory=list)
+    source_tags: list[str] = Field(default_factory=list)
+    class_count: int = 0
+    selectable_count: int = 0
+    eligibility_pending_count: int = 0
+    available_count: int = 0
+    conflict_free_count: int = 0
+    classes: list[JwxkCourseItem] = Field(default_factory=list)
+
+
+class JwxkCatalogSearchResponse(StrictModel):
+    total: int = 0
+    scope: str
+    scope_options: list[dict[str, str]] = Field(default_factory=list)
+    groups: list[JwxkCourseGroup] = Field(default_factory=list)
+
+
+class JwxkCourseDetail(StrictModel):
+    course_code: str = ""
+    course_name: str = ""
+    english_name: str = ""
+    credits: str = ""
+    hours: str = ""
+    department: str = ""
+    course_nature: str = ""
+    course_category: str = ""
+    course_categories: list[str] = Field(default_factory=list)
+    normalized_course_category: str = ""
+    general_elective_category_code: str = ""
+    general_elective_category: str = ""
+    exam_type_code: str = ""
+    exam_type: str = ""
+    score_scale_code: str = ""
+    score_scale: str = ""
+    description: str = ""
+
+
+class JwxkCatalogDetailResponse(StrictModel):
+    course: JwxkCourseDetail
+    teaching_class: JwxkCourseItem
+
+
+class JwxkSelectionScheduleResponse(StrictModel):
+    source: Literal["official_timetable", "selected_records_fallback"]
+    source_label: str
+    courses: list[JwxkCourseItem] = Field(default_factory=list)
+    meetings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class JwxkPlanPreviewRequest(JwxkBatchRequest):
+    term_code: str = Field(min_length=1, max_length=32)
+    meetings: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
+
+
+class JwxkPlanPreviewResponse(StrictModel):
+    term_code: str
+    baseline_available: bool
+    baseline_stale: bool
+    results: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class JwxkPlanGroup(StrictModel):
+    group_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=60)
+    target_count: int = Field(default=1, ge=1, le=20)
+
+
+class JwxkSavedPlanRequest(JwxkBatchRequest):
+    term_code: str = Field(min_length=1, max_length=32)
+    groups: list[JwxkPlanGroup] = Field(default_factory=list, max_length=20)
+    items: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+
+class JwxkWeightPlanRequest(JwxkSavedPlanRequest):
+    grade_size: int = Field(ge=1, le=100_000)
+
+
+class JwxkWeightConfigResponse(StrictModel):
+    term_code: str
+    grade_size: int | None = None
+
+
+class JwxkAutomationCourseRef(StrictModel):
+    class_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    course_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    course_name: str = Field(default="", max_length=120)
+    teaching_class_type: str = Field(default="ALLKC", min_length=1, max_length=24, pattern=r"^[A-Z0-9_]+$")
+    teacher: str = Field(default="", max_length=120)
+
+
+class JwxkVacancySwapGroup(StrictModel):
+    group_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=80)
+    target: JwxkAutomationCourseRef
+    drop_courses: list[JwxkAutomationCourseRef] = Field(min_length=1, max_length=20)
+
+
+class JwxkAutomationTaskRequest(JwxkSavedPlanRequest):
+    name: str = Field(default="自动抢课任务", min_length=1, max_length=80)
+    task_type: Literal["selection", "vacancy_swap", "weight_strategy"] = "selection"
+    swap_groups: list[JwxkVacancySwapGroup] = Field(default_factory=list, max_length=20)
+    grade_size: int | None = Field(default=None, ge=1, le=100_000)
+    rebalance_seconds: int = Field(default=30, ge=15, le=300)
+    start_at: str = ""
+    end_at: str = ""
+    # One second is reserved for the short opening burst.  Normal vacancy
+    # monitoring is clamped to at least 15 seconds by the service.
+    poll_seconds: int = Field(default=15, ge=1, le=300)
+
+    @model_validator(mode="after")
+    def validate_task_mode(self):
+        if self.task_type == "weight_strategy" and self.grade_size is None:
+            raise ValueError("weight strategy requires grade_size")
+        return self
+
+
+class JwxkAutomationTaskAction(StrictModel):
+    task_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")

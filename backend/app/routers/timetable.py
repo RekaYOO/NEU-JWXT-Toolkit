@@ -149,6 +149,11 @@ def get_personal_timetable(
     auth: NEUAuthClient = Depends(require_cached_auth_identity),
 ):
     """Read/refresh the official current personal term through shared cache."""
+    # When the term catalog is already in memory, reject historical terms
+    # before touching the personal-timetable cache. If it is not available yet,
+    # retain the local-first path below so opening the timetable is still fast.
+    if auth.timetable.get_cached_terms() is not None:
+        _require_current_personal_term(auth, term_code)
     coordinator = get_cache_coordinator()
     account = str(auth.username)
     variant = personal_timetable_variant(term_code)

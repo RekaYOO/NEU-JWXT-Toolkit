@@ -56,6 +56,8 @@ api.interceptors.response.use(
         window.dispatchEvent(new CustomEvent('neu-auth-required'));
       }
     }
+    const detail = error.response?.data?.detail;
+    if (typeof detail === 'string' && detail.trim()) error.message = detail;
     return Promise.reject(error);
   }
 );
@@ -913,6 +915,136 @@ export const updateJwxkSettings = async (networkMode) => {
   const response = await api.put('/api/course-selection/jwxk/settings', {
     network_mode: networkMode,
   });
+  return response.data;
+};
+
+export const searchJwxkCourses = async (payload) => {
+  const response = await api.post('/api/course-selection/jwxk/courses/search', payload);
+  return response.data;
+};
+
+export const getJwxkSelected = async (batchCode) => {
+  const response = await api.post('/api/course-selection/jwxk/selected', {
+    batch_code: batchCode,
+  });
+  return response.data;
+};
+
+export const confirmJwxkBatch = async (batchCode) => {
+  const response = await api.post('/api/course-selection/jwxk/batches/confirm', {
+    batch_code: batchCode,
+    acknowledged: true,
+  }, { skipAuthRedirect: true });
+  return response.data;
+};
+
+export const selectJwxkCourse = async (payload) => {
+  const response = await api.post('/api/course-selection/jwxk/courses/select', payload, {
+    skipAuthRedirect: true,
+  });
+  return response.data;
+};
+
+export const deselectJwxkCourse = async (payload) => {
+  const response = await api.post('/api/course-selection/jwxk/courses/deselect', payload, {
+    skipAuthRedirect: true,
+  });
+  return response.data;
+};
+
+export const searchJwxkCatalog = async (payload, config = {}) => {
+  const response = await api.post('/api/course-selection/jwxk/catalog/search', payload, config);
+  return response.data;
+};
+
+export const getJwxkCatalogDetail = async (payload) => {
+  const response = await api.post('/api/course-selection/jwxk/catalog/detail', payload);
+  return response.data;
+};
+
+export const getJwxkCatalogFilterOptions = async (batchCode) => {
+  const response = await api.post('/api/course-selection/jwxk/catalog/filter-options', {
+    batch_code: batchCode,
+  });
+  return response.data;
+};
+
+export const checkJwxkCatalogEligibility = async (batchCode, classIds) => {
+  const response = await api.post('/api/course-selection/jwxk/catalog/eligibility', {
+    batch_code: batchCode,
+    class_ids: classIds,
+  });
+  return response.data;
+};
+
+export const getJwxkCatalogArchives = async () => {
+  const response = await api.get('/api/course-selection/jwxk/catalog/archives');
+  return response.data;
+};
+
+export const deleteJwxkCatalogArchive = async (archiveId) => {
+  const response = await api.delete(`/api/course-selection/jwxk/catalog/archives/${encodeURIComponent(archiveId)}`);
+  return response.data;
+};
+
+export const getJwxkSchedule = async (batchCode) => {
+  const response = await api.post('/api/course-selection/jwxk/schedule', { batch_code: batchCode });
+  return response.data;
+};
+
+export const previewJwxkPlan = async (payload) => {
+  const response = await api.post('/api/course-selection/jwxk/plan/preview', payload);
+  return response.data;
+};
+
+export const readJwxkPlan = async (batchCode) => {
+  const response = await api.post('/api/course-selection/jwxk/plan/read', { batch_code: batchCode });
+  return response.data;
+};
+
+export const saveJwxkPlan = async (payload) => {
+  const response = await api.post('/api/course-selection/jwxk/plan/save', payload);
+  return response.data;
+};
+
+export const planJwxkWeights = async (payload) => {
+  const response = await api.post('/api/course-selection/jwxk/weights/plan', payload);
+  return response.data;
+};
+
+export const getJwxkWeightConfig = async (termCode) => {
+  const response = await api.get('/api/course-selection/jwxk/weights/config', {
+    params: { term_code: termCode },
+  });
+  return response.data;
+};
+
+export const getJwxkWeightBudget = async (batchCode) => {
+  const response = await api.post('/api/course-selection/jwxk/weights/budget', { batch_code: batchCode });
+  return response.data;
+};
+
+export const applyJwxkWeights = async (payload) => {
+  const response = await api.post('/api/course-selection/jwxk/weights/apply', payload, {
+    skipAuthRedirect: true,
+  });
+  return response.data;
+};
+
+export const listJwxkAutomationTasks = async (batchCode = '') => {
+  const response = await api.get('/api/course-selection/jwxk/automation/tasks', {
+    params: batchCode ? { batch_code: batchCode } : undefined,
+  });
+  return response.data;
+};
+
+export const createJwxkAutomationTask = async (payload) => {
+  const response = await api.post('/api/course-selection/jwxk/automation/tasks', payload);
+  return response.data;
+};
+
+export const actionJwxkAutomationTask = async (taskId, action) => {
+  const response = await api.post(`/api/course-selection/jwxk/automation/tasks/${action}`, { task_id: taskId });
   return response.data;
 };
 

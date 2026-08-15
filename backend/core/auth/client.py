@@ -70,6 +70,9 @@ SERVICE_CONFIGS = {
         "network_modes": ("direct", "webvpn"),
         "allowed_prefixes": ("/xsxk/",),
         "login_paths": ("/xsxk/auth/cas",),
+        "token_cookie": "token",
+        "token_header": "Authorization",
+        "auth_response_codes": ("401", "402", "403"),
     },
 }
 
@@ -1145,6 +1148,7 @@ class NEUAuthClient:
         path: str,
         *,
         network_mode_override: Optional[str] = None,
+        retry_on_auth: bool = True,
         **kwargs,
     ) -> requests.Response:
         """Request one explicitly supported campus service on the shared session.
@@ -1171,16 +1175,18 @@ class NEUAuthClient:
         if "verify" not in kwargs:
             kwargs["verify"] = self.verify_ssl
         url = self._service_route_url(urljoin(config["origin"], path), network_mode)
+        request_options = self._service_request_options(service, config, kwargs)
         response = self._request_service_redirects(
-            method, url, service_config=config, network_mode=network_mode, **kwargs
+            method, url, service_config=config, network_mode=network_mode, **request_options
         )
-        if self._is_service_auth_required(response, config, network_mode):
+        if self._is_service_auth_required(response, config, network_mode) and retry_on_auth:
             self._close_response_safely(response)
             self.ensure_service_session(
                 service, network_mode_override=network_mode_override
             )
+            request_options = self._service_request_options(service, config, kwargs)
             response = self._request_service_redirects(
-                method, url, service_config=config, network_mode=network_mode, **kwargs
+                method, url, service_config=config, network_mode=network_mode, **request_options
             )
         if self._is_service_auth_required(response, config, network_mode):
             self._close_response_safely(response)
@@ -1189,6 +1195,36 @@ class NEUAuthClient:
             self._close_response_safely(response)
             raise NEULoginError("业务系统返回了不受信任的跳转地址")
         return response
+
+    def get_service_token(self, service: str) -> Optional[str]:
+        """Return a service bearer token kept inside the shared cookie jar."""
+        config = SERVICE_CONFIGS.get(service)
+        if config is None:
+            raise ValueError(f"unsupported service: {service}")
+        cookie_name = config.get("token_cookie")
+        if not cookie_name:
+            return None
+        candidates = [
+            cookie for cookie in self._session.cookies
+            if cookie.name == cookie_name
+            and cookie.domain.lstrip(".") in {config["host"], "webvpn.neu.edu.cn"}
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda cookie: len(cookie.path or ""), reverse=True)
+        return str(candidates[0].value or "") or None
+
+    def _service_request_options(
+        self, service: str, config: Dict[str, Any], kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        options = dict(kwargs)
+        token_header = config.get("token_header")
+        token = self.get_service_token(service) if token_header else None
+        if token:
+            headers = dict(options.get("headers") or {})
+            headers.setdefault(token_header, token)
+            options["headers"] = headers
+        return options
 
     def ensure_service_session(
         self, service: str, *, network_mode_override: Optional[str] = None
@@ -1223,12 +1259,18 @@ class NEUAuthClient:
             self._close_response_safely(ticket_response)
             return established
 
-        if not establish():
+        established = establish()
+        if established and config.get("token_cookie"):
+            established = bool(self.get_service_token(service))
+        if not established:
             logger.info("跨系统 CAS 会话已过期，尝试恢复统一认证后重建业务会话...")
             self._logged_in = False
             if not self.ensure_login():
                 raise NEULoginError("统一认证会话已过期")
-            if not establish():
+            established = establish()
+            if established and config.get("token_cookie"):
+                established = bool(self.get_service_token(service))
+            if not established:
                 raise NEULoginError("统一认证恢复后仍无法建立业务系统会话")
         self._save_cookies()
         return True
@@ -1278,6 +1320,13 @@ class NEUAuthClient:
         response_url = str(getattr(response, "url", "") or "")
         if self._is_auth_redirect(response_url):
             return True
+        response_codes = config.get("auth_response_codes") or ()
+        if response_codes and "json" in str(response.headers.get("Content-Type", "")).lower():
+            try:
+                if str(response.json().get("code")) in response_codes:
+                    return True
+            except (AttributeError, TypeError, ValueError):
+                pass
         if network_mode == "webvpn":
             if self._webvpn_targets_host(response_url, "pass.neu.edu.cn"):
                 return True

@@ -1,0 +1,582 @@
+import json
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+
+from backend.core.course_selection import CourseSelectionAutomationService
+
+
+def _service(tmp_path):
+    return CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        client_builder=lambda auth: None,
+    )
+
+
+def test_automation_tasks_are_account_scoped_and_require_explicit_start(tmp_path):
+    service = _service(tmp_path)
+    task = service.create("student-a", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "目标课程", "items": [], "poll_seconds": 15,
+    })
+    assert task["status"] == "draft"
+    assert service.list("student-b") == []
+    running = service.action("student-a", task["task_id"], "start")
+    assert running["status"] == "running"
+
+
+def test_automation_tasks_are_filtered_by_batch(tmp_path):
+    service = _service(tmp_path)
+    first = service.create("student", {
+        "batch_code": "batch-1", "term_code": "2026-2027-1",
+        "name": "第一轮任务", "items": [], "poll_seconds": 15,
+    })
+    service.create("student", {
+        "batch_code": "batch-2", "term_code": "2026-2027-1",
+        "name": "第二轮任务", "items": [], "poll_seconds": 15,
+    })
+
+    assert [item["task_id"] for item in service.list("student", "batch-1")] == [first["task_id"]]
+    assert len(service.list("student")) == 2
+
+
+def test_cancelled_automation_task_is_removed_immediately(tmp_path):
+    service = _service(tmp_path)
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "待取消任务", "items": [], "poll_seconds": 15,
+    })
+
+    result = service.action("student", task["task_id"], "cancel")
+
+    assert result["status"] == "cancelled"
+    assert service.list("student") == []
+
+
+def test_running_automation_task_resumes_with_reconciliation_after_restart(tmp_path):
+    path = tmp_path / "course_selection_tasks.json"
+    path.write_text(json.dumps([{
+        "task_id": "task-1", "account": "student", "status": "running",
+        "batch_code": "batch", "term_code": "2026-2027-1", "items": [],
+    }]), encoding="utf-8")
+
+    task = _service(tmp_path).list("student")[0]
+    assert task["status"] == "waiting"
+    assert task["desired_state"] == "running"
+    assert task["restart_reconcile"] is True
+    assert "核验官方状态" in task["message"]
+
+
+def test_pre_start_task_uses_opening_burst_then_degrades_to_vacancy_watch(tmp_path):
+    class Client:
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": []}
+
+        def search_courses(self, **_kwargs):
+            return {"courses": [{"class_id": "class-1", "full": True}]}
+
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: Client(),
+    )
+    future = (datetime.now().astimezone() + timedelta(minutes=5)).isoformat()
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "开场任务",
+        "start_at": future, "poll_seconds": 15, "groups": [
+            {"group_id": "group", "name": "目标", "target_count": 1},
+        ], "items": [{
+            "plan_group_id": "group", "priority": 1, "course_code": "A",
+            "course_name": "A", "class_id": "class-1",
+        }],
+    })
+    assert task["polling_mode"] == "opening_burst"
+    running = service.action("student", task["task_id"], "start")
+    assert running["status"] == "waiting"
+    task["start_at"] = (datetime.now().astimezone() - timedelta(seconds=1)).isoformat()
+    task["status"] = "running"
+    task["desired_state"] = "running"
+    task["last_attempt_at"] = None
+
+    service._tick(task)
+
+    assert task["polling_mode"] == "vacancy_watch"
+    assert service._poll_interval(task) == 15
+
+
+def test_login_recovery_provider_continues_read_phase_without_pausing(tmp_path):
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+
+    class Client:
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": []}
+
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        auth_recover_provider=lambda: auth,
+        client_builder=lambda _auth: Client(),
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "恢复登录",
+        "groups": [], "items": [], "poll_seconds": 15,
+    })
+    task.update({"status": "waiting", "desired_state": "running"})
+
+    service._tick(task)
+
+    assert task["status"] == "running"
+    assert task["attempt_count"] == 1
+
+
+def test_inflight_write_after_restart_is_reconciled_not_replayed(tmp_path):
+    class Client:
+        selected_calls = 0
+
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": []}
+
+        def select_course(self, **_kwargs):
+            self.selected_calls += 1
+            raise AssertionError("uncertain write must never be replayed")
+
+    client = Client()
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: client,
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "待核验",
+        "groups": [{"group_id": "group", "name": "目标", "target_count": 1}],
+        "items": [{"plan_group_id": "group", "course_code": "A", "class_id": "class-1"}],
+        "poll_seconds": 15,
+    })
+    task.update({
+        "status": "waiting", "desired_state": "running", "last_attempt_at": None,
+        "inflight_mutation": {"action": "select", "class_id": "class-1", "course_code": "A"},
+    })
+
+    service._tick(task)
+
+    assert task["status"] == "needs_review"
+    assert client.selected_calls == 0
+
+
+def test_legacy_cancelled_tasks_are_removed_on_restart(tmp_path):
+    path = tmp_path / "course_selection_tasks.json"
+    path.write_text(json.dumps([{
+        "task_id": "cancelled", "account": "student", "status": "cancelled",
+        "batch_code": "batch", "term_code": "2026-2027-1", "items": [],
+    }]), encoding="utf-8")
+
+    assert _service(tmp_path).list("student") == []
+
+
+def test_catalog_archives_are_account_scoped_and_only_deleted_explicitly(tmp_path):
+    service = _service(tmp_path)
+    archive = service.merge_catalog_archive(
+        "student-a",
+        batch={
+            "code": "batch", "name": "必修课初选", "term_code": "2026-2027-1",
+            "term_name": "2026-2027学年秋季学期", "begin_time": "2026-08-14 08:00:00",
+            "end_time": "2026-08-14 18:00:00",
+        },
+        scope="ALLKC",
+        groups=[{
+            "group_id": "course-a", "source_tags": ["全校课程查询"],
+            "classes": [{
+                "class_id": "class-a", "course_code": "A", "course_name": "课程A",
+                "capacity": 30, "selected_count": 20, "eligibility_status": "unknown",
+            }],
+        }],
+    )
+
+    service.update_archive_eligibility(
+        "student-a", batch_code="batch",
+        results=[{"class_id": "class-a", "status": "selectable", "reason": ""}],
+    )
+    assert service.list_catalog_archives("student-b") == []
+    saved = service.list_catalog_archives("student-a")[0]
+    assert saved["courses"][0]["eligibility_status"] == "selectable"
+    assert saved["courses"][0]["capacity_updated_at"]
+    assert service.delete_catalog_archive("student-b", archive["archive_id"]) is False
+    assert service.list_catalog_archives("student-a")
+    assert service.delete_catalog_archive("student-a", archive["archive_id"]) is True
+    assert service.list_catalog_archives("student-a") == []
+
+
+def test_complete_catalog_sync_scans_every_official_scope(tmp_path):
+    batch = SimpleNamespace(
+        code="batch",
+        menus=({"code": "FANKC"}, {"code": "XGKC"}, {"code": "ALLKC"}),
+        to_dict=lambda: {
+            "code": "batch", "name": "轮次", "term_code": "2026-2027-1",
+            "menus": [{"code": "FANKC"}, {"code": "XGKC"}, {"code": "ALLKC"}],
+        },
+    )
+
+    class FakeClient:
+        def get_context(self):
+            return {"batches": [batch]}
+
+        def search_courses(self, *, teaching_class_type, **_kwargs):
+            return {"total": 1, "courses": [{
+                "class_id": f"{teaching_class_type}-1",
+                "course_code": teaching_class_type,
+                "course_name": teaching_class_type,
+            }]}
+
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: FakeClient(),
+    )
+    service.schedule_catalog_sync("student", batch={"code": "batch", "name": "轮次"})
+    service._tick_catalog_sync()
+
+    saved = service.list_catalog_archives("student")[0]
+    assert saved["sync_status"] == "complete"
+    assert saved["catalog_complete"] is True
+    assert saved["sync_scopes"] == ["FANKC", "XGKC", "ALLKC"]
+    assert {course["course_code"] for course in saved["courses"]} == {"FANKC", "XGKC", "ALLKC"}
+
+
+def test_complete_catalog_is_requeued_only_after_dynamic_refresh_interval(tmp_path):
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student", batch={"code": "batch", "name": "轮次"}, scope="ALLKC", groups=[],
+    )
+    with service._lock:
+        archive = service._archives[0]
+        archive["sync_status"] = "complete"
+        archive["catalog_complete"] = True
+        archive["last_sync_at"] = datetime.now().astimezone().isoformat()
+
+    service.schedule_catalog_sync("student", batch={"code": "batch", "name": "轮次"})
+    assert service.list_catalog_archives("student")[0]["sync_status"] == "complete"
+
+    with service._lock:
+        service._archives[0]["last_sync_at"] = (
+            datetime.now().astimezone() - timedelta(minutes=3)
+        ).isoformat()
+    service.schedule_catalog_sync("student", batch={"code": "batch", "name": "轮次"})
+    refreshed = service.list_catalog_archives("student")[0]
+    assert refreshed["sync_status"] == "queued"
+    assert refreshed["catalog_complete"] is True
+
+
+def test_union_catalog_archive_merges_sources_filters_and_paginates(tmp_path):
+    service = _service(tmp_path)
+    batch = {"code": "batch", "name": "轮次", "term_code": "2026-2027-1"}
+    service.merge_catalog_archive(
+        "student", batch=batch, scope="FANKC", groups=[{
+            "group_id": "A", "source_tags": ["培养方案内课"], "classes": [{
+                "class_id": "class-a", "course_code": "A", "course_name": "人文课程",
+                "credits": "2", "course_category": "人文社会科学类",
+                "course_nature": "选修", "eligibility_status": "selectable",
+            }],
+        }],
+    )
+    service.merge_catalog_archive(
+        "student", batch=batch, scope="ALLKC", groups=[{
+            "group_id": "A", "source_tags": ["全校课程查询"], "classes": [{
+                "class_id": "class-a", "course_code": "A", "course_name": "人文课程",
+                "credits": "2", "course_category": "人文社会科学类",
+                "course_nature": "选修", "eligibility_status": "selectable",
+            }],
+        }, {
+            "group_id": "B", "source_tags": ["全校课程查询"], "classes": [{
+                "class_id": "class-b", "course_code": "B", "course_name": "其他课程",
+                "credits": "1", "course_category": "自然科学类",
+                "course_nature": "选修", "eligibility_status": "unavailable",
+            }],
+        }],
+    )
+
+    result = service.query_catalog_archive(
+        "student", batch_code="batch", page_number=1, page_size=20,
+        filters={"KCLB": "人文社会科学类"},
+    )
+
+    assert result["total"] == 1
+    assert result["groups"][0]["course_code"] == "A"
+    assert result["groups"][0]["source_tags"] == ["全校课程查询", "培养方案内课"]
+    assert result["groups"][0]["classes"][0]["teaching_class_type"] == "FANKC"
+
+
+def test_archive_filters_match_campus_code_name_and_category_aliases(tmp_path):
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student", batch={"code": "batch", "name": "轮次"}, scope="TJKC", groups=[{
+            "group_id": "A", "classes": [{
+                "class_id": "class-a", "course_code": "A", "course_name": "工商管理课程",
+                "course_category": "专业方向类", "department": "工商管理学院",
+                "campus": "01", "campus_name": "浑南校区", "schedules": [],
+            }],
+        }],
+    )
+
+    result = service.query_catalog_archive(
+        "student", batch_code="batch", page_number=1, page_size=20,
+        campus="浑南校区", filters={"KCLB": "专业方向课"},
+    )
+
+    assert result["total"] == 1
+    assert result["groups"][0]["department"] == "工商管理学院"
+
+    recommended = service.query_catalog_archive(
+        "student", batch_code="batch", page_number=1, page_size=20,
+        scope="TJKC", campus="01", filters={"KCLB": "专业方向类"},
+    )
+    unrelated = service.query_catalog_archive(
+        "student", batch_code="batch", page_number=1, page_size=20,
+        scope="XGKC", filters={"KCLB": "专业方向类"},
+    )
+
+    assert recommended["total"] == 1
+    assert recommended["groups"][0]["classes"][0]["teaching_class_type"] == "TJKC"
+    assert unrelated["total"] == 0
+
+
+def test_catalog_final_refresh_updates_saved_selectable_course_counts(tmp_path):
+    class FakeClient:
+        def search_courses(self, **kwargs):
+            assert kwargs["batch_code"] == "batch"
+            assert kwargs["keyword"] == "A"
+            return {"courses": [{
+                "class_id": "class-a", "course_code": "A", "course_name": "课程A",
+                "capacity": 30, "selected_count": 29, "full": False,
+                "first_choice_count": 28, "weight_participant_count": 0,
+            }]}
+
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: auth,
+        client_builder=lambda _auth: FakeClient(),
+    )
+    archive = service.merge_catalog_archive(
+        "student",
+        batch={
+            "code": "batch", "name": "初选", "term_code": "2026-2027-1",
+            "end_time": "2026-08-14 18:00:00",
+        },
+        scope="ALLKC",
+        groups=[{"group_id": "A", "classes": [{
+            "class_id": "class-a", "course_code": "A", "course_name": "课程A",
+            "capacity": 30, "selected_count": 10, "eligibility_status": "selectable",
+        }]}],
+    )
+
+    service._refresh_archive_counts(auth, archive)
+    saved = service.list_catalog_archives("student")[0]
+    assert saved["courses"][0]["selected_count"] == 29
+    assert saved["final_refresh_status"] == "complete"
+    assert saved["final_refresh_at"]
+
+
+def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tmp_path):
+    class FakeClient:
+        def __init__(self):
+            self.volunteered = [{
+                "class_id": "class-a", "course_code": "A", "course_name": "课程A",
+                "devoted_weight": 20,
+            }]
+            self.dropped = []
+
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": list(self.volunteered)}
+
+        def search_courses(self, *, keyword, **_kwargs):
+            rows = {
+                "A": {"class_id": "class-a", "course_code": "A", "course_name": "课程A", "capacity": 30, "weight_participant_count": 40},
+                "B": {"class_id": "class-b", "course_code": "B", "course_name": "课程B", "capacity": 30, "weight_participant_count": 35},
+            }
+            return {"courses": [rows[keyword]]}
+
+        def get_weight_budget(self, **_kwargs):
+            return {"remaining": 85, "total": 105, "used": 20, "minimum": 5, "step": 1}
+
+        def deselect_course(self, *, class_id, **_kwargs):
+            self.dropped.append(class_id)
+            return {"success": True, "code": "200", "message": "queued"}
+
+    client = FakeClient()
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: client,
+    )
+    service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "name": "权重轮次", "term_code": "2026-2027-1", "selection_type_code": "04"},
+        scope="ALLKC",
+        groups=[{"group_id": "catalog", "classes": [
+            {"class_id": "class-a", "course_code": "A", "course_name": "课程A", "capacity": 30, "weight_participant_count": 30},
+            {"class_id": "class-b", "course_code": "B", "course_name": "课程B", "capacity": 30, "weight_participant_count": 30},
+            {"class_id": "other", "course_code": "O", "course_name": "背景课", "capacity": 80, "weight_participant_count": 50},
+        ]}],
+    )
+    service._archives[0]["catalog_complete"] = True
+    service._archives[0]["sync_status"] = "complete"
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "实时投权",
+        "task_type": "weight_strategy", "grade_size": 126, "rebalance_seconds": 30,
+        "groups": [{"group_id": "g", "name": "选修", "target_count": 2}],
+        "items": [
+            {"plan_group_id": "g", "priority": 1, "utility": 10, "course_code": "A", "course_name": "课程A", "class_id": "class-a", "teaching_class_type": "ALLKC", "capacity": 30, "weight_participant_count": 30},
+            {"plan_group_id": "g", "priority": 2, "utility": 8, "course_code": "B", "course_name": "课程B", "class_id": "class-b", "teaching_class_type": "ALLKC", "capacity": 30, "weight_participant_count": 30},
+        ],
+    })
+    task.update({"status": "running", "desired_state": "running", "last_attempt_at": None})
+
+    service._tick(task)
+
+    assert task["weight_status"]["last_calculated_at"]
+    assert task["weight_status"]["pending_drop"][0]["class_id"] == "class-a"
+    assert task["weight_status"]["pending_add"]
+    assert client.dropped == []
+
+    service._tick(task)
+    assert client.dropped == ["class-a"]
+    assert task["weight_status"]["inflight"]["action"] == "drop"
+
+
+def test_group_quota_skips_full_candidates_and_keeps_filling_other_groups(tmp_path):
+    class FakeClient:
+        def __init__(self):
+            self.selected = []
+            self.submitted = []
+            self.candidates = {
+                "A1": {"class_id": "a1", "full": True},
+                "A2": {"class_id": "a2", "full": False},
+                "A3": {"class_id": "a3", "full": False},
+                "B1": {"class_id": "b1", "full": False},
+            }
+
+        def get_selected(self, *, batch_code):
+            return {"selected": list(self.selected), "volunteered": []}
+
+        def search_courses(self, *, keyword, **_kwargs):
+            return {"courses": [self.candidates[keyword]]}
+
+        def check_course_eligibility(self, *, class_ids, **_kwargs):
+            return {"results": [
+                {"class_id": class_id, "status": "selectable", "reason": ""}
+                for class_id in class_ids
+            ]}
+
+        def select_course(self, *, class_id, course_code, **_kwargs):
+            self.submitted.append((class_id, course_code))
+            return {"success": True, "code": "queued", "message": "已提交至官方队列"}
+
+    client = FakeClient()
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: auth,
+        client_builder=lambda _auth: client,
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "分类目标",
+        "groups": [
+            {"group_id": "a", "name": "A 类", "target_count": 2},
+            {"group_id": "b", "name": "B 类", "target_count": 1},
+        ],
+        "items": [
+            {"plan_group_id": "a", "priority": 1, "course_code": "A1", "course_name": "A1", "class_id": "a1"},
+            {"plan_group_id": "a", "priority": 2, "course_code": "A2", "course_name": "A2", "class_id": "a2"},
+            {"plan_group_id": "a", "priority": 3, "course_code": "A3", "course_name": "A3", "class_id": "a3"},
+            {"plan_group_id": "b", "priority": 1, "course_code": "B1", "course_name": "B1", "class_id": "b1"},
+        ],
+        "poll_seconds": 5,
+    })
+    task["status"] = "running"
+    task["desired_state"] = "running"
+
+    service._tick(task)
+    assert client.submitted == [("a2", "A2"), ("b1", "B1")]
+    assert task["group_results"]["a"]["status"] == "verifying"
+    assert task["group_results"]["b"]["status"] == "verifying"
+
+    client.selected = [
+        {"class_id": "a2", "course_code": "A2"},
+        {"class_id": "b1", "course_code": "B1"},
+    ]
+    task["last_attempt_at"] = None
+    service._tick(task)
+    assert client.submitted[-1] == ("a3", "A3")
+    assert task["group_results"]["a"]["success_count"] == 1
+    assert task["group_results"]["b"]["status"] == "success"
+
+    client.selected.append({"class_id": "a3", "course_code": "A3"})
+    task["last_attempt_at"] = None
+    service._tick(task)
+    assert task["group_results"]["a"]["success_count"] == 2
+    assert task["group_results"]["a"]["status"] == "success"
+    assert task["status"] == "success"
+
+
+def test_vacancy_swap_waits_for_drop_confirmation_before_selecting_target(tmp_path):
+    class FakeClient:
+        def __init__(self):
+            self.selected = [{"class_id": "drop-1", "course_code": "DROP"}]
+            self.full = True
+            self.dropped = []
+            self.submitted = []
+
+        def get_selected(self, **_kwargs):
+            return {"selected": list(self.selected), "volunteered": []}
+
+        def search_courses(self, **_kwargs):
+            return {"courses": [{
+                "class_id": "target-1", "course_code": "TARGET", "full": self.full,
+            }]}
+
+        def deselect_course(self, *, class_id, **_kwargs):
+            self.dropped.append(class_id)
+            return {"success": True, "code": "queued", "message": "退选已提交"}
+
+        def check_course_eligibility(self, *, class_ids, **_kwargs):
+            return {"results": [{"class_id": class_ids[0], "status": "selectable", "reason": ""}]}
+
+        def select_course(self, *, class_id, **_kwargs):
+            self.submitted.append(class_id)
+            return {"success": True, "code": "queued", "message": "选课已提交"}
+
+    client = FakeClient()
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: client,
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "换课",
+        "task_type": "vacancy_swap", "groups": [], "items": [], "poll_seconds": 5,
+        "swap_groups": [{
+            "group_id": "swap-1", "name": "目标课程",
+            "target": {"class_id": "target-1", "course_code": "TARGET", "course_name": "目标课程", "teaching_class_type": "FANKC"},
+            "drop_courses": [{"class_id": "drop-1", "course_code": "DROP", "course_name": "腾位课程", "teaching_class_type": "FANKC"}],
+        }],
+    })
+    task["status"] = "running"
+    task["desired_state"] = "running"
+
+    service._tick(task)
+    assert client.dropped == []
+    assert task["swap_results"]["swap-1"]["status"] == "monitoring"
+
+    client.full = False
+    task["last_attempt_at"] = None
+    service._tick(task)
+    assert client.dropped == ["drop-1"]
+    assert client.submitted == []
+    assert task["swap_results"]["swap-1"]["status"] == "verifying_drop"
+
+    client.selected = []
+    task["last_attempt_at"] = None
+    service._tick(task)
+    assert client.submitted == ["target-1"]
+    assert task["swap_results"]["swap-1"]["status"] == "verifying"
+
+    client.selected = [{"class_id": "target-1", "course_code": "TARGET"}]
+    task["last_attempt_at"] = None
+    service._tick(task)
+    assert task["swap_results"]["swap-1"]["status"] == "success"
+    assert task["status"] == "success"

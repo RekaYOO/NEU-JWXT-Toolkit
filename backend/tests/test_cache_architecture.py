@@ -222,6 +222,9 @@ def test_remote_mutations_declare_no_retry_and_consistency_action():
         "experiment.deselect",
         "evaluation.submit",
         "evaluation.batch",
+        "jwxk.confirm",
+        "jwxk.select",
+        "jwxk.deselect",
     }
     assert set(MUTATION_POLICIES) == expected
     assert all(
@@ -233,7 +236,7 @@ def test_remote_mutations_declare_no_retry_and_consistency_action():
         (ROOT / "backend" / "app" / "routers" / name).read_text(
             encoding="utf-8"
         )
-        for name in ("research.py", "experiment.py", "evaluation.py")
+        for name in ("research.py", "experiment.py", "evaluation.py", "course_selection.py")
     )
     assert all(
         f'mutation_policy("{operation}")' in route_sources
