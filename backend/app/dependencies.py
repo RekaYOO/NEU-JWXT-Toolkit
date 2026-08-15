@@ -74,10 +74,17 @@ _auth_sessions = AuthSessionManager()
 
 
 @contextmanager
-def remote_session_guard():
+def remote_session_guard(*, priority: str = "foreground", label: str = "remote-route"):
     """Serialize every operation that may touch the shared remote session."""
-    with _auth_sessions.remote_guard():
-        yield
+    with _auth_sessions.remote_guard(priority=priority, label=label) as timing:
+        yield timing
+
+
+@contextmanager
+def background_remote_session_guard():
+    """Give scheduled/cache work lower priority than visible user actions."""
+    with remote_session_guard(priority="background", label="background-service") as timing:
+        yield timing
 
 
 _storage = Storage()
@@ -136,7 +143,7 @@ _course_selection_automation = CourseSelectionAutomationService(
     # recovery chain; no second account or cookie store is created.
     auth_recover_provider=_jwxk_automation_auth,
     client_builder=_jwxk_automation_client,
-    remote_guard=remote_session_guard,
+    remote_guard=background_remote_session_guard,
 )
 
 
@@ -483,7 +490,7 @@ _cache_coordinator = CacheCoordinator(
         epoch, account
     ),
     identity_commit_guard=_identity_commit_guard,
-    remote_guard=remote_session_guard,
+    remote_guard=background_remote_session_guard,
     worker_count=2,
     autostart=False,
 )
@@ -979,6 +986,16 @@ def require_auth() -> NEUAuthClient:
 def require_serialized_auth():
     """Hold exclusive access to the shared requests.Session for a remote route."""
     with remote_session_guard():
+        client = _get_auth_client_unlocked()
+        if client is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=401, detail="未登录或登录已过期")
+        yield client
+
+
+def require_mutation_auth():
+    """Prioritize an explicit user write over queued reads and background scans."""
+    with remote_session_guard(priority="mutation", label="user-mutation"):
         client = _get_auth_client_unlocked()
         if client is None:
             from fastapi import HTTPException

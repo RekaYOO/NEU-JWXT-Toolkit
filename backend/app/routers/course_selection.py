@@ -40,7 +40,8 @@ from backend.app.schemas.course_selection import (
     JwxkAutomationTaskAction,
 )
 from backend.app.dependencies import (
-    get_storage, peek_auth_client, remote_session_guard, require_cached_auth_identity, require_serialized_auth,
+    get_storage, peek_auth_client, remote_session_guard, require_cached_auth_identity,
+    require_mutation_auth, require_serialized_auth,
     get_cache_coordinator,
     get_course_selection_automation_service,
 )
@@ -302,58 +303,84 @@ def get_jwxk_selected(
     storage: Storage = Depends(get_storage),
 ) -> JwxkSelectedResponse:
     response.headers["Cache-Control"] = "no-store"
-    def load(client):
-        result = client.get_selected(batch_code=request.batch_code)
-        rows = [
-            item for key in ("selected", "volunteered", "withdrawal")
-            for item in result.get(key) or [] if isinstance(item, dict)
-        ]
-        if not include_market:
-            return result
-        live_by_class: dict[str, dict] = {}
+    result = _run_jwxk_read(
+        storage, lambda client: client.get_selected(batch_code=request.batch_code),
+    )
+    rows = [
+        item for key in ("selected", "volunteered", "withdrawal")
+        for item in result.get(key) or [] if isinstance(item, dict)
+    ]
+    account = str(getattr(peek_auth_client(), "username", "") or "")
+    archive = get_course_selection_automation_service().get_catalog_archive_view(
+        account, request.batch_code,
+    ) if account else None
+    live_by_class = {
+        str(course.get("class_id") or ""): course
+        for course in (archive or {}).get("courses") or []
+        if str(course.get("class_id") or "")
+    }
+
+    # Base selected rows and locally archived market data return immediately.
+    # A requested live refresh yields the shared Session between courses, so a
+    # manual deselect/weight mutation can jump ahead of the remaining reads.
+    if include_market:
         seen: set[tuple[str, str]] = set()
         for item in rows:
             course_code = str(item.get("course_code") or "").strip()
-            class_type = str(item.get("teaching_class_type") or "ALLKC").strip() or "ALLKC"
+            class_type = str(item.get("teaching_class_type") or "").strip()
+            archived_course = live_by_class.get(str(item.get("class_id") or ""), {})
+            if class_type in {"", "ALL", "ROUND", "ALLKC"}:
+                class_type = next((
+                    str(value) for value in [
+                        *(item.get("source_scopes") or []),
+                        *(archived_course.get("source_scopes") or []),
+                        archived_course.get("teaching_class_type"),
+                    ]
+                    if str(value) not in {"", "ALL", "ROUND", "ALLKC"}
+                ), "")
             lookup = (course_code.upper(), class_type)
-            if not course_code or lookup in seen:
+            if not course_code or not class_type or lookup in seen:
                 continue
             seen.add(lookup)
             try:
-                live = client.search_courses(
-                    batch_code=request.batch_code,
-                    teaching_class_type=class_type,
-                    page_number=1,
-                    page_size=50,
-                    keyword=course_code,
-                    campus="",
-                    order_by="",
-                    filters={},
+                live = _run_jwxk_read(storage, lambda client, code=course_code, scope=class_type: (
+                    client.search_courses(
+                        batch_code=request.batch_code,
+                        teaching_class_type=scope,
+                        page_number=1,
+                        page_size=50,
+                        keyword=code,
+                        campus="",
+                        order_by="",
+                        filters={},
+                    )
+                ))
+            except HTTPException as error:
+                logger.info(
+                    "selected market refresh stopped status=%s completed=%s total=%s",
+                    error.status_code, len(seen) - 1, len(rows),
                 )
-            except (NEULoginError, JwxkError, requests.RequestException):
-                continue
+                break
             for course in live.get("courses") or []:
                 class_id = str(course.get("class_id") or "")
                 if class_id:
                     live_by_class[class_id] = course
-        dynamic_fields = (
-            "capacity", "selected_count", "first_choice_count",
-            "weight_participant_count", "market_participant_count",
-            "market_participant_label", "capacity_updated_at", "full",
-        )
-        for key in ("selected", "volunteered", "withdrawal"):
-            result[key] = [{
-                **item,
-                **{
-                    field: live_by_class[str(item.get("class_id") or "")][field]
-                    for field in dynamic_fields
-                    if str(item.get("class_id") or "") in live_by_class
-                    and field in live_by_class[str(item.get("class_id") or "")]
-                },
-            } for item in result.get(key) or []]
-        return result
 
-    result = _run_jwxk_read(storage, load)
+    dynamic_fields = (
+        "capacity", "selected_count", "first_choice_count",
+        "weight_participant_count", "market_participant_count",
+        "market_participant_label", "capacity_updated_at", "full",
+    )
+    for key in ("selected", "volunteered", "withdrawal"):
+        result[key] = [{
+            **item,
+            **{
+                field: live_by_class[str(item.get("class_id") or "")][field]
+                for field in dynamic_fields
+                if str(item.get("class_id") or "") in live_by_class
+                and field in live_by_class[str(item.get("class_id") or "")]
+            },
+        } for item in result.get(key) or []]
     return JwxkSelectedResponse.model_validate(result)
 
 
@@ -832,6 +859,7 @@ def get_jwxk_weight_budget(
     try:
         return _jwxk_mutation_client(auth, storage).get_weight_budget(
             batch_code=request.batch_code,
+            include_usage=False,
         )
     except JwxkError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -1117,7 +1145,7 @@ def plan_jwxk_weights(
 @router.post("/jwxk/weights/apply")
 def apply_jwxk_weights(
     request: JwxkSavedPlanRequest,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_mutation_auth),
     storage: Storage = Depends(get_storage),
 ):
     mutation_policy("jwxk.select")
@@ -1266,7 +1294,7 @@ def _invalidate_jwxk_timetable(auth: NEUAuthClient, term_code: str, operation: s
 def confirm_jwxk_batch(
     request: JwxkBatchConfirmRequest,
     response: Response,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_mutation_auth),
     storage: Storage = Depends(get_storage),
 ) -> JwxkMutationResponse:
     response.headers["Cache-Control"] = "no-store"
@@ -1288,7 +1316,7 @@ def confirm_jwxk_batch(
 def select_jwxk_course(
     request: JwxkCourseSelectRequest,
     response: Response,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_mutation_auth),
     storage: Storage = Depends(get_storage),
 ) -> JwxkMutationResponse:
     response.headers["Cache-Control"] = "no-store"
@@ -1319,7 +1347,7 @@ def select_jwxk_course(
 def deselect_jwxk_course(
     request: JwxkCourseDeselectRequest,
     response: Response,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_mutation_auth),
     storage: Storage = Depends(get_storage),
 ) -> JwxkMutationResponse:
     response.headers["Cache-Control"] = "no-store"

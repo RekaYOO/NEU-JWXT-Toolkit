@@ -261,6 +261,7 @@ const CourseSelectionWorkspacePage = () => {
   const courseClassRefs = useRef(new Map());
   const focusInProgressRef = useRef(false);
   const capacityRefreshInFlightRef = useRef(false);
+  const selectedMarketRefreshInFlightRef = useRef(false);
   const tasksRefreshInFlightRef = useRef(false);
   const taskAttentionTimerRef = useRef(null);
   const selectedRef = useRef([]);
@@ -564,7 +565,9 @@ const CourseSelectionWorkspacePage = () => {
     selection_source: batch?.selection_type_code === '04' ? 'fakcyx' : 'yxkcyx',
   });
 
-  const loadSelected = async ({ silent = false, propagateError = false, includeMarket = true } = {}) => {
+  const loadSelected = async ({ silent = false, propagateError = false, includeMarket = false } = {}) => {
+    if (includeMarket && selectedMarketRefreshInFlightRef.current) return null;
+    if (includeMarket) selectedMarketRefreshInFlightRef.current = true;
     if (silent) setSelectedRefreshing(true);
     else setLoading(true);
     try {
@@ -582,6 +585,7 @@ const CourseSelectionWorkspacePage = () => {
       if (propagateError) throw error;
       return null;
     } finally {
+      if (includeMarket) selectedMarketRefreshInFlightRef.current = false;
       if (silent) setSelectedRefreshing(false);
       else setLoading(false);
     }
@@ -753,6 +757,7 @@ const CourseSelectionWorkspacePage = () => {
     setCapacityUpdatedAt(null);
     setPendingVerificationClassIds([]);
     capacityRefreshInFlightRef.current = false;
+    selectedMarketRefreshInFlightRef.current = false;
     setFilterOptions(null);
     setFilterLoading(false);
     filterOptionsPromiseRef.current = null;
@@ -808,7 +813,7 @@ const CourseSelectionWorkspacePage = () => {
       const nextScopeOptions = batchScopeOptions(nextBatch);
       if (nextScopeOptions.length > 2) setScopeOptions(nextScopeOptions);
     }).catch(error => message.warning(error.message || '暂时无法刷新选课轮次状态，已继续显示本地数据'));
-    getJwxkSelected(batchCode).then(result => {
+    getJwxkSelected(batchCode, { includeMarket: false }).then(result => {
       if (generation !== workspaceGeneration.current) return;
       const { confirmed, merged } = selectionRecordsFromResponse(result);
       setConfirmedSelected(confirmed);
@@ -912,7 +917,11 @@ const CourseSelectionWorkspacePage = () => {
   };
 
   useEffect(() => {
-    if (view === 'selected') loadSelected({ silent: selected.length > 0 });
+    if (view === 'selected') {
+      loadSelected({ silent: selected.length > 0, includeMarket: false }).then(result => {
+        if (result) loadSelected({ silent: true, includeMarket: true });
+      });
+    }
     if (view === 'tasks') loadTasks();
   }, [view]);
 
@@ -928,7 +937,9 @@ const CourseSelectionWorkspacePage = () => {
   useEffect(() => {
     if (!batch || batch.state !== 'active' || view !== 'selected') return undefined;
     const refresh = () => {
-      if (document.visibilityState === 'visible') loadSelected({ silent: true });
+      if (document.visibilityState === 'visible') {
+        loadSelected({ silent: true, includeMarket: true });
+      }
     };
     const timer = window.setInterval(refresh, CATALOG_CAPACITY_REFRESH_MS);
     return () => window.clearInterval(timer);
@@ -1168,46 +1179,52 @@ const CourseSelectionWorkspacePage = () => {
     });
   };
 
-  const adjustCourseWeight = async (group, course, selectedRecord) => {
+  const adjustCourseWeight = (group, course, selectedRecord) => {
     if (!isCurrentBatchSelectionRecord(selectedRecord, batch?.selection_type_code)) {
       message.warning('这不是当前轮次的投权记录，不能在本轮调整权重');
       return;
     }
-    let budget;
-    try {
-      budget = await getJwxkWeightBudget(batchCode);
-    } catch (error) {
-      message.error(error.message || '读取剩余权重失败');
-      return;
-    }
     const oldWeight = Number(selectedRecord.devoted_weight || 0);
-    const minimum = Number(budget.minimum || 5);
-    const step = Number(budget.step || 1);
-    const maximum = Math.min(150, Number(budget.remaining || 0) + oldWeight);
-    if (maximum < minimum) {
-      message.warning(`当前可用权重不足，至少需要 ${minimum} 点，暂时无法调整`);
-      return;
-    }
-    let nextWeight = Math.min(maximum, Math.max(minimum, oldWeight || minimum));
-    Modal.confirm({
+    let budget = null;
+    let minimum = 5;
+    let step = 1;
+    let maximum = 150;
+    let nextWeight = Math.max(minimum, oldWeight || minimum);
+    const renderAdjustment = ({ loading = false, error = '' } = {}) => (
+      <div className="jwxk-adjust-weight">
+        <Alert
+          type="warning"
+          showIcon
+          message="官方没有原地修改权重接口"
+          description="确认后将先退选当前教学班；官方明确返回退选成功后立即按新权重重新投放，最终结果继续在后台核验。"
+        />
+        <div><span>当前权重</span><b>{oldWeight || '未返回'} 点</b></div>
+        <div>
+          <span>调整后权重</span>
+          <InputNumber
+            min={minimum}
+            max={maximum}
+            step={step}
+            defaultValue={nextWeight}
+            disabled={loading || Boolean(error)}
+            onChange={value => { nextWeight = Number(value || 0); }}
+            addonAfter="点"
+          />
+        </div>
+        {loading && <Text type="secondary"><Spin size="small" /> 正在读取官方剩余权重…</Text>}
+        {error && <Alert type="error" showIcon message="剩余权重读取失败" description={error} />}
+        {budget && <Text type="secondary">可用上限 {maximum} 点（当前剩余 {budget.remaining} + 本课程退选后预计返还 {oldWeight}）</Text>}
+      </div>
+    );
+    const dialog = Modal.confirm({
       title: `调整“${group.course_name}”的权重`,
       width: 560,
-      content: (
-        <div className="jwxk-adjust-weight">
-          <Alert
-            type="warning"
-            showIcon
-            message="官方没有原地修改权重接口"
-            description="确认后将先退选当前教学班；只有实时结果确认旧投权已经移除，才会按新权重重新投放。退选结果未确认时不会继续重投。"
-          />
-          <div><span>当前权重</span><b>{oldWeight || '未返回'} 点</b></div>
-          <div><span>调整后权重</span><InputNumber min={minimum} max={maximum} step={step} defaultValue={nextWeight} onChange={value => { nextWeight = Number(value || 0); }} addonAfter="点" /></div>
-          <Text type="secondary">可用上限 {maximum} 点（当前剩余 {budget.remaining} + 本课程退选后预计返还 {oldWeight}）</Text>
-        </div>
-      ),
+      content: renderAdjustment({ loading: true }),
       okText: '确认退选并重投',
       cancelText: '取消',
+      okButtonProps: { disabled: true },
       onOk: async () => {
+        if (!budget) return Promise.reject(new Error('budget pending'));
         if (!Number.isInteger(nextWeight) || nextWeight < minimum || nextWeight > maximum || (nextWeight - minimum) % step) {
           message.error(`权重需在 ${minimum}-${maximum} 之间，并按 ${step} 点递增`);
           return Promise.reject(new Error('invalid weight'));
@@ -1265,6 +1282,29 @@ const CourseSelectionWorkspacePage = () => {
           setActionLoading('');
         }
       },
+    });
+    getJwxkWeightBudget(batchCode).then(result => {
+      budget = result;
+      minimum = Number(budget.minimum || 5);
+      step = Number(budget.step || 1);
+      maximum = Math.min(150, Number(budget.remaining || 0) + oldWeight);
+      nextWeight = Math.min(maximum, Math.max(minimum, oldWeight || minimum));
+      if (maximum < minimum) {
+        dialog.update({
+          content: renderAdjustment({ error: `当前可用权重不足，至少需要 ${minimum} 点` }),
+          okButtonProps: { disabled: true },
+        });
+        return;
+      }
+      dialog.update({
+        content: renderAdjustment(),
+        okButtonProps: { disabled: false },
+      });
+    }).catch(error => {
+      dialog.update({
+        content: renderAdjustment({ error: error.message || '请稍后重试' }),
+        okButtonProps: { disabled: true },
+      });
     });
   };
 

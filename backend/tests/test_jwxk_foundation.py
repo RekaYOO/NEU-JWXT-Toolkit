@@ -807,6 +807,23 @@ def test_course_selection_refetches_secret_and_performs_explicit_301_confirmatio
     assert calls[2][1]["isConfirm"] == "1"
 
 
+def test_direct_official_mutation_success_is_not_misreported_as_queued():
+    class Client(JwxkSessionClient):
+        def _request(self, *_args, **_kwargs):
+            response = __import__("requests").Response()
+            response.status_code = 200
+            response.headers["Content-Type"] = "application/json"
+            response._content = b'{"code": 200, "msg": "operation success"}'
+            return response
+
+    result = Client(object())._post_mutation(
+        "/xsxk/elective/neu/clazz/del", {}, confirm_risk=False,
+    )
+
+    assert result["success"] is True
+    assert result["queued"] is False
+
+
 def test_course_selection_stops_before_mutation_when_official_check_rejects_class():
     calls = []
 
@@ -955,6 +972,28 @@ def test_weight_budget_reads_current_term_weight_from_official_context():
     }
 
 
+def test_lightweight_weight_budget_does_not_read_all_selected_feeds():
+    class Client(JwxkSessionClient):
+        def _post_form(self, path, data=None):
+            assert path == "/xsxk/elective/user"
+            return {"data": {"student": {
+                "electiveBatchList": [{
+                    "code": "weight-batch", "schoolTerm": "2026-2027-1",
+                }],
+                "termWeightList": [{"termCode": "2026-2027-1", "weight": "65"}],
+            }}}
+
+        def get_selected(self, **_kwargs):
+            raise AssertionError("lightweight budget must not read selected feeds")
+
+    result = Client(object()).get_weight_budget(
+        batch_code="weight-batch", include_usage=False,
+    )
+
+    assert result["remaining"] == 65
+    assert result["minimum"] == 5
+
+
 @pytest.mark.parametrize(
     "result_path,expected_source",
     [
@@ -1042,6 +1081,106 @@ def test_deselect_prefers_the_known_selection_source():
 
     assert result["success"] is True
     assert calls[:2] == ["/xsxk/elective/user", "/xsxk/volunteer/select"]
+
+
+def test_deselect_reuses_activated_batch_and_reads_only_known_source():
+    calls = []
+
+    class Client(JwxkSessionClient):
+        def _activate_batch(self, batch_code):
+            calls.append("activate")
+            return {
+                "electiveBatchList": [{
+                    "code": batch_code, "name": "权重轮次",
+                    "schoolTerm": "2026-2027-1", "schoolTermName": "秋季",
+                    "beginTime": "2020-01-01 00:00:00",
+                    "endTime": "2099-01-01 00:00:00",
+                    "typeCode": "04", "typeName": "权重", "tacticName": "可选可退",
+                    "canSelect": "1", "needConfirm": "0", "isConfirmed": "1",
+                }],
+            }
+
+        def get_context(self):
+            raise AssertionError("activated batch already contains mutation context")
+
+        def _post_form(self, path, data=None):
+            calls.append(path)
+            assert path == "/xsxk/volunteer/select"
+            return {"data": [{
+                "JXBID": "CLASS-1", "KCH": "COURSE-1",
+                "teachingClassType": "FANKC", "secretVal": "server-secret",
+            }]}
+
+        def _post_mutation(self, *_args, **_kwargs):
+            calls.append("mutate")
+            return {"success": True, "queued": False, "message": "退选成功"}
+
+    result = Client(object()).deselect_course(
+        batch_code="batch", class_id="CLASS-1",
+        selection_source="fakcyx", confirm_risk=True,
+    )
+
+    assert result["success"] is True
+    assert calls == ["activate", "/xsxk/volunteer/select", "mutate"]
+
+
+def test_deselect_reuses_recent_server_side_material_without_preflight_requests():
+    calls = []
+
+    class Auth:
+        timeout = 10
+
+    auth = Auth()
+    expires_at = jwxk_module.time.monotonic() + 60
+    auth._jwxk_active_batch_context = {
+        "batch_code": "batch",
+        "expires_at": expires_at,
+        "student": {"electiveBatchList": [{
+            "code": "batch", "name": "权重轮次",
+            "schoolTerm": "2026-2027-1", "schoolTermName": "秋季",
+            "beginTime": "2020-01-01 00:00:00",
+            "endTime": "2099-01-01 00:00:00",
+            "typeCode": "04", "typeName": "权重", "tacticName": "可选可退",
+            "canSelect": "1", "needConfirm": "0", "isConfirmed": "1",
+        }]},
+    }
+    auth._jwxk_deselect_material = {
+        ("batch", "CLASS-1", "fakcyx"): {
+            "expires_at": expires_at,
+            "source": "fakcyx",
+            "item": {
+                "JXBID": "CLASS-1", "KCH": "COURSE-1",
+                "teachingClassType": "FANKC", "secretVal": "server-secret",
+            },
+        },
+    }
+
+    class Client(JwxkSessionClient):
+        def _activate_batch(self, _batch_code):
+            raise AssertionError("fresh active batch context should be reused")
+
+        def _post_form(self, *_args, **_kwargs):
+            raise AssertionError("fresh selected-result material should be reused")
+
+        def _post_mutation(self, path, data, *, confirm_risk):
+            calls.append((path, data, confirm_risk))
+            return {"success": True, "queued": False, "message": "退选成功"}
+
+    result = Client(auth).deselect_course(
+        batch_code="batch", class_id="CLASS-1",
+        selection_source="fakcyx", confirm_risk=True,
+    )
+
+    assert result["success"] is True
+    assert calls == [(
+        "/xsxk/elective/neu/clazz/del",
+        {
+            "clazzType": "FANKC", "clazzId": "CLASS-1",
+            "secretVal": "server-secret", "source": "fakcyx",
+        },
+        True,
+    )]
+    assert auth._jwxk_deselect_material == {}
 
 
 def test_deselect_does_not_submit_when_class_is_absent_from_official_results():

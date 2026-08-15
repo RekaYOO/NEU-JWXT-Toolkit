@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
+
+
+logger = logging.getLogger(__name__)
+
+_REMOTE_PRIORITIES = {
+    "mutation": 0,
+    "foreground": 1,
+    "background": 2,
+}
 
 
 class AuthSessionManager:
@@ -14,12 +25,70 @@ class AuthSessionManager:
         self._client: Any | None = None
         self._identity_epoch = 0
         self._state_lock = threading.RLock()
-        self._remote_lock = threading.Lock()
+        self._remote_condition = threading.Condition(threading.Lock())
+        self._remote_active = False
+        self._remote_ticket = 0
+        self._remote_waiting: dict[str, list[int]] = {
+            priority: [] for priority in _REMOTE_PRIORITIES
+        }
+        self._remote_foreground_streak = 0
 
     @contextmanager
-    def remote_guard(self) -> Iterator[None]:
-        with self._remote_lock:
-            yield
+    def remote_guard(
+        self,
+        *,
+        priority: str = "foreground",
+        label: str = "remote-operation",
+    ) -> Iterator[dict[str, float | str]]:
+        """Serialize the shared Session while letting user writes skip queued reads.
+
+        The active request is never interrupted.  Once it releases the Session,
+        mutations win over foreground reads, which win over background scans.
+        After a bounded foreground streak, one background request may proceed so
+        cache/archive work cannot starve forever.
+        """
+        if priority not in _REMOTE_PRIORITIES:
+            raise ValueError(f"unknown remote priority: {priority}")
+        started = time.monotonic()
+        with self._remote_condition:
+            ticket = self._remote_ticket
+            self._remote_ticket += 1
+            self._remote_waiting[priority].append(ticket)
+            while self._remote_active or not self._remote_turn(priority, ticket):
+                self._remote_condition.wait()
+            self._remote_waiting[priority].pop(0)
+            self._remote_active = True
+            if priority == "foreground":
+                self._remote_foreground_streak += 1
+            elif priority == "background":
+                self._remote_foreground_streak = 0
+        wait_ms = round((time.monotonic() - started) * 1000, 1)
+        if wait_ms >= 250:
+            logger.info(
+                "remote session acquired priority=%s label=%s queue_wait_ms=%.1f",
+                priority, label, wait_ms,
+            )
+        try:
+            yield {"priority": priority, "label": label, "queue_wait_ms": wait_ms}
+        finally:
+            with self._remote_condition:
+                self._remote_active = False
+                self._remote_condition.notify_all()
+
+    def _remote_turn(self, priority: str, ticket: int) -> bool:
+        queue = self._remote_waiting[priority]
+        if not queue or queue[0] != ticket:
+            return False
+        if self._remote_waiting["mutation"]:
+            return priority == "mutation"
+        if (
+            self._remote_waiting["background"]
+            and self._remote_foreground_streak >= 8
+        ):
+            return priority == "background"
+        if self._remote_waiting["foreground"]:
+            return priority == "foreground"
+        return priority == "background"
 
     @contextmanager
     def identity_commit_guard(self) -> Iterator[None]:

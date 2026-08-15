@@ -931,6 +931,7 @@ class JwxkSessionClient:
     # and automatic tasks.
     _CATALOG_MIN_INTERVAL_SECONDS = 0.55
     _CATALOG_JITTER_SECONDS = 0.15
+    _MUTATION_MATERIAL_TTL_SECONDS = 300
     _GATE_CREATION_LOCK = threading.Lock()
 
     def __init__(self, auth: "NEUAuthClient", *, network_mode: str = "direct"):
@@ -1063,10 +1064,77 @@ class JwxkSessionClient:
 
     def _activate_batch(self, batch_code: str) -> dict[str, Any]:
         payload = self._post_form("/xsxk/elective/user", {"batchId": batch_code})
-        return (payload.get("data") or {}).get("student") or {}
+        student = (payload.get("data") or {}).get("student") or {}
+        try:
+            setattr(self.auth, "_jwxk_active_batch_context", {
+                "batch_code": batch_code,
+                "student": student,
+                "expires_at": time.monotonic() + self._MUTATION_MATERIAL_TTL_SECONDS,
+            })
+        except AttributeError:
+            pass
+        return student
+
+    def _cached_active_batch_student(self, batch_code: str) -> dict[str, Any] | None:
+        cached = getattr(self.auth, "_jwxk_active_batch_context", None)
+        if not isinstance(cached, dict):
+            return None
+        if (
+            _text(cached.get("batch_code")) != batch_code
+            or float(cached.get("expires_at") or 0) <= time.monotonic()
+        ):
+            return None
+        student = cached.get("student")
+        return student if isinstance(student, dict) else None
+
+    def _remember_deselect_material(
+        self, batch_code: str, rows_by_feed: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        now = time.monotonic()
+        existing = getattr(self.auth, "_jwxk_deselect_material", None)
+        cache = {
+            key: value for key, value in (existing.items() if isinstance(existing, dict) else [])
+            if isinstance(value, dict) and float(value.get("expires_at") or 0) > now
+        }
+        source_by_feed = {
+            "selected": "yxkcyx",
+            "volunteered": "fakcyx",
+            "general_volunteered": "xgxkyx",
+        }
+        for feed, source in source_by_feed.items():
+            for row in self._raw_classes(rows_by_feed.get(feed) or []):
+                class_id = _text(row.get("JXBID") or row.get("KXH"))
+                secret_val = _text(row.get("secretVal"))
+                if class_id and secret_val:
+                    cache[(batch_code, class_id, source)] = {
+                        "item": row,
+                        "source": source,
+                        "expires_at": now + self._MUTATION_MATERIAL_TTL_SECONDS,
+                    }
+        try:
+            setattr(self.auth, "_jwxk_deselect_material", cache)
+        except AttributeError:
+            pass
+
+    def _cached_deselect_material(
+        self, batch_code: str, class_id: str, selection_source: str,
+    ) -> tuple[dict[str, Any] | None, str]:
+        now = time.monotonic()
+        cache = getattr(self.auth, "_jwxk_deselect_material", None)
+        if not isinstance(cache, dict):
+            return None, ""
+        sources = [selection_source] if selection_source else ["yxkcyx", "fakcyx", "xgxkyx"]
+        for source in sources:
+            value = cache.get((batch_code, class_id, source))
+            if isinstance(value, dict) and float(value.get("expires_at") or 0) > now:
+                item = value.get("item")
+                if isinstance(item, dict) and _text(item.get("secretVal")):
+                    return item, source
+        return None, ""
 
     def get_weight_budget(
         self, *, batch_code: str, selected_snapshot: dict[str, Any] | None = None,
+        include_usage: bool = True,
     ) -> dict[str, Any]:
         """Read the active round's official remaining weight."""
 
@@ -1105,9 +1173,12 @@ class JwxkSessionClient:
         step = _find_named_number(context, {
             "weightStep", "bidStep", "QZBC",
         }) or 1
-        selected = selected_snapshot or self.get_selected(
-            batch_code=batch_code, include_withdrawal=False,
-        )
+        selected = selected_snapshot
+        if selected is None and include_usage:
+            selected = self.get_selected(
+                batch_code=batch_code, include_withdrawal=False,
+            )
+        selected = selected or {"volunteered": []}
         devoted = sum(
             int(row.get("devoted_weight") or 0)
             for row in selected.get("volunteered") or []
@@ -1116,8 +1187,10 @@ class JwxkSessionClient:
             remaining = max(0, total - devoted)
         if remaining is None:
             raise JwxkError("官方选课系统暂未返回剩余权重，请刷新轮次后重试")
-        if total is None:
+        if total is None and include_usage:
             total = remaining + devoted
+        if total is None:
+            total = remaining
         return {
             "remaining": remaining,
             "total": total,
@@ -1127,9 +1200,23 @@ class JwxkSessionClient:
             "source": "official_round_context",
         }
 
-    def _batch_for_mutation(self, batch_code: str) -> JwxkBatch:
-        context = self.get_context()
-        batch = next((item for item in context["batches"] if item.code == batch_code), None)
+    def _batch_for_mutation(
+        self, batch_code: str, *, activated_student: dict[str, Any] | None = None,
+    ) -> JwxkBatch:
+        batch = None
+        if isinstance(activated_student, dict):
+            rows = [
+                *(activated_student.get("electiveBatchList") or []),
+                *(activated_student.get("expElectiveBatchList") or []),
+            ]
+            if rows:
+                batches = parse_account_batches(
+                    rows, official_now=round(time.time() * 1000),
+                )
+                batch = next((item for item in batches if item.code == batch_code), None)
+        if batch is None:
+            context = self.get_context()
+            batch = next((item for item in context["batches"] if item.code == batch_code), None)
         if batch is None:
             raise JwxkError("选课轮次不存在或当前账号不可见")
         if not batch.account_selectable:
@@ -1309,12 +1396,16 @@ class JwxkSessionClient:
             except ValueError as error:
                 raise JwxkError("选课系统没有返回有效的确认结果") from error
             code = str(payload.get("code"))
+        message = _text(payload.get("msg")) or ("操作成功" if code == "200" else "操作失败")
+        queued = code == "200" and any(marker in message for marker in (
+            "队列", "排队", "处理中", "等待处理", "等待确认",
+        ))
         return {
             "success": code == "200",
-            "queued": code == "200",
+            "queued": queued,
             "requires_confirmation": code == "301",
             "code": code,
-            "message": _text(payload.get("msg")) or ("已进入官方处理队列" if code == "200" else "操作失败"),
+            "message": message,
         }
 
     def confirm_batch(self, *, batch_code: str) -> dict[str, Any]:
@@ -1410,35 +1501,44 @@ class JwxkSessionClient:
         selection_source: str = "",
         confirm_risk: bool,
     ) -> dict[str, Any]:
-        batch = self._batch_for_mutation(batch_code)
-        self._activate_batch(batch_code)
-        item = None
-        source = ""
-        feeds = [
-            ("/xsxk/elective/select", "yxkcyx"),
-            ("/xsxk/volunteer/select", "fakcyx"),
-            ("/xsxk/volunteer/xgxk/select", "xgxkyx"),
-        ]
-        if selection_source:
-            feeds.sort(key=lambda feed: feed[1] != selection_source)
-        for path, source_name in feeds:
-            try:
-                rows = self._post_form(path).get("data") or []
-            except JwxkError:
-                # The general-elective volunteer feed is absent in some rounds.
-                # The first two feeds are part of the stable selected-result
-                # contract: if either cannot be read, the source is ambiguous and
-                # a destructive request must not be submitted with a guessed source.
-                if source_name == "xgxkyx":
-                    continue
-                raise
-            item = next((
-                row for row in self._raw_classes(rows)
-                if _text(row.get("JXBID") or row.get("KXH")) == class_id
-            ), None)
-            if item is not None:
-                source = source_name
-                break
+        started = time.monotonic()
+        item, source = self._cached_deselect_material(
+            batch_code, class_id, selection_source,
+        )
+        activated_student = self._cached_active_batch_student(batch_code)
+        if activated_student is None:
+            activated_student = self._activate_batch(batch_code)
+        activated_at = time.monotonic()
+        batch = self._batch_for_mutation(
+            batch_code, activated_student=activated_student,
+        )
+        cache_hit = item is not None
+        if item is None:
+            feeds = [
+                ("/xsxk/elective/select", "yxkcyx"),
+                ("/xsxk/volunteer/select", "fakcyx"),
+                ("/xsxk/volunteer/xgxk/select", "xgxkyx"),
+            ]
+            if selection_source:
+                feeds = [feed for feed in feeds if feed[1] == selection_source]
+            for path, source_name in feeds:
+                try:
+                    rows = self._post_form(path).get("data") or []
+                except JwxkError:
+                    # The general-elective volunteer feed is absent in some rounds.
+                    # The first two feeds are part of the stable selected-result
+                    # contract: if either cannot be read, the source is ambiguous and
+                    # a destructive request must not be submitted with a guessed source.
+                    if source_name == "xgxkyx":
+                        continue
+                    raise
+                item = next((
+                    row for row in self._raw_classes(rows)
+                    if _text(row.get("JXBID") or row.get("KXH")) == class_id
+                ), None)
+                if item is not None:
+                    source = source_name
+                    break
         if item is None or not _text(item.get("secretVal")):
             raise JwxkError("已选课程信息已变化，请刷新后重试")
         data = {
@@ -1452,6 +1552,19 @@ class JwxkSessionClient:
             data["crossBatch"] = "1"
         result = self._post_mutation(
             "/xsxk/elective/neu/clazz/del", data, confirm_risk=confirm_risk
+        )
+        if result.get("success"):
+            cache = getattr(self.auth, "_jwxk_deselect_material", None)
+            if isinstance(cache, dict):
+                cache.pop((batch_code, class_id, source), None)
+        completed_at = time.monotonic()
+        logger.info(
+            "jwxk manual deselect completed source=%s cache_hit=%s activate_ms=%s lookup_and_submit_ms=%s total_ms=%s success=%s queued=%s",
+            source or "unknown", cache_hit,
+            round((activated_at - started) * 1000),
+            round((completed_at - activated_at) * 1000),
+            round((completed_at - started) * 1000),
+            bool(result.get("success")), bool(result.get("queued")),
         )
         result["_term_code"] = batch.term_code
         return result
@@ -1584,6 +1697,7 @@ class JwxkSessionClient:
                 name,
                 type(error).__name__,
             )
+        self._remember_deselect_material(batch_code, rows_by_feed)
         selected = rows_by_feed["selected"]
         volunteered = rows_by_feed["volunteered"]
         general_volunteered = rows_by_feed["general_volunteered"]
