@@ -166,6 +166,30 @@ export const sortCatalogGroupsBySelectability = groups => [...(groups || [])]
     || Number(isTaskRecommendedGroup(right)) - Number(isTaskRecommendedGroup(left))
   ));
 
+export const catalogGroupsForDisplay = (groups = [], {
+  availability = 'all',
+  weekday = 'all',
+  expandedGroupId = '',
+  expandedIndex = -1,
+} = {}) => {
+  const visible = sortCatalogGroupsBySelectability((groups || []).map(group => {
+    const preserveExpanded = Boolean(expandedGroupId && group.group_id === expandedGroupId);
+    const classes = (group.classes || []).filter(course => {
+      if (!preserveExpanded && !matchesCatalogAvailability(course, availability)) return false;
+      if (weekday !== 'all' && !(course.schedules || []).some(item => String(item.weekday) === String(weekday))) {
+        return false;
+      }
+      return true;
+    });
+    return { ...group, classes, class_count: classes.length };
+  }).filter(group => group.classes.length));
+  const currentIndex = visible.findIndex(group => group.group_id === expandedGroupId);
+  if (currentIndex < 0 || expandedIndex < 0 || currentIndex === expandedIndex) return visible;
+  const [expanded] = visible.splice(currentIndex, 1);
+  visible.splice(Math.min(expandedIndex, visible.length), 0, expanded);
+  return visible;
+};
+
 export const sameSelectionCourse = (left, right) => {
   const leftCode = String(left.course_code || '').trim().toLocaleLowerCase();
   const rightCode = String(right.course_code || '').trim().toLocaleLowerCase();

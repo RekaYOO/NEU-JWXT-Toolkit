@@ -2,6 +2,7 @@ import {
   academicGapCatalogScope,
   catalogAvailabilityRequestMode,
   catalogAvailabilityRemoteFilters,
+  catalogGroupsForDisplay,
   filterAcademicPlanGapsForBatch,
   findMatchingSelectionRecord,
   inferBatchRequirementType,
@@ -232,6 +233,25 @@ test('catalog places task-recommended courses first within the same availability
   expect(sorted.map(group => group.group_id)).toEqual([
     'recommended-by-scope', 'recommended-by-tag', 'ordinary', 'recommended-but-unavailable',
   ]);
+});
+
+test('eligibility updates keep the expanded course visible at its original position', () => {
+  const groups = [{
+    group_id: 'first',
+    classes: [{ class_id: 'first-1', eligibility_status: 'selectable', schedules: [] }],
+  }, {
+    group_id: 'expanded',
+    classes: [{ class_id: 'expanded-1', eligibility_status: 'unavailable', schedules: [] }],
+  }, {
+    group_id: 'last',
+    classes: [{ class_id: 'last-1', eligibility_status: 'selectable', schedules: [] }],
+  }];
+
+  const visible = catalogGroupsForDisplay(groups, {
+    availability: 'selectable', expandedGroupId: 'expanded', expandedIndex: 1,
+  });
+  expect(visible.map(group => group.group_id)).toEqual(['first', 'expanded', 'last']);
+  expect(visible[1].classes[0].eligibility_status).toBe('unavailable');
 });
 
 test('academic-plan gaps map to official task category and nature filters', () => {

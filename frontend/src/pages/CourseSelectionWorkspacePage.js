@@ -23,6 +23,7 @@ import TimetablePage from './TimetablePage';
 import {
   catalogAvailabilityRequestMode,
   catalogAvailabilityRemoteFilters,
+  catalogGroupsForDisplay,
   filterAcademicPlanGapsForBatch,
   findMatchingSelectionRecord,
   immediateSelectionConflictMap,
@@ -227,6 +228,7 @@ const CourseSelectionWorkspacePage = () => {
   const capacityRefreshInFlightRef = useRef(false);
   const tasksRefreshInFlightRef = useRef(false);
   const selectedRef = useRef([]);
+  const expandedGroupPositionRef = useRef(-1);
   const [status, setStatus] = useState(null);
   const [localBatch, setLocalBatch] = useState(null);
   const [savedTermCode, setSavedTermCode] = useState('');
@@ -336,14 +338,12 @@ const CourseSelectionWorkspacePage = () => {
     Number(isCurrentBatchSelectionRecord(right, batch?.selection_type_code))
     - Number(isCurrentBatchSelectionRecord(left, batch?.selection_type_code))
   )), [selected, batch?.selection_type_code]);
-  const visibleGroups = useMemo(() => sortCatalogGroupsBySelectability(groups.map(group => {
-    const classes = (group.classes || []).filter(course => {
-      if (!matchesCatalogAvailability(course, availability)) return false;
-      if (weekday !== 'all' && !(course.schedules || []).some(item => String(item.weekday) === weekday)) return false;
-      return true;
-    });
-    return { ...group, classes, class_count: classes.length };
-  }).filter(group => group.classes.length)), [availability, groups, weekday]);
+  const visibleGroups = useMemo(() => catalogGroupsForDisplay(groups, {
+    availability,
+    weekday,
+    expandedGroupId,
+    expandedIndex: expandedGroupPositionRef.current,
+  }), [availability, expandedGroupId, groups, weekday]);
 
   const fetchEligibility = async classIds => {
     const ids = [...new Set(classIds.filter(Boolean))];
@@ -698,6 +698,7 @@ const CourseSelectionWorkspacePage = () => {
     setTotal(0);
     setPage(1);
     setExpandedGroupId('');
+    expandedGroupPositionRef.current = -1;
     setHoverPreviewClass(null);
     setPinnedPreviewClass(null);
     setHiddenPlanClassIds([]);
@@ -1533,6 +1534,9 @@ const CourseSelectionWorkspacePage = () => {
 
   const toggleCourseGroup = group => {
     const opening = expandedGroupId !== group.group_id;
+    expandedGroupPositionRef.current = opening
+      ? visibleGroups.findIndex(item => item.group_id === group.group_id)
+      : -1;
     setExpandedGroupId(opening ? group.group_id : '');
     if (opening) {
       verifyEligibility((group.classes || [])
@@ -1772,6 +1776,7 @@ const CourseSelectionWorkspacePage = () => {
                       })}
                       <Button className="jwxk-collapse-classes" type="text" onClick={() => {
                         setExpandedGroupId('');
+                        expandedGroupPositionRef.current = -1;
                         setHoverPreviewClass(null);
                       }}>收起教学班</Button>
                     </div>
