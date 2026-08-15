@@ -61,10 +61,17 @@ class CourseSelectionAutomationService:
         self.remote_guard = remote_guard or nullcontext
         self._lock = threading.RLock()
         self._wake = threading.Event()
+        # Catalog archiving is deliberately isolated from the task scheduler.
+        # A complete round may contain thousands of classes; it must not block
+        # the one-second/30-second automation loop or make a live task appear
+        # to be stuck in authentication recovery.
+        self._catalog_sync_wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._catalog_thread: threading.Thread | None = None
         self._tasks = [task for task in self._read() if task.get("status") != "cancelled"]
         self._archives = self._read_archives()
+        archives_changed = self._remove_directory_only_courses()
         self._last_archive_scan = 0.0
         self._catalog_sync_queue: set[tuple[str, str]] = set()
         for task in self._tasks:
@@ -81,6 +88,8 @@ class CourseSelectionAutomationService:
                 task["restart_reconcile"] = True
                 task["message"] = "程序已重新启动，正在核验官方状态后继续任务"
         self._write()
+        if archives_changed:
+            self._write_archives()
 
     def _read(self) -> list[dict[str, Any]]:
         try:
@@ -112,6 +121,61 @@ class CourseSelectionAutomationService:
         )
         temporary.replace(self.archive_path)
         secure_file(self.archive_path)
+
+    @staticmethod
+    def _persistable_archive_course(course: dict[str, Any]) -> dict[str, Any] | None:
+        """Drop ALLKC-only discovery rows from durable round data.
+
+        ALLKC is the school's global search directory.  It is useful for a
+        live explicit search, but it is not a round-owned course source and is
+        mostly duplicate data.  A class is durable only when another official
+        round scope (for example TJKC/FANKC/XGKC) also contains it.
+        """
+        value = copy.deepcopy(course)
+        scopes = [
+            str(item or "") for item in value.get("source_scopes") or [
+                value.get("teaching_class_type")
+            ]
+            if str(item or "")
+        ]
+        real_scopes = [
+            item for item in scopes
+            if item not in {"ALL", "ROUND", "ALLKC"}
+        ]
+        if not real_scopes:
+            return None
+        value["source_scopes"] = [item for item in scopes if item != "ALLKC"]
+        value["source_tags"] = [
+            item for item in value.get("source_tags") or []
+            if str(item or "") not in {"ALLKC", "全校课程查询"}
+        ]
+        if str(value.get("teaching_class_type") or "") in {"", "ALL", "ROUND", "ALLKC"}:
+            value["teaching_class_type"] = real_scopes[0]
+        return value
+
+    def _remove_directory_only_courses(self) -> bool:
+        changed = False
+        for archive in self._archives:
+            previous = list(archive.get("courses") or [])
+            cleaned = [
+                normalized for course in previous
+                if (normalized := self._persistable_archive_course(course)) is not None
+            ]
+            if cleaned != previous:
+                archive["courses"] = cleaned
+                archive["sync_scopes"] = [
+                    scope for scope in archive.get("sync_scopes") or []
+                    if str(scope or "") != "ALLKC"
+                ]
+                archive["sync_loaded"] = min(
+                    int(archive.get("sync_loaded") or 0), len(cleaned),
+                )
+                archive["sync_total"] = min(
+                    int(archive.get("sync_total") or 0), len(cleaned),
+                )
+                archive["updated_at"] = datetime.now().astimezone().isoformat()
+                changed = True
+        return changed
 
     @staticmethod
     def _archive_class(group: dict[str, Any], course: dict[str, Any], scope: str) -> dict[str, Any]:
@@ -155,7 +219,7 @@ class CourseSelectionAutomationService:
             for group in groups if isinstance(group, dict)
             for course in (group.get("classes") or []) if isinstance(course, dict)
             and str(course.get("class_id") or "")
-        ]
+        ] if scope != "ALLKC" else []
         with self._lock:
             archive = next((item for item in self._archives if item.get("account") == account and item.get("batch_code") == batch_code), None)
             if archive is None:
@@ -189,7 +253,11 @@ class CourseSelectionAutomationService:
                 target = "batch_name" if key == "name" else key
                 if batch.get(key):
                     archive[target] = str(batch[key])
-            by_class = {str(item.get("class_id") or ""): item for item in archive.get("courses") or []}
+            persisted = [
+                normalized for item in archive.get("courses") or []
+                if (normalized := self._persistable_archive_course(item)) is not None
+            ]
+            by_class = {str(item.get("class_id") or ""): item for item in persisted}
             for course in incoming:
                 class_id = str(course["class_id"])
                 if any(course.get(key) is not None for key in self._CATALOG_DYNAMIC_FIELDS):
@@ -224,6 +292,7 @@ class CourseSelectionAutomationService:
             archive["updated_at"] = now
             self._write_archives()
             self._wake.set()
+            self._catalog_sync_wake.set()
             return copy.deepcopy(archive)
 
     def schedule_catalog_sync(self, account: str, *, batch: dict[str, Any]) -> None:
@@ -256,7 +325,7 @@ class CourseSelectionAutomationService:
             archive["updated_at"] = datetime.now().astimezone().isoformat()
             self._catalog_sync_queue.add((account, batch_code))
             self._write_archives()
-            self._wake.set()
+            self._catalog_sync_wake.set()
 
     def update_archive_eligibility(
         self, account: str, *, batch_code: str, results: list[dict[str, Any]]
@@ -467,12 +536,21 @@ class CourseSelectionAutomationService:
             self._stop.clear()
             self._thread = threading.Thread(target=self._run, name="jwxk-auto-selection", daemon=True)
             self._thread.start()
+            self._catalog_thread = threading.Thread(
+                target=self._run_catalog_background,
+                name="jwxk-catalog-background",
+                daemon=True,
+            )
+            self._catalog_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        self._catalog_sync_wake.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3)
+        if self._catalog_thread and self._catalog_thread.is_alive():
+            self._catalog_thread.join(timeout=3)
 
     def list(self, account: str, batch_code: str = "") -> list[dict[str, Any]]:
         with self._lock:
@@ -677,15 +755,21 @@ class CourseSelectionAutomationService:
                 if self._stop.is_set():
                     break
                 self._tick(task)
+            # Keep this loop exclusively for user-started tasks.  Catalog
+            # archiving runs in _run_catalog_background so a large scan cannot
+            # delay a live strategy or vacancy task.
+            self._wake.wait(timeout=1)
+            self._wake.clear()
+
+    def _run_catalog_background(self) -> None:
+        """Process rebuildable catalog work without blocking task scheduling."""
+        while not self._stop.is_set():
             self._tick_catalog_sync()
             if time.time() - self._last_archive_scan >= 60:
                 self._last_archive_scan = time.time()
                 self._tick_catalog_archives()
-            # Opening-window tasks genuinely need one-second scheduling.  The
-            # per-task interval check below keeps normal vacancy monitoring at
-            # 15 seconds without making the whole service sluggish.
-            self._wake.wait(timeout=1)
-            self._wake.clear()
+            self._catalog_sync_wake.wait(timeout=1)
+            self._catalog_sync_wake.clear()
 
     @staticmethod
     def _parse_task_time(value: Any) -> datetime | None:
@@ -839,7 +923,7 @@ class CourseSelectionAutomationService:
                 raise JwxkError("选课轮次已不可见")
             scopes = list(dict.fromkeys(
                 str(item.get("code") or "") for item in batch.menus
-                if str(item.get("code") or "")
+                if str(item.get("code") or "") not in {"", "ALL", "ROUND", "ALLKC"}
             ))
             loaded = 0
             total = 0

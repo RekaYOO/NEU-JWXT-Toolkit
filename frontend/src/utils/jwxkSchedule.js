@@ -42,6 +42,14 @@ export const catalogGroupLiveStats = (
   };
 };
 
+export const toggleCatalogPreviewCourse = (courses = [], course = {}) => {
+  const classId = String(course.class_id || '');
+  if (!classId) return courses || [];
+  return (courses || []).some(item => String(item.class_id || '') === classId)
+    ? (courses || []).filter(item => String(item.class_id || '') !== classId)
+    : [...(courses || []), course];
+};
+
 /** 权重结果中的 0/0 记录来自其他轮次，不属于当前轮次可操作结果。 */
 export const isCurrentBatchSelectionRecord = (course, selectionTypeCode = '') => {
   if (String(selectionTypeCode || course?.selection_type_code || '') !== '04') return true;

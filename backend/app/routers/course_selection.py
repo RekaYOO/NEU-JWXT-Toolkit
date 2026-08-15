@@ -942,6 +942,36 @@ def plan_jwxk_weights(
 
     archive = _weight_market_archive(str(auth.username), request.batch_code)
     archive_rows = [dict(item) for item in archive.get("courses") or []]
+    archive_by_class = {
+        str(item.get("class_id") or "").strip(): item
+        for item in archive_rows
+        if str(item.get("class_id") or "").strip()
+    }
+    # The saved plan may contain an older participant snapshot.  Before model
+    # calculation, overlay the latest archived market values so the advice and
+    # the numbers shown beside it describe the same observation.
+    for target in targets:
+        snapshots = [
+            archive_by_class.get(str(item.get("class_id") or "").strip())
+            for item in target.get("alternatives") or []
+        ]
+        snapshots = [item for item in snapshots if item]
+        if not snapshots:
+            continue
+        def _snapshot_participants(item):
+            value = item.get("weight_participant_count")
+            if value is None:
+                value = item.get("market_participant_count")
+            return max(0, int(value or 0))
+        target["participants"] = max(_snapshot_participants(item) for item in snapshots)
+        target["capacity"] = max(1, max(int(item.get("capacity") or 0) for item in snapshots))
+        target["current_participant_count"] = target["participants"]
+        target["current_participant_label"] = "已投注人数"
+        target["current_capacity"] = target["capacity"]
+        target["capacity_updated_at"] = max(
+            (str(item.get("capacity_updated_at") or "") for item in snapshots),
+            default="",
+        )
     market_courses = []
     for item in archive_rows:
         class_id = str(item.get("class_id") or "").strip()
@@ -992,6 +1022,10 @@ def plan_jwxk_weights(
             }},
             **course,
             "weight": int(course["bid"]),
+            "current_participant_count": int(target.get("current_participant_count", target.get("participants", 0))),
+            "current_participant_label": target.get("current_participant_label", "已投注人数"),
+            "current_capacity": int(target.get("current_capacity", target.get("capacity", 0))),
+            "capacity_updated_at": target.get("capacity_updated_at", ""),
         }
         course_results.append(result)
         if course["bid"] > 0 and not course["already_selected"]:

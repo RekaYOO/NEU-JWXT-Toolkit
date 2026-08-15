@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -38,6 +39,33 @@ def test_automation_tasks_are_filtered_by_batch(tmp_path):
 
     assert [item["task_id"] for item in service.list("student", "batch-1")] == [first["task_id"]]
     assert len(service.list("student")) == 2
+
+
+def test_catalog_sync_does_not_block_live_task_scheduler(tmp_path):
+    service = _service(tmp_path)
+    catalog_started = threading.Event()
+    release_catalog = threading.Event()
+    task_ran = threading.Event()
+
+    def slow_catalog_sync():
+        catalog_started.set()
+        release_catalog.wait(timeout=2)
+
+    service._tick_catalog_sync = slow_catalog_sync
+    service._tick_catalog_archives = lambda: None
+    service._tick = lambda _task: task_ran.set()
+    service.start()
+    try:
+        assert catalog_started.wait(timeout=1)
+        task = service.create("student", {
+            "batch_code": "batch", "term_code": "2026-2027-1",
+            "name": "实时策略", "items": [], "poll_seconds": 15,
+        })
+        service.action("student", task["task_id"], "start")
+        assert task_ran.wait(timeout=1)
+    finally:
+        release_catalog.set()
+        service.stop()
 
 
 def test_running_task_snapshot_exposes_poll_progress_without_sharing_mutable_state(tmp_path):
@@ -241,7 +269,7 @@ def test_catalog_archives_are_account_scoped_and_only_deleted_explicitly(tmp_pat
             "term_name": "2026-2027学年秋季学期", "begin_time": "2026-08-14 08:00:00",
             "end_time": "2026-08-14 18:00:00",
         },
-        scope="ALLKC",
+        scope="FANKC",
         groups=[{
             "group_id": "course-a", "source_tags": ["全校课程查询"],
             "classes": [{
@@ -265,7 +293,7 @@ def test_catalog_archives_are_account_scoped_and_only_deleted_explicitly(tmp_pat
     assert service.list_catalog_archives("student-a") == []
 
 
-def test_complete_catalog_sync_scans_every_official_scope(tmp_path):
+def test_complete_catalog_sync_excludes_global_directory_scope(tmp_path):
     batch = SimpleNamespace(
         code="batch",
         menus=({"code": "FANKC"}, {"code": "XGKC"}, {"code": "ALLKC"}),
@@ -296,14 +324,14 @@ def test_complete_catalog_sync_scans_every_official_scope(tmp_path):
     saved = service.list_catalog_archives("student")[0]
     assert saved["sync_status"] == "complete"
     assert saved["catalog_complete"] is True
-    assert saved["sync_scopes"] == ["FANKC", "XGKC", "ALLKC"]
-    assert {course["course_code"] for course in saved["courses"]} == {"FANKC", "XGKC", "ALLKC"}
+    assert saved["sync_scopes"] == ["FANKC", "XGKC"]
+    assert {course["course_code"] for course in saved["courses"]} == {"FANKC", "XGKC"}
 
 
 def test_complete_catalog_is_requeued_only_after_dynamic_refresh_interval(tmp_path):
     service = _service(tmp_path)
     service.merge_catalog_archive(
-        "student", batch={"code": "batch", "name": "轮次"}, scope="ALLKC", groups=[],
+        "student", batch={"code": "batch", "name": "轮次"}, scope="FANKC", groups=[],
     )
     with service._lock:
         archive = service._archives[0]
@@ -372,7 +400,32 @@ def test_union_catalog_archive_merges_sources_filters_and_paginates(tmp_path):
     all_school = service.query_catalog_archive(
         "student", batch_code="batch", page_number=1, page_size=20, scope="ALLKC",
     )
-    assert {group["course_code"] for group in all_school["groups"]} == {"A", "B"}
+    assert all_school["total"] == 0
+
+
+def test_legacy_all_school_directory_rows_are_removed_on_restart(tmp_path):
+    path = tmp_path / "course_selection_catalog_history.json"
+    path.write_text(json.dumps([{
+        "archive_id": "archive", "account": "student", "batch_code": "batch",
+        "sync_scopes": ["TJKC", "ALLKC"], "sync_loaded": 4001, "sync_total": 4001,
+        "courses": [{
+            "class_id": "recommended", "course_code": "A", "course_name": "推荐课",
+            "teaching_class_type": "TJKC", "source_scopes": ["TJKC", "ALLKC"],
+            "source_tags": ["任务推荐班课程", "全校课程查询"],
+        }, {
+            "class_id": "directory-only", "course_code": "B", "course_name": "目录课",
+            "teaching_class_type": "ALLKC", "source_scopes": ["ALLKC"],
+            "source_tags": ["全校课程查询"],
+        }],
+    }]), encoding="utf-8")
+
+    service = _service(tmp_path)
+    archive = service.list_catalog_archives("student")[0]
+
+    assert [course["class_id"] for course in archive["courses"]] == ["recommended"]
+    assert archive["courses"][0]["source_scopes"] == ["TJKC"]
+    assert archive["courses"][0]["source_tags"] == ["任务推荐班课程"]
+    assert archive["sync_scopes"] == ["TJKC"]
 
 
 def test_archive_filters_match_campus_code_name_and_category_aliases(tmp_path):
@@ -432,7 +485,7 @@ def test_catalog_final_refresh_updates_saved_selectable_course_counts(tmp_path):
             "code": "batch", "name": "初选", "term_code": "2026-2027-1",
             "end_time": "2026-08-14 18:00:00",
         },
-        scope="ALLKC",
+        scope="TJKC",
         groups=[{"group_id": "A", "classes": [{
             "class_id": "class-a", "course_code": "A", "course_name": "课程A",
             "capacity": 30, "selected_count": 10, "eligibility_status": "selectable",
@@ -480,7 +533,7 @@ def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tm
     service.merge_catalog_archive(
         "student",
         batch={"code": "batch", "name": "权重轮次", "term_code": "2026-2027-1", "selection_type_code": "04"},
-        scope="ALLKC",
+        scope="TJKC",
         groups=[{"group_id": "catalog", "classes": [
             {"class_id": "class-a", "course_code": "A", "course_name": "课程A", "capacity": 30, "weight_participant_count": 30},
             {"class_id": "class-b", "course_code": "B", "course_name": "课程B", "capacity": 30, "weight_participant_count": 30},

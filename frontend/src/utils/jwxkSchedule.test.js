@@ -23,6 +23,7 @@ import {
   selectionParticipantLabel,
   sortCatalogGroupsBySelectability,
   summarizeSelectionConflictsByClass,
+  toggleCatalogPreviewCourse,
   upsertSelectionRecord,
 } from './jwxkSchedule';
 
@@ -51,6 +52,14 @@ test('catalog group summary only exposes live conflict-free and capacity counts'
     conflict_free_count: 1,
     available_count: 2,
   });
+});
+
+test('catalog preview toggles only the explicitly selected teaching class', () => {
+  const first = { class_id: 'first', course_name: '第一门' };
+  const second = { class_id: 'second', course_name: '第二门' };
+  const one = toggleCatalogPreviewCourse([], first);
+  expect(toggleCatalogPreviewCourse(one, second).map(item => item.class_id)).toEqual(['first', 'second']);
+  expect(toggleCatalogPreviewCourse(one, first)).toEqual([]);
 });
 
 test('weight records with zero participants and zero capacity belong to another batch', () => {

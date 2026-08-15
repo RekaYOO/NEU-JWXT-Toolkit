@@ -187,7 +187,7 @@ def test_jwxk_weight_plan_uses_official_budget_and_group_optimizer(monkeypatch):
             {
                 "course_code": "COURSE-A", "course_name": "课程A", "class_id": "A-1",
                 "plan_group_id": "group-1", "priority": 1, "utility": 9,
-                "capacity": 30, "weight_participant_count": 25,
+                "capacity": 10, "weight_participant_count": 1,
             },
             {
                 "course_code": "COURSE-A", "course_name": "课程A", "class_id": "A-2",
@@ -212,6 +212,10 @@ def test_jwxk_weight_plan_uses_official_budget_and_group_optimizer(monkeypatch):
     assert result["groups"][0]["satisfied"] is True
     assert {item["course_code"] for item in result["items"]} == {"COURSE-A", "COURSE-B"}
     assert sum(item["weight"] for item in result["items"]) == 105
+    by_code = {item["course_code"]: item for item in result["courses"]}
+    assert by_code["COURSE-A"]["current_participant_label"] == "已投注人数"
+    assert by_code["COURSE-A"]["current_participant_count"] == 25
+    assert by_code["COURSE-A"]["current_capacity"] == 30
     assert storage.value["course_selection_weight_grade_sizes"]["student:2026-2027-1"] == 126
 
 
