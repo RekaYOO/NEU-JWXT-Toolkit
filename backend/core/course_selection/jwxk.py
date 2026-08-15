@@ -12,7 +12,9 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
+import random
 import re
+import threading
 import time
 from typing import Any, Literal, TYPE_CHECKING
 from urllib.parse import quote
@@ -40,6 +42,14 @@ _BATCH_LIST_PATTERN = re.compile(
 
 class JwxkError(RuntimeError):
     """Raised when the official selection system cannot be interpreted."""
+
+
+class JwxkRateLimitError(JwxkError):
+    """Raised when JWXK asks this shared account session to cool down."""
+
+    def __init__(self, retry_after: int):
+        self.retry_after = max(1, int(retry_after))
+        super().__init__(f"学校限制了请求频率，已暂停远端读取，约 {self.retry_after} 秒后重试")
 
 
 @dataclass(frozen=True)
@@ -250,6 +260,23 @@ def _payload(response: requests.Response) -> dict[str, Any]:
     if str(payload.get("code")) != "200":
         raise JwxkError(str(payload.get("msg") or "选课系统请求失败"))
     return payload
+
+
+def _rate_limit_delay(response: requests.Response) -> int:
+    try:
+        payload = response.json()
+    except (AttributeError, TypeError, ValueError):
+        return 0
+    if not isinstance(payload, dict) or str(payload.get("code") or "") not in {"403", "429"}:
+        return 0
+    message = _text(payload.get("msg") or payload.get("message")).casefold()
+    if not any(marker in message for marker in ("请求过快", "请求频繁", "访问频繁", "操作频繁")):
+        return 0
+    try:
+        official_delay = int(float(str(response.headers.get("Retry-After") or "0")))
+    except (AttributeError, TypeError, ValueError):
+        official_delay = 0
+    return min(300, max(30, official_delay))
 
 
 def _text(value: Any) -> str:
@@ -898,16 +925,65 @@ def group_course_rows(
 class JwxkSessionClient:
     """Authenticated JWXK adapter on the shared CAS session."""
 
+    # The official catalog endpoint starts rejecting short bursts even when
+    # every request is valid.  Reserve request slots across every client built
+    # on the same shared auth object, including foreground pages, archive scans
+    # and automatic tasks.
+    _CATALOG_MIN_INTERVAL_SECONDS = 0.55
+    _CATALOG_JITTER_SECONDS = 0.15
+    _GATE_CREATION_LOCK = threading.Lock()
+
     def __init__(self, auth: "NEUAuthClient", *, network_mode: str = "direct"):
         self.auth = auth
         self.network_mode = network_mode
 
+    def _pace_catalog_request(self) -> None:
+        gate = getattr(self.auth, "_jwxk_catalog_rate_gate", None)
+        if gate is None:
+            with self._GATE_CREATION_LOCK:
+                gate = getattr(self.auth, "_jwxk_catalog_rate_gate", None)
+                if gate is None:
+                    gate = threading.Lock()
+                    setattr(self.auth, "_jwxk_catalog_rate_gate", gate)
+        with gate:
+            now = time.monotonic()
+            next_at = float(getattr(self.auth, "_jwxk_catalog_next_request_at", 0.0) or 0.0)
+            wait_seconds = max(0.0, next_at - now)
+            if wait_seconds:
+                time.sleep(wait_seconds)
+            interval = self._CATALOG_MIN_INTERVAL_SECONDS + random.uniform(
+                0.0, self._CATALOG_JITTER_SECONDS,
+            )
+            setattr(
+                self.auth, "_jwxk_catalog_next_request_at",
+                time.monotonic() + interval,
+            )
+
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
-        return self.auth.request_service(
+        now = time.monotonic()
+        cooldown_until = float(getattr(self.auth, "_jwxk_rate_limit_until", 0.0) or 0.0)
+        if cooldown_until > now:
+            raise JwxkRateLimitError(max(1, round(cooldown_until - now)))
+        if path == "/xsxk/elective/clazz/list":
+            self._pace_catalog_request()
+        response = self.auth.request_service(
             "jwxk", method, path,
             network_mode_override=self.network_mode,
             **kwargs,
         )
+        delay = _rate_limit_delay(response)
+        if delay:
+            setattr(self.auth, "_jwxk_rate_limit_until", time.monotonic() + delay)
+            try:
+                response.close()
+            except (AttributeError, TypeError):
+                pass
+            logger.warning(
+                "jwxk request throttled path=%s cooldown_seconds=%s; preserving current service session",
+                path, delay,
+            )
+            raise JwxkRateLimitError(delay)
+        return response
 
     def _post_form(
         self, path: str, data: dict[str, Any] | None = None, **request_options,
@@ -989,7 +1065,9 @@ class JwxkSessionClient:
         payload = self._post_form("/xsxk/elective/user", {"batchId": batch_code})
         return (payload.get("data") or {}).get("student") or {}
 
-    def get_weight_budget(self, *, batch_code: str) -> dict[str, Any]:
+    def get_weight_budget(
+        self, *, batch_code: str, selected_snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Read the active round's official remaining weight."""
 
         payload = self._post_form("/xsxk/elective/user", {"batchId": batch_code})
@@ -1027,7 +1105,9 @@ class JwxkSessionClient:
         step = _find_named_number(context, {
             "weightStep", "bidStep", "QZBC",
         }) or 1
-        selected = self.get_selected(batch_code=batch_code, include_withdrawal=False)
+        selected = selected_snapshot or self.get_selected(
+            batch_code=batch_code, include_withdrawal=False,
+        )
         devoted = sum(
             int(row.get("devoted_weight") or 0)
             for row in selected.get("volunteered") or []

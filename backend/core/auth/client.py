@@ -79,6 +79,12 @@ SERVICE_CONFIGS = {
         "auth_response_message_markers": (
             "登录", "认证", "未授权", "授权失效", "会话", "token", "令牌",
         ),
+        # These responses can contain wording such as “请登录后再试”, but the
+        # actual condition is school-side throttling.  Rebuilding CAS here
+        # creates a retry storm and makes the cooldown longer.
+        "auth_response_message_exclusions": (
+            "请求过快", "请求频繁", "访问频繁", "操作频繁",
+        ),
         "json_prefixes": (
             "/xsxk/elective/",
             "/xsxk/volunteer/",
@@ -1530,6 +1536,9 @@ class NEUAuthClient:
                     if not markers:
                         return True
                     message = str(payload.get("msg") or payload.get("message") or "").casefold()
+                    exclusions = tuple(config.get("auth_response_message_exclusions") or ())
+                    if any(str(marker).casefold() in message for marker in exclusions):
+                        return False
                     if any(str(marker).casefold() in message for marker in markers):
                         return True
             except (AttributeError, TypeError, ValueError):

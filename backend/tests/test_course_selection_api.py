@@ -155,6 +155,9 @@ def test_excessive_combined_workload_is_rejected():
 
 def test_jwxk_weight_plan_uses_official_budget_and_group_optimizer(monkeypatch):
     class FakeClient:
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": []}
+
         def get_weight_budget(self, **_kwargs):
             return {"remaining": 105, "total": 105, "used": 0, "minimum": 5, "step": 1}
 
@@ -219,6 +222,61 @@ def test_jwxk_weight_plan_uses_official_budget_and_group_optimizer(monkeypatch):
     assert storage.value["course_selection_weight_grade_sizes"]["student:2026-2027-1"] == 126
 
 
+def test_jwxk_weight_plan_includes_existing_volunteer_as_reapply_target(monkeypatch):
+    class FakeClient:
+        def get_selected(self, **_kwargs):
+            return {
+                "selected": [],
+                "volunteered": [{
+                    "course_code": "COURSE-A", "course_name": "课程A",
+                    "class_id": "A-1", "devoted_weight": 40,
+                    "selection_source": "fakcyx",
+                }],
+            }
+
+        def get_weight_budget(self, **_kwargs):
+            return {"remaining": 65, "total": 105, "used": 40, "minimum": 5, "step": 1}
+
+    class FakeStorage:
+        def load_config(self):
+            return {}
+
+        def save_config(self, _value):
+            return None
+
+    monkeypatch.setattr(course_selection, "_jwxk_mutation_client", lambda *_args: FakeClient())
+    monkeypatch.setattr(course_selection, "_weight_market_archive", lambda *_args: {
+        "catalog_complete": True,
+        "courses": [{
+            "class_id": "A-1", "course_code": "COURSE-A", "course_name": "课程A",
+            "capacity": 30, "weight_participant_count": 35,
+        }],
+    })
+    request = JwxkWeightPlanRequest.model_validate({
+        "batch_code": "weight-batch", "term_code": "2026-2027-1", "grade_size": 126,
+        "groups": [{"group_id": "g", "name": "选修组", "target_count": 1}],
+        "items": [{
+            "course_code": "COURSE-A", "course_name": "课程A", "class_id": "A-1",
+            "plan_group_id": "g", "priority": 1, "utility": 10,
+            "course_already_selected": True, "capacity": 30,
+            "weight_participant_count": 35,
+        }],
+    })
+
+    result = course_selection.plan_jwxk_weights(
+        request, Response(), auth=type("Auth", (), {"username": "student"})(),
+        storage=FakeStorage(),
+    )
+
+    assert result["official_remaining"] == 65
+    assert result["reclaimable_weight"] == 40
+    assert result["budget"] == 105
+    assert len(result["items"]) == 1
+    assert result["items"][0]["reapply_required"] is True
+    assert result["items"][0]["current_weight"] == 40
+    assert result["items"][0]["already_selected"] is False
+
+
 def test_jwxk_weight_apply_rejects_duplicate_courses_before_any_write(monkeypatch):
     class FakeClient:
         writes = 0
@@ -244,6 +302,55 @@ def test_jwxk_weight_apply_rejects_duplicate_courses_before_any_write(monkeypatc
         course_selection.apply_jwxk_weights(request, auth=object(), storage=object())
 
     assert client.writes == 0
+
+
+def test_jwxk_weight_apply_withdraws_confirms_and_reapplies_existing_weight(monkeypatch):
+    class FakeClient:
+        def __init__(self):
+            self.current = True
+            self.actions = []
+
+        def get_selected(self, **_kwargs):
+            return {
+                "selected": [],
+                "volunteered": [{
+                    "course_code": "COURSE-A", "class_id": "OLD-A",
+                    "devoted_weight": 40, "selection_source": "fakcyx",
+                }] if self.current else [],
+            }
+
+        def get_weight_budget(self, **_kwargs):
+            return {"remaining": 65, "total": 105, "used": 40, "minimum": 5, "step": 1}
+
+        def deselect_course(self, **kwargs):
+            self.actions.append(("withdraw", kwargs["class_id"]))
+            self.current = False
+            return {"success": True, "queued": False, "code": "200", "message": "撤回成功"}
+
+        def select_course(self, **kwargs):
+            self.actions.append(("reapply", kwargs["class_id"], kwargs["weight"]))
+            return {"success": True, "queued": False, "code": "200", "message": "投权成功"}
+
+    client = FakeClient()
+    monkeypatch.setattr(course_selection, "_jwxk_mutation_client", lambda *_args: client)
+    monkeypatch.setattr(course_selection, "_invalidate_jwxk_timetable", lambda *_args: None)
+    request = JwxkSavedPlanRequest.model_validate({
+        "batch_code": "weight-batch", "term_code": "2026-2027-1", "groups": [],
+        "items": [{
+            "course_code": "COURSE-A", "class_id": "NEW-A",
+            "teaching_class_type": "TJKC", "weight": 55,
+        }],
+    })
+
+    result = course_selection.apply_jwxk_weights(
+        request, auth=object(), storage=object(),
+    )
+
+    assert result["completed"] is True
+    assert client.actions == [("withdraw", "OLD-A"), ("reapply", "NEW-A", 55)]
+    assert [item["action"] for item in result["results"]] == [
+        "weight_withdraw", "weight_reapply",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -549,6 +656,39 @@ def test_catalog_local_search_returns_archive_without_remote_request(monkeypatch
     assert result.cache_hit is True
     assert result.data_source == "local"
     assert result.groups[0].course_name == "本地课程"
+    assert {item["code"] for item in result.scope_options} >= {"ALL", "ROUND", "TJKC", "ALLKC"}
+
+
+def test_catalog_local_search_uses_persisted_menu_for_live_only_allkc_option(monkeypatch):
+    class Automation:
+        def get_catalog_archive_view(self, *_args):
+            return {
+                "batch_code": "BATCH-1", "sync_status": "complete",
+                "scope_options": [
+                    {"code": "TJKC", "name": "任务推荐班课程"},
+                    {"code": "ALLKC", "name": "全校课程查询"},
+                ],
+                "courses": [{
+                    "course_code": "LOCAL", "course_name": "真实轮次课程",
+                    "class_id": "LOCAL-1", "teaching_class_type": "TJKC",
+                    "source_scopes": ["TJKC"],
+                }],
+            }
+
+        def query_catalog_archive(self, *_args, **_kwargs):
+            return {"total": 1, "sync_status": "complete", "groups": []}
+
+    monkeypatch.setattr(course_selection, "get_course_selection_automation_service", lambda: Automation())
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: type(
+        "Auth", (), {"is_logged_in": True, "username": "student"}
+    )())
+
+    result = course_selection.search_jwxk_catalog(
+        JwxkCatalogSearchRequest(batch_code="BATCH-1", local_only=True),
+        Response(), object(),
+    )
+
+    assert result.cache_hit is True
     assert {item["code"] for item in result.scope_options} >= {"ALL", "ROUND", "TJKC", "ALLKC"}
 
 

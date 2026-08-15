@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.core.course_selection import CourseSelectionAutomationService, JwxkError
+from backend.core.course_selection.jwxk import JwxkRateLimitError
 
 
 def _service(tmp_path):
@@ -443,6 +444,39 @@ def test_complete_catalog_sync_excludes_global_directory_scope(tmp_path):
     assert saved["catalog_complete"] is True
     assert saved["sync_scopes"] == ["FANKC", "XGKC"]
     assert {course["course_code"] for course in saved["courses"]} == {"FANKC", "XGKC"}
+    assert saved["scope_options"] == [
+        {"code": "FANKC", "name": "FANKC"},
+        {"code": "XGKC", "name": "XGKC"},
+        {"code": "ALLKC", "name": "ALLKC"},
+    ]
+
+
+def test_catalog_archive_persists_menu_metadata_without_global_directory_rows(tmp_path):
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student",
+        batch={
+            "code": "batch", "name": "轮次",
+            "menus": [
+                {"code": "TJKC", "name": "任务推荐班课程"},
+                {"code": "ALLKC", "name": "全校课程查询"},
+            ],
+        },
+        scope="TJKC",
+        groups=[{
+            "group_id": "A", "classes": [{
+                "class_id": "class-a", "course_code": "A", "course_name": "推荐课",
+                "teaching_class_type": "TJKC",
+            }],
+        }],
+    )
+
+    saved = service.list_catalog_archives("student")[0]
+    assert saved["scope_options"] == [
+        {"code": "TJKC", "name": "任务推荐班课程"},
+        {"code": "ALLKC", "name": "全校课程查询"},
+    ]
+    assert all(course["teaching_class_type"] != "ALLKC" for course in saved["courses"])
 
 
 def test_complete_catalog_is_requeued_only_after_dynamic_refresh_interval(tmp_path):
@@ -518,6 +552,24 @@ def test_failed_catalog_sync_is_silently_requeued_with_clean_progress(tmp_path):
     assert refreshed["sync_status"] == "queued"
     assert refreshed["sync_loaded"] == 0
     assert refreshed["sync_total"] == 0
+
+
+def test_catalog_rate_limit_uses_official_cooldown_instead_of_auth_retry(tmp_path):
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student", batch={"code": "batch", "name": "轮次"}, scope="TJKC", groups=[],
+    )
+
+    service._set_catalog_sync_state(
+        "student", "batch", "failed", "学校限制请求频率",
+        retry_after_seconds=75,
+    )
+
+    archive = service.list_catalog_archives("student")[0]
+    retry_at = datetime.fromisoformat(archive["sync_retry_at"]).astimezone()
+    remaining = (retry_at - datetime.now().astimezone()).total_seconds()
+    assert archive["sync_status"] == "failed"
+    assert 70 <= remaining <= 75
 
 
 def test_catalog_watchdog_resets_a_scan_without_progress(tmp_path):

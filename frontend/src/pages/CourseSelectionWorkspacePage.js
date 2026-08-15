@@ -32,6 +32,7 @@ import {
   findMatchingSelectionRecord,
   immediateSelectionConflictMap,
   isCurrentBatchSelectionRecord,
+  academicPlanSelectionRecords,
   matchAcademicGapCatalogFilters,
   mergeCatalogRefreshPreservingOrder,
   mergeCatalogFilterLayers,
@@ -158,6 +159,18 @@ const mergedCampusFilterOptions = (loaded = [], candidates = []) => {
 const courseScopeLabel = value => COURSE_SCOPE_LABELS[value]
   || (/^[A-Z0-9_]+$/.test(String(value || '')) ? '其他课程' : value)
   || '其他课程';
+const batchScopeOptions = batch => {
+  const options = [
+    { code: 'ALL', name: '所有课程' },
+    { code: 'ROUND', name: '本轮课程' },
+    ...(batch?.menus || []),
+  ];
+  return [...new Map(options.map(item => {
+    const code = String(item?.code || item?.teachingClassType || '').trim();
+    const officialName = String(item?.name || item?.displayName || '').trim();
+    return [code, { code, name: officialName || courseScopeLabel(code) }];
+  }).filter(([code]) => code)).values()];
+};
 const displayCampusName = value => (/^[A-Za-z0-9_-]+$/.test(String(value || '')) ? '其他校区' : value);
 
 const EMPTY_CATALOG_FILTERS = Object.freeze({
@@ -307,15 +320,10 @@ const CourseSelectionWorkspacePage = () => {
   const [vacancySwapTarget, setVacancySwapTarget] = useState(null);
   const [vacancyDropIds, setVacancyDropIds] = useState([]);
   const [activePlanGapId, setActivePlanGapId] = useState('');
+  const [activePlanGapLabel, setActivePlanGapLabel] = useState('');
+  const [activePlanGapCategoryMatched, setActivePlanGapCategoryMatched] = useState(true);
   const [outlineCourse, setOutlineCourse] = useState(null);
   const remoteAvailability = catalogAvailabilityRequestMode(availability);
-  const academicPlanProjection = useMemo(() => overlayExternalSelectedCourses(
-    academicReportResource.data?.categories || [],
-    confirmedSelected,
-  ), [academicReportResource.data, confirmedSelected]);
-  const academicPlanGaps = useMemo(() => collectAcademicPlanDeficits(
-    academicPlanProjection.categories,
-  ), [academicPlanProjection.categories]);
   const effectiveCatalogFilters = useMemo(() => mergeCatalogFilterLayers(
     catalogFilters, planGapFilters, Object.keys(EMPTY_CATALOG_FILTERS),
   ), [catalogFilters, planGapFilters]);
@@ -325,6 +333,16 @@ const CourseSelectionWorkspacePage = () => {
     [status, batchCode],
   );
   const batch = remoteBatch || localBatch;
+  const academicPlanSelected = useMemo(() => academicPlanSelectionRecords(
+    selected, batch?.selection_type_code,
+  ), [batch?.selection_type_code, selected]);
+  const academicPlanProjection = useMemo(() => overlayExternalSelectedCourses(
+    academicReportResource.data?.categories || [],
+    academicPlanSelected,
+  ), [academicPlanSelected, academicReportResource.data]);
+  const academicPlanGaps = useMemo(() => collectAcademicPlanDeficits(
+    academicPlanProjection.categories,
+  ), [academicPlanProjection.categories]);
   const visibleAcademicPlanGaps = useMemo(
     () => filterAcademicPlanGapsForBatch(academicPlanGaps, batch),
     [academicPlanGaps, batch],
@@ -715,6 +733,7 @@ const CourseSelectionWorkspacePage = () => {
     ++requestGeneration.current;
     setStatus(null);
     setLocalBatch(null);
+    setScopeOptions([]);
     setSavedTermCode('');
     setPlan([]);
     setPlanGroupConfigs([]);
@@ -750,6 +769,8 @@ const CourseSelectionWorkspacePage = () => {
     setVacancySwapTarget(null);
     setVacancyDropIds([]);
     setActivePlanGapId('');
+    setActivePlanGapLabel('');
+    setActivePlanGapCategoryMatched(true);
     setOutlineCourse(null);
     setWeightPlan(null);
     setWeightSetupOpen(false);
@@ -777,10 +798,15 @@ const CourseSelectionWorkspacePage = () => {
       setPlan(savedItems); setPlanGroupConfigs(savedGroups);
       setSavedTermCode(saved.term_code || '');
       setLocalBatch(saved.batch || null);
+      const savedScopeOptions = batchScopeOptions(saved.batch);
+      if (savedScopeOptions.length > 2) setScopeOptions(savedScopeOptions);
     }).catch(error => message.error(error.message || '读取本地选课数据失败'));
     getJwxkStatus().then(nextStatus => {
       if (generation !== workspaceGeneration.current) return;
       setStatus(nextStatus);
+      const nextBatch = (nextStatus.batches || []).find(item => item.code === batchCode);
+      const nextScopeOptions = batchScopeOptions(nextBatch);
+      if (nextScopeOptions.length > 2) setScopeOptions(nextScopeOptions);
     }).catch(error => message.warning(error.message || '暂时无法刷新选课轮次状态，已继续显示本地数据'));
     getJwxkSelected(batchCode).then(result => {
       if (generation !== workspaceGeneration.current) return;
@@ -1291,7 +1317,7 @@ const CourseSelectionWorkspacePage = () => {
     if (items.some(item => Number(item.weight || 0) < Number(weightPlan?.minimum || 5))) return message.error('存在低于官方最低值的课程权重');
     return Modal.confirm({
       title: '确认批量投放权重？', width: 620,
-      content: <div>{items.map(item => <p key={item.class_id}><b>{item.course_name}</b> · {item.teacher || '教师待定'} · {item.weight} 点</p>)}</div>,
+      content: <div>{items.map(item => <p key={item.class_id}><b>{item.course_name}</b> · {item.teacher || '教师待定'} · {item.weight} 点{item.reapply_required ? `（先撤回当前 ${item.current_weight ?? '-'} 点，再重新投放）` : ''}</p>)}</div>,
       okText: '确认并逐项提交', cancelText: '取消',
       onOk: async () => {
         const result = await applyJwxkWeights({ batch_code: batchCode, term_code: termCode, items });
@@ -1518,6 +1544,8 @@ const CourseSelectionWorkspacePage = () => {
     setCatalogFilters({ ...EMPTY_CATALOG_FILTERS });
     setPlanGapFilters({ ...EMPTY_CATALOG_FILTERS });
     setActivePlanGapId('');
+    setActivePlanGapLabel('');
+    setActivePlanGapCategoryMatched(true);
     setKeywordDraft(query);
     setKeyword(query);
     setPage(1);
@@ -1590,6 +1618,8 @@ const CourseSelectionWorkspacePage = () => {
     const gapId = gap.wid || gap.path || gap.name;
     if (activePlanGapId === gapId) {
       setActivePlanGapId('');
+      setActivePlanGapLabel('');
+      setActivePlanGapCategoryMatched(true);
       setPlanGapFilters({ ...EMPTY_CATALOG_FILTERS });
       return;
     }
@@ -1628,6 +1658,8 @@ const CourseSelectionWorkspacePage = () => {
       campus: '', department: '', startSection: '', endSection: '',
     };
     setActivePlanGapId(gapId);
+    setActivePlanGapLabel(gap.name || gap.originalName || gap.path || '培养计划缺口');
+    setActivePlanGapCategoryMatched(Boolean(matched.gapCategoryMatched));
     setPlanGapFilters(nextFilters);
     setExpandedGroupId('');
     setView('catalog');
@@ -1739,16 +1771,30 @@ const CourseSelectionWorkspacePage = () => {
               </Text>
             </div>
           )}
-          {(timeSlot || activeAdvancedFilters) && (
+          {(timeSlot || activeAdvancedFilters || activePlanGapId) && (
             <div className="jwxk-active-filters">
               {timeSlot && <Tag closable onClose={() => setTimeSlot(null)} color="blue">周{WEEKDAYS[timeSlot.weekday - 1]} · 覆盖第{timeSlot.section}节</Tag>}
               {Object.entries(catalogFilters).filter(([, value]) => value).map(([key, value]) => (
                 <Tag key={`manual-${key}`} closable onClose={() => setCatalogFilters(previous => ({ ...previous, [key]: '' }))}>{FILTER_LABELS[key]} · {filterValueLabel(key, value)}</Tag>
               ))}
+              {activePlanGapId && (
+                <Tooltip title="这是你选择的培养计划缺口；其后的紫色标签是本轮课程目录实际可执行的映射条件">
+                  <Tag color={activePlanGapCategoryMatched ? 'purple' : 'warning'} closable onClose={() => { setActivePlanGapId(''); setActivePlanGapLabel(''); setActivePlanGapCategoryMatched(true); setPlanGapFilters({ ...EMPTY_CATALOG_FILTERS }); }}>培养计划缺口 · {activePlanGapLabel || '当前类别'}{activePlanGapCategoryMatched ? '' : ' · 本轮无对应分类'}</Tag>
+                </Tooltip>
+              )}
               {activePlanGapId && Object.entries(planGapFilters).filter(([key, value]) => value && !catalogFilters[key]).map(([key, value]) => (
-                <Tag color="purple" key={`plan-${key}`} closable onClose={() => { setActivePlanGapId(''); setPlanGapFilters({ ...EMPTY_CATALOG_FILTERS }); }}>培养计划 · {FILTER_LABELS[key]} · {filterValueLabel(key, value)}</Tag>
+                <Tag color="purple" key={`plan-${key}`} closable onClose={() => { setActivePlanGapId(''); setActivePlanGapLabel(''); setActivePlanGapCategoryMatched(true); setPlanGapFilters({ ...EMPTY_CATALOG_FILTERS }); }}>培养计划 · {FILTER_LABELS[key]} · {filterValueLabel(key, value)}</Tag>
               ))}
-              <Button type="link" size="small" onClick={() => { setActivePlanGapId(''); setPlanGapFilters({ ...EMPTY_CATALOG_FILTERS }); setTimeSlot(null); setCatalogFilters({ ...EMPTY_CATALOG_FILTERS }); }}>清除筛选</Button>
+              {!activePlanGapCategoryMatched && activePlanGapId && (
+                <Alert
+                  className="jwxk-plan-gap-mapping-warning"
+                  type="warning"
+                  showIcon
+                  message={`本轮课程目录没有“${activePlanGapLabel}”这一细分类`}
+                  description="当前只能按下方显示的上级条件检索；如果课程列表为空，表示本轮没有提供对应课程，不是筛选加载失败。"
+                />
+              )}
+              <Button type="link" size="small" onClick={() => { setActivePlanGapId(''); setActivePlanGapLabel(''); setActivePlanGapCategoryMatched(true); setPlanGapFilters({ ...EMPTY_CATALOG_FILTERS }); setTimeSlot(null); setCatalogFilters({ ...EMPTY_CATALOG_FILTERS }); }}>清除筛选</Button>
             </div>
           )}
           <div className="jwxk-group-list">
@@ -1910,9 +1956,9 @@ const CourseSelectionWorkspacePage = () => {
               {academicReportResource.data && <Tag>{visibleAcademicPlanGaps.length} 项</Tag>}
             </div>
             {academicReportResource.data?.program_name && <small className="jwxk-plan-gap-program">{academicReportResource.data.program_name}</small>}
-            {academicReportResource.data && confirmedSelected.length > 0 && (
+            {academicReportResource.data && academicPlanSelected.length > 0 && (
               <small className="jwxk-plan-gap-program">
-                已实时计入本轮确认选中的 {academicPlanProjection.matched.length} 门课程
+                已实时计入本轮已选或已投权的 {academicPlanProjection.matched.length} 门课程
                 {academicPlanProjection.unmatched.length > 0 ? `；${academicPlanProjection.unmatched.length} 门因缺少可靠类别未计入` : ''}
               </small>
             )}
@@ -2137,7 +2183,7 @@ const CourseSelectionWorkspacePage = () => {
     <Modal title="策略投权设置" open={weightSetupOpen} onCancel={() => setWeightSetupOpen(false)} footer={<><Button onClick={() => setWeightSetupOpen(false)}>取消</Button><Button loading={weightBuilding} onClick={buildWeightPlan}>生成一次建议</Button><Button type="primary" icon={<RobotOutlined />} onClick={createWeightStrategyTask}>创建实时策略任务</Button></>} width={620}>
       <div className="jwxk-group-form"><Alert type="info" showIcon message="年级人数用于估计全市场最终投权热度" description="配置按当前账号和学期保存。实时策略任务在服务进程运行期间每 30 秒静默读取最新已投注人数，推荐发生变化时才调整投权。" /><label><span>年级人数</span><InputNumber min={1} max={100000} value={gradeSizeDraft} onChange={setGradeSizeDraft} placeholder="请输入本年级学生人数" /></label><Text type="secondary">每门课程的 1–10 分意愿值可在方案组列表中修改；教学班优先级仍只决定同一课程的班级选择顺序。</Text></div>
     </Modal>
-    <Modal title="策略投权建议" open={!!weightPlan} onCancel={() => setWeightPlan(null)} onOk={applyWeights} okText="确认并逐项提交" width={760}>{weightPlan && <><Alert type="info" showIcon message={`官方剩余权重 ${weightPlan.budget}，推荐使用 ${weightPlan.used}`} description={`最低投放 ${weightPlan.minimum}，步长 ${weightPlan.step}。概率为未校准的模型代理值，不代表真实录取概率。${weightPlan.approximate ? ' 当前为限时搜索得到的最佳可行解。' : ''}`} />{(weightPlan.warnings || []).map(value => <Alert key={value} type="warning" showIcon message={value} />)}<div className="jwxk-weight-groups">{(weightPlan.groups || []).map(group => <Tag key={group.group_id} color={group.satisfied ? 'success' : 'warning'}>{group.name} {group.selected_count}/{group.target_count}</Tag>)}</div>{(weightPlan.courses || []).map(item => <div className="jwxk-weight-row" key={item.class_id || item.course_id}><span><b>{item.course_name || item.name}</b><small>{item.teacher || '教师待定'} · 意愿 {item.utility} · {item.classification}</small><small>{item.current_participant_label || '已投注人数'} {item.current_participant_count ?? item.weight_participant_count ?? '-'} / 容量 {item.current_capacity ?? item.capacity ?? '-'}</small><small>保守 {(Number(item.scenario_success_rates?.conservative || 0) * 100).toFixed(1)}% · 中性 {(Number(item.scenario_success_rates?.neutral || 0) * 100).toFixed(1)}% · 激进 {(Number(item.scenario_success_rates?.aggressive || 0) * 100).toFixed(1)}%</small></span>{item.weight > 0 && !item.already_selected ? <InputNumber min={weightPlan.minimum} step={weightPlan.step} max={weightPlan.budget} value={item.weight} onChange={value => setWeightPlan(previous => { const items = previous.items.map(row => row.class_id === item.class_id ? { ...row, weight: value || previous.minimum } : row); return { ...previous, items, used: items.reduce((sum, row) => sum + Number(row.weight || 0), 0) }; })} /> : <Tag>{item.already_selected ? '已在投权结果中' : '本次不投'}</Tag>}</div>)}</>}</Modal>
+    <Modal title="策略投权建议" open={!!weightPlan} onCancel={() => setWeightPlan(null)} onOk={applyWeights} okText="确认并逐项提交" width={760}>{weightPlan && <><Alert type="info" showIcon message={`本次可重分配 ${weightPlan.budget} 点，推荐使用 ${weightPlan.used} 点`} description={`官方当前剩余 ${weightPlan.official_remaining ?? weightPlan.budget} 点，可撤回并重分配 ${weightPlan.reclaimable_weight || 0} 点。最低投放 ${weightPlan.minimum}，步长 ${weightPlan.step}。已有投权课程会先撤回、确认后再按建议值重新投放。概率为未校准的模型代理值，不代表真实录取概率。${weightPlan.approximate ? ' 当前为限时搜索得到的最佳可行解。' : ''}`} />{(weightPlan.warnings || []).map(value => <Alert key={value} type="warning" showIcon message={value} />)}<div className="jwxk-weight-groups">{(weightPlan.groups || []).map(group => <Tag key={group.group_id} color={group.satisfied ? 'success' : 'warning'}>{group.name} {group.selected_count}/{group.target_count}</Tag>)}</div>{(weightPlan.courses || []).map(item => <div className="jwxk-weight-row" key={item.class_id || item.course_id}><span><b>{item.course_name || item.name}</b><small>{item.teacher || '教师待定'} · 意愿 {item.utility} · {item.classification}</small><small>{item.current_participant_label || '已投注人数'} {item.current_participant_count ?? item.weight_participant_count ?? '-'} / 容量 {item.current_capacity ?? item.capacity ?? '-'}</small>{item.reapply_required && <small>当前已投 {item.current_weight ?? '-'} 点，提交时将先撤回再重投</small>}<small>保守 {(Number(item.scenario_success_rates?.conservative || 0) * 100).toFixed(1)}% · 中性 {(Number(item.scenario_success_rates?.neutral || 0) * 100).toFixed(1)}% · 激进 {(Number(item.scenario_success_rates?.aggressive || 0) * 100).toFixed(1)}%</small></span>{item.weight > 0 && !item.already_selected ? <InputNumber min={weightPlan.minimum} step={weightPlan.step} max={weightPlan.budget} value={item.weight} onChange={value => setWeightPlan(previous => { const items = previous.items.map(row => row.class_id === item.class_id ? { ...row, weight: value || previous.minimum } : row); return { ...previous, items, used: items.reduce((sum, row) => sum + Number(row.weight || 0), 0) }; })} /> : <Tag>{item.already_selected ? '已形成最终选课结果' : '本次不投'}</Tag>}</div>)}</>}</Modal>
     <CourseOutlineDrawer
       open={Boolean(outlineCourse)}
       course={outlineCourse}

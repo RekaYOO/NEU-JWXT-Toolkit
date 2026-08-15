@@ -12,6 +12,7 @@ import {
   inferBatchRequirementType,
   immediateSelectionConflictMap,
   isCurrentBatchSelectionRecord,
+  academicPlanSelectionRecords,
   matchAcademicGapCatalogFilters,
   mergeCatalogRefreshPreservingOrder,
   mergeCatalogFilterLayers,
@@ -116,6 +117,22 @@ test('weight records with zero participants and zero capacity belong to another 
   expect(isCurrentBatchSelectionRecord({
     selected_count: 0, capacity: 0,
   }, '02')).toBe(true);
+});
+
+test('academic-plan projection keeps current volunteered courses and drops other-round records', () => {
+  const records = academicPlanSelectionRecords([{
+    course_code: 'CURRENT', course_name: '本轮已投课程',
+    selection_record_type: 'volunteered', weight_participant_count: 12, capacity: 30,
+  }, {
+    course_code: 'OTHER', course_name: '其他轮次课程',
+    selection_record_type: 'volunteered', weight_participant_count: 0, capacity: 0,
+  }, {
+    course_code: 'CURRENT', course_name: '本轮已投课程重复记录',
+    selection_record_type: 'volunteered', weight_participant_count: 12, capacity: 30,
+  }], '04');
+
+  expect(records).toHaveLength(1);
+  expect(records[0].course_code).toBe('CURRENT');
 });
 
 test('batch course nature is inferred from the batch name before its notice', () => {
@@ -354,13 +371,19 @@ test('academic-plan gaps map to official task category and nature filters', () =
   }, {
     course_categories: [{ value: '专业基础课', label: '专业基础课' }],
     course_natures: [{ value: '必修', label: '必修' }, { value: '选修', label: '选修' }],
-  })).toEqual({ courseCategory: '专业基础课', courseNature: '必修', generalElectiveCategory: '' });
+  })).toEqual({
+    courseCategory: '专业基础课', courseNature: '必修',
+    generalElectiveCategory: '', gapCategoryMatched: true,
+  });
 
   expect(matchAcademicGapCatalogFilters({
     name: '人文社会科学类', requirement_type: 'elective', course_natures: ['选修'],
   }, {
     course_categories: ['人文社会科学类'], course_natures: ['选修'],
-  })).toEqual({ courseCategory: '人文社会科学类', courseNature: '选修', generalElectiveCategory: '' });
+  })).toEqual({
+    courseCategory: '人文社会科学类', courseNature: '选修',
+    generalElectiveCategory: '', gapCategoryMatched: true,
+  });
 
   expect(matchAcademicGapCatalogFilters({
     name: '人文社会科学类', path_array: ['通识类', '人文社会科学类'],
@@ -371,6 +394,7 @@ test('academic-plan gaps map to official task category and nature filters', () =
   })).toEqual({
     courseCategory: '通识选修', courseNature: '选修',
     generalElectiveCategory: '人文社会科学类',
+    gapCategoryMatched: true,
   });
 
   expect(matchAcademicGapCatalogFilters({
@@ -381,5 +405,19 @@ test('academic-plan gaps map to official task category and nature filters', () =
   })).toEqual({
     courseCategory: '通识选修', courseNature: '选修',
     generalElectiveCategory: '科学素养类',
+    gapCategoryMatched: true,
+  });
+});
+
+test('academic-plan gap reports when only a broader fallback exists in the round', () => {
+  expect(matchAcademicGapCatalogFilters({
+    name: '人文社会科学类', path_array: ['通识类', '人文社会科学类'],
+    requirement_type: 'elective', course_natures: ['选修'],
+  }, {
+    course_categories: ['通识选修课'], course_natures: ['选修'],
+    general_elective_categories: ['科学素养类'],
+  })).toEqual({
+    courseCategory: '通识选修', courseNature: '选修',
+    generalElectiveCategory: '', gapCategoryMatched: false,
   });
 });

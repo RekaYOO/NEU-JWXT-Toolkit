@@ -205,6 +205,7 @@
 .jwxk-capacity-refresh-status { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-height: 22px; margin: -7px 0 10px; font-size: 12px; }
 .jwxk-archive-search { grid-template-columns: minmax(260px, 1fr) repeat(3, minmax(150px, auto)); margin-top: 18px; }
 .jwxk-active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -4px 0 12px; }
+.jwxk-plan-gap-mapping-warning { width: 100%; }
 .jwxk-group-list, .jwxk-plan-page, .jwxk-task-list { display: grid; gap: 12px; }
 .jwxk-course-group { cursor: pointer; border: 1px solid var(--color-line); border-radius: var(--radius-lg); transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
 .jwxk-course-group:hover { border-color: var(--color-brand); box-shadow: var(--shadow-card); transform: translateY(-1px); }

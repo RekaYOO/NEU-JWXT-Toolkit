@@ -21,6 +21,8 @@ from backend.core.course_selection import (
 )
 from backend.core.auth import NEUAuthClient
 from backend.core.auth.client import NEULoginError, SERVICE_CONFIGS
+from backend.core.course_selection.jwxk import JwxkRateLimitError
+import backend.core.course_selection.jwxk as jwxk_module
 from backend.core.network import WebVPNUrlCodec
 from backend.app.routers import course_selection
 from backend.app.schemas.course_selection import JwxkSettingsUpdate
@@ -107,6 +109,74 @@ def test_catalog_recovery_reactivates_batch_before_retrying_course_page():
 
     assert result == {"total": 0, "courses": []}
     assert events == ["request", "recover", "activate", "request"]
+
+
+def test_catalog_rate_limit_enters_shared_cooldown_without_session_recovery():
+    calls = []
+
+    class Response:
+        headers = {"Content-Type": "application/json"}
+
+        def json(self):
+            return {"code": 403, "msg": "请求过快，请登录后再试"}
+
+        def close(self):
+            calls.append("close")
+
+    class Auth:
+        def request_service(self, *_args, **_kwargs):
+            calls.append("request")
+            return Response()
+
+        def ensure_service_session(self, *_args, **_kwargs):
+            calls.append("recover")
+
+    client = JwxkSessionClient(Auth())
+    with pytest.raises(JwxkRateLimitError, match="限制了请求频率"):
+        client._search_courses_page(
+            batch_code="BATCH-1", teaching_class_type="ALLKC",
+            page_number=1, page_size=20, keyword="课程",
+        )
+    with pytest.raises(JwxkRateLimitError):
+        client._search_courses_page(
+            batch_code="BATCH-1", teaching_class_type="TJKC",
+            page_number=1, page_size=20, keyword="课程",
+        )
+
+    assert calls == ["request", "close"]
+
+
+def test_jwxk_rate_limit_wording_is_not_classified_as_auth_expiry():
+    client = NEUAuthClient(restore_session=False)
+    response = type("Response", (), {
+        "url": "https://jwxk.neu.edu.cn/xsxk/elective/clazz/list",
+        "headers": {"Content-Type": "application/json"},
+        "text": "",
+        "json": lambda _self: {"code": 403, "msg": "请求过快，请登录后再试"},
+    })()
+
+    assert client._is_service_auth_required(
+        response, SERVICE_CONFIGS["jwxk"], "direct",
+        request_path="/xsxk/elective/clazz/list",
+    ) is False
+
+
+def test_catalog_request_pacing_is_shared_across_clients(monkeypatch):
+    clock = [100.0]
+    sleeps = []
+    monkeypatch.setattr(jwxk_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(jwxk_module.time, "sleep", lambda delay: (
+        sleeps.append(delay), clock.__setitem__(0, clock[0] + delay)
+    ))
+    monkeypatch.setattr(jwxk_module.random, "uniform", lambda *_args: 0.0)
+
+    auth = type("Auth", (), {})()
+    first = JwxkSessionClient(auth)
+    second = JwxkSessionClient(auth)
+    first._pace_catalog_request()
+    second._pace_catalog_request()
+
+    assert sleeps == [pytest.approx(first._CATALOG_MIN_INTERVAL_SECONDS)]
 
 
 def test_service_auth_reason_keeps_official_semantics_but_redacts_identity():

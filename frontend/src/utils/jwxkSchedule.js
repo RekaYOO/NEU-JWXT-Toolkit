@@ -65,6 +65,20 @@ export const isCurrentBatchSelectionRecord = (course, selectionTypeCode = '') =>
   return !(Number(participants) === 0 && capacity === 0);
 };
 
+/** 培养计划缺口同时计入本轮确认选中和已投权课程，排除其他轮次的只读记录。 */
+export const academicPlanSelectionRecords = (courses = [], selectionTypeCode = '') => {
+  const byCourse = new Map((courses || [])
+    .filter(course => isCurrentBatchSelectionRecord(course, selectionTypeCode))
+    .map(course => [
+      String(course.course_code || '').trim().toUpperCase()
+        || `name:${String(course.course_name || '').trim().replace(/\s+/g, '').toLowerCase()}`,
+      course,
+    ]));
+  return [...byCourse.entries()]
+    .filter(([identity]) => identity && identity !== 'name:')
+    .map(([, course]) => course);
+};
+
 export const matchAcademicGapCatalogFilters = (gap, filterOptions = {}) => {
   const availableCategories = (filterOptions.course_categories || []).map(item => (
     typeof item === 'string' ? item : item.value
@@ -94,6 +108,7 @@ export const matchAcademicGapCatalogFilters = (gap, filterOptions = {}) => {
     return '';
   };
   const matchedGeneralCategory = matchOption(categoryCandidates, availableGeneralCategories);
+  const matchedCourseCategory = matchOption(categoryCandidates, availableCategories);
   const generalElectiveGap = Boolean(matchedGeneralCategory) || categoryCandidates.some(value => (
     isGeneralElective(value) || /通识/.test(String(value))
   ));
@@ -103,12 +118,13 @@ export const matchAcademicGapCatalogFilters = (gap, filterOptions = {}) => {
       ? '必修'
       : (gap?.course_natures || [])[0] || '';
   return {
-    courseCategory: matchOption(categoryCandidates, availableCategories)
+    courseCategory: matchedCourseCategory
       || (generalElectiveGap && availableCategories.some(isGeneralElective) ? '通识选修' : '')
       || String(categoryCandidates[0] || ''),
     courseNature: matchOption([preferredNature, ...(gap?.course_natures || [])], availableNatures)
       || preferredNature,
     generalElectiveCategory: generalElectiveGap ? matchedGeneralCategory : '',
+    gapCategoryMatched: Boolean(matchedCourseCategory || matchedGeneralCategory),
   };
 };
 

@@ -248,7 +248,13 @@ def _merge_catalog_option_values(options: dict, archive: dict | None) -> dict:
 
 def _archive_scope_options(archive: dict | None) -> list[dict[str, str]]:
     courses = archive.get("courses") if isinstance(archive, dict) else []
-    codes = sorted({
+    stored_options = archive.get("scope_options") if isinstance(archive, dict) else []
+    names_by_code = {
+        str(item.get("code") or "").strip(): str(item.get("name") or "").strip()
+        for item in stored_options or [] if isinstance(item, dict)
+        and str(item.get("code") or "").strip() not in {"", "ALL", "ROUND"}
+    }
+    codes = {
         str(scope or "")
         for course in courses or []
         for scope in [
@@ -256,11 +262,15 @@ def _archive_scope_options(archive: dict | None) -> list[dict[str, str]]:
             *(course.get("source_scopes") or []),
         ]
         if str(scope or "") not in {"", "ALL", "ROUND"}
-    })
+    }
+    codes.update(names_by_code)
     return [
         {"code": "ALL", "name": "所有课程"},
         {"code": "ROUND", "name": "本轮课程"},
-        *[{"code": code, "name": _JWXK_SCOPE_NAMES.get(code, code)} for code in codes],
+        *[{
+            "code": code,
+            "name": names_by_code.get(code) or _JWXK_SCOPE_NAMES.get(code, code),
+        } for code in sorted(codes)],
     ]
 
 
@@ -942,18 +952,49 @@ def plan_jwxk_weights(
         raise HTTPException(status_code=422, detail="请先向方案中加入课程")
     client = _jwxk_mutation_client(auth, storage)
     try:
-        budget_info = client.get_weight_budget(batch_code=request.batch_code)
+        official = client.get_selected(batch_code=request.batch_code, include_withdrawal=False)
+        budget_info = client.get_weight_budget(
+            batch_code=request.batch_code, selected_snapshot=official,
+        )
     except JwxkError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except NEULoginError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
     except requests.RequestException as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
-    budget = int(budget_info["remaining"])
+    official_remaining = int(budget_info["remaining"])
     minimum = int(budget_info["minimum"])
     step = int(budget_info["step"])
+    volunteered_by_code = {
+        str(item.get("course_code") or "").strip().upper(): item
+        for item in official.get("volunteered") or []
+        if str(item.get("course_code") or "").strip()
+    }
+    volunteered_codes = set(volunteered_by_code)
+    confirmed_codes = {
+        str(item.get("course_code") or "").strip().upper()
+        for item in official.get("selected") or []
+        if str(item.get("course_code") or "").strip().upper() not in volunteered_codes
+    }
+    target_codes = {str(item.get("course_key") or "").strip().upper() for item in targets}
+    reclaimable_weight = sum(
+        int(item.get("devoted_weight") or 0)
+        for code, item in volunteered_by_code.items()
+        if code in target_codes
+    )
+    budget = official_remaining + reclaimable_weight
     if budget < minimum:
-        raise HTTPException(status_code=422, detail="当前剩余权重不足以投放任何课程")
+        raise HTTPException(status_code=422, detail="当前可重分配权重不足以投放任何课程")
+    for target in targets:
+        course_key = str(target.get("course_key") or "").strip().upper()
+        current = volunteered_by_code.get(course_key)
+        target["already_selected"] = course_key in confirmed_codes
+        target["current_weight"] = (
+            int(current.get("devoted_weight") or 0) if current is not None else None
+        )
+        target["current_class_id"] = str((current or {}).get("class_id") or "")
+        target["current_selection_source"] = str((current or {}).get("selection_source") or "")
+        target["reapply_required"] = current is not None
 
     config, grade_sizes = _weight_grade_sizes(storage)
     grade_sizes[f"{auth.username}:{request.term_code}"] = request.grade_size
@@ -1046,6 +1087,10 @@ def plan_jwxk_weights(
             "current_participant_label": target.get("current_participant_label", "已投注人数"),
             "current_capacity": int(target.get("current_capacity", target.get("capacity", 0))),
             "capacity_updated_at": target.get("capacity_updated_at", ""),
+            "current_weight": target.get("current_weight"),
+            "current_class_id": target.get("current_class_id", ""),
+            "current_selection_source": target.get("current_selection_source", ""),
+            "reapply_required": bool(target.get("reapply_required")),
         }
         course_results.append(result)
         if course["bid"] > 0 and not course["already_selected"]:
@@ -1053,6 +1098,8 @@ def plan_jwxk_weights(
     return {
         "model_version": optimized["model_version"],
         "budget": budget,
+        "official_remaining": official_remaining,
+        "reclaimable_weight": reclaimable_weight,
         "official_total": budget_info["total"],
         "official_used": budget_info["used"],
         "minimum": minimum,
@@ -1074,28 +1121,90 @@ def apply_jwxk_weights(
     storage: Storage = Depends(get_storage),
 ):
     mutation_policy("jwxk.select")
+    mutation_policy("jwxk.deselect")
     results = []
+    course_codes = [str(item.get("course_code") or "").strip().upper() for item in request.items]
+    if not all(course_codes) or len(course_codes) != len(set(course_codes)):
+        raise HTTPException(status_code=422, detail="同一课程只能投放一次权重")
     client = _jwxk_mutation_client(auth, storage)
     try:
-        budget_info = client.get_weight_budget(batch_code=request.batch_code)
+        official = client.get_selected(batch_code=request.batch_code, include_withdrawal=False)
+        budget_info = client.get_weight_budget(
+            batch_code=request.batch_code, selected_snapshot=official,
+        )
     except JwxkError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except NEULoginError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
     except requests.RequestException as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
-    course_codes = [str(item.get("course_code") or "").strip().upper() for item in request.items]
-    if not all(course_codes) or len(course_codes) != len(set(course_codes)):
-        raise HTTPException(status_code=422, detail="同一课程只能投放一次权重")
     minimum = int(budget_info["minimum"])
     step = int(budget_info["step"])
     weights = [int(item.get("weight") or 0) for item in request.items]
     if any(weight < minimum or weight % step for weight in weights):
         raise HTTPException(status_code=422, detail=f"每门课程权重至少为 {minimum}，且必须按 {step} 递增")
-    if sum(weights) > int(budget_info["remaining"]):
-        raise HTTPException(status_code=422, detail=f"投放总额超过官方剩余权重 {budget_info['remaining']}")
+    volunteered_by_code = {
+        str(item.get("course_code") or "").strip().upper(): item
+        for item in official.get("volunteered") or []
+        if str(item.get("course_code") or "").strip()
+    }
+    reclaimable_weight = sum(
+        int(volunteered_by_code[code].get("devoted_weight") or 0)
+        for code in set(course_codes)
+        if code in volunteered_by_code
+    )
+    available_after_withdrawal = int(budget_info["remaining"]) + reclaimable_weight
+    if sum(weights) > available_after_withdrawal:
+        raise HTTPException(
+            status_code=422,
+            detail=f"投放总额超过撤回现有投权后的可用权重 {available_after_withdrawal}",
+        )
+    completed_courses = 0
     for item in request.items:
+        course_code = str(item.get("course_code") or "").strip().upper()
+        current = volunteered_by_code.get(course_code)
         try:
+            if current is not None:
+                withdrawn = client.deselect_course(
+                    batch_code=request.batch_code,
+                    class_id=str(current.get("class_id") or ""),
+                    selection_source=str(current.get("selection_source") or ""),
+                    confirm_risk=True,
+                )
+                results.append({
+                    "action": "weight_withdraw",
+                    "course_code": course_code,
+                    "class_id": current.get("class_id"),
+                    **withdrawn,
+                })
+                if not withdrawn.get("success"):
+                    break
+                removed = False
+                for attempt in range(8):
+                    checked = client.get_selected(
+                        batch_code=request.batch_code, include_withdrawal=False,
+                    )
+                    still_present = any(
+                        str(row.get("course_code") or "").strip().upper() == course_code
+                        for row in checked.get("volunteered") or []
+                    )
+                    if not still_present:
+                        removed = True
+                        break
+                    if attempt < 7:
+                        time.sleep(0.25)
+                if not removed:
+                    results.append({
+                        "action": "weight_reapply",
+                        "course_code": course_code,
+                        "class_id": item.get("class_id"),
+                        "success": False,
+                        "queued": False,
+                        "requires_confirmation": False,
+                        "code": "withdrawal_pending",
+                        "message": "旧权重已提交撤回，但官方结果尚未确认，已停止后续重投",
+                    })
+                    break
             result = client.select_course(
                 batch_code=request.batch_code,
                 teaching_class_type=str(item.get("teaching_class_type") or "ALLKC"),
@@ -1104,15 +1213,28 @@ def apply_jwxk_weights(
                 weight=int(item.get("weight") or 0),
                 confirm_risk=True,
             )
-            results.append({"class_id": item.get("class_id"), **result})
+            results.append({
+                "action": "weight_reapply" if current is not None else "weight_add",
+                "course_code": course_code,
+                "class_id": item.get("class_id"),
+                **result,
+            })
             if not result.get("success"):
                 break
+            completed_courses += 1
         except (JwxkError, NEULoginError, requests.RequestException) as error:
-            results.append({"class_id": item.get("class_id"), "success": False, "queued": False, "requires_confirmation": False, "code": "stopped", "message": str(error)})
+            results.append({
+                "action": "weight_reapply" if current is not None else "weight_add",
+                "course_code": course_code,
+                "class_id": item.get("class_id"), "success": False,
+                "queued": False, "requires_confirmation": False,
+                "code": "stopped", "message": str(error),
+            })
             break
-    if results and all(item.get("success") for item in results):
+    completed = completed_courses == len(request.items)
+    if completed:
         _invalidate_jwxk_timetable(auth, request.term_code, "jwxk.select")
-    return {"results": results, "completed": len(results) == len(request.items) and all(item.get("success") for item in results)}
+    return {"results": results, "completed": completed}
 
 
 def _jwxk_mutation_client(auth: NEUAuthClient, storage: Storage) -> JwxkSessionClient:

@@ -20,7 +20,7 @@ from backend.core.runtime.config import secure_file
 from backend.core.scheduling import check_conflicts, normalize_meeting
 
 from .jwxk import (
-    JwxkError, JwxkSessionClient, course_categories_equivalent,
+    JwxkError, JwxkRateLimitError, JwxkSessionClient, course_categories_equivalent,
     group_course_rows, normalize_jwxk_campus_code,
 )
 from .weight_optimizer import (
@@ -227,6 +227,17 @@ class CourseSelectionAutomationService:
         if not account or not batch_code:
             raise ValueError("account and batch code are required")
         now = datetime.now().astimezone().isoformat()
+        batch_scope_options = []
+        seen_scope_codes: set[str] = set()
+        for item in batch.get("menus") or []:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or item.get("teachingClassType") or "").strip()
+            if not code or code in {"ALL", "ROUND"} or code in seen_scope_codes:
+                continue
+            seen_scope_codes.add(code)
+            name = str(item.get("name") or item.get("displayName") or code).strip() or code
+            batch_scope_options.append({"code": code, "name": name})
         incoming = [
             self._archive_class(group, course, scope)
             for group in groups if isinstance(group, dict)
@@ -257,6 +268,7 @@ class CourseSelectionAutomationService:
                     "sync_loaded": 0,
                     "sync_total": 0,
                     "last_sync_at": None,
+                    "scope_options": [],
                     "courses": [],
                 }
                 self._archives.append(archive)
@@ -266,6 +278,8 @@ class CourseSelectionAutomationService:
                 target = "batch_name" if key == "name" else key
                 if batch.get(key):
                     archive[target] = str(batch[key])
+            if batch_scope_options:
+                archive["scope_options"] = batch_scope_options
             persisted = [
                 normalized for item in archive.get("courses") or []
                 if (normalized := self._persistable_archive_course(item)) is not None
@@ -1296,6 +1310,12 @@ class CourseSelectionAutomationService:
                     scope, scope_total or 0, round((time.monotonic() - scope_started) * 1000),
                 )
             self._set_catalog_sync_state(account, batch_code, "complete", "")
+        except JwxkRateLimitError as error:
+            location = f"{current_scope} 第 {current_page} 页" if current_scope else "读取轮次上下文"
+            self._set_catalog_sync_state(
+                account, batch_code, "failed", f"{location}：{error}",
+                retry_after_seconds=error.retry_after,
+            )
         except (NEULoginError, JwxkError, requests.RequestException, ValueError) as error:
             location = f"{current_scope} 第 {current_page} 页" if current_scope else "读取轮次上下文"
             self._set_catalog_sync_state(
@@ -1320,7 +1340,10 @@ class CourseSelectionAutomationService:
             })
             self._write_archives()
 
-    def _set_catalog_sync_state(self, account: str, batch_code: str, status: str, error: str) -> None:
+    def _set_catalog_sync_state(
+        self, account: str, batch_code: str, status: str, error: str,
+        *, retry_after_seconds: int | None = None,
+    ) -> None:
         with self._lock:
             archive = next((item for item in self._archives if (
                 item.get("account") == account and item.get("batch_code") == batch_code
@@ -1332,7 +1355,11 @@ class CourseSelectionAutomationService:
             archive["updated_at"] = datetime.now().astimezone().isoformat()
             if status in {"failed", "paused"}:
                 failures = int(archive.get("sync_failure_count") or 0) + 1
-                delay = min(self._CATALOG_RETRY_MAX_SECONDS, 15 * (2 ** min(failures - 1, 5)))
+                delay = (
+                    min(self._CATALOG_RETRY_MAX_SECONDS, max(1, int(retry_after_seconds)))
+                    if retry_after_seconds is not None
+                    else min(self._CATALOG_RETRY_MAX_SECONDS, 15 * (2 ** min(failures - 1, 5)))
+                )
                 archive["sync_failure_count"] = failures
                 archive["sync_retry_at"] = (
                     datetime.now().astimezone() + timedelta(seconds=delay)
