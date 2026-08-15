@@ -235,7 +235,7 @@ def test_service_same_origin_login_trampoline_establishes_session_and_retries(mo
     result = client.request_service("cxcy", "GET", "/popscience/comp/ucenter/main/index")
     assert result.status_code == 200
     assert urls[0] == urls[2]
-    assert urls[1].startswith("https://pass.neu.edu.cn/tpass/login?service=")
+    assert urls[1] == "https://cxcy.neu.edu.cn/ucenter/auth/caslogin?type=student"
 
 
 def test_service_expired_cas_recovers_primary_login_then_rebuilds_service_session(monkeypatch):
@@ -274,7 +274,7 @@ def test_service_expired_cas_recovers_primary_login_then_rebuilds_service_sessio
 
     assert result.url.endswith("/popscience/comp/ucenter/main/index")
     assert recoveries == [True]
-    assert sum(url.startswith("https://pass.neu.edu.cn/") for url in urls) == 2
+    assert urls.count("https://cxcy.neu.edu.cn/ucenter/auth/caslogin?type=student") == 2
 
 
 def test_service_expired_cas_reports_login_failure_after_one_recovery_attempt(monkeypatch):

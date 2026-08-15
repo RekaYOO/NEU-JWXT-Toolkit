@@ -23,6 +23,7 @@ import {
   selectionParticipantLabel,
   sortCatalogGroupsBySelectability,
   summarizeSelectionConflictsByClass,
+  uniqueDisplayLabels,
   toggleCatalogPreviewCourse,
   upsertSelectionRecord,
 } from './jwxkSchedule';
@@ -34,6 +35,14 @@ test('participant metric follows grab and weight round semantics', () => {
   expect(selectionParticipantCount(course, '04')).toBe(63);
   expect(selectionParticipantLabel(course, '04')).toBe('已投注人数');
   expect(matchesCatalogAvailability({ ...course, selection_type_code: '04' }, 'available')).toBe(false);
+});
+
+test('course source labels are deduplicated after user-facing translation', () => {
+  const labels = uniqueDisplayLabels(
+    ['TJKC', '任务推荐班课程', 'FANKC'],
+    value => ({ TJKC: '任务推荐班课程', FANKC: '培养方案内课' }[value] || value),
+  );
+  expect(labels).toEqual(['任务推荐班课程', '培养方案内课']);
 });
 
 test('catalog group summary only exposes live conflict-free and capacity counts', () => {
@@ -50,8 +59,43 @@ test('catalog group summary only exposes live conflict-free and capacity counts'
     'official-conflict': { status: 'clear' },
   }, '04')).toEqual({
     conflict_free_count: 1,
+    all_classes_conflict: false,
     available_count: 2,
   });
+});
+
+test('catalog display coalesces duplicate groups with the same course code', () => {
+  const groups = catalogGroupsForDisplay([
+    { group_id: 'old-a', course_code: 'C1', course_name: '课程', classes: [{ class_id: 'A' }] },
+    { group_id: 'old-b', course_code: 'C1', course_name: '课程', classes: [{ class_id: 'B' }] },
+  ]);
+  expect(groups).toHaveLength(1);
+  expect(groups[0].classes.map(item => item.class_id)).toEqual(['A', 'B']);
+  const layout = createCatalogDisplayLayout(groups);
+  expect(applyCatalogDisplayLayout([
+    { group_id: 'old-a', course_code: 'C1', classes: [{ class_id: 'A' }] },
+    { group_id: 'old-b', course_code: 'C1', classes: [{ class_id: 'B' }] },
+  ], layout)[0].classes.map(item => item.class_id)).toEqual(['A', 'B']);
+});
+
+test('catalog group is marked conflicting only when every teaching class conflicts', () => {
+  expect(catalogGroupLiveStats({
+    classes: [
+      { class_id: 'official', conflict: true },
+      { class_id: 'local', conflict: false },
+    ],
+  }, {
+    local: { status: 'conflict' },
+  }).all_classes_conflict).toBe(true);
+
+  expect(catalogGroupLiveStats({
+    classes: [
+      { class_id: 'conflict', conflict: true },
+      { class_id: 'unknown', conflict: false },
+    ],
+  }, {
+    unknown: { status: 'unknown' },
+  }).all_classes_conflict).toBe(false);
 });
 
 test('catalog preview toggles only the explicitly selected teaching class', () => {

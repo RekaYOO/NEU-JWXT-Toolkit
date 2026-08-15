@@ -514,13 +514,16 @@
 .timetable-cluster-stack-card.is-plan-candidate,
 .timetable-mobile-card.is-plan-candidate {
   border-style: dashed;
-  border-color: var(--color-warning);
-  background: color-mix(in srgb, var(--color-warning) 38%, var(--color-surface));
+  border-color: var(--color-brand-strong);
+  background: color-mix(in srgb, var(--color-brand) 38%, var(--color-surface));
 }
 
 .timetable-course-block.is-selection-preview,
 .timetable-cluster-stack-card.is-selection-preview,
-.timetable-mobile-card.is-selection-preview {
+.timetable-mobile-card.is-selection-preview,
+.timetable-course-block.is-selection-pending,
+.timetable-cluster-stack-card.is-selection-pending,
+.timetable-mobile-card.is-selection-pending {
   z-index: 4;
   border-color: var(--color-brand-strong);
   background: color-mix(in srgb, var(--color-brand) 46%, var(--color-surface));
@@ -534,7 +537,11 @@
 .timetable-course-block.is-selection-preview .course-title,
 .timetable-cluster-stack-card.is-selection-preview > strong,
 .timetable-mobile-card.is-selection-preview .mobile-course-title,
-.timetable-cluster-dialog-item.is-selection-preview > strong {
+.timetable-cluster-dialog-item.is-selection-preview > strong,
+.timetable-course-block.is-selection-pending .course-title,
+.timetable-cluster-stack-card.is-selection-pending > strong,
+.timetable-mobile-card.is-selection-pending .mobile-course-title,
+.timetable-cluster-dialog-item.is-selection-pending > strong {
   color: var(--color-brand-strong);
 }
 
@@ -607,8 +614,8 @@
 
 .timetable-cluster-dialog-item.is-plan-candidate {
   border-style: dashed;
-  border-color: var(--color-warning);
-  background: color-mix(in srgb, var(--color-warning) 10%, var(--color-surface));
+  border-color: var(--color-brand-strong);
+  background: color-mix(in srgb, var(--color-brand) 10%, var(--color-surface));
 }
 
 .timetable-course-block.is-course-now,

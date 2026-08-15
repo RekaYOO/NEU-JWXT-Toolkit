@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import copy
+import logging
 import threading
 import time
 import uuid
@@ -33,12 +34,18 @@ from .weight_optimizer import (
 
 
 _OFFICIAL_TIMEZONE = timezone(timedelta(hours=8))
+logger = logging.getLogger(__name__)
 
 
 class CourseSelectionAutomationService:
     """Own automatic tasks and user-kept catalog archives outside the cache."""
 
-    _CATALOG_DYNAMIC_REFRESH_SECONDS = 120
+    # Refresh every real menu scope in the active round, excluding ALLKC.
+    # Candidate classes are still refreshed on every strategy check; this
+    # slower full-market cadence limits request volume and school-side risk.
+    _CATALOG_DYNAMIC_REFRESH_SECONDS = 600
+    _CATALOG_RETRY_MAX_SECONDS = 300
+    _CATALOG_STALE_PROGRESS_SECONDS = 120
     _CATALOG_DYNAMIC_FIELDS = (
         "capacity", "selected_count", "full",
         "first_choice_count", "weight_participant_count", "market_participant_count",
@@ -72,12 +79,18 @@ class CourseSelectionAutomationService:
         self._tasks = [task for task in self._read() if task.get("status") != "cancelled"]
         self._archives = self._read_archives()
         archives_changed = self._remove_directory_only_courses()
+        for archive in self._archives:
+            if not archive.get("archived") and archive.get("sync_status") in {"queued", "running"}:
+                archive["sync_status"] = "pending"
+                archive["sync_error"] = "程序重启后等待重新同步"
+                archives_changed = True
         self._last_archive_scan = 0.0
         self._catalog_sync_queue: set[tuple[str, str]] = set()
         for task in self._tasks:
             self._normalize_group_results(task)
             self._normalize_swap_results(task)
             task.setdefault("weight_status", {})
+            task.setdefault("execution", {})
             task.setdefault(
                 "desired_state",
                 "running" if task.get("status") in {"running", "waiting"} else "paused",
@@ -295,7 +308,9 @@ class CourseSelectionAutomationService:
             self._catalog_sync_wake.set()
             return copy.deepcopy(archive)
 
-    def schedule_catalog_sync(self, account: str, *, batch: dict[str, Any]) -> None:
+    def schedule_catalog_sync(
+        self, account: str, *, batch: dict[str, Any], force: bool = False,
+    ) -> None:
         """Queue a non-blocking complete scan of the round's real catalog scopes."""
         batch_code = str(batch.get("code") or "")
         if not account or not batch_code:
@@ -309,7 +324,7 @@ class CourseSelectionAutomationService:
                 return
             if archive.get("sync_status") in {"queued", "running"}:
                 return
-            if archive.get("sync_status") == "complete":
+            if archive.get("sync_status") == "complete" and not force:
                 last_sync_at = archive.get("last_sync_at")
                 if last_sync_at:
                     try:
@@ -322,6 +337,12 @@ class CourseSelectionAutomationService:
                         pass
             archive["sync_status"] = "queued"
             archive["sync_error"] = ""
+            archive["sync_failure_count"] = 0
+            archive["sync_retry_at"] = ""
+            archive["sync_loaded"] = 0
+            archive["sync_total"] = 0
+            archive["sync_current_scope"] = ""
+            archive["sync_current_page"] = 0
             archive["updated_at"] = datetime.now().astimezone().isoformat()
             self._catalog_sync_queue.add((account, batch_code))
             self._write_archives()
@@ -585,9 +606,12 @@ class CourseSelectionAutomationService:
         snapshot["poll_interval_seconds"] = interval
         snapshot["next_attempt_at"] = None
         if task.get("desired_state") == "running" and task.get("status") in {"running", "waiting"}:
-            last_attempt = self._parse_task_time(task.get("last_attempt_at"))
-            if last_attempt is not None:
-                snapshot["next_attempt_at"] = (last_attempt + timedelta(seconds=interval)).isoformat()
+            if task.get("manual_check_requested_at"):
+                snapshot["next_attempt_at"] = datetime.now().astimezone().isoformat()
+            else:
+                last_attempt = self._parse_task_time(task.get("last_attempt_at"))
+                if last_attempt is not None:
+                    snapshot["next_attempt_at"] = (last_attempt + timedelta(seconds=interval)).isoformat()
         return snapshot
 
     @staticmethod
@@ -700,6 +724,21 @@ class CourseSelectionAutomationService:
                 "inflight": None,
                 "confirmation_checks": 0,
             }
+        task["execution"] = {
+            "state": "idle",
+            "stage": "尚未执行",
+            "stage_code": "idle",
+            "trigger": "",
+            "check_started_at": None,
+            "stage_started_at": None,
+            "last_completed_at": None,
+            "last_duration_ms": None,
+            "last_error_stage": "",
+            "last_error_type": "",
+            "last_error_message": "",
+            "last_error_at": None,
+            "events": [],
+        }
         with self._lock:
             self._tasks.append(task)
             self._write()
@@ -726,6 +765,16 @@ class CourseSelectionAutomationService:
                 task["desired_state"] = "paused"
                 task["status"] = "paused"
                 task["message"] = "任务已暂停"
+            elif action == "check_now":
+                if task.get("task_type") != "weight_strategy":
+                    raise ValueError("立即检查并执行策略仅适用于策略投权任务")
+                if task.get("desired_state") != "running" or task.get("status") not in {"running", "waiting"}:
+                    raise ValueError("请先启动任务，再执行立即检查")
+                task["manual_check_requested_at"] = datetime.now().astimezone().isoformat()
+                if (task.get("execution") or {}).get("state") == "running":
+                    task["message"] = "当前检查仍在执行，完成后将立即再次检查并按策略行动"
+                else:
+                    task["message"] = "已请求立即检查，正在等待后台执行"
             elif action == "cancel":
                 task["desired_state"] = "cancelled"
                 task["status"] = "cancelled"
@@ -764,12 +813,77 @@ class CourseSelectionAutomationService:
     def _run_catalog_background(self) -> None:
         """Process rebuildable catalog work without blocking task scheduling."""
         while not self._stop.is_set():
+            self._reset_stale_catalog_syncs()
+            self._requeue_failed_catalog_syncs()
             self._tick_catalog_sync()
             if time.time() - self._last_archive_scan >= 60:
                 self._last_archive_scan = time.time()
                 self._tick_catalog_archives()
             self._catalog_sync_wake.wait(timeout=1)
             self._catalog_sync_wake.clear()
+
+    def _reset_stale_catalog_syncs(self) -> None:
+        """Turn a read-only catalog scan with no progress back into retry state."""
+        now = datetime.now().astimezone()
+        changed = False
+        with self._lock:
+            for archive in self._archives:
+                if archive.get("archived") or archive.get("sync_status") != "running":
+                    continue
+                try:
+                    updated = datetime.fromisoformat(str(archive.get("updated_at") or "")).astimezone()
+                except ValueError:
+                    updated = now - timedelta(seconds=self._CATALOG_STALE_PROGRESS_SECONDS + 1)
+                if (now - updated).total_seconds() <= self._CATALOG_STALE_PROGRESS_SECONDS:
+                    continue
+                failures = int(archive.get("sync_failure_count") or 0) + 1
+                delay = min(self._CATALOG_RETRY_MAX_SECONDS, 15 * (2 ** min(failures - 1, 5)))
+                archive.update({
+                    "sync_status": "failed",
+                    "sync_error": "学校数据读取长时间没有进展，已自动重置",
+                    "sync_failure_count": failures,
+                    "sync_retry_at": (now + timedelta(seconds=delay)).isoformat(),
+                    "updated_at": now.isoformat(),
+                })
+                changed = True
+            if changed:
+                self._write_archives()
+
+    def _requeue_failed_catalog_syncs(self) -> None:
+        """Retry transient read-only catalog failures with bounded backoff."""
+        auth = self.auth_recover_provider()
+        account = str(getattr(auth, "username", "") or "") if auth is not None else ""
+        if not account:
+            return
+        now = datetime.now().astimezone()
+        changed = False
+        with self._lock:
+            for archive in self._archives:
+                if (
+                    archive.get("archived")
+                    or archive.get("account") != account
+                    or archive.get("sync_status") not in {"failed", "paused"}
+                ):
+                    continue
+                try:
+                    retry_at = datetime.fromisoformat(str(archive.get("sync_retry_at") or "")).astimezone()
+                except ValueError:
+                    retry_at = now
+                if now < retry_at:
+                    continue
+                archive.update({
+                    "sync_status": "queued",
+                    "sync_loaded": 0,
+                    "sync_total": 0,
+                    "sync_current_scope": "",
+                    "sync_current_page": 0,
+                    "updated_at": now.isoformat(),
+                })
+                self._catalog_sync_queue.add((account, str(archive.get("batch_code") or "")))
+                changed = True
+            if changed:
+                self._write_archives()
+                self._catalog_sync_wake.set()
 
     @staticmethod
     def _parse_task_time(value: Any) -> datetime | None:
@@ -801,26 +915,142 @@ class CourseSelectionAutomationService:
     @staticmethod
     def _poll_interval(task: dict[str, Any]) -> int:
         if task.get("polling_mode") == "weight_rebalance":
-            return max(15, int(task.get("rebalance_seconds") or 30))
+            return max(600, int(task.get("rebalance_seconds") or 600))
         if task.get("polling_mode") == "opening_burst":
             return 1
         return max(15, int(task.get("poll_seconds") or 15))
+
+    @staticmethod
+    def _consume_manual_check(task: dict[str, Any]) -> bool:
+        return bool(task.pop("manual_check_requested_at", None))
+
+    @staticmethod
+    def _execution_elapsed_ms(started_at: Any) -> int | None:
+        try:
+            started = datetime.fromisoformat(str(started_at or ""))
+            return max(0, round((datetime.now().astimezone() - started).total_seconds() * 1000))
+        except ValueError:
+            return None
+
+    def _append_execution_event(
+        self, task: dict[str, Any], message: str, *, level: str = "info",
+        stage_code: str = "",
+    ) -> None:
+        execution = task.setdefault("execution", {})
+        events = list(execution.get("events") or [])
+        events.append({
+            "at": datetime.now().astimezone().isoformat(),
+            "level": level,
+            "stage_code": stage_code or str(execution.get("stage_code") or ""),
+            "message": message,
+        })
+        execution["events"] = events[-16:]
+
+    def _begin_execution(self, task: dict[str, Any], *, trigger: str) -> None:
+        now = datetime.now().astimezone().isoformat()
+        execution = task.setdefault("execution", {})
+        execution.update({
+            "state": "running",
+            "stage": "准备检查",
+            "stage_code": "starting",
+            "trigger": trigger,
+            "check_started_at": now,
+            "stage_started_at": now,
+            "last_error_stage": "",
+            "last_error_type": "",
+            "last_error_message": "",
+        })
+        self._append_execution_event(
+            task,
+            "手动立即检查已开始" if trigger == "manual" else "定时策略检查已开始",
+            stage_code="starting",
+        )
+        self._persist_task(task)
+
+    def _set_execution_stage(
+        self, task: dict[str, Any], stage_code: str, message: str,
+    ) -> None:
+        now = datetime.now().astimezone().isoformat()
+        execution = task.setdefault("execution", {})
+        previous_duration = self._execution_elapsed_ms(execution.get("stage_started_at"))
+        execution.update({
+            "state": "running",
+            "stage": message,
+            "stage_code": stage_code,
+            "stage_started_at": now,
+            "previous_stage_duration_ms": previous_duration,
+            "elapsed_ms": self._execution_elapsed_ms(execution.get("check_started_at")),
+        })
+        task["message"] = message
+        self._append_execution_event(task, message, stage_code=stage_code)
+        self._persist_task(task)
+
+    def _finish_execution(self, task: dict[str, Any]) -> None:
+        now = datetime.now().astimezone().isoformat()
+        execution = task.setdefault("execution", {})
+        duration = self._execution_elapsed_ms(execution.get("check_started_at"))
+        execution.update({
+            "state": "idle",
+            "stage": task.get("message") or "检查完成",
+            "stage_code": "complete",
+            "last_completed_at": now,
+            "last_duration_ms": duration,
+            "elapsed_ms": duration,
+        })
+        duration_text = f"，耗时 {(duration or 0) / 1000:.1f} 秒" if duration is not None else ""
+        self._append_execution_event(
+            task, f"本轮检查结束{duration_text}：{task.get('message') or '已完成'}",
+            stage_code="complete",
+        )
+        logger.info(
+            "jwxk automation check completed task=%s trigger=%s duration_ms=%s status=%s",
+            task.get("task_id"), execution.get("trigger"), duration, task.get("status"),
+        )
+        self._persist_task(task)
+
+    def _fail_execution(self, task: dict[str, Any], error: Exception) -> None:
+        now = datetime.now().astimezone().isoformat()
+        execution = task.setdefault("execution", {})
+        duration = self._execution_elapsed_ms(execution.get("check_started_at"))
+        stage = str(execution.get("stage") or "未知阶段")
+        execution.update({
+            "state": "error",
+            "last_completed_at": now,
+            "last_duration_ms": duration,
+            "elapsed_ms": duration,
+            "last_error_stage": stage,
+            "last_error_type": type(error).__name__,
+            "last_error_message": str(error),
+            "last_error_at": now,
+        })
+        self._append_execution_event(
+            task, f"{stage}失败：{error}", level="error",
+            stage_code=str(execution.get("stage_code") or "error"),
+        )
+        logger.warning(
+            "jwxk automation check failed task=%s trigger=%s stage=%s duration_ms=%s error=%s",
+            task.get("task_id"), execution.get("trigger"), execution.get("stage_code"),
+            duration, type(error).__name__,
+        )
+        self._persist_task(task)
 
     def _task_auth(self, task: dict[str, Any]) -> Any | None:
         auth = self.auth_recover_provider()
         if (
             auth is None
-            or not getattr(auth, "is_logged_in", False)
             or str(getattr(auth, "username", "") or "") != str(task.get("account") or "")
         ):
             return None
+        # JWXK is a child session of the shared identity but its bearer token
+        # can remain valid while the primary JWXT route is unavailable.  Let
+        # request_service validate or rebuild that child session instead of
+        # rejecting it from the process-wide JWXT login flag here.
         return auth
 
     def _refresh_task_course_states(
         self, client: JwxkSessionClient, task: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
         live_by_class: dict[str, dict[str, Any]] = {}
-        seen_queries: set[tuple[str, str]] = set()
         with self._lock:
             archive = next((item for item in self._archives if (
                 item.get("account") == task.get("account")
@@ -831,7 +1061,37 @@ class CourseSelectionAutomationService:
                 for item in (archive or {}).get("courses") or []
                 if str(item.get("class_id") or "")
             }
+            archive_sync_at = str((archive or {}).get("last_sync_at") or "")
+            archive_sync_status = str((archive or {}).get("sync_status") or "")
+        expected_task_ids = {
+            str(item.get("class_id") or "")
+            for item in task.get("items") or []
+            if str(item.get("class_id") or "")
+        }
+        market_snapshot_at = str((task.get("weight_status") or {}).get("market_snapshot_at") or "")
+        can_reuse_market_snapshot = bool(
+            task.get("task_type") == "weight_strategy"
+            and market_snapshot_at
+            and market_snapshot_at == archive_sync_at
+            and archive_sync_status == "complete"
+        )
+        if can_reuse_market_snapshot:
+            live_by_class.update({
+                class_id: archived_by_class[class_id]
+                for class_id in expected_task_ids
+                if class_id in archived_by_class
+            })
+            self._append_execution_event(
+                task,
+                f"复用刚完成的完整市场快照，方案候选精确命中 {len(live_by_class)}/{len(expected_task_ids)}",
+                stage_code="market_refresh",
+                level="error" if expected_task_ids - set(live_by_class) else "info",
+            )
+        query_specs: dict[tuple[str, str], dict[str, Any]] = {}
         for item in task.get("items") or []:
+            item_class_id = str(item.get("class_id") or "")
+            if item_class_id and item_class_id in live_by_class:
+                continue
             query = str(item.get("course_code") or item.get("course_name") or "").strip()
             archived = archived_by_class.get(str(item.get("class_id") or ""), {})
             class_type = str(item.get("teaching_class_type") or "")
@@ -843,17 +1103,73 @@ class CourseSelectionAutomationService:
                     if str(value) not in {"", "ALL", "ROUND", "ALLKC"}
                 ), "ALLKC")
             query_key = (query.upper(), class_type)
-            if not query or query_key in seen_queries:
+            if not query:
                 continue
-            seen_queries.add(query_key)
-            result = client.search_courses(
-                batch_code=task["batch_code"], teaching_class_type=class_type,
-                page_number=1, page_size=50, keyword=query,
+            spec = query_specs.setdefault(query_key, {
+                "query": query,
+                "class_type": class_type,
+                "class_ids": set(),
+                "course_names": set(),
+            })
+            class_id = item_class_id
+            if class_id:
+                spec["class_ids"].add(class_id)
+            course_name = str(item.get("course_name") or "").strip()
+            if course_name:
+                spec["course_names"].add(course_name)
+
+        total_queries = len(query_specs)
+        for index, spec in enumerate(query_specs.values(), start=1):
+            query = str(spec["query"])
+            class_type = str(spec["class_type"])
+            expected_ids = set(spec["class_ids"])
+            course_label = "、".join(sorted(spec["course_names"])) or query
+            self._append_execution_event(
+                task,
+                f"刷新候选 {index}/{total_queries}：{course_label}（{class_type}）",
+                stage_code="market_refresh",
             )
-            for row in result.get("courses") or []:
+            started = time.monotonic()
+            try:
+                result = client.search_courses(
+                    batch_code=task["batch_code"], teaching_class_type=class_type,
+                    page_number=1, page_size=50, keyword=query,
+                )
+            except NEULoginError as error:
+                raise NEULoginError(
+                    f"刷新“{course_label}”人数时失败：{error}"
+                ) from error
+            except (JwxkError, requests.RequestException) as error:
+                raise JwxkError(
+                    f"刷新“{course_label}”人数时失败：{error}"
+                ) from error
+            rows = result.get("courses") or []
+            matched_ids: set[str] = set()
+            for row in rows:
                 class_id = str(row.get("class_id") or "")
-                if class_id:
+                # Keyword search can return adjacent or fuzzy-matched courses.
+                # Only the exact teaching classes stored in this task are
+                # valid model inputs; never let an unrelated result enter the
+                # live snapshot.
+                if class_id and class_id in expected_ids:
                     live_by_class[class_id] = row
+                    matched_ids.add(class_id)
+            missing_ids = sorted(expected_ids - matched_ids)
+            elapsed_ms = round((time.monotonic() - started) * 1000)
+            self._append_execution_event(
+                task,
+                f"候选 {index}/{total_queries} 返回 {len(rows)} 条，精确命中 {len(matched_ids)}/{len(expected_ids)}，耗时 {elapsed_ms} ms",
+                stage_code="market_refresh",
+                level="error" if missing_ids else "info",
+            )
+            logger.info(
+                "jwxk strategy candidate refresh scope=%s result_count=%s exact_matches=%s expected=%s duration_ms=%s",
+                class_type, len(rows), len(matched_ids), len(expected_ids), elapsed_ms,
+            )
+            if missing_ids:
+                raise JwxkError(
+                    f"刷新“{course_label}”人数时未找到方案中的教学班（{len(missing_ids)} 个），已停止本轮计算"
+                )
         now = datetime.now().astimezone().isoformat()
         previous = task.get("course_states") if isinstance(task.get("course_states"), dict) else {}
         fields = (
@@ -907,14 +1223,16 @@ class CourseSelectionAutomationService:
             )), None)
         if archive is None:
             return
-        auth = self.auth_provider()
-        if not auth or not getattr(auth, "is_logged_in", False) or str(getattr(auth, "username", "") or "") != account:
+        auth = self.auth_recover_provider()
+        if not auth or str(getattr(auth, "username", "") or "") != account:
             self._set_catalog_sync_state(account, batch_code, "paused", "登录身份不可用")
             return
         self._set_catalog_sync_state(account, batch_code, "running", "")
+        current_scope = ""
+        current_page = 0
         try:
             with self.remote_guard():
-                if self.auth_provider() is not auth:
+                if self.auth_recover_provider() is not auth:
                     raise NEULoginError("登录身份已切换")
                 client = self.client_builder(auth)
                 context = client.get_context()
@@ -928,11 +1246,19 @@ class CourseSelectionAutomationService:
             loaded = 0
             total = 0
             for scope in scopes:
+                current_scope = scope
                 page = 1
                 scope_total = None
+                scope_started = time.monotonic()
                 while page <= 200 and not self._stop.is_set():
+                    current_page = page
+                    self._update_catalog_sync_progress(
+                        account, batch_code, scopes, loaded, total,
+                        current_scope=scope, current_page=page,
+                    )
+                    page_started = time.monotonic()
                     with self.remote_guard():
-                        if self.auth_provider() is not auth:
+                        if self.auth_recover_provider() is not auth:
                             raise NEULoginError("登录身份已切换")
                         result = client.search_courses(
                             batch_code=batch_code, teaching_class_type=scope,
@@ -953,16 +1279,32 @@ class CourseSelectionAutomationService:
                     )
                     self.merge_catalog_archive(account, batch=batch.to_dict(), scope=scope, groups=groups)
                     loaded += len(courses)
-                    self._update_catalog_sync_progress(account, batch_code, scopes, loaded, total)
+                    page_elapsed_ms = round((time.monotonic() - page_started) * 1000)
+                    self._update_catalog_sync_progress(
+                        account, batch_code, scopes, loaded, total,
+                        current_scope=scope, current_page=page,
+                    )
+                    logger.info(
+                        "jwxk round market refresh scope=%s page=%s rows=%s scope_total=%s loaded=%s total=%s duration_ms=%s",
+                        scope, page, len(courses), scope_total, loaded, total, page_elapsed_ms,
+                    )
                     if not courses or page * 50 >= scope_total:
                         break
                     page += 1
+                logger.info(
+                    "jwxk round market scope complete scope=%s rows=%s duration_ms=%s",
+                    scope, scope_total or 0, round((time.monotonic() - scope_started) * 1000),
+                )
             self._set_catalog_sync_state(account, batch_code, "complete", "")
         except (NEULoginError, JwxkError, requests.RequestException, ValueError) as error:
-            self._set_catalog_sync_state(account, batch_code, "failed", str(error))
+            location = f"{current_scope} 第 {current_page} 页" if current_scope else "读取轮次上下文"
+            self._set_catalog_sync_state(
+                account, batch_code, "failed", f"{location}：{error}",
+            )
 
     def _update_catalog_sync_progress(
         self, account: str, batch_code: str, scopes: list[str], loaded: int, total: int,
+        *, current_scope: str = "", current_page: int = 0,
     ) -> None:
         with self._lock:
             archive = next((item for item in self._archives if (
@@ -973,6 +1315,8 @@ class CourseSelectionAutomationService:
             archive.update({
                 "sync_scopes": list(scopes), "sync_loaded": loaded,
                 "sync_total": total, "updated_at": datetime.now().astimezone().isoformat(),
+                "sync_current_scope": current_scope,
+                "sync_current_page": current_page,
             })
             self._write_archives()
 
@@ -986,9 +1330,20 @@ class CourseSelectionAutomationService:
             archive["sync_status"] = status
             archive["sync_error"] = error[:300]
             archive["updated_at"] = datetime.now().astimezone().isoformat()
+            if status in {"failed", "paused"}:
+                failures = int(archive.get("sync_failure_count") or 0) + 1
+                delay = min(self._CATALOG_RETRY_MAX_SECONDS, 15 * (2 ** min(failures - 1, 5)))
+                archive["sync_failure_count"] = failures
+                archive["sync_retry_at"] = (
+                    datetime.now().astimezone() + timedelta(seconds=delay)
+                ).isoformat()
             if status == "complete":
                 archive["last_sync_at"] = archive["updated_at"]
                 archive["catalog_complete"] = True
+                archive["sync_failure_count"] = 0
+                archive["sync_retry_at"] = ""
+                archive["sync_current_scope"] = ""
+                archive["sync_current_page"] = 0
             self._write_archives()
 
     @staticmethod
@@ -1000,8 +1355,8 @@ class CourseSelectionAutomationService:
             return None
 
     def _tick_catalog_archives(self) -> None:
-        auth = self.auth_provider()
-        if not auth or not getattr(auth, "is_logged_in", False):
+        auth = self.auth_recover_provider()
+        if not auth:
             return
         account = str(getattr(auth, "username", "") or "")
         now = datetime.now().astimezone()
@@ -1272,6 +1627,8 @@ class CourseSelectionAutomationService:
                         )
                         record = {
                             "group_id": group_id, "class_id": item["class_id"],
+                            "course_code": item.get("course_code") or "",
+                            "course_name": item.get("course_name") or "",
                             "code": mutation.get("code"), "message": mutation.get("message"),
                             "at": datetime.now().astimezone().isoformat(),
                         }
@@ -1401,22 +1758,121 @@ class CourseSelectionAutomationService:
             or weight_status.get("pending_drop")
             or weight_status.get("pending_add")
         )
+        market_refresh_pending = bool(weight_status.get("market_refresh_pending"))
+        market_snapshot_ready = False
+        if market_refresh_pending and not busy and self._catalog_thread is not None:
+            # The task scheduler remains responsive while the catalog worker
+            # is blocked in a network call, so it also acts as the watchdog
+            # that resets a scan whose progress timestamp stopped moving.
+            self._reset_stale_catalog_syncs()
+            with self._lock:
+                pending_archive = next((copy.deepcopy(item) for item in self._archives if (
+                    item.get("account") == task.get("account")
+                    and item.get("batch_code") == task.get("batch_code")
+                )), None)
+            sync_status = str((pending_archive or {}).get("sync_status") or "")
+            if sync_status in {"queued", "running", "pending"}:
+                task["status"] = "running"
+                current_scope = str((pending_archive or {}).get("sync_current_scope") or "")
+                current_page = int((pending_archive or {}).get("sync_current_page") or 0)
+                loaded = int((pending_archive or {}).get("sync_loaded") or 0)
+                total = int((pending_archive or {}).get("sync_total") or 0)
+                progress = f"，已读取 {loaded}/{total or '?'}"
+                location = f"（{current_scope} 第 {current_page} 页）" if current_scope else ""
+                task["message"] = f"正在刷新当前轮次全部真实课程类别的人数{location}{progress}，完成后生成策略"
+                self._persist_task(task)
+                return
+            if sync_status in {"failed", "paused"}:
+                reason = str((pending_archive or {}).get("sync_error") or "学校接口暂时不可用")
+                retry_at = str((pending_archive or {}).get("sync_retry_at") or "")
+                try:
+                    retry_seconds = max(0, round((
+                        datetime.fromisoformat(retry_at).astimezone()
+                        - datetime.now().astimezone()
+                    ).total_seconds()))
+                except ValueError:
+                    retry_seconds = 0
+                failure_key = f"{sync_status}:{reason}:{retry_at}"
+                if weight_status.get("market_last_failure") != failure_key:
+                    weight_status["market_last_failure"] = failure_key
+                    self._append_execution_event(
+                        task,
+                        f"完整市场读取失败，已自动重置并等待重试：{reason}",
+                        level="error", stage_code="full_market_refresh",
+                    )
+                task["status"] = "running"
+                task["message"] = (
+                    f"完整市场读取失败：{reason}；已静默重置，"
+                    f"约 {retry_seconds} 秒后自动重试"
+                )
+                self._persist_task(task)
+                return
+            latest_sync = str((pending_archive or {}).get("last_sync_at") or "")
+            previous_sync = str(weight_status.get("market_refresh_previous_sync") or "")
+            if sync_status == "complete" and latest_sync and latest_sync != previous_sync:
+                weight_status.pop("market_refresh_pending", None)
+                weight_status.pop("market_refresh_previous_sync", None)
+                weight_status["market_snapshot_at"] = latest_sync
+                weight_status.pop("market_last_failure", None)
+                market_snapshot_ready = True
+                self._append_execution_event(
+                    task,
+                    f"当前轮次市场快照已更新：{int((pending_archive or {}).get('sync_loaded') or 0)} 条教学班",
+                    stage_code="full_market_refresh",
+                )
+            else:
+                task["status"] = "running"
+                task["message"] = "等待当前轮次市场快照完成写入"
+                self._persist_task(task)
+                return
+        manual_check = bool(task.get("manual_check_requested_at"))
         last = task.get("last_attempt_at")
-        if last and not busy:
+        if last and not busy and not manual_check and not market_snapshot_ready:
             try:
                 if time.time() - datetime.fromisoformat(last).timestamp() < self._poll_interval(task):
                     return
             except ValueError:
                 pass
+        if not market_snapshot_ready:
+            manual_check = self._consume_manual_check(task)
+            attempted_at = datetime.now().astimezone().isoformat()
+            task["status"] = "running"
+            task["last_attempt_at"] = attempted_at
+            task["attempt_count"] = int(task.get("attempt_count") or 0) + 1
+            self._begin_execution(task, trigger="manual" if manual_check else "scheduled")
+            if self._catalog_thread is not None and not busy:
+                with self._lock:
+                    current_archive = next((copy.deepcopy(item) for item in self._archives if (
+                        item.get("account") == task.get("account")
+                        and item.get("batch_code") == task.get("batch_code")
+                    )), None)
+                if current_archive is not None:
+                    self._set_execution_stage(
+                        task, "full_market_refresh",
+                        "正在刷新当前轮次全部真实课程类别的人数",
+                    )
+                    weight_status["market_refresh_pending"] = True
+                    weight_status["market_refresh_previous_sync"] = str(
+                        current_archive.get("last_sync_at") or ""
+                    )
+                    self.schedule_catalog_sync(
+                        str(task.get("account") or ""),
+                        batch={**current_archive, "code": str(task.get("batch_code") or "")},
+                        force=True,
+                    )
+                    self._persist_task(task)
+                    return
         mutation_started = False
+        execution_failed = False
         try:
             with self.remote_guard():
+                self._set_execution_stage(task, "authentication", "正在检查 JWXK 业务会话")
                 auth = self._task_auth(task)
                 if auth is None:
-                    self._wait_for_auth(task, "正在恢复登录，恢复后继续实时策略投权")
-                    return
+                    raise NEULoginError("当前账号的 JWXK 认证客户端不可用")
                 client = self.client_builder(auth)
                 task["status"] = "running"
+                self._set_execution_stage(task, "selected_results", "正在读取官方已投结果和当前权重")
                 official = client.get_selected(batch_code=task["batch_code"])
                 volunteered = list(official.get("volunteered") or [])
                 confirmed = list(official.get("selected") or [])
@@ -1425,7 +1881,31 @@ class CourseSelectionAutomationService:
                     for item in (*volunteered, *confirmed)
                     if str(item.get("class_id") or "")
                 }
+                official_by_code = {
+                    str(item.get("course_code") or "").casefold(): item
+                    for item in (*volunteered, *confirmed)
+                    if str(item.get("course_code") or "")
+                }
+                course_states = task.setdefault("course_states", {})
+                official_checked_at = datetime.now().astimezone().isoformat()
+                for item in task.get("items") or []:
+                    class_id = str(item.get("class_id") or "")
+                    course_code = str(item.get("course_code") or "").casefold()
+                    row = official_by_class.get(class_id) or official_by_code.get(course_code)
+                    if row is None or not class_id:
+                        continue
+                    state = course_states.setdefault(class_id, {})
+                    state.update({
+                        "class_id": class_id,
+                        "course_code": item.get("course_code") or row.get("course_code") or "",
+                        "course_name": item.get("course_name") or row.get("course_name") or "",
+                        "devoted_weight": row.get("devoted_weight"),
+                        "selected": True,
+                        "selection_updated_at": official_checked_at,
+                    })
+                self._persist_task(task)
 
+                self._set_execution_stage(task, "reconcile", "正在核验上一次投权操作结果")
                 persisted_inflight = task.get("inflight_mutation")
                 if isinstance(persisted_inflight, dict) and not weight_status.get("inflight"):
                     class_id = str(persisted_inflight.get("class_id") or "")
@@ -1484,6 +1964,10 @@ class CourseSelectionAutomationService:
 
                 if weight_status.get("pending_drop"):
                     item = dict(weight_status["pending_drop"][0])
+                    self._set_execution_stage(
+                        task, "weight_drop",
+                        f"正在撤回“{item.get('course_name') or item.get('course_code')}”的旧权重",
+                    )
                     task["inflight_mutation"] = {
                         "action": "weight_drop", "class_id": item["class_id"],
                         "course_code": item.get("course_code") or "",
@@ -1497,6 +1981,8 @@ class CourseSelectionAutomationService:
                     )
                     task.setdefault("results", []).append({
                         "action": "weight_drop", "class_id": item["class_id"],
+                        "course_code": item.get("course_code") or "",
+                        "course_name": item.get("course_name") or "",
                         "code": result.get("code"), "message": result.get("message"),
                         "at": datetime.now().astimezone().isoformat(),
                     })
@@ -1513,6 +1999,10 @@ class CourseSelectionAutomationService:
 
                 if weight_status.get("pending_add"):
                     item = dict(weight_status["pending_add"][0])
+                    self._set_execution_stage(
+                        task, "weight_add",
+                        f"正在为“{item.get('course_name') or item.get('course_code')}”投放 {int(item['weight'])} 点权重",
+                    )
                     task["inflight_mutation"] = {
                         "action": "weight_add", "class_id": item["class_id"],
                         "course_code": item.get("course_code") or "",
@@ -1529,6 +2019,8 @@ class CourseSelectionAutomationService:
                     )
                     task.setdefault("results", []).append({
                         "action": "weight_add", "class_id": item["class_id"],
+                        "course_code": item.get("course_code") or "",
+                        "course_name": item.get("course_name") or "",
                         "weight": item["weight"], "code": result.get("code"),
                         "message": result.get("message"),
                         "at": datetime.now().astimezone().isoformat(),
@@ -1558,6 +2050,7 @@ class CourseSelectionAutomationService:
                     self._persist_task(task)
                     return
 
+                self._set_execution_stage(task, "market_refresh", "正在刷新方案组全部候选课程的已投注人数和容量")
                 live_by_class = self._refresh_task_course_states(client, task)
                 for row in (*volunteered, *confirmed):
                     class_id = str(row.get("class_id") or "")
@@ -1574,6 +2067,7 @@ class CourseSelectionAutomationService:
                     item for item in volunteered
                     if str(item.get("course_code") or "").casefold() in target_codes
                 ]
+                self._set_execution_stage(task, "weight_budget", "正在读取官方剩余权重")
                 budget_info = client.get_weight_budget(batch_code=task["batch_code"])
                 total_available = int(budget_info["remaining"]) + sum(
                     int(item.get("devoted_weight") or 0) for item in managed_current
@@ -1583,8 +2077,13 @@ class CourseSelectionAutomationService:
                     str(item.get("name") or "方案组"),
                     max(1, int(item.get("target_count") or 1)),
                 ) for item in task.get("groups") or []]
+                volunteered_codes = {
+                    str(item.get("course_code") or "").casefold() for item in volunteered
+                    if str(item.get("course_code") or "")
+                }
                 confirmed_codes = {
                     str(item.get("course_code") or "").casefold() for item in confirmed
+                    if str(item.get("course_code") or "").casefold() not in volunteered_codes
                 }
                 market = [WeightMarketCourse(
                     course_id=str(item.get("class_id") or ""),
@@ -1598,6 +2097,7 @@ class CourseSelectionAutomationService:
                     already_selected=str(item["course_key"]).casefold() in confirmed_codes,
                     time_unknown=bool(item["time_unknown"]),
                 ) for item in targets]
+                self._set_execution_stage(task, "optimization", "正在运行策略模型并生成本轮建议")
                 optimized = optimize_grouped_weights(
                     policy=WeightPolicy(
                         budget=total_available,
@@ -1650,7 +2150,10 @@ class CourseSelectionAutomationService:
                 now = datetime.now().astimezone().isoformat()
                 weight_status.update({
                     "last_calculated_at": now,
-                    "recommendation": pending_add or desired,
+                    # Keep the complete model target, including courses whose
+                    # current bid is already correct.  The UI must distinguish
+                    # “keep current weight” from “no recommendation yet”.
+                    "recommendation": desired,
                     "groups": optimized["groups"],
                     "warnings": optimized.get("warnings") or [],
                     "approximate": bool(optimized.get("approximate")),
@@ -1669,25 +2172,33 @@ class CourseSelectionAutomationService:
                     for item in optimized["groups"]
                 }
                 task["last_attempt_at"] = now
-                task["attempt_count"] = int(task.get("attempt_count") or 0) + 1
                 if pending_drop or pending_add:
                     task["message"] = f"已根据最新已投注人数重算，准备调整 {len(pending_drop)} 项旧权重并提交 {len(pending_add)} 项新权重"
                 else:
                     task["message"] = "已根据最新已投注人数重算，当前权重无需调整"
                 self._persist_task(task)
-        except NEULoginError:
+        except NEULoginError as error:
+            execution_failed = True
             if mutation_started:
                 self._set_state(task, "needs_review", "投权调整期间登录状态变化，结果不明确，请核验官方结果")
             else:
-                self._wait_for_auth(task, "正在恢复登录，恢复后继续实时策略投权")
+                stage = str((task.get("execution") or {}).get("stage") or "认证检查")
+                self._wait_for_auth(task, f"{stage}失败：JWXK 会话需要恢复；下轮将从选课系统 CAS 入口重试")
+            self._fail_execution(task, error)
         except (requests.RequestException, JwxkError, WeightOptimizationError, ValueError) as error:
+            execution_failed = True
             if mutation_started:
                 self._set_state(task, "needs_review", f"投权调整结果不明确，请核验官方结果：{error}")
             else:
+                stage = str((task.get("execution") or {}).get("stage") or "策略检查")
                 task["status"] = "waiting"
-                task["message"] = f"实时策略暂时无法更新，将自动重试：{error}"
+                task["message"] = f"{stage}失败，将按计划重试：{error}"
                 task["last_attempt_at"] = datetime.now().astimezone().isoformat()
                 self._persist_task(task)
+            self._fail_execution(task, error)
+        finally:
+            if not execution_failed:
+                self._finish_execution(task)
 
     def _tick_vacancy_swap(self, task: dict[str, Any]) -> None:
         if task.get("desired_state") != "running" or task.get("status") not in {"running", "waiting"}:
@@ -1802,6 +2313,8 @@ class CourseSelectionAutomationService:
                             )
                             task.setdefault("results", []).append({
                                 "group_id": group_id, "action": "drop", "class_id": drop["class_id"],
+                                "course_code": drop.get("course_code") or "",
+                                "course_name": drop.get("course_name") or "",
                                 "code": mutation.get("code"), "message": mutation.get("message"),
                                 "at": datetime.now().astimezone().isoformat(),
                             })
@@ -1843,6 +2356,8 @@ class CourseSelectionAutomationService:
                     )
                     task.setdefault("results", []).append({
                         "group_id": group_id, "action": "select", "class_id": target["class_id"],
+                        "course_code": target.get("course_code") or "",
+                        "course_name": target.get("course_name") or "",
                         "code": mutation.get("code"), "message": mutation.get("message"),
                         "at": datetime.now().astimezone().isoformat(),
                     })

@@ -361,6 +361,20 @@ def search_jwxk_catalog(
             raise HTTPException(status_code=401, detail="请先登录后再访问选课系统")
         account = str(getattr(primary, "username", "") or "")
         archive = automation.get_catalog_archive_view(account, request.batch_code)
+        if request.scope == "ALLKC":
+            # The global directory is intentionally live-only and never part
+            # of the durable real-round archive.  Report a cache miss so the
+            # local-first frontend immediately continues to JWXK instead of
+            # briefly accepting an empty archived page.
+            return JwxkCatalogSearchResponse.model_validate({
+                "total": 0,
+                "scope": "ALLKC",
+                "scope_options": _archive_scope_options(archive),
+                "groups": [],
+                "cache_hit": False,
+                "data_source": "local",
+                "sync_status": str((archive or {}).get("sync_status") or ""),
+            })
         archived = automation.query_catalog_archive(
             account,
             batch_code=request.batch_code,
@@ -412,7 +426,11 @@ def search_jwxk_catalog(
         filters=request.filters,
         time_slot=request.time_slot.model_dump() if request.time_slot else None,
     )
-    if archived and (
+    # ALLKC is an explicit live global-directory query and is deliberately
+    # excluded from the durable round archive.  Never replace its successful
+    # remote result with the real-round archive (which correctly has no
+    # ALLKC-only rows).
+    if request.scope != "ALLKC" and archived and (
         archived.get("catalog_complete")
         or archived.get("sync_status") == "complete"
         or not result.get("groups")
@@ -783,12 +801,14 @@ def action_jwxk_automation_task(
     request: JwxkAutomationTaskAction,
     auth: NEUAuthClient = Depends(require_cached_auth_identity),
 ):
-    if action not in {"start", "pause", "cancel"}:
+    if action not in {"start", "pause", "cancel", "check_now"}:
         raise HTTPException(status_code=404, detail="未知任务操作")
     try:
         return get_course_selection_automation_service().action(str(auth.username), request.task_id, action)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="自动抢课任务不存在") from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/jwxk/weights/budget")

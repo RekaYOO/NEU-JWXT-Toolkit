@@ -6,6 +6,7 @@ import { getJwxkCatalogArchives } from '../services/api';
 import TimetablePage from './TimetablePage';
 import {
   matchesCatalogAvailability, selectionParticipantCount, selectionParticipantLabel,
+  uniqueDisplayLabels,
 } from '../utils/jwxkSchedule';
 import './CourseSelectionPage.css';
 
@@ -134,7 +135,7 @@ export default function CourseSelectionArchivePage() {
     </div>
     <div className="jwxk-group-list">
       {visibleGroups.map(group => <Card key={group.group_id} className={`jwxk-course-group${expanded === group.group_id ? ' is-expanded' : ''}`} onClick={() => setExpanded(previous => previous === group.group_id ? '' : group.group_id)}>
-        <div className="jwxk-course-group__head"><div><Space wrap>{group.source_tags.map(tag => <Tag key={tag}>{courseScopeLabel(tag)}</Tag>)}</Space><Title level={4}>{group.course_name}</Title><Text type="secondary">{group.course_code || '课程代码待定'} · {group.credits || '-'} 学分 · {group.department || '开课单位待定'}</Text></div><Badge count={group.class_count} /></div>
+        <div className="jwxk-course-group__head"><div><Space wrap>{uniqueDisplayLabels(group.source_tags, courseScopeLabel).map(label => <Tag key={label}>{label}</Tag>)}</Space><Title level={4}>{group.course_name}</Title><Text type="secondary">{group.course_code || '课程代码待定'} · {group.credits || '-'} 学分 · {group.department || '开课单位待定'}</Text></div><Badge count={group.class_count} /></div>
         <div className="jwxk-course-group__stats"><span>{group.classes.filter(item => item.eligibility_status === 'selectable').length} 个确认可选</span><span>{group.classes.filter(item => selectionParticipantCount(item, archive.selection_type_code) != null && Number(item.capacity || 0) > selectionParticipantCount(item, archive.selection_type_code)).length} 个{archive.selection_type_code === '04' ? '当时未超容量' : '未报满'}</span><b>{expanded === group.group_id ? '收起教学班' : '查看教学班'}</b></div>
         {expanded === group.group_id && <div className="jwxk-inline-classes" onClick={event => event.stopPropagation()}>{group.classes.map(course => <article className={`jwxk-inline-class${preview?.class_id === course.class_id ? ' is-previewing' : ''}`} key={course.class_id}>
           <div className="jwxk-inline-class__summary"><strong>{course.teacher || '教师待定'}</strong><span>{course.official_schedule || '时间待定'}</span><small>{selectionParticipantLabel(course, archive.selection_type_code)} {selectionParticipantCount(course, archive.selection_type_code) ?? '-'} / 容量 {course.capacity ?? '-'}</small></div>

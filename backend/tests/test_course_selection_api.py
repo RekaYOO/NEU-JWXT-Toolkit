@@ -466,6 +466,41 @@ def test_catalog_search_uses_complete_archive_for_specific_scope_filters(monkeyp
     assert result.groups[0].classes[0].teaching_class_type == "TJKC"
 
 
+def test_allkc_live_search_is_never_replaced_by_real_round_archive(monkeypatch):
+    class Automation:
+        def merge_catalog_archive(self, *_args, **_kwargs):
+            return None
+
+        def schedule_catalog_sync(self, *_args, **_kwargs):
+            return None
+
+        def query_catalog_archive(self, *_args, **_kwargs):
+            return {"total": 0, "sync_status": "complete", "groups": []}
+
+    monkeypatch.setattr(course_selection, "get_course_selection_automation_service", lambda: Automation())
+    monkeypatch.setattr(course_selection, "_run_jwxk_read", lambda *_args: {
+        "_account": "student", "_batch": {"code": "BATCH-1"},
+        "total": 1, "scope": "ALLKC",
+        "scope_options": [{"code": "ALLKC", "name": "全校课程查询"}],
+        "groups": [{
+            "group_id": "GLOBAL-1", "course_code": "GLOBAL-1",
+            "course_name": "全校目录课程", "classes": [{
+                "group_id": "GLOBAL-1", "course_code": "GLOBAL-1",
+                "course_name": "全校目录课程", "class_id": "CLASS-1",
+                "teaching_class_type": "ALLKC",
+            }],
+        }],
+    })
+
+    result = course_selection.search_jwxk_catalog(
+        JwxkCatalogSearchRequest(batch_code="BATCH-1", scope="ALLKC"),
+        Response(), object(),
+    )
+
+    assert result.total == 1
+    assert result.groups[0].course_name == "全校目录课程"
+
+
 def test_catalog_local_search_returns_archive_without_remote_request(monkeypatch):
     class Automation:
         def get_catalog_archive_view(self, account, batch_code):
@@ -515,6 +550,37 @@ def test_catalog_local_search_returns_archive_without_remote_request(monkeypatch
     assert result.data_source == "local"
     assert result.groups[0].course_name == "本地课程"
     assert {item["code"] for item in result.scope_options} >= {"ALL", "ROUND", "TJKC", "ALLKC"}
+
+
+def test_allkc_local_first_probe_reports_cache_miss(monkeypatch):
+    class Automation:
+        def get_catalog_archive_view(self, *_args):
+            return {
+                "batch_code": "BATCH-1", "sync_status": "complete",
+                "courses": [{
+                    "course_code": "LOCAL", "course_name": "真实轮次课程",
+                    "class_id": "LOCAL-1", "teaching_class_type": "TJKC",
+                    "source_scopes": ["TJKC"],
+                }],
+            }
+
+        def query_catalog_archive(self, *_args, **_kwargs):
+            raise AssertionError("ALLKC must not query the real-round archive")
+
+    monkeypatch.setattr(course_selection, "get_course_selection_automation_service", lambda: Automation())
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: type(
+        "Auth", (), {"is_logged_in": True, "username": "student"}
+    )())
+
+    result = course_selection.search_jwxk_catalog(
+        JwxkCatalogSearchRequest(
+            batch_code="BATCH-1", scope="ALLKC", local_only=True,
+        ),
+        Response(), object(),
+    )
+
+    assert result.cache_hit is False
+    assert result.groups == []
 
 
 def test_catalog_filter_options_use_archive_without_remote_request(monkeypatch):

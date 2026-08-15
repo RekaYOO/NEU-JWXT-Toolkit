@@ -20,7 +20,7 @@ from backend.core.course_selection import (
     resolve_network_mode,
 )
 from backend.core.auth import NEUAuthClient
-from backend.core.auth.client import NEULoginError
+from backend.core.auth.client import NEULoginError, SERVICE_CONFIGS
 from backend.core.network import WebVPNUrlCodec
 from backend.app.routers import course_selection
 from backend.app.schemas.course_selection import JwxkSettingsUpdate
@@ -42,11 +42,14 @@ def _html(rows: str) -> str:
 
 
 def test_selected_results_degrade_when_one_round_specific_feed_is_unavailable():
+    retry_flags = []
+
     class Client(JwxkSessionClient):
         def _activate_batch(self, _batch_code):
             return {}
 
-        def _post_form(self, path, data=None):
+        def _post_form(self, path, data=None, **kwargs):
+            retry_flags.append(kwargs.get("retry_on_auth"))
             if path == "/xsxk/volunteer/xgxk/select":
                 raise NEULoginError("业务系统会话建立失败")
             if path == "/xsxk/elective/select":
@@ -58,6 +61,7 @@ def test_selected_results_degrade_when_one_round_specific_feed_is_unavailable():
     assert [item["class_id"] for item in result["selected"]] == ["CLASS-1"]
     assert result["volunteered"] == []
     assert result["withdrawal"] == []
+    assert retry_flags == [False, False, False, False]
 
 
 def test_selected_results_preserve_auth_failure_when_every_feed_is_unavailable():
@@ -65,11 +69,62 @@ def test_selected_results_preserve_auth_failure_when_every_feed_is_unavailable()
         def _activate_batch(self, _batch_code):
             return {}
 
-        def _post_form(self, path, data=None):
+        def _post_form(self, path, data=None, **kwargs):
+            assert kwargs.get("retry_on_auth") is False
             raise NEULoginError("业务系统会话建立失败")
 
     with pytest.raises(NEULoginError, match="业务系统会话建立失败"):
         Client(object()).get_selected(batch_code="BATCH-1")
+
+
+def test_catalog_recovery_reactivates_batch_before_retrying_course_page():
+    events = []
+
+    class Auth:
+        def ensure_service_session(self, *_args, **kwargs):
+            assert kwargs.get("force_refresh") is True
+            events.append("recover")
+
+    class Client(JwxkSessionClient):
+        def _request(self, _method, _path, **kwargs):
+            assert kwargs.get("retry_on_auth") is False
+            events.append("request")
+            if events.count("request") == 1:
+                raise NEULoginError("expired")
+            return type("Response", (), {
+                "json": lambda _self: {"code": 200, "data": {"total": 0, "rows": []}},
+            })()
+
+        def _activate_batch(self, batch_code):
+            assert batch_code == "BATCH-1"
+            events.append("activate")
+            return {}
+
+    result = Client(Auth())._search_courses_page(
+        batch_code="BATCH-1", teaching_class_type="TJKC",
+        page_number=1, page_size=20,
+    )
+
+    assert result == {"total": 0, "courses": []}
+    assert events == ["request", "recover", "activate", "request"]
+
+
+def test_service_auth_reason_keeps_official_semantics_but_redacts_identity():
+    response = type("Response", (), {
+        "headers": {"Content-Type": "application/json"},
+        "status_code": 200,
+        "json": lambda _self: {
+            "code": 403,
+            "msg": "用户 20241643 登录状态失效 token=abcdefghijklmnopqrstuvwxyz123456",
+        },
+    })()
+
+    reason = NEUAuthClient._service_auth_response_kind(response)
+
+    assert "code=403" in reason
+    assert "登录状态失效" in reason
+    assert "20241643" not in reason
+    assert "abcdefghijklmnopqrstuvwxyz123456" not in reason
 
 
 def test_public_batch_parser_distinguishes_weight_and_grab_windows():
@@ -204,6 +259,15 @@ def test_group_course_rows_merges_non_empty_metadata_and_category_aliases():
     assert groups[0]["general_elective_category_code"] == "01"
 
 
+def test_group_course_rows_uses_course_code_as_stable_identity():
+    groups = group_course_rows([
+        {"course_code": "C1", "course_name": "课程", "credits": "2", "department": "单位甲", "class_id": "A"},
+        {"course_code": "C1", "course_name": "课程", "credits": "", "department": "单位乙", "class_id": "B"},
+    ])
+    assert len(groups) == 1
+    assert {item["class_id"] for item in groups[0]["classes"]} == {"A", "B"}
+
+
 @pytest.mark.parametrize(
     "preference,primary,expected",
     [
@@ -314,7 +378,9 @@ def test_jwxk_service_uses_shared_session_and_does_not_change_primary_mode(monke
 def test_jwxk_service_maps_business_token_cookie_to_authorization_header(monkeypatch):
     client = NEUAuthClient(restore_session=False)
     client._logged_in = True
-    client.session.cookies.set("token", "opaque-token", domain="jwxk.neu.edu.cn", path="/xsxk/profile")
+    client.session.cookies.set("token", "stale-profile-token", domain="jwxk.neu.edu.cn", path="/xsxk/profile")
+    client.session.cookies.set("token", "opaque-token", domain="jwxk.neu.edu.cn", path="/xsxk")
+    client.session.cookies.set("token", "webvpn-token", domain="webvpn.neu.edu.cn", path="/")
     captured = {}
 
     def fake_request(method, url, **kwargs):
@@ -330,6 +396,109 @@ def test_jwxk_service_maps_business_token_cookie_to_authorization_header(monkeyp
     client.request_service("jwxk", "POST", "/xsxk/web/now", data={})
 
     assert captured["Authorization"] == "opaque-token"
+
+
+def test_jwxk_session_rebuild_does_not_accept_a_stale_token(monkeypatch):
+    client = NEUAuthClient(restore_session=False)
+    client._logged_in = True
+    client.session.cookies.set("token", "stale-token", domain="jwxk.neu.edu.cn", path="/xsxk")
+    calls = []
+
+    def fake_redirects(_method, _url, **_kwargs):
+        calls.append(True)
+        item = __import__("requests").Response()
+        item.status_code = 200
+        item.url = "https://jwxk.neu.edu.cn/xsxk/profile/index.html"
+        item._content = b"profile"
+        return item
+
+    monkeypatch.setattr(client, "_request_service_redirects", fake_redirects)
+    monkeypatch.setattr(client, "ensure_login", lambda: True)
+
+    with pytest.raises(NEULoginError, match="无法建立业务系统会话"):
+        client.ensure_service_session(
+            "jwxk", network_mode_override="direct", force_refresh=True,
+        )
+
+    assert len(calls) == 2
+    assert client.get_service_token(
+        "jwxk", network_mode="direct", request_path="/xsxk/web/now",
+    ) is None
+    assert client.is_logged_in is True
+
+
+def test_jwxk_direct_session_can_recover_when_primary_jwxt_route_is_unavailable(monkeypatch):
+    client = NEUAuthClient(
+        username="student", password="secret", restore_session=False,
+    )
+    client._logged_in = False
+    login_targets = []
+    captured = {}
+
+    monkeypatch.setattr(client, "ensure_login", lambda: False)
+
+    def fake_service_login(target):
+        login_targets.append(target)
+        client._logged_in = True
+        client.session.cookies.set(
+            "token", "fresh-service-token",
+            domain="jwxk.neu.edu.cn", path="/xsxk",
+        )
+        return True
+
+    def fake_redirects(_method, url, **kwargs):
+        captured.update(kwargs.get("headers") or {})
+        item = __import__("requests").Response()
+        item.status_code = 200
+        item.url = url
+        item._content = b'{"code":200,"data":[]}'
+        item.headers["Content-Type"] = "application/json"
+        return item
+
+    monkeypatch.setattr(client, "_do_login", fake_service_login)
+    monkeypatch.setattr(client, "_request_service_redirects", fake_redirects)
+
+    response = client.request_service(
+        "jwxk", "POST", "/xsxk/volunteer/select", data={},
+    )
+
+    assert response.json()["code"] == 200
+    assert login_targets == ["https://jwxk.neu.edu.cn/xsxk/auth/cas"]
+    assert captured["Authorization"] == "fresh-service-token"
+
+
+def test_jwxk_json_api_html_response_recovers_service_session_once(monkeypatch):
+    client = NEUAuthClient(restore_session=False)
+    client._logged_in = True
+    calls = []
+    recovered = []
+
+    def fake_redirects(method, url, **_kwargs):
+        calls.append((method, url))
+        item = __import__("requests").Response()
+        item.status_code = 200
+        item.url = url
+        if len(calls) == 1:
+            item._content = b"<!doctype html><html><body>login</body></html>"
+            item.headers["Content-Type"] = "text/html; charset=utf-8"
+        else:
+            item._content = b'{"code":200,"data":[]}'
+            item.headers["Content-Type"] = "application/json"
+        return item
+
+    monkeypatch.setattr(client, "_request_service_redirects", fake_redirects)
+    monkeypatch.setattr(
+        client, "ensure_service_session",
+        lambda *_args, **_kwargs: recovered.append(True) or True,
+    )
+
+    response = client.request_service(
+        "jwxk", "POST", "/xsxk/volunteer/select", data={},
+    )
+
+    assert response.json()["code"] == 200
+    assert len(calls) == 2
+    assert recovered == [True]
 
 
 def test_jwxk_webvpn_override_routes_only_service_request(monkeypatch):
@@ -380,8 +549,114 @@ def test_jwxk_webvpn_cas_callback_also_targets_webvpn(monkeypatch):
     assert client.ensure_service_session("jwxk", network_mode_override="webvpn") is True
     assert len(calls) == 1
     assert "webvpn.neu.edu.cn" in calls[0]
-    assert __import__("requests").utils.quote(expected_callback, safe="") in calls[0]
+    assert calls[0] == expected_callback
     assert client.active_mode == "direct"
+
+
+def test_jwxk_cas_http_pass_redirect_is_upgraded_before_request(monkeypatch):
+    client = NEUAuthClient(restore_session=False)
+    calls = []
+
+    def response(url, status=200, location=""):
+        item = __import__("requests").Response()
+        item.status_code = status
+        item.url = url
+        item._content = b"ok"
+        if location:
+            item.headers["Location"] = location
+        return item
+
+    results = iter([
+        response(
+            "https://jwxk.neu.edu.cn/xsxk/auth/cas", 302,
+            "http://pass.neu.edu.cn/tpass/login?service=jwxk",
+        ),
+        response(
+            "https://pass.neu.edu.cn/tpass/login?service=jwxk", 302,
+            "https://jwxk.neu.edu.cn/xsxk/auth/cas?ticket=opaque",
+        ),
+        response(
+            "https://jwxk.neu.edu.cn/xsxk/auth/cas?ticket=opaque", 302,
+            "/xsxk/profile/index.html",
+        ),
+        response("https://jwxk.neu.edu.cn/xsxk/profile/index.html"),
+    ])
+
+    def fake_request(_method, url, **_kwargs):
+        calls.append(url)
+        return next(results)
+
+    monkeypatch.setattr(client.session, "request", fake_request)
+    result = client._request_service_redirects(
+        "GET", "https://jwxk.neu.edu.cn/xsxk/auth/cas",
+        service_config=SERVICE_CONFIGS["jwxk"], network_mode="direct",
+    )
+
+    assert result.url == "https://jwxk.neu.edu.cn/xsxk/profile/index.html"
+    assert calls[1].startswith("https://pass.neu.edu.cn/tpass/login?")
+    assert all(not url.startswith("http://") for url in calls)
+
+
+def test_jwxk_business_401_does_not_invalidate_a_working_session(monkeypatch):
+    client = NEUAuthClient(restore_session=False)
+    client._logged_in = True
+    client.session.cookies.set(
+        "token", "working-token", domain="jwxk.neu.edu.cn", path="/xsxk",
+    )
+    recoveries = []
+
+    def fake_request(_method, url, **_kwargs):
+        item = __import__("requests").Response()
+        item.status_code = 200
+        item.url = url
+        item._content = b'{"code":401,"msg":"round feed is unavailable","data":null}'
+        item.headers["Content-Type"] = "application/json"
+        return item
+
+    monkeypatch.setattr(client.session, "request", fake_request)
+    monkeypatch.setattr(
+        client, "ensure_service_session",
+        lambda *_args, **_kwargs: recoveries.append(True) or True,
+    )
+
+    response = client.request_service(
+        "jwxk", "POST", "/xsxk/volunteer/xgxk/select", data={},
+    )
+
+    assert response.json()["code"] == 401
+    assert recoveries == []
+    assert client.is_logged_in is True
+
+
+def test_jwxk_token_remains_usable_when_primary_login_flag_is_false(monkeypatch):
+    client = NEUAuthClient(restore_session=False)
+    client._logged_in = False
+    client.session.cookies.set(
+        "token", "working-token", domain="jwxk.neu.edu.cn", path="/xsxk",
+    )
+    captured = {}
+
+    def fake_request(_method, url, **kwargs):
+        captured.update(kwargs.get("headers") or {})
+        item = __import__("requests").Response()
+        item.status_code = 200
+        item.url = url
+        item._content = b'{"code":200,"data":[]}'
+        item.headers["Content-Type"] = "application/json"
+        return item
+
+    monkeypatch.setattr(client.session, "request", fake_request)
+    monkeypatch.setattr(
+        client, "ensure_login",
+        lambda: (_ for _ in ()).throw(AssertionError("primary login must not be probed")),
+    )
+
+    response = client.request_service(
+        "jwxk", "POST", "/xsxk/volunteer/select", data={},
+    )
+
+    assert response.json()["code"] == 200
+    assert captured["Authorization"] == "working-token"
 
 
 def test_account_batches_use_official_time_and_keep_account_eligibility():

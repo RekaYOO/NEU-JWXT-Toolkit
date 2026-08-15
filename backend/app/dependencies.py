@@ -118,13 +118,23 @@ def _jwxk_automation_client(client: NEUAuthClient) -> JwxkSessionClient:
     return JwxkSessionClient(client, network_mode=effective)
 
 
+def _jwxk_automation_auth() -> Optional[NEUAuthClient]:
+    # A live JWXK task should not probe JWXT before every read.  Reuse the
+    # process-wide authenticated client and let request_service repair only
+    # the JWXK child session when its bearer token expires.
+    client = _auth_sessions.peek_client()
+    if client is not None:
+        return client
+    return _get_auth_client_unlocked()
+
+
 _course_selection_automation = CourseSelectionAutomationService(
     _storage.config.data_dir,
     auth_provider=lambda: _auth_sessions.peek_client(),
     # Called only while the automation service holds remote_session_guard.
     # It reuses the same AuthSessionManager and the normal cookie/password
     # recovery chain; no second account or cookie store is created.
-    auth_recover_provider=lambda: _get_auth_client_unlocked(),
+    auth_recover_provider=_jwxk_automation_auth,
     client_builder=_jwxk_automation_client,
     remote_guard=remote_session_guard,
 )

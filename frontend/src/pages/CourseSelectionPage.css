@@ -214,6 +214,7 @@
 .jwxk-course-group__main { min-width: 0; flex: 1; }
 .jwxk-course-group__title-row { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: 18px; margin: 6px 0 2px; }
 .jwxk-course-group__title-row h4 { min-width: 180px; margin: 0; }
+.jwxk-course-group.has-all-conflicts .jwxk-course-group__title-row h4 { color: var(--color-danger); }
 .jwxk-course-group__facts { display: flex; min-width: 0; align-items: baseline; justify-content: flex-end; gap: 8px 18px; color: var(--color-muted); font-size: 12px; }
 .jwxk-course-group__facts span { display: inline-flex; gap: 5px; white-space: nowrap; }
 .jwxk-course-group__facts b { max-width: 180px; overflow: hidden; color: var(--color-ink); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -266,6 +267,13 @@
 .jwxk-detail-loading { display: flex; min-height: 150px; align-items: center; justify-content: center; gap: 10px; color: var(--color-muted); }
 .jwxk-task-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .jwxk-task-head h5 { margin: 0; }
+.jwxk-task-head > div:first-child { min-width: 0; flex: 1; }
+.jwxk-task-live-log { display: grid; gap: 5px; margin-top: 4px; }
+.jwxk-task-live-log > small { color: var(--color-primary); font-variant-numeric: tabular-nums; }
+.jwxk-task-live-log__events { display: grid; gap: 2px; max-width: 780px; padding: 7px 9px; border-radius: var(--radius-md); background: var(--color-surface-soft); }
+.jwxk-task-live-log__events span { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 7px; color: var(--color-muted); font-size: 12px; line-height: 1.45; }
+.jwxk-task-live-log__events span.is-error { color: var(--color-danger); }
+.jwxk-task-live-log__events time { font-variant-numeric: tabular-nums; opacity: .8; }
 .jwxk-task-card.is-live { border-color: color-mix(in srgb, var(--color-primary) 38%, var(--color-border)); }
 .jwxk-start-strategy-attention {
   animation: jwxk-start-strategy-attention .72s ease-in-out 4;
@@ -320,6 +328,8 @@
 }
 
 @media (max-width: 620px) {
+  .jwxk-task-head { align-items: flex-start; }
+  .jwxk-task-live-log__events span { grid-template-columns: 62px minmax(0, 1fr); }
   .jwxk-workspace-header { grid-template-columns: auto 1fr auto; gap: 8px; }
   .jwxk-workspace-header .ant-btn span:not(.anticon) { display: none; }
   .jwxk-workspace > .ant-segmented .ant-segmented-item-label { padding-inline: 7px; font-size: 12px; }

@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from typing import Any, Literal, TYPE_CHECKING
 from urllib.parse import quote
 
@@ -775,8 +776,10 @@ def normalize_saved_plan_items(rows: Any) -> list[dict[str, Any]]:
 
 
 def _course_group_id(course: dict[str, Any]) -> str:
-    identity = "|".join((
-        _text(course.get("course_code")).casefold(),
+    # Course code is the stable official identity.  Display metadata can vary
+    # between JWXK menu responses and must not split one course into two cards.
+    code = _text(course.get("course_code")).casefold()
+    identity = code or "|".join((
         _text(course.get("course_name")).casefold(),
         _text(course.get("credits")),
         _text(course.get("department")).casefold(),
@@ -906,8 +909,12 @@ class JwxkSessionClient:
             **kwargs,
         )
 
-    def _post_form(self, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        return _payload(self._request("POST", path, data=data or {}))
+    def _post_form(
+        self, path: str, data: dict[str, Any] | None = None, **request_options,
+    ) -> dict[str, Any]:
+        return _payload(self._request(
+            "POST", path, data=data or {}, **request_options,
+        ))
 
     def _check_one_course_eligibility(
         self, *, batch_code: str, class_id: str, secret_val: str = ""
@@ -943,7 +950,10 @@ class JwxkSessionClient:
     def get_context(self) -> dict[str, Any]:
         self.auth.ensure_service_session("jwxk", network_mode_override=self.network_mode)
         now = self._post_form("/xsxk/web/now").get("data") or {}
-        token = self.auth.get_service_token("jwxk")
+        token = self.auth.get_service_token(
+            "jwxk", network_mode=self.network_mode,
+            request_path="/xsxk/web/studentInfo",
+        )
         student_payload = self._post_form(
             "/xsxk/web/studentInfo", {"token": token or ""}
         )
@@ -1387,6 +1397,7 @@ class JwxkSessionClient:
             if _text(row.get("code") or row.get("batchCode") or row.get("id")) == batch_code
         ), {})
         result = self._search_courses_page(
+            batch_code=batch_code,
             teaching_class_type=teaching_class_type, page_number=page_number,
             page_size=page_size, keyword=keyword, campus=campus,
             order_by=order_by, filters=filters,
@@ -1397,7 +1408,7 @@ class JwxkSessionClient:
         return result
 
     def _search_courses_page(
-        self, *, teaching_class_type: str, page_number: int, page_size: int,
+        self, *, batch_code: str, teaching_class_type: str, page_number: int, page_size: int,
         keyword: str = "", campus: str = "", order_by: str = "",
         filters: dict[str, str] | None = None,
     ) -> dict[str, Any]:
@@ -1417,9 +1428,38 @@ class JwxkSessionClient:
         for key, value in (filters or {}).items():
             if key in _FILTER_FIELDS and value:
                 body[key] = value
-        payload = _payload(self._request(
-            "POST", "/xsxk/elective/clazz/list", json=body
-        ))
+        def request_page() -> dict[str, Any]:
+            return _payload(self._request(
+                "POST", "/xsxk/elective/clazz/list", json=body,
+                # A fresh JWXK token loses the active batch context.  The
+                # generic low-level retry cannot safely replay this request
+                # until /elective/user activates the batch again.
+                retry_on_auth=False,
+            ))
+
+        request_started = time.monotonic()
+        try:
+            payload = request_page()
+        except NEULoginError as first_error:
+            logger.warning(
+                "jwxk catalog page rejected scope=%s page=%s keyword=%s duration_ms=%s reason=%s; rebuilding child session and reactivating batch",
+                teaching_class_type, page_number, bool(keyword),
+                round((time.monotonic() - request_started) * 1000), first_error,
+            )
+            self.auth.ensure_service_session(
+                "jwxk", network_mode_override=self.network_mode, force_refresh=True,
+            )
+            self._activate_batch(batch_code)
+            retry_started = time.monotonic()
+            try:
+                payload = request_page()
+            except NEULoginError as final_error:
+                logger.error(
+                    "jwxk catalog page still rejected after session recovery scope=%s page=%s keyword=%s duration_ms=%s reason=%s",
+                    teaching_class_type, page_number, bool(keyword),
+                    round((time.monotonic() - retry_started) * 1000), final_error,
+                )
+                raise
         data = payload.get("data") or {}
         return {
             "total": _number(data.get("total")) or 0,
@@ -1439,7 +1479,15 @@ class JwxkSessionClient:
         failures: list[tuple[str, Exception]] = []
         for name, path in feeds:
             try:
-                rows_by_feed[name] = self._post_form(path).get("data") or []
+                # _activate_batch above is the reliable authentication probe.
+                # Some result feeds that do not apply to this round return the
+                # same JSON 401/login wording as a truly expired token.  Do
+                # not rebuild the JWXK session for an optional feed: doing so
+                # replaces a working token and clears the active batch context
+                # halfway through one selected-result read.
+                rows_by_feed[name] = self._post_form(
+                    path, retry_on_auth=False,
+                ).get("data") or []
             except (NEULoginError, JwxkError) as error:
                 # JWXK exposes several result feeds for different round/menu
                 # types.  A non-applicable feed can answer with the same
@@ -1536,6 +1584,7 @@ class JwxkSessionClient:
             )
             if not requires_full_scan:
                 result = self._search_courses_page(
+                    batch_code=batch_code,
                     teaching_class_type=teaching_class_type, page_number=page_number,
                     page_size=page_size, keyword=keyword, campus=campus,
                     order_by=order_by, filters=remote_filters,
@@ -1546,6 +1595,7 @@ class JwxkSessionClient:
             remote_total = 0
             while remote_page <= 60:
                 result = self._search_courses_page(
+                    batch_code=batch_code,
                     teaching_class_type=teaching_class_type, page_number=remote_page,
                     page_size=50, keyword=keyword, campus=campus,
                     order_by=order_by, filters=remote_filters,
@@ -1639,6 +1689,7 @@ class JwxkSessionClient:
             }
         else:
             primary = self._search_courses_page(
+                batch_code=batch_code,
                 teaching_class_type=effective_scope, page_number=page_number,
                 page_size=page_size, keyword=keyword, campus=campus,
                 order_by=order_by, filters=remote_filters,
@@ -1689,6 +1740,7 @@ class JwxkSessionClient:
         # every catalog page the user loads instead of blocking initial rendering
         # while scanning the entire official directory.
         courses = self._search_courses_page(
+            batch_code=batch_code,
             teaching_class_type=scope, page_number=1, page_size=50,
         )["courses"]
 

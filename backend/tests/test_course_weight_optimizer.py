@@ -84,3 +84,19 @@ def test_unknown_time_is_warned_but_not_treated_as_safe_conflict_data():
         candidates=[WeightCandidate("A", "A", 30, 35, 10, ("g",), time_unknown=True)],
     )
     assert any("时间信息待核验" in warning for warning in result["warnings"])
+
+
+def test_live_candidate_market_value_replaces_older_round_snapshot():
+    result = optimize_grouped_weights(
+        policy=WeightPolicy(budget=10, min_bid=5),
+        grade_size=100,
+        market_courses=[
+            WeightMarketCourse("A", 30, 90),
+            WeightMarketCourse("BACKGROUND", 30, 10),
+        ],
+        groups=[WeightGroupTarget("g", "目标", 1)],
+        candidates=[WeightCandidate("A", "A", 30, 20, 10, ("g",))],
+    )
+
+    assert result["diagnostics"]["total_current_bidders"] == 30
+    assert result["courses"][0]["forecast_participants"]["neutral"] < 90

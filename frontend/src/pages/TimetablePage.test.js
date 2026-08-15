@@ -127,6 +127,35 @@ describe('TimetablePage helpers', () => {
     ]);
   });
 
+  test('pending weight overlay replaces the same baseline course so it remains blue', () => {
+    const personal = [{
+      id: 'personal-1', course_code: 'A100', course_name: '物流与供应链管理',
+      weekday: 1, start_section: 1, end_section: 2,
+    }];
+    const overlays = [{
+      id: 'pending-1', course_code: 'A100', course_name: '物流与供应链管理',
+      weekday: 1, start_section: 1, end_section: 2, layer: 'pending',
+    }];
+
+    expect(mergeScheduleWithSelectionOverlays(personal, overlays).map(item => item.id)).toEqual([
+      'pending-1',
+    ]);
+  });
+
+  test('candidate preview replaces the same baseline course instead of duplicating it', () => {
+    const personal = [{
+      id: 'personal-1', course_code: 'A100', course_name: '物流与供应链管理',
+      weekday: 1, start_section: 1, end_section: 2,
+    }];
+    const overlays = [{
+      id: 'candidate-1', course_code: 'A100', course_name: '物流与供应链管理',
+      weekday: 1, start_section: 1, end_section: 2, layer: 'candidate',
+    }];
+    expect(mergeScheduleWithSelectionOverlays(personal, overlays).map(item => item.id)).toEqual([
+      'candidate-1',
+    ]);
+  });
+
   test('does not mark duplicate representations of the same course as a conflict', () => {
     const grouped = groupDayCourses([{
       id: 'personal-1', course_code: 'A100', course_name: '物流与供应链管理',

@@ -126,6 +126,27 @@ URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控�
 多个并发请求按恢复范围共用同一次恢复，原请求最多重试一次。用户主动调用退出接口后
 不会执行这一恢复流程。
 
+JWXK 的 `token` Cookie 会同时映射到业务请求的 `Authorization` 头。映射时必须按当前
+服务线路和实际 API 路径选择 Cookie：直连请求只使用 `jwxk.neu.edu.cn` 的 token，WebVPN
+请求只使用代理域的 token；`/xsxk/profile` 等旧路径 Cookie 不能覆盖适用于
+`/xsxk/elective`、`/xsxk/volunteer` 的 `/xsxk` token。只读请求确认 token 被拒绝后，恢复
+流程会先删除当前线路的旧 token，再执行 CAS 回调并确认确实取得新 token，不能仅凭“最终回到
+JWXK 页面”或 Cookie Jar 中仍存在同名旧值就判定成功。JWXK 子会话失效不会把全局 JWXT
+登录标记改成失效；自动任务也不会为了每轮 JWXK 检查先探测一次 JWXT。若 JWXT 当前线路不可达
+但 JWXK 直连可用，保存了凭据时允许在同一 Session 内直接针对 JWXK CAS 服务恢复身份。
+WebVPN 静默恢复需要短信时仍停止自动恢复并交给用户完成，不会在后台擅自发送验证码。
+
+JWXK 恢复固定从其服务入口 `/xsxk/auth/cas` 发起，再由该入口跳转到 `pass.neu.edu.cn` 并回到
+JWXK；不能只从通用教务登录状态推断选课系统是否可用。JWXK 的部分不适用结果源也会返回业务
+`401`，只有响应明确包含登录、认证或 token 失效语义，或者实际返回登录 HTML/认证跳转时，才按
+子会话失效处理。即使 JWXT 的全局登录标记暂时不可用，只要当前账号的 JWXK token 仍有效，后台
+自动任务仍可继续读取；token 被服务端拒绝后才进入上述服务级恢复。
+
+截至 2026 年 8 月 15 日，JWXK 的 HTTPS 服务入口实际会返回指向
+`http://pass.neu.edu.cn/tpass/login` 的绝对重定向。客户端只对“官方统一认证域名 + 精确
+`/tpass/login` 路径 + 标准 HTTP 端口”这一种情况在发送下一跳前强制升级为 HTTPS；不会真的通过
+明文 HTTP 发送 Cookie 或 CAS ticket，也不会因此放宽其他不受信任跳转。
+
 `session.json` 未加密，应仅保存在受信任的本地用户目录中，且绝不可分享或提交。勾选“记住密码”还会启用本地自动登录配置；公共设备不建议勾选。
 
 `POST /api/logout` 会取消未完成的二维码/短信流程、清除内存 Cookie、删除持久化会话，并可按 `clear_data` 清理本地业务数据。

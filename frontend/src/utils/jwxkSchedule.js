@@ -1,5 +1,10 @@
 const normalizedName = value => String(value || '').replace(/\s+/g, '').toLocaleLowerCase();
 
+export const uniqueDisplayLabels = (values = [], formatter = value => value) => {
+  const labels = (values || []).map(formatter).filter(Boolean);
+  return [...new Set(labels)];
+};
+
 const normalizedTaxonomy = value => normalizedName(value)
   .replace(/课程/g, '')
   .replace(/课$/g, '')
@@ -29,10 +34,12 @@ export const catalogGroupLiveStats = (
   group = {}, conflictMap = {}, selectionTypeCode = '',
 ) => {
   const classes = group.classes || [];
+  const isConflicting = course => (
+    Boolean(course.conflict) || conflictMap[course.class_id]?.status === 'conflict'
+  );
   return {
-    conflict_free_count: classes.filter(course => (
-      !course.conflict && conflictMap[course.class_id]?.status !== 'conflict'
-    )).length,
+    conflict_free_count: classes.filter(course => !isConflicting(course)).length,
+    all_classes_conflict: classes.length > 0 && classes.every(isConflicting),
     available_count: classes.filter(course => {
       const participants = selectionParticipantCount(course, selectionTypeCode);
       return course.capacity != null
@@ -191,11 +198,56 @@ export const sortCatalogGroupsBySelectability = groups => [...(groups || [])]
     || Number(isTaskRecommendedGroup(right)) - Number(isTaskRecommendedGroup(left))
   ));
 
+const catalogCourseIdentity = group => {
+  const code = String(group?.course_code || '').trim().toLocaleLowerCase();
+  if (code) return `code:${code}`;
+  const fallback = `${normalizedName(group?.course_name)}|${String(group?.credits || '').trim()}|${String(group?.department || '').trim().toLocaleLowerCase()}`;
+  return fallback !== '||' ? `name:${fallback}` : `group:${String(group?.group_id || '').trim().toLocaleLowerCase()}`;
+};
+
+const mergeCatalogGroupsByCourse = groups => {
+  const merged = [];
+  const byIdentity = new Map();
+  (groups || []).forEach(group => {
+    const identity = catalogCourseIdentity(group);
+    const previous = byIdentity.get(identity);
+    if (!previous) {
+      const copy = { ...group, classes: [...(group.classes || [])] };
+      byIdentity.set(identity, copy);
+      merged.push(copy);
+      return;
+    }
+    const classMap = new Map((previous.classes || []).map(course => [catalogClassKey(course), course]));
+    (group.classes || []).forEach(course => {
+      const key = catalogClassKey(course);
+      if (!key || !classMap.has(key)) {
+        previous.classes.push(course);
+        if (key) classMap.set(key, course);
+        return;
+      }
+      const existing = classMap.get(key);
+      const replacement = { ...existing, ...course };
+      classMap.set(key, replacement);
+      const index = previous.classes.indexOf(existing);
+      if (index >= 0) previous.classes[index] = replacement;
+    });
+    for (const key of ['source_tags', 'source_scopes', 'course_categories', 'campuses']) {
+      const values = [...(previous[key] || []), ...(group[key] || [])].filter(Boolean);
+      if (values.length) previous[key] = [...new Set(values)];
+    }
+    for (const key of ['course_name', 'course_code', 'credits', 'hours', 'department', 'course_nature', 'course_category', 'normalized_course_category', 'general_elective_category', 'general_elective_category_code', 'exam_type', 'exam_type_code', 'score_scale', 'score_scale_code']) {
+      if (!previous[key] && group[key]) previous[key] = group[key];
+    }
+    previous.class_count = previous.classes.length;
+  });
+  return merged;
+};
+
 export const catalogGroupsForDisplay = (groups = [], {
   availability = 'all',
   weekday = 'all',
 } = {}) => {
-  return sortCatalogGroupsBySelectability((groups || []).map(group => {
+  return sortCatalogGroupsBySelectability(mergeCatalogGroupsByCourse((groups || []).map(group => {
     const classes = (group.classes || []).filter(course => {
       if (!matchesCatalogAvailability(course, availability)) return false;
       if (weekday !== 'all' && !(course.schedules || []).some(item => String(item.weekday) === String(weekday))) {
@@ -204,13 +256,14 @@ export const catalogGroupsForDisplay = (groups = [], {
       return true;
     });
     return { ...group, classes, class_count: classes.length };
-  }).filter(group => group.classes.length));
+  }).filter(group => group.classes.length)));
 };
 
-const catalogGroupKey = group => String(group?.group_id || group?.course_code || group?.course_name || '');
+const catalogGroupKey = group => String(group?.course_code || group?.group_id || group?.course_name || '')
+  .trim().toLocaleLowerCase();
 const catalogClassKey = course => String(course?.class_id || course?.teaching_class_id || '');
 
-export const createCatalogDisplayLayout = groups => (groups || []).map(group => ({
+export const createCatalogDisplayLayout = groups => mergeCatalogGroupsByCourse(groups).map(group => ({
   group_id: catalogGroupKey(group),
   class_ids: (group.classes || []).map(catalogClassKey).filter(Boolean),
 })).filter(item => item.group_id);
@@ -240,7 +293,7 @@ export const extendCatalogDisplayLayout = (layout = [], groups = []) => {
 };
 
 export const applyCatalogDisplayLayout = (groups = [], layout = []) => {
-  const groupMap = new Map((groups || []).map(group => [catalogGroupKey(group), group]));
+  const groupMap = new Map(mergeCatalogGroupsByCourse(groups).map(group => [catalogGroupKey(group), group]));
   return (layout || []).map(entry => {
     const group = groupMap.get(entry.group_id);
     if (!group) return null;

@@ -460,7 +460,7 @@ class JwxkAutomationTaskRequest(JwxkSavedPlanRequest):
     task_type: Literal["selection", "vacancy_swap", "weight_strategy"] = "selection"
     swap_groups: list[JwxkVacancySwapGroup] = Field(default_factory=list, max_length=20)
     grade_size: int | None = Field(default=None, ge=1, le=100_000)
-    rebalance_seconds: int = Field(default=30, ge=15, le=300)
+    rebalance_seconds: int = Field(default=60, ge=60, le=600)
     start_at: str = ""
     end_at: str = ""
     # One second is reserved for the short opening burst.  Normal vacancy

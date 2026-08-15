@@ -42,6 +42,7 @@ import {
   selectionParticipantLabel,
   summarizeSelectionConflictsByClass,
   toggleCatalogPreviewCourse,
+  uniqueDisplayLabels,
   upsertSelectionRecord,
 } from '../utils/jwxkSchedule';
 import {
@@ -50,6 +51,7 @@ import {
   overlayExternalSelectedCourses,
 } from '../utils/academicReport';
 import { useCachedResource } from '../resources/ResourceStore';
+import CourseOutlineDrawer from '../components/CourseOutlineDrawer';
 import './CourseSelectionPage.css';
 
 const { Paragraph, Text, Title } = Typography;
@@ -99,6 +101,13 @@ const planItem = (group, course, scope, planGroup, priority) => ({
   schedules: course.schedules || [],
 });
 
+const scheduleOverlayMeta = layer => ({
+  preview: { label: '正在预览', tag: '正在预览', color: '#2563eb' },
+  candidate: { label: '待选方案', tag: '待选方案', color: '#2563eb' },
+  pending: { label: '已投权待结果', tag: '已投权', color: '#2563eb' },
+  selected: { label: '已选课程', tag: '已选', color: '#16a34a' },
+}[layer] || { label: '待选课程', tag: '待选', color: '#2563eb' });
+
 const scheduleOverlayForCourse = (item, layer, idPrefix) => (item.schedules || []).map((meeting, index) => ({
   ...meeting,
   id: `${idPrefix}-${item.class_id}-${index}`,
@@ -116,10 +125,10 @@ const scheduleOverlayForCourse = (item, layer, idPrefix) => (item.schedules || [
   campus: meeting.campus_name || item.campus_name || meeting.campus || item.campus || '',
   teachers: item.teacher ? [item.teacher] : [],
   classes: item.class_number ? [item.class_number] : [],
-  course_type: layer === 'preview' ? '正在预览' : layer === 'selected' ? '已选课程' : '待选方案',
-  tags: [layer === 'preview' ? '正在预览' : layer === 'selected' ? '已选' : '待选方案'],
+  course_type: scheduleOverlayMeta(layer).label,
+  tags: [scheduleOverlayMeta(layer).tag],
   title_details: [meeting.raw_text, item.official_schedule].filter(Boolean),
-  color: layer === 'preview' ? '#2563eb' : layer === 'selected' ? '#16a34a' : '#d97706',
+  color: scheduleOverlayMeta(layer).color,
   layer,
 }));
 
@@ -298,6 +307,7 @@ const CourseSelectionWorkspacePage = () => {
   const [vacancySwapTarget, setVacancySwapTarget] = useState(null);
   const [vacancyDropIds, setVacancyDropIds] = useState([]);
   const [activePlanGapId, setActivePlanGapId] = useState('');
+  const [outlineCourse, setOutlineCourse] = useState(null);
   const remoteAvailability = catalogAvailabilityRequestMode(availability);
   const academicPlanProjection = useMemo(() => overlayExternalSelectedCourses(
     academicReportResource.data?.categories || [],
@@ -690,6 +700,7 @@ const CourseSelectionWorkspacePage = () => {
         : previous.map(item => item.task_id === task.task_id ? { ...item, ...updated } : item));
       if (action === 'start') message.success('任务已启动，页面将实时显示后台执行进度');
       if (action === 'pause') message.success('任务已暂停');
+      if (action === 'check_now') message.success('已请求立即检查；如果当前一轮仍在执行，会在结束后立即再检查并按策略行动');
       await loadTasks({ silent: true });
     } catch (error) {
       message.error(error.message || '更新自动任务失败');
@@ -739,6 +750,7 @@ const CourseSelectionWorkspacePage = () => {
     setVacancySwapTarget(null);
     setVacancyDropIds([]);
     setActivePlanGapId('');
+    setOutlineCourse(null);
     setWeightPlan(null);
     setWeightSetupOpen(false);
     setGradeSizeDraft(null);
@@ -1301,7 +1313,7 @@ const CourseSelectionWorkspacePage = () => {
         start_at: batch?.begin_time || '',
         end_at: batch?.end_time || '',
         poll_seconds: 30,
-        rebalance_seconds: 30,
+        rebalance_seconds: 60,
         grade_size: Number(gradeSizeDraft),
         groups: planGroupConfigs,
         items: plan.map(item => ({ ...item, utility: Number(item.utility || 5) })),
@@ -1390,9 +1402,13 @@ const CourseSelectionWorkspacePage = () => {
 
   const planScheduleOverlay = useMemo(
     () => plan
-      .filter(item => !selected.some(selectedCourse => sameSelectionCourse(selectedCourse, item)))
+      .filter(item => !selected.some(selectedCourse => (
+        isCurrentBatchSelectionRecord(selectedCourse, batch?.selection_type_code)
+        && selectedCourse.selection_record_type === 'selected'
+        && sameSelectionCourse(selectedCourse, item)
+      )))
       .flatMap(item => scheduleOverlayForCourse(item, 'candidate', 'jwxk-plan')),
-    [plan, selected],
+    [batch?.selection_type_code, plan, selected],
   );
   const previewScheduleOverlay = useMemo(() => (
     catalogPreviewClasses
@@ -1401,9 +1417,20 @@ const CourseSelectionWorkspacePage = () => {
   ), [catalogPreviewClasses, plan]);
   const selectedScheduleOverlay = useMemo(() => (
     (schedule?.courses || [])
-      .filter(item => !personalCourses.some(personal => sameSelectionCourse(personal, item)))
-      .flatMap(item => scheduleOverlayForCourse(item, 'selected', 'jwxk-selected'))
-  ), [personalCourses, schedule]);
+      .filter(item => (
+        !(item.selection_record_type === 'volunteered'
+          && plan.some(planItem => sameSelectionCourse(planItem, item)))
+        && (
+          item.selection_record_type === 'volunteered'
+          || !personalCourses.some(personal => sameSelectionCourse(personal, item))
+        )
+      ))
+      .flatMap(item => scheduleOverlayForCourse(
+        item,
+        item.selection_record_type === 'volunteered' ? 'pending' : 'selected',
+        'jwxk-selected',
+      ))
+  ), [personalCourses, plan, schedule]);
   const candidateScheduleOverlay = useMemo(
     () => [...planScheduleOverlay, ...previewScheduleOverlay],
     [planScheduleOverlay, previewScheduleOverlay],
@@ -1729,6 +1756,7 @@ const CourseSelectionWorkspacePage = () => {
               const expanded = expandedGroupId === group.group_id;
               const liveStats = catalogGroupLiveStatsMap.get(group.group_id) || {
                 conflict_free_count: 0,
+                all_classes_conflict: false,
                 available_count: 0,
               };
               return (
@@ -1738,7 +1766,7 @@ const CourseSelectionWorkspacePage = () => {
                     if (node) courseCardRefs.current.set(group.group_id, node);
                     else courseCardRefs.current.delete(group.group_id);
                   }}
-                  className={`jwxk-course-group${expanded ? ' is-expanded' : ''}${focusedGroupId === group.group_id ? ' is-focused' : ''}`}
+                  className={`jwxk-course-group${expanded ? ' is-expanded' : ''}${focusedGroupId === group.group_id ? ' is-focused' : ''}${liveStats.all_classes_conflict ? ' has-all-conflicts' : ''}`}
                   role="button"
                   tabIndex={0}
                   aria-expanded={expanded}
@@ -1753,7 +1781,9 @@ const CourseSelectionWorkspacePage = () => {
                   <div className="jwxk-course-group__head">
                     <div className="jwxk-course-group__main">
                       <Space wrap>
-                        {group.source_tags.map(tag => <Tag color={courseScopeLabel(tag) === '培养方案内课' ? 'blue' : 'default'} key={tag}>{courseScopeLabel(tag)}</Tag>)}
+                        {uniqueDisplayLabels(group.source_tags, courseScopeLabel).map(label => (
+                          <Tag color={label === '培养方案内课' ? 'blue' : 'default'} key={label}>{label}</Tag>
+                        ))}
                         {(group.normalized_course_category || group.course_category) && <Tag color="geekblue">类别 · {group.normalized_course_category || group.course_category}</Tag>}
                         {group.course_nature && <Tag>性质 · {group.course_nature}</Tag>}
                       </Space>
@@ -1824,6 +1854,15 @@ const CourseSelectionWorkspacePage = () => {
                             </Space>
                             <Space wrap className="jwxk-inline-class__actions">
                               <Button size="small" onClick={() => showCatalogDetail(group, course)}>查看详情</Button>
+                              <Button
+                                size="small"
+                                icon={<BookOutlined />}
+                                disabled={!group.course_code && !course.course_code}
+                                onClick={() => setOutlineCourse({
+                                  course_code: group.course_code || course.course_code,
+                                  course_name: group.course_name || course.course_name,
+                                })}
+                              >查看大纲</Button>
                               <Button
                                 size="small"
                                 disabled={inPlan}
@@ -1946,12 +1985,28 @@ const CourseSelectionWorkspacePage = () => {
     const isWeight = task.task_type === 'weight_strategy';
     const entries = isSwap ? Object.entries(task.swap_results || {}) : Object.entries(task.group_results || {});
     const recommendationByClass = new Map((task.weight_status?.recommendation || []).map(item => [String(item.class_id), item]));
+    const pendingDropClassIds = new Set((task.weight_status?.pending_drop || []).map(item => String(item.class_id || '')));
+    const historyCourseByClass = new Map([
+      ...(task.items || []),
+      ...(task.swap_groups || []).flatMap(group => [group.target, ...(group.drop_courses || [])]),
+    ].filter(Boolean).map(item => [String(item.class_id || ''), item]));
+    const historyCourseLabel = result => {
+      const course = historyCourseByClass.get(String(result.class_id || '')) || {};
+      const name = result.course_name || course.course_name || '';
+      const code = result.course_code || course.course_code || '';
+      return [name, code].filter(Boolean).join('-') || result.class_id || '课程信息待确认';
+    };
     const nextAttemptSeconds = task.next_attempt_at
       ? Math.max(0, Math.ceil((new Date(task.next_attempt_at).getTime() - Date.now()) / 1000))
       : null;
     const active = ['running', 'waiting'].includes(task.status);
+    const execution = task.execution || {};
+    const executionElapsedSeconds = execution.state === 'running' && execution.check_started_at
+      ? Math.max(0, Math.round((Date.now() - new Date(execution.check_started_at).getTime()) / 1000))
+      : execution.last_duration_ms != null ? Math.round(Number(execution.last_duration_ms) / 100) / 10 : null;
+    const executionEvents = [...(execution.events || [])].slice(-5).reverse();
       return <Card key={task.task_id} className={active ? 'jwxk-task-card is-live' : 'jwxk-task-card'}>
-        <div className="jwxk-task-head"><div><Title level={5}>{task.name}</Title><Text type="secondary">{task.message}</Text></div><Tag color={active ? 'processing' : task.status === 'success' ? 'success' : task.status === 'needs_review' ? 'warning' : 'default'}>{task.status === 'running' ? '运行中' : task.status === 'waiting' ? '等待并自动重试' : task.status === 'success' ? '已完成' : task.status === 'needs_review' ? '待人工核验' : task.status === 'paused' ? '已暂停' : '草稿'}</Tag></div>
+        <div className="jwxk-task-head"><div><Title level={5}>{task.name}</Title><div className="jwxk-task-live-log"><Text type={execution.state === 'error' ? 'danger' : 'secondary'}>{task.message}</Text>{execution.state === 'running' && <small>当前阶段已执行 {executionElapsedSeconds ?? 0} 秒</small>}{executionEvents.length > 0 && <div className="jwxk-task-live-log__events">{executionEvents.map((event, index) => <span className={event.level === 'error' ? 'is-error' : ''} key={`${event.at || index}:${event.stage_code || ''}`}><time>{event.at ? new Date(event.at).toLocaleTimeString('zh-CN', { hour12: false }) : '--:--:--'}</time>{event.message}</span>)}</div>}</div></div><Tag color={active ? 'processing' : task.status === 'success' ? 'success' : task.status === 'needs_review' ? 'warning' : 'default'}>{task.status === 'running' ? '运行中' : task.status === 'waiting' ? '等待并自动重试' : task.status === 'success' ? '已完成' : task.status === 'needs_review' ? '待人工核验' : task.status === 'paused' ? '已暂停' : '草稿'}</Tag></div>
         <div className="jwxk-task-runtime">
           <span><b>{task.attempt_count || 0}</b><small>检查次数</small></span>
           <span><b>{task.poll_interval_seconds || task.poll_seconds || 15}s</b><small>学校端轮询</small></span>
@@ -1975,19 +2030,28 @@ const CourseSelectionWorkspacePage = () => {
           const participantLabel = selectionParticipantLabel(merged, isWeight ? '04' : '02');
           const currentWeight = state.devoted_weight ?? recommendation.devoted_weight ?? item.devoted_weight;
           const recommendedWeight = recommendation.weight;
+          const recommendationText = pendingDropClassIds.has(String(item.class_id || ''))
+            ? '建议撤回'
+            : recommendedWeight != null
+            ? `${recommendedWeight} 点`
+            : execution.state === 'running'
+              ? '计算中'
+              : currentWeight != null && task.weight_status?.last_calculated_at
+                ? `保持 ${currentWeight} 点`
+                : task.weight_status?.last_calculated_at ? '未纳入本轮建议' : '待计算';
           return <div key={item.class_id} className="jwxk-task-course-row">
             <span><b>{item.course_name || item.course_code}</b><small>{item.teacher || '教师待定'} · {item.class_id}</small></span>
             <span><b>{participantCount ?? '-'}/{merged.capacity ?? '-'}</b><small>{participantLabel} / 容量</small></span>
             {isWeight && <span><b>{currentWeight ?? '未投'}{currentWeight != null ? ' 点' : ''}</b><small>当前投权</small></span>}
-            {isWeight && <span><b>{recommendedWeight ?? '-' }{recommendedWeight != null ? ' 点' : ''}</b><small>策略建议</small></span>}
+            {isWeight && <span><b>{recommendationText}</b><small>策略建议</small></span>}
             <Tag color={merged.full ? 'warning' : 'success'}>{merged.full ? '已满/超容量' : '持续监测'}</Tag>
           </div>;
         })}</div>
       </section>;
     })}</div>
         {isWeight && <Text type="secondary">最近计算 {formatTaskTimestamp(task.weight_status?.last_calculated_at)} · 最近调整 {task.weight_status?.last_adjusted_at ? formatTaskTimestamp(task.weight_status.last_adjusted_at) : '暂无'}</Text>}
-        {(task.results || []).length > 0 && <div className="jwxk-task-history"><Text strong>最近操作</Text>{[...(task.results || [])].slice(-5).reverse().map((result, index) => <div key={`${result.at || index}:${result.class_id || ''}`}><span>{result.action === 'weight_drop' ? '撤回权重' : result.action === 'weight_add' ? `投放 ${result.weight || ''} 点权重` : '提交选课'} · {result.class_id}</span><small>{result.message || `官方代码 ${result.code || '-'}`} · {formatTaskTimestamp(result.at)}</small></div>)}</div>}
-        <Space wrap><Button type={isWeight && attentionTaskId === task.task_id ? 'primary' : 'default'} className={isWeight && attentionTaskId === task.task_id ? 'jwxk-start-strategy-attention' : ''} icon={<PlayCircleOutlined />} loading={taskActionLoading === `${task.task_id}:start`} disabled={active || task.status === 'success'} onClick={() => runTaskAction(task, 'start')}>{isWeight ? '启动实时策略' : isSwap ? '开始追踪空位' : '同时启动全部方案组'}</Button><Button icon={<PauseCircleOutlined />} loading={taskActionLoading === `${task.task_id}:pause`} disabled={!active} onClick={() => runTaskAction(task, 'pause')}>暂停</Button><Button danger loading={taskActionLoading === `${task.task_id}:cancel`} onClick={() => Modal.confirm({ title: '取消并删除这个任务？', content: '任务会立即停止，并从任务列表中移除。', okText: '取消任务', okButtonProps: { danger: true }, onOk: () => runTaskAction(task, 'cancel') })}>取消任务</Button></Space>
+        {(task.results || []).length > 0 && <div className="jwxk-task-history"><Text strong>最近操作</Text>{[...(task.results || [])].slice(-5).reverse().map((result, index) => <div key={`${result.at || index}:${result.class_id || ''}`}><span>{result.action === 'weight_drop' ? '撤回权重' : result.action === 'weight_add' ? `投放 ${result.weight || ''} 点权重` : result.action === 'drop' ? '自动退选' : '提交选课'} · {historyCourseLabel(result)}</span><small>{result.message || `官方代码 ${result.code || '-'}`} · {formatTaskTimestamp(result.at)}</small></div>)}</div>}
+        <Space wrap><Button type={isWeight && attentionTaskId === task.task_id ? 'primary' : 'default'} className={isWeight && attentionTaskId === task.task_id ? 'jwxk-start-strategy-attention' : ''} icon={<PlayCircleOutlined />} loading={taskActionLoading === `${task.task_id}:start`} disabled={active || task.status === 'success'} onClick={() => runTaskAction(task, 'start')}>{isWeight ? '启动实时策略' : isSwap ? '开始追踪空位' : '同时启动全部方案组'}</Button>{isWeight && <Button type="primary" ghost icon={<ReloadOutlined />} loading={taskActionLoading === `${task.task_id}:check_now`} disabled={!active || task.status === 'success'} onClick={() => runTaskAction(task, 'check_now')}>立即检查并执行策略</Button>}<Button icon={<PauseCircleOutlined />} loading={taskActionLoading === `${task.task_id}:pause`} disabled={!active} onClick={() => runTaskAction(task, 'pause')}>暂停</Button><Button danger loading={taskActionLoading === `${task.task_id}:cancel`} onClick={() => Modal.confirm({ title: '取消并删除这个任务？', content: '任务会立即停止，并从任务列表中移除。', okText: '取消任务', okButtonProps: { danger: true }, onOk: () => runTaskAction(task, 'cancel') })}>取消任务</Button></Space>
       </Card>;
   })}{!tasks.length && <Empty description="尚未创建自动抢课或空位追踪任务" />}</div>;
 
@@ -2074,6 +2138,11 @@ const CourseSelectionWorkspacePage = () => {
       <div className="jwxk-group-form"><Alert type="info" showIcon message="年级人数用于估计全市场最终投权热度" description="配置按当前账号和学期保存。实时策略任务在服务进程运行期间每 30 秒静默读取最新已投注人数，推荐发生变化时才调整投权。" /><label><span>年级人数</span><InputNumber min={1} max={100000} value={gradeSizeDraft} onChange={setGradeSizeDraft} placeholder="请输入本年级学生人数" /></label><Text type="secondary">每门课程的 1–10 分意愿值可在方案组列表中修改；教学班优先级仍只决定同一课程的班级选择顺序。</Text></div>
     </Modal>
     <Modal title="策略投权建议" open={!!weightPlan} onCancel={() => setWeightPlan(null)} onOk={applyWeights} okText="确认并逐项提交" width={760}>{weightPlan && <><Alert type="info" showIcon message={`官方剩余权重 ${weightPlan.budget}，推荐使用 ${weightPlan.used}`} description={`最低投放 ${weightPlan.minimum}，步长 ${weightPlan.step}。概率为未校准的模型代理值，不代表真实录取概率。${weightPlan.approximate ? ' 当前为限时搜索得到的最佳可行解。' : ''}`} />{(weightPlan.warnings || []).map(value => <Alert key={value} type="warning" showIcon message={value} />)}<div className="jwxk-weight-groups">{(weightPlan.groups || []).map(group => <Tag key={group.group_id} color={group.satisfied ? 'success' : 'warning'}>{group.name} {group.selected_count}/{group.target_count}</Tag>)}</div>{(weightPlan.courses || []).map(item => <div className="jwxk-weight-row" key={item.class_id || item.course_id}><span><b>{item.course_name || item.name}</b><small>{item.teacher || '教师待定'} · 意愿 {item.utility} · {item.classification}</small><small>{item.current_participant_label || '已投注人数'} {item.current_participant_count ?? item.weight_participant_count ?? '-'} / 容量 {item.current_capacity ?? item.capacity ?? '-'}</small><small>保守 {(Number(item.scenario_success_rates?.conservative || 0) * 100).toFixed(1)}% · 中性 {(Number(item.scenario_success_rates?.neutral || 0) * 100).toFixed(1)}% · 激进 {(Number(item.scenario_success_rates?.aggressive || 0) * 100).toFixed(1)}%</small></span>{item.weight > 0 && !item.already_selected ? <InputNumber min={weightPlan.minimum} step={weightPlan.step} max={weightPlan.budget} value={item.weight} onChange={value => setWeightPlan(previous => { const items = previous.items.map(row => row.class_id === item.class_id ? { ...row, weight: value || previous.minimum } : row); return { ...previous, items, used: items.reduce((sum, row) => sum + Number(row.weight || 0), 0) }; })} /> : <Tag>{item.already_selected ? '已在投权结果中' : '本次不投'}</Tag>}</div>)}</>}</Modal>
+    <CourseOutlineDrawer
+      open={Boolean(outlineCourse)}
+      course={outlineCourse}
+      onClose={() => setOutlineCourse(null)}
+    />
   </main>;
 };
 

@@ -3,7 +3,9 @@ import threading
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from backend.core.course_selection import CourseSelectionAutomationService
+import pytest
+
+from backend.core.course_selection import CourseSelectionAutomationService, JwxkError
 
 
 def _service(tmp_path):
@@ -39,6 +41,25 @@ def test_automation_tasks_are_filtered_by_batch(tmp_path):
 
     assert [item["task_id"] for item in service.list("student", "batch-1")] == [first["task_id"]]
     assert len(service.list("student")) == 2
+
+
+def test_weight_task_immediate_check_is_queued_and_uses_longer_schedule(tmp_path):
+    service = _service(tmp_path)
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "实时策略", "task_type": "weight_strategy",
+        "grade_size": 100, "rebalance_seconds": 30,
+        "groups": [], "items": [],
+    })
+    service.action("student", task["task_id"], "start")
+
+    queued = service.action("student", task["task_id"], "check_now")
+    snapshot = service.list("student", "batch")[0]
+
+    assert queued["manual_check_requested_at"]
+    assert snapshot["next_attempt_at"] is not None
+    assert snapshot["poll_interval_seconds"] == 600
+    assert service._consume_manual_check(service._tasks[0]) is True
 
 
 def test_catalog_sync_does_not_block_live_task_scheduler(tmp_path):
@@ -129,6 +150,89 @@ def test_task_course_refresh_prefers_archived_real_scope_and_records_live_counts
     assert task["course_states"]["class-1"]["market_participant_count"] == 12
 
 
+def test_weight_strategy_reuses_just_completed_market_snapshot_without_duplicate_queries(tmp_path):
+    class Client:
+        def search_courses(self, **_kwargs):
+            raise AssertionError("fresh complete market snapshot must be reused")
+
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "selection_type_code": "04"},
+        scope="TJKC",
+        groups=[{"group_id": "A", "classes": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC", "capacity": 50,
+            "weight_participant_count": 27, "market_participant_count": 27,
+        }]}],
+    )
+    snapshot_at = datetime.now().astimezone().isoformat()
+    with service._lock:
+        service._archives[0].update({
+            "sync_status": "complete", "last_sync_at": snapshot_at,
+        })
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "实时策略", "task_type": "weight_strategy", "grade_size": 100,
+        "groups": [{"group_id": "g", "name": "目标", "target_count": 1}],
+        "items": [{
+            "plan_group_id": "g", "class_id": "class-1",
+            "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC",
+        }],
+    })
+    task.setdefault("weight_status", {})["market_snapshot_at"] = snapshot_at
+
+    live = service._refresh_task_course_states(Client(), task)
+
+    assert live["class-1"]["weight_participant_count"] == 27
+    assert any(
+        "复用刚完成的完整市场快照" in item["message"]
+        for item in task["execution"]["events"]
+    )
+
+
+def test_task_course_refresh_ignores_fuzzy_rows_and_requires_exact_class(tmp_path):
+    class Client:
+        def search_courses(self, **_kwargs):
+            return {"courses": [
+                {"class_id": "wrong", "course_code": "A-OTHER", "weight_participant_count": 99},
+                {"class_id": "class-1", "course_code": "A", "weight_participant_count": 12},
+            ]}
+
+    service = _service(tmp_path)
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "实时任务",
+        "items": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC",
+        }],
+    })
+
+    live = service._refresh_task_course_states(Client(), task)
+
+    assert set(live) == {"class-1"}
+    assert any("返回 2 条，精确命中 1/1" in item["message"] for item in task["execution"]["events"])
+
+
+def test_task_course_refresh_stops_when_exact_class_is_missing(tmp_path):
+    class Client:
+        def search_courses(self, **_kwargs):
+            return {"courses": [{"class_id": "wrong", "course_code": "A"}]}
+
+    service = _service(tmp_path)
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "实时任务",
+        "items": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC",
+        }],
+    })
+
+    with pytest.raises(JwxkError, match="未找到方案中的教学班"):
+        service._refresh_task_course_states(Client(), task)
+
+
 def test_cancelled_automation_task_is_removed_immediately(tmp_path):
     service = _service(tmp_path)
     task = service.create("student", {
@@ -215,6 +319,19 @@ def test_login_recovery_provider_continues_read_phase_without_pausing(tmp_path):
 
     assert task["status"] == "running"
     assert task["attempt_count"] == 1
+
+
+def test_jwxk_task_does_not_reject_same_account_when_primary_flag_is_false(tmp_path):
+    auth = SimpleNamespace(is_logged_in=False, username="student", password="")
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: auth,
+        auth_recover_provider=lambda: auth,
+        client_builder=lambda _auth: None,
+    )
+
+    assert service._task_auth({"account": "student"}) is auth
+    assert service._task_auth({"account": "another-student"}) is None
 
 
 def test_inflight_write_after_restart_is_reconciled_not_replayed(tmp_path):
@@ -344,12 +461,83 @@ def test_complete_catalog_is_requeued_only_after_dynamic_refresh_interval(tmp_pa
 
     with service._lock:
         service._archives[0]["last_sync_at"] = (
-            datetime.now().astimezone() - timedelta(minutes=3)
+            datetime.now().astimezone() - timedelta(minutes=9)
+        ).isoformat()
+    service.schedule_catalog_sync("student", batch={"code": "batch", "name": "轮次"})
+    assert service.list_catalog_archives("student")[0]["sync_status"] == "complete"
+
+    with service._lock:
+        service._archives[0]["last_sync_at"] = (
+            datetime.now().astimezone() - timedelta(minutes=11)
         ).isoformat()
     service.schedule_catalog_sync("student", batch={"code": "batch", "name": "轮次"})
     refreshed = service.list_catalog_archives("student")[0]
     assert refreshed["sync_status"] == "queued"
     assert refreshed["catalog_complete"] is True
+
+
+def test_forced_catalog_sync_queues_a_fresh_market_snapshot_immediately(tmp_path):
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student", batch={"code": "batch", "name": "轮次"}, scope="TJKC", groups=[],
+    )
+    with service._lock:
+        archive = service._archives[0]
+        archive["sync_status"] = "complete"
+        archive["catalog_complete"] = True
+        archive["last_sync_at"] = datetime.now().astimezone().isoformat()
+
+    service.schedule_catalog_sync(
+        "student", batch={"code": "batch", "name": "轮次"}, force=True,
+    )
+
+    assert service.list_catalog_archives("student")[0]["sync_status"] == "queued"
+
+
+def test_failed_catalog_sync_is_silently_requeued_with_clean_progress(tmp_path):
+    auth = SimpleNamespace(username="student", is_logged_in=False)
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        auth_recover_provider=lambda: auth,
+        client_builder=lambda _auth: None,
+    )
+    service.merge_catalog_archive(
+        "student", batch={"code": "batch", "name": "轮次"}, scope="TJKC", groups=[],
+    )
+    with service._lock:
+        archive = service._archives[0]
+        archive.update({
+            "sync_status": "failed", "sync_loaded": 204, "sync_total": 204,
+            "sync_retry_at": (datetime.now().astimezone() - timedelta(seconds=1)).isoformat(),
+        })
+
+    service._requeue_failed_catalog_syncs()
+
+    refreshed = service.list_catalog_archives("student")[0]
+    assert refreshed["sync_status"] == "queued"
+    assert refreshed["sync_loaded"] == 0
+    assert refreshed["sync_total"] == 0
+
+
+def test_catalog_watchdog_resets_a_scan_without_progress(tmp_path):
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student", batch={"code": "batch", "name": "轮次"}, scope="TJKC", groups=[],
+    )
+    with service._lock:
+        archive = service._archives[0]
+        archive.update({
+            "sync_status": "running",
+            "updated_at": (datetime.now().astimezone() - timedelta(minutes=3)).isoformat(),
+        })
+
+    service._reset_stale_catalog_syncs()
+
+    refreshed = service.list_catalog_archives("student")[0]
+    assert refreshed["sync_status"] == "failed"
+    assert "自动重置" in refreshed["sync_error"]
+    assert refreshed["sync_retry_at"]
 
 
 def test_union_catalog_archive_merges_sources_filters_and_paginates(tmp_path):
@@ -509,7 +697,10 @@ def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tm
             self.dropped = []
 
         def get_selected(self, **_kwargs):
-            return {"selected": [], "volunteered": list(self.volunteered)}
+            # Some JWXK rounds expose the same pending weighted course in both
+            # result feeds.  It must remain a managed recommendation instead
+            # of being mistaken for an already-finalized course.
+            return {"selected": list(self.volunteered), "volunteered": list(self.volunteered)}
 
         def search_courses(self, *, keyword, **_kwargs):
             rows = {
@@ -556,13 +747,50 @@ def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tm
     service._tick(task)
 
     assert task["weight_status"]["last_calculated_at"]
+    assert {item["class_id"] for item in task["weight_status"]["recommendation"]} == {"class-a", "class-b"}
     assert task["weight_status"]["pending_drop"][0]["class_id"] == "class-a"
     assert task["weight_status"]["pending_add"]
+    assert task["execution"]["last_duration_ms"] is not None
+    assert any(event["stage_code"] == "optimization" for event in task["execution"]["events"])
     assert client.dropped == []
 
     service._tick(task)
     assert client.dropped == ["class-a"]
     assert task["weight_status"]["inflight"]["action"] == "drop"
+
+
+def test_weight_strategy_refreshes_official_weight_before_waiting_for_catalog(tmp_path):
+    class FakeClient:
+        def get_selected(self, **_kwargs):
+            return {
+                "selected": [],
+                "volunteered": [{
+                    "class_id": "class-a", "course_code": "A",
+                    "course_name": "课程A", "devoted_weight": 42,
+                }],
+            }
+
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: FakeClient(),
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "实时投权",
+        "task_type": "weight_strategy", "grade_size": 100, "rebalance_seconds": 30,
+        "groups": [{"group_id": "g", "name": "选修", "target_count": 1}],
+        "items": [{
+            "plan_group_id": "g", "course_code": "A", "course_name": "课程A",
+            "class_id": "class-a", "teaching_class_type": "TJKC",
+        }],
+    })
+    task.update({"status": "running", "desired_state": "running", "last_attempt_at": None})
+
+    service._tick(task)
+
+    assert task["attempt_count"] == 1
+    assert task["course_states"]["class-a"]["devoted_weight"] == 42
+    assert task["status"] == "waiting"
+    assert task["message"] == "等待完整轮次课程数据同步后计算投权策略"
 
 
 def test_group_quota_skips_full_candidates_and_keeps_filling_other_groups(tmp_path):

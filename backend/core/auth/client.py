@@ -73,6 +73,18 @@ SERVICE_CONFIGS = {
         "token_cookie": "token",
         "token_header": "Authorization",
         "auth_response_codes": ("401", "402", "403"),
+        # JWXK also uses 401-like business codes for feeds or course scopes
+        # that do not apply to the active round.  Only messages that actually
+        # describe identity/token expiry may trigger CAS recovery.
+        "auth_response_message_markers": (
+            "登录", "认证", "未授权", "授权失效", "会话", "token", "令牌",
+        ),
+        "json_prefixes": (
+            "/xsxk/elective/",
+            "/xsxk/volunteer/",
+            "/xsxk/web/now",
+            "/xsxk/web/studentInfo",
+        ),
     },
 }
 
@@ -1168,35 +1180,113 @@ class NEUAuthClient:
         if not any(normalized_path.startswith(prefix) for prefix in config["allowed_prefixes"]):
             raise ValueError("service path is not allowed")
         network_mode = self._service_network_mode(config, network_mode_override)
-        if not self._logged_in and not self.ensure_login():
-            raise NEULoginError("未登录或登录已过期")
+        usable_service_token = bool(
+            config.get("token_cookie")
+            and self.get_service_token(
+                service,
+                network_mode=network_mode,
+                request_path=normalized_path,
+            )
+        )
+        if not self._logged_in and not usable_service_token:
+            recovered = self.ensure_login()
+            if (
+                not recovered
+                and network_mode == "direct"
+                and self.username and self.password
+            ):
+                recovered = self._login_direct_service(config)
+            if not recovered:
+                raise NEULoginError("未登录或登录已过期")
         if "timeout" not in kwargs:
             kwargs["timeout"] = self.timeout
         if "verify" not in kwargs:
             kwargs["verify"] = self.verify_ssl
         url = self._service_route_url(urljoin(config["origin"], path), network_mode)
-        request_options = self._service_request_options(service, config, kwargs)
+        request_options = self._service_request_options(
+            service, config, kwargs,
+            network_mode=network_mode, request_path=normalized_path,
+        )
         response = self._request_service_redirects(
             method, url, service_config=config, network_mode=network_mode, **request_options
         )
-        if self._is_service_auth_required(response, config, network_mode) and retry_on_auth:
+        if self._is_service_auth_required(
+            response, config, network_mode, request_path=normalized_path,
+        ) and retry_on_auth:
+            first_rejection = self._service_auth_response_kind(response)
+            logger.warning(
+                "service session rejected service=%s path=%s response=%s; rebuilding child session",
+                service, normalized_path, first_rejection,
+            )
             self._close_response_safely(response)
             self.ensure_service_session(
-                service, network_mode_override=network_mode_override
+                service, network_mode_override=network_mode_override,
+                force_refresh=True,
             )
-            request_options = self._service_request_options(service, config, kwargs)
+            request_options = self._service_request_options(
+                service, config, kwargs,
+                network_mode=network_mode, request_path=normalized_path,
+            )
             response = self._request_service_redirects(
                 method, url, service_config=config, network_mode=network_mode, **request_options
             )
-        if self._is_service_auth_required(response, config, network_mode):
+        if self._is_service_auth_required(
+            response, config, network_mode, request_path=normalized_path,
+        ):
+            final_rejection = self._service_auth_response_kind(response)
             self._close_response_safely(response)
-            raise NEULoginError("业务系统会话建立失败")
+            raise NEULoginError(
+                f"业务系统接口 {normalized_path} 拒绝当前会话（{final_rejection}）"
+            )
         if not self._is_service_destination(response.url, config, network_mode):
             self._close_response_safely(response)
             raise NEULoginError("业务系统返回了不受信任的跳转地址")
         return response
 
-    def get_service_token(self, service: str) -> Optional[str]:
+    @staticmethod
+    def _service_auth_response_kind(response: requests.Response) -> str:
+        """Return a non-sensitive reason label for an auth-shaped response."""
+        content_type = str(response.headers.get("Content-Type", "")).casefold()
+        if "json" in content_type:
+            try:
+                payload = response.json()
+                code = str(payload.get("code") or response.status_code or "unknown")
+                raw_message = str(payload.get("msg") or payload.get("message") or "").strip()
+                safe_message = re.sub(r"https?://\S+", "[链接已隐藏]", raw_message)
+                safe_message = re.sub(
+                    r"(?i)\b(token|ticket|cookie|authorization)\b\s*[:=：]\s*\S+",
+                    r"\1=[已隐藏]", safe_message,
+                )
+                safe_message = re.sub(r"\b\d{6,}\b", "[编号已隐藏]", safe_message)
+                safe_message = re.sub(
+                    r"[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]{20,}){1,2}",
+                    "[令牌已隐藏]", safe_message,
+                )
+                safe_message = safe_message[:120]
+                return (
+                    f"JSON 业务响应 code={code}，提示={safe_message}"
+                    if safe_message else f"JSON 业务响应 code={code}，无提示文本"
+                )
+            except (AttributeError, TypeError, ValueError):
+                return f"无法解析的 JSON 响应 HTTP {response.status_code}"
+        try:
+            preview = str(response.text or "").lstrip().casefold()[:128]
+        except (AttributeError, TypeError, ValueError):
+            preview = ""
+        if "html" in content_type or preview.startswith(("<!doctype html", "<html")):
+            return "返回登录 HTML"
+        parsed = urlparse(str(getattr(response, "url", "") or ""))
+        if parsed.hostname:
+            return f"跳转至 {parsed.hostname}{parsed.path}"
+        return f"HTTP {response.status_code}"
+
+    def get_service_token(
+        self,
+        service: str,
+        *,
+        network_mode: Optional[str] = None,
+        request_path: str = "",
+    ) -> Optional[str]:
         """Return a service bearer token kept inside the shared cookie jar."""
         config = SERVICE_CONFIGS.get(service)
         if config is None:
@@ -1204,10 +1294,27 @@ class NEUAuthClient:
         cookie_name = config.get("token_cookie")
         if not cookie_name:
             return None
+        allowed_domains = (
+            {"webvpn.neu.edu.cn"}
+            if network_mode == "webvpn"
+            else {config["host"]}
+            if network_mode == "direct"
+            else {config["host"], "webvpn.neu.edu.cn"}
+        )
+        def path_matches(cookie_path: str) -> bool:
+            if not request_path:
+                return True
+            normalized_cookie_path = str(cookie_path or "/").rstrip("/") or "/"
+            return (
+                normalized_cookie_path == "/"
+                or request_path == normalized_cookie_path
+                or request_path.startswith(normalized_cookie_path + "/")
+            )
         candidates = [
             cookie for cookie in self._session.cookies
             if cookie.name == cookie_name
-            and cookie.domain.lstrip(".") in {config["host"], "webvpn.neu.edu.cn"}
+            and cookie.domain.lstrip(".") in allowed_domains
+            and (network_mode == "webvpn" or path_matches(cookie.path))
         ]
         if not candidates:
             return None
@@ -1215,38 +1322,76 @@ class NEUAuthClient:
         return str(candidates[0].value or "") or None
 
     def _service_request_options(
-        self, service: str, config: Dict[str, Any], kwargs: Dict[str, Any]
+        self, service: str, config: Dict[str, Any], kwargs: Dict[str, Any],
+        *, network_mode: str, request_path: str,
     ) -> Dict[str, Any]:
         options = dict(kwargs)
         token_header = config.get("token_header")
-        token = self.get_service_token(service) if token_header else None
+        token = self.get_service_token(
+            service, network_mode=network_mode, request_path=request_path,
+        ) if token_header else None
         if token:
             headers = dict(options.get("headers") or {})
             headers.setdefault(token_header, token)
             options["headers"] = headers
         return options
 
+    def _clear_service_token(self, service: str, *, network_mode: str) -> None:
+        config = SERVICE_CONFIGS.get(service)
+        if config is None or not config.get("token_cookie"):
+            return
+        domain = "webvpn.neu.edu.cn" if network_mode == "webvpn" else config["host"]
+        matches = [
+            (cookie.domain, cookie.path, cookie.name)
+            for cookie in self._session.cookies
+            if cookie.name == config["token_cookie"]
+            and cookie.domain.lstrip(".") == domain
+        ]
+        for cookie_domain, cookie_path, cookie_name in matches:
+            try:
+                self._session.cookies.clear(
+                    domain=cookie_domain, path=cookie_path, name=cookie_name,
+                )
+            except KeyError:
+                pass
+
+    def _login_direct_service(self, config: Dict[str, Any]) -> bool:
+        original_target = self.target
+        original_mode = self.active_mode
+        try:
+            return bool(self._do_login(config["service"]))
+        finally:
+            self.target = original_target
+            self.active_mode = original_mode
+
     def ensure_service_session(
-        self, service: str, *, network_mode_override: Optional[str] = None
+        self, service: str, *, network_mode_override: Optional[str] = None,
+        force_refresh: bool = False,
     ) -> bool:
         """Establish one business-system session from the shared CAS identity."""
         config = SERVICE_CONFIGS.get(service)
         if config is None:
             raise ValueError(f"unsupported service: {service}")
         network_mode = self._service_network_mode(config, network_mode_override)
-        if not self._logged_in and not self.ensure_login():
-            raise NEULoginError("未登录或登录已过期")
+        token_probe_path = "/xsxk/web/now" if service == "jwxk" else "/"
+        if (
+            config.get("token_cookie")
+            and not force_refresh
+            and self.get_service_token(
+                service, network_mode=network_mode,
+                request_path=token_probe_path,
+            )
+        ):
+            return True
         service_callback = self._service_route_url(config["service"], network_mode)
-        login_url = (
-            f"{CAS_LOGIN_URL}?service="
-            f"{requests.utils.quote(service_callback, safe='')}"
-        )
 
         def establish() -> bool:
-            routed_login_url = self._service_route_url(login_url, network_mode)
+            # Start from the service provider's own CAS endpoint.  JWXK uses
+            # this visit to initialize its application session before sending
+            # the browser to pass.neu.edu.cn and accepting the callback.
             ticket_response = self._request_service_redirects(
                 "GET",
-                routed_login_url,
+                service_callback,
                 service_config=config,
                 network_mode=network_mode,
                 timeout=self.timeout,
@@ -1259,18 +1404,72 @@ class NEUAuthClient:
             self._close_response_safely(ticket_response)
             return established
 
+        # A rejected bearer token must not be accepted as evidence that the
+        # CAS callback issued a fresh JWXK session.  Remove only this route's
+        # service token; primary JWXT/CAS cookies remain untouched.
+        if force_refresh:
+            self._clear_service_token(service, network_mode=network_mode)
         established = establish()
         if established and config.get("token_cookie"):
-            established = bool(self.get_service_token(service))
+            established = bool(self.get_service_token(
+                service, network_mode=network_mode,
+                request_path=token_probe_path,
+            ))
         if not established:
             logger.info("跨系统 CAS 会话已过期，尝试恢复统一认证后重建业务会话...")
-            self._logged_in = False
-            if not self.ensure_login():
-                raise NEULoginError("统一认证会话已过期")
-            established = establish()
+            primary_recovered = self.ensure_login()
+            identity_recovered = bool(primary_recovered)
+            if primary_recovered:
+                self._clear_service_token(service, network_mode=network_mode)
+                established = establish()
             if established and config.get("token_cookie"):
-                established = bool(self.get_service_token(service))
+                established = bool(self.get_service_token(
+                    service, network_mode=network_mode,
+                    request_path=token_probe_path,
+                ))
+            if (
+                not established
+                and network_mode == "direct"
+                and self.username and self.password
+            ):
+                # The primary JWXT route may be unavailable while JWXK remains
+                # directly reachable.  Re-authenticate CAS against this
+                # service on the same Session without changing the primary
+                # route or creating a second credential store.
+                self._clear_service_token(service, network_mode=network_mode)
+                direct_service_recovered = self._login_direct_service(config)
+                identity_recovered = identity_recovered or bool(direct_service_recovered)
+                established = direct_service_recovered
+                if established and config.get("token_cookie"):
+                    established = bool(self.get_service_token(
+                        service, network_mode=network_mode,
+                        request_path=token_probe_path,
+                    ))
+            if (
+                not established
+                and network_mode == "webvpn"
+                and self.username and self.password
+            ):
+                try:
+                    webvpn_result = self.start_webvpn_password_login()
+                except NEULoginError:
+                    webvpn_result = {}
+                if webvpn_result.get("status") == "authenticated":
+                    identity_recovered = True
+                    self._clear_service_token(service, network_mode=network_mode)
+                    established = establish()
+                    if established and config.get("token_cookie"):
+                        established = bool(self.get_service_token(
+                            service, network_mode=network_mode,
+                            request_path=token_probe_path,
+                        ))
+                elif webvpn_result.get("status") == "sms_required":
+                    # Silent background recovery must not leave an interactive
+                    # SMS flow that no visible login page owns.
+                    self._webvpn_sms_flow = None
             if not established:
+                if not identity_recovered:
+                    raise NEULoginError("统一认证会话已过期")
                 raise NEULoginError("统一认证恢复后仍无法建立业务系统会话")
         self._save_cookies()
         return True
@@ -1315,6 +1514,8 @@ class NEUAuthClient:
         response: requests.Response,
         config: Dict[str, Any],
         network_mode: str,
+        *,
+        request_path: str = "",
     ) -> bool:
         """Recognize CAS and a service's same-origin login trampoline."""
         response_url = str(getattr(response, "url", "") or "")
@@ -1323,10 +1524,28 @@ class NEUAuthClient:
         response_codes = config.get("auth_response_codes") or ()
         if response_codes and "json" in str(response.headers.get("Content-Type", "")).lower():
             try:
-                if str(response.json().get("code")) in response_codes:
-                    return True
+                payload = response.json()
+                if str(payload.get("code")) in response_codes:
+                    markers = tuple(config.get("auth_response_message_markers") or ())
+                    if not markers:
+                        return True
+                    message = str(payload.get("msg") or payload.get("message") or "").casefold()
+                    if any(str(marker).casefold() in message for marker in markers):
+                        return True
             except (AttributeError, TypeError, ValueError):
                 pass
+        expects_json = any(
+            request_path.startswith(prefix)
+            for prefix in config.get("json_prefixes") or ()
+        )
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        if expects_json and "json" not in content_type:
+            try:
+                preview = str(response.text or "").lstrip().lower()[:128]
+            except (AttributeError, TypeError, ValueError):
+                preview = ""
+            if "html" in content_type or preview.startswith(("<!doctype html", "<html")):
+                return True
         if network_mode == "webvpn":
             if self._webvpn_targets_host(response_url, "pass.neu.edu.cn"):
                 return True
@@ -1392,6 +1611,24 @@ class NEUAuthClient:
             if not location:
                 return response
             current_url = urljoin(current_url, location)
+            # JWXK's service-provider CAS endpoint currently emits an
+            # absolute http://pass.neu.edu.cn/tpass/login redirect even when
+            # entered over HTTPS.  Never send cookies or tickets over that
+            # clear-text hop: recognize only this exact official CAS path and
+            # upgrade it to HTTPS before the next request.  All other HTTP
+            # redirects remain rejected by the allow-list on the next loop.
+            parsed_next = urlparse(current_url)
+            if (
+                parsed_next.scheme == "http"
+                and parsed_next.hostname == "pass.neu.edu.cn"
+                and parsed_next.port in {None, 80}
+                and parsed_next.username is None
+                and parsed_next.password is None
+                and parsed_next.path == "/tpass/login"
+            ):
+                current_url = parsed_next._replace(
+                    scheme="https", netloc="pass.neu.edu.cn",
+                ).geturl()
             try:
                 response.close()
             except AttributeError:

@@ -384,11 +384,21 @@ export const groupDayCourses = (courses = []) => {
 
 export const mergeScheduleWithSelectionOverlays = (scheduleCourses = [], overlayCourses = []) => {
   const baseline = Array.isArray(scheduleCourses) ? scheduleCourses : [];
-  const overlays = (Array.isArray(overlayCourses) ? overlayCourses : []).filter(overlay => (
-    overlay?.layer !== 'selected'
-    || !baseline.some(course => sameSelectionCourse(course, overlay))
+  const incoming = Array.isArray(overlayCourses) ? overlayCourses : [];
+  // Preview/candidate/pending layers are the user's explicit selection view.
+  // When they represent a course already present in the personal timetable,
+  // replace the baseline card instead of rendering the same course twice.
+  // Confirmed selected overlays intentionally keep the baseline card so the
+  // normal personal-timetable appearance is preserved.
+  const replacing = incoming.filter(overlay => ['preview', 'candidate', 'pending'].includes(overlay?.layer));
+  const visibleBaseline = baseline.filter(course => (
+    !replacing.some(overlay => sameSelectionCourse(course, overlay))
   ));
-  return [...baseline, ...overlays];
+  const overlays = incoming.filter(overlay => (
+    overlay?.layer !== 'selected'
+    || !visibleBaseline.some(course => sameSelectionCourse(course, overlay))
+  ));
+  return [...visibleBaseline, ...overlays];
 };
 
 export const clusterLayoutMetrics = (
@@ -645,6 +655,7 @@ const courseContextText = (course, mode) => {
 const courseLayerClass = course => (
   course.layer === 'candidate' ? ' is-plan-candidate'
     : course.layer === 'preview' ? ' is-selection-preview'
+      : course.layer === 'pending' ? ' is-selection-pending'
       : course.layer === 'selected' ? ' is-selection-selected'
         : ''
 );
@@ -2582,7 +2593,7 @@ function DesktopTimetable({
                     {!compact && <span className="course-location"><EnvironmentOutlined /> {content.location}</span>}
                     {!compact && contextText && <span className="course-context">{contextText}</span>}
                     {!compact && <span className="course-secondary">{uniqueTexts([content.type, sectionText]).join(' · ')}</span>}
-                    {compact && course.layer && <small className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'selected' ? '已选' : '待选方案'}</small>}
+                    {compact && course.layer && <small className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'pending' ? '已投权待结果' : course.layer === 'selected' ? '已选' : '待选方案'}</small>}
                   </button>
                   </PersonalConflictPopover>
                 );
@@ -2695,7 +2706,7 @@ function DesktopTimetable({
                         {!compact && <span className="timetable-cluster-stack-detail"><EnvironmentOutlined /> {content.location}</span>}
                         {!compact && contextText && <span className="timetable-cluster-stack-detail">{contextText}</span>}
                         {!compact && content.type && <span className="timetable-cluster-stack-detail">{content.type}</span>}
-                        {compact && course.layer && <small className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'selected' ? '已选' : '待选方案'}</small>}
+                        {compact && course.layer && <small className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'pending' ? '已投权待结果' : course.layer === 'selected' ? '已选' : '待选方案'}</small>}
                         {course.hasActualConflict && <small>{isExpanded ? '同周时间冲突' : '冲突'}</small>}
                       </button>
                       </PersonalConflictPopover>
@@ -2869,7 +2880,7 @@ export function MobileTimetable({
         {!compact && viewMode === 'term' && <span className="mobile-course-weeks">{formatWeekNumbers(course.weeks) || '周次待确认'}</span>}
         {!compact && <span className="mobile-course-location"><EnvironmentOutlined /> {content.location}</span>}
         {!compact && content.type && <span className="mobile-course-type">{content.type}</span>}
-        {compact && course.layer && <span className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'selected' ? '已选' : '待选方案'}</span>}
+        {compact && course.layer && <span className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'pending' ? '已投权待结果' : course.layer === 'selected' ? '已选' : '待选方案'}</span>}
       </Card>
     );
   };
@@ -2951,8 +2962,9 @@ function CourseDetailContent({ course, conflictMap = {} }) {
       <div className="timetable-detail-lead">
         <span>{WEEKDAY_NAMES[course.weekday - 1] || '未安排'} · 第{course.start_section}–{course.end_section}节</span>
         <strong><EnvironmentOutlined /> {content.location}</strong>
-        {course.layer === 'candidate' && <Tag color="orange">待选方案</Tag>}
+        {course.layer === 'candidate' && <Tag color="blue">待选方案</Tag>}
         {course.layer === 'preview' && <Tag color="blue">正在预览</Tag>}
+        {course.layer === 'pending' && <Tag color="blue">已投权待结果</Tag>}
         {course.layer === 'selected' && <Tag color="green">已选课程</Tag>}
         {content.type && <Tag>{content.type}</Tag>}
       </div>

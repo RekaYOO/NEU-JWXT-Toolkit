@@ -218,10 +218,13 @@ def optimize_grouped_weights(
 
     market_by_id = {course.course_id: course for course in market_courses}
     for candidate in candidates:
-        if candidate.course_id not in market_by_id:
-            market_by_id[candidate.course_id] = WeightMarketCourse(
-                candidate.course_id, candidate.capacity, candidate.bidders,
-            )
+        # Candidate rows are refreshed immediately before every strategy run.
+        # They must replace the possibly older round-wide market snapshot,
+        # otherwise the model can visibly show the new QZXKRS value while
+        # still calculating forecasts from the archived value.
+        market_by_id[candidate.course_id] = WeightMarketCourse(
+            candidate.course_id, candidate.capacity, candidate.bidders,
+        )
     market = tuple(market_by_id.values())
     group_by_id = {group.group_id: group for group in groups}
     if any(group.target_count <= 0 for group in groups):
