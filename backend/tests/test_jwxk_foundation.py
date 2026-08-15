@@ -41,6 +41,37 @@ def _html(rows: str) -> str:
     return f"<script>loginVue.batchList = {rows}; loginVue.creditRatios = [];</script>"
 
 
+def test_selected_results_degrade_when_one_round_specific_feed_is_unavailable():
+    class Client(JwxkSessionClient):
+        def _activate_batch(self, _batch_code):
+            return {}
+
+        def _post_form(self, path, data=None):
+            if path == "/xsxk/volunteer/xgxk/select":
+                raise NEULoginError("业务系统会话建立失败")
+            if path == "/xsxk/elective/select":
+                return {"data": [{"JXBID": "CLASS-1", "KCH": "COURSE-1", "KCM": "课程一"}]}
+            return {"data": []}
+
+    result = Client(object()).get_selected(batch_code="BATCH-1")
+
+    assert [item["class_id"] for item in result["selected"]] == ["CLASS-1"]
+    assert result["volunteered"] == []
+    assert result["withdrawal"] == []
+
+
+def test_selected_results_preserve_auth_failure_when_every_feed_is_unavailable():
+    class Client(JwxkSessionClient):
+        def _activate_batch(self, _batch_code):
+            return {}
+
+        def _post_form(self, path, data=None):
+            raise NEULoginError("业务系统会话建立失败")
+
+    with pytest.raises(NEULoginError, match="业务系统会话建立失败"):
+        Client(object()).get_selected(batch_code="BATCH-1")
+
+
 def test_public_batch_parser_distinguishes_weight_and_grab_windows():
     batches = parse_public_batches(_html(r'''[
       {"code":"weight","name":"选修课调整","schoolTerm":"2026-2027-1",
@@ -396,9 +427,13 @@ def test_course_selection_refetches_secret_and_performs_explicit_301_confirmatio
                 can_enter=True, account_selectable=True, confirmed=True,
             )]}
 
-        def _find_raw_class(self, **kwargs):
-            assert kwargs["class_id"] == "CLASS-1"
-            return {"JXBID": "CLASS-1", "KCH": "COURSE-1", "secretVal": "server-secret"}
+        def _search_raw(self, **kwargs):
+            assert kwargs["teaching_class_type"] == "ALLKC"
+            assert kwargs["keyword"] == "COURSE-1"
+            return [{
+                "JXBID": "CLASS-1", "KCH": "COURSE-1", "secretVal": "server-secret",
+                "teachingClassType": "FANKC",
+            }]
 
         def get_selected(self, **_kwargs):
             return {"selected": [], "volunteered": []}
@@ -421,6 +456,7 @@ def test_course_selection_refetches_secret_and_performs_explicit_301_confirmatio
     assert calls[0][0] == "/xsxk/elective/check"
     assert calls[0][1]["secretVal"] == "server-secret"
     assert calls[1][0] == "/xsxk/elective/clazz/add"
+    assert calls[1][1]["clazzType"] == "FANKC"
     assert calls[1][1]["secretVal"] == "server-secret"
     assert "isConfirm" not in calls[1][1]
     assert calls[2][1]["isConfirm"] == "1"
@@ -443,7 +479,10 @@ def test_course_selection_stops_before_mutation_when_official_check_rejects_clas
             )]}
 
         def _find_raw_class(self, **_kwargs):
-            return {"JXBID": "CLASS-1", "KCH": "COURSE-1", "secretVal": "server-secret"}
+            return {
+                "JXBID": "CLASS-1", "KCH": "COURSE-1", "secretVal": "server-secret",
+                "teachingClassType": "FANKC",
+            }
 
         def get_selected(self, **_kwargs):
             return {"selected": [], "volunteered": []}
@@ -954,7 +993,7 @@ def test_all_catalog_merges_every_official_scope_and_deduplicates_classes():
             if scope == "ALLKC":
                 courses.append({
                     "course_code": "B", "course_name": "课程B", "class_id": "all-only",
-                    "teacher": "乙", "schedules": [],
+                    "teacher": "乙", "schedules": [], "teaching_class_type": "TJKC",
                 })
             return {"total": len(courses), "courses": courses}
 
@@ -967,6 +1006,9 @@ def test_all_catalog_merges_every_official_scope_and_deduplicates_classes():
     shared = next(group for group in result["groups"] if group["course_code"] == "A")
     assert shared["classes"][0]["teaching_class_type"] == "FANKC"
     assert shared["source_tags"] == ["全校课程查询", "培养方案内课"]
+    all_only = next(group for group in result["groups"] if group["course_code"] == "B")
+    assert all_only["classes"][0]["teaching_class_type"] == "TJKC"
+    assert all_only["classes"][0]["source_scopes"] == ["ALLKC"]
 
 
 def test_scope_category_and_campus_filters_use_codes_without_losing_alias_matches():

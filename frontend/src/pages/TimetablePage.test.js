@@ -16,6 +16,7 @@ import {
   estimatedCourseCardHeight,
   estimatedFoldedCourseHeight,
   shouldUsePersonalTimetableCache,
+  shouldUsePersonalTimetableEndpoint,
   mergeTargetOptions,
   mergeTargetFilterOptions,
   sortGradeOptionsNewestFirst,
@@ -40,7 +41,10 @@ import {
   usableTargetFilterDefinitions,
   TIMETABLE_DAY_ORDER,
   TIMETABLE_MODES,
+  MobileTimetable,
 } from './TimetablePage';
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
 
 jest.mock('../services/api', () => ({
   getTimetableContext: jest.fn(),
@@ -54,6 +58,34 @@ jest.mock('../services/api', () => ({
 
 
 describe('TimetablePage helpers', () => {
+  test('mobile timetable renders without reading parent-only embedded props', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<MobileTimetable
+          coursesByDay={Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]))}
+          sections={[]}
+          selectedDay={1}
+          viewMode="term"
+          currentTerm={false}
+          currentWeekNumber={1}
+          onDayChange={() => {}}
+          onCourseClick={() => {}}
+          personalConflictMap={{}}
+        />);
+      });
+      expect(container.querySelector('.timetable-mobile')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
   test('explains frontend request timeouts instead of reporting an unknown term failure', () => {
     expect(requestErrorText(
       { code: 'ECONNABORTED', message: 'timeout of 30000ms exceeded' },
@@ -81,6 +113,21 @@ describe('TimetablePage helpers', () => {
     expect(shouldUsePersonalTimetableCache('personal', '2025-2026-2', '2026-2027-1')).toBe(false);
     expect(shouldUsePersonalTimetableCache('personal', '2027-2028-1', '2026-2027-1', '2027-2028-1')).toBe(true);
     expect(shouldUsePersonalTimetableCache('class', '2026-2027-1', '2026-2027-1')).toBe(false);
+  });
+
+  test('embedded selection timetable loads its known term before term discovery finishes', () => {
+    expect(shouldUsePersonalTimetableEndpoint(
+      'personal', '2026-2027-1', '', '',
+      { embedded: true, preferredTermCode: '2026-2027-1' },
+    )).toBe(true);
+    expect(shouldUsePersonalTimetableEndpoint(
+      'personal', '2026-2027-1', '', '',
+      { embedded: true, preferredTermCode: '2025-2026-2' },
+    )).toBe(false);
+    expect(shouldUsePersonalTimetableEndpoint(
+      'teacher', '2026-2027-1', '', '',
+      { embedded: true, preferredTermCode: '2026-2027-1' },
+    )).toBe(false);
   });
 
   test('builds a bounded conflict candidate from the displayed meeting', () => {

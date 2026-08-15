@@ -199,6 +199,60 @@ describe('API silent authentication recovery', () => {
     await expect(pending).rejects.toBe(error);
     expect(client.request).not.toHaveBeenCalled();
   });
+
+  test('JWXK 401 使用选课子会话状态恢复而不是主教务状态', async () => {
+    const { client, rejectResponse } = loadApiWithAxios();
+    const dispatch = jest.spyOn(window, 'dispatchEvent');
+    client.get.mockResolvedValue({ data: { service_authenticated: true } });
+    client.request.mockResolvedValue({ data: { selected: [] } });
+
+    await rejectResponse({
+      response: { status: 401, data: {} },
+      config: {
+        url: '/api/course-selection/jwxk/selected',
+        method: 'post',
+        authRecoveryScope: 'jwxk',
+      },
+    });
+
+    expect(client.get).toHaveBeenCalledWith(
+      '/api/course-selection/jwxk/status',
+      { skipAuthRedirect: true },
+    );
+    expect(client.request).toHaveBeenCalledWith(expect.objectContaining({
+      authRecoveryScope: 'jwxk',
+      _silentAuthRecoveryRetried: true,
+    }));
+    expect(dispatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'neu-auth-required' }),
+    );
+    dispatch.mockRestore();
+  });
+
+  test('JWXK 子会话恢复失败不会误报整个教务会话失效', async () => {
+    const { client, rejectResponse } = loadApiWithAxios();
+    const events = [];
+    const listener = event => events.push(event.type);
+    window.addEventListener('neu-auth-required', listener);
+    client.get.mockResolvedValue({ data: {
+      primary_authenticated: true,
+      service_authenticated: false,
+    } });
+    const error = {
+      response: { status: 401, data: {} },
+      config: {
+        url: '/api/course-selection/jwxk/selected',
+        method: 'post',
+        authRecoveryScope: 'jwxk',
+      },
+    };
+
+    await expect(rejectResponse(error)).rejects.toBe(error);
+
+    expect(client.request).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    window.removeEventListener('neu-auth-required', listener);
+  });
 });
 
 describe('JWXK mutation authentication boundary', () => {

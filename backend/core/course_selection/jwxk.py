@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 import re
 from typing import Any, Literal, TYPE_CHECKING
 from urllib.parse import quote
@@ -18,11 +19,14 @@ from urllib.parse import quote
 import requests
 from bs4 import BeautifulSoup
 
+from backend.core.auth.client import NEULoginError
 from backend.core.scheduling import parse_weeks
 
 if TYPE_CHECKING:
     from backend.core.auth.client import NEUAuthClient
 
+
+logger = logging.getLogger(__name__)
 
 JWXK_ORIGIN = "https://jwxk.neu.edu.cn"
 JWXK_PROFILE_URL = f"{JWXK_ORIGIN}/xsxk/profile/index.html"
@@ -596,6 +600,12 @@ def _normalize_class(row: dict[str, Any], parent: dict[str, Any]) -> dict[str, A
         "exam_type": exam_type,
         "score_scale_code": score_scale_code,
         "score_scale": score_scale,
+        # teachingClassType is the official mutation clazzType carried by the
+        # row.  It is not the same thing as the catalog query scope: ALLKC is
+        # only the all-course search entry and must never be posted as clazzType.
+        "teaching_class_type": _text(
+            course.get("teachingClassType") or course.get("clazzType")
+        ),
         "teaching_mode": _text(course.get("XSXLX")),
         "teacher_details": _teacher_details(course.get("SKJSLB")),
         "teacher_titles": _text(course.get("SKJSZC")),
@@ -1091,6 +1101,48 @@ class JwxkSessionClient:
             raise JwxkError("教学班信息已变化，请刷新课程列表后重试")
         return item
 
+    def _resolve_mutation_class(
+        self,
+        *,
+        batch: JwxkBatch,
+        batch_code: str,
+        teaching_class_type: str,
+        class_id: str,
+        course_code: str,
+    ) -> tuple[dict[str, Any], str]:
+        """Resolve a real clazzType without ever submitting the ALLKC query scope."""
+
+        query_scopes = (
+            [teaching_class_type]
+            if teaching_class_type not in {"", "ALL", "ROUND"}
+            else []
+        )
+        query_scopes.extend(
+            _text(item.get("code")) for item in batch.menus
+            if _text(item.get("code")) not in {"", "ALLKC"}
+        )
+        seen: set[str] = set()
+        for query_scope in query_scopes:
+            if not query_scope or query_scope in seen:
+                continue
+            seen.add(query_scope)
+            try:
+                item = self._find_raw_class(
+                    batch_code=batch_code,
+                    teaching_class_type=query_scope,
+                    class_id=class_id,
+                    course_code=course_code,
+                )
+            except JwxkError:
+                continue
+            official_type = _text(item.get("teachingClassType") or item.get("clazzType"))
+            mutation_type = official_type if official_type != "ALLKC" else ""
+            if not mutation_type and query_scope != "ALLKC":
+                mutation_type = query_scope
+            if mutation_type:
+                return item, mutation_type
+        raise JwxkError("只能在全校课程查询中找到该教学班，暂时无法确认其真实投选类型，请刷新目录后重试")
+
     def get_catalog_detail(
         self, *, batch_code: str, teaching_class_type: str,
         course_code: str, class_id: str,
@@ -1208,7 +1260,8 @@ class JwxkSessionClient:
             raise JwxkError(
                 f"已选课程中已存在同课程代码“{_text(duplicate.get('course_name')) or course_code}”，不能重复选择"
             )
-        item = self._find_raw_class(
+        item, mutation_class_type = self._resolve_mutation_class(
+            batch=batch,
             batch_code=batch_code,
             teaching_class_type=teaching_class_type,
             class_id=class_id,
@@ -1226,7 +1279,7 @@ class JwxkSessionClient:
         if eligibility["status"] != "selectable":
             raise JwxkError("暂时无法确认该教学班是否可选，请稍后重新核验")
         data = {
-            "clazzType": teaching_class_type,
+            "clazzType": mutation_class_type,
             "clazzId": class_id,
             "secretVal": _text(item.get("secretVal")),
             "batchId": batch_code,
@@ -1368,13 +1421,37 @@ class JwxkSessionClient:
 
     def get_selected(self, *, batch_code: str) -> dict[str, Any]:
         self._activate_batch(batch_code)
-        selected = self._post_form("/xsxk/elective/select").get("data") or []
-        volunteered = self._post_form("/xsxk/volunteer/select").get("data") or []
-        try:
-            general_volunteered = self._post_form("/xsxk/volunteer/xgxk/select").get("data") or []
-        except JwxkError:
-            general_volunteered = []
-        withdrawal = self._post_form("/xsxk/elective/neu/deselect").get("data") or []
+        feeds = (
+            ("selected", "/xsxk/elective/select"),
+            ("volunteered", "/xsxk/volunteer/select"),
+            ("general_volunteered", "/xsxk/volunteer/xgxk/select"),
+            ("withdrawal", "/xsxk/elective/neu/deselect"),
+        )
+        rows_by_feed: dict[str, list[dict[str, Any]]] = {}
+        failures: list[tuple[str, Exception]] = []
+        for name, path in feeds:
+            try:
+                rows_by_feed[name] = self._post_form(path).get("data") or []
+            except (NEULoginError, JwxkError) as error:
+                # JWXK exposes several result feeds for different round/menu
+                # types.  A non-applicable feed can answer with the same
+                # business 401 used for an expired token.  Once another feed
+                # succeeds, treat that endpoint as unavailable instead of
+                # discarding the complete selected-result response.
+                failures.append((name, error))
+                rows_by_feed[name] = []
+        if failures and len(failures) == len(feeds):
+            raise failures[0][1]
+        for name, error in failures:
+            logger.info(
+                "jwxk selected feed unavailable feed=%s error=%s",
+                name,
+                type(error).__name__,
+            )
+        selected = rows_by_feed["selected"]
+        volunteered = rows_by_feed["volunteered"]
+        general_volunteered = rows_by_feed["general_volunteered"]
+        withdrawal = rows_by_feed["withdrawal"]
         def tagged(rows, source):
             return [
                 {**row, "_selection_source": source}
@@ -1486,7 +1563,9 @@ class JwxkSessionClient:
                 scope_total, scope_courses = scan_scope(round_scope)
                 merged_total += scope_total
                 for course in scope_courses:
-                    course["teaching_class_type"] = round_scope
+                    course["source_scopes"] = [round_scope]
+                    if not _text(course.get("teaching_class_type")) and round_scope != "ALLKC":
+                        course["teaching_class_type"] = round_scope
                     merged_courses.append(course)
                     code = _text(course.get("course_code"))
                     if code:
@@ -1503,14 +1582,17 @@ class JwxkSessionClient:
                 ))
                 previous = by_class.get(class_id)
                 if previous is None:
-                    course["source_scopes"] = [_text(course.get("teaching_class_type"))]
                     by_class[class_id] = course
                     continue
                 source_scopes = list(dict.fromkeys([
-                    *(previous.get("source_scopes") or [previous.get("teaching_class_type")]),
-                    _text(course.get("teaching_class_type")),
+                    *(previous.get("source_scopes") or []),
+                    *(course.get("source_scopes") or []),
                 ]))
-                preferred_scope = next((value for value in source_scopes if value and value != "ALLKC"), None)
+                mutation_types = [
+                    _text(previous.get("teaching_class_type")),
+                    _text(course.get("teaching_class_type")),
+                ]
+                preferred_scope = next((value for value in mutation_types if value and value != "ALLKC"), None)
                 merged = {**previous}
                 for key, value in course.items():
                     if key not in merged or value not in (None, "", [], {}):
@@ -1524,7 +1606,7 @@ class JwxkSessionClient:
                 by_class[class_id] = {
                     **merged,
                     "source_scopes": [value for value in source_scopes if value],
-                    "teaching_class_type": preferred_scope or _text(course.get("teaching_class_type")) or "ALLKC",
+                    "teaching_class_type": preferred_scope,
                 }
             merged_courses = list(by_class.values())
             apply_selection_market_semantics(merged_courses, batch.selection_type_code)

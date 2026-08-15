@@ -12,19 +12,27 @@ const api = axios.create({
   },
 });
 
-let authRecoveryPromise = null;
+const authRecoveryPromises = new Map();
 
-const trySilentAuthRecovery = async () => {
-  if (!authRecoveryPromise) {
-    authRecoveryPromise = api.get('/api/status', {
+const trySilentAuthRecovery = async (scope = 'primary') => {
+  if (!authRecoveryPromises.has(scope)) {
+    const statusUrl = scope === 'jwxk'
+      ? '/api/course-selection/jwxk/status'
+      : '/api/status';
+    const recovery = api.get(statusUrl, {
       skipAuthRedirect: true,
-    }).then(response => Boolean(response.data?.is_logged_in))
+    }).then(response => Boolean(
+      scope === 'jwxk'
+        ? response.data?.service_authenticated
+        : response.data?.is_logged_in
+    ))
       .catch(() => false)
       .finally(() => {
-        authRecoveryPromise = null;
+        authRecoveryPromises.delete(scope);
       });
+    authRecoveryPromises.set(scope, recovery);
   }
-  return authRecoveryPromise;
+  return authRecoveryPromises.get(scope);
 };
 
 api.interceptors.response.use(
@@ -42,7 +50,8 @@ api.interceptors.response.use(
         && !error.config?.url?.startsWith('/api/offline/')
       ) {
         if (!error.config?._silentAuthRecoveryRetried) {
-          const recovered = await trySilentAuthRecovery();
+          const recoveryScope = error.config?.authRecoveryScope || 'primary';
+          const recovered = await trySilentAuthRecovery(recoveryScope);
           if (recovered && !isManualLogoutActive()) {
             return api.request({
               ...error.config,
@@ -53,7 +62,12 @@ api.interceptors.response.use(
         if (isManualLogoutActive()) {
           return Promise.reject(error);
         }
-        window.dispatchEvent(new CustomEvent('neu-auth-required'));
+        // A JWXK business session can expire while the primary JWXT session
+        // remains valid.  Never turn that service-local failure into the
+        // application-wide "教务会话已失效" flow.
+        if (error.config?.authRecoveryScope !== 'jwxk') {
+          window.dispatchEvent(new CustomEvent('neu-auth-required'));
+        }
       }
     }
     const detail = error.response?.data?.detail;
@@ -906,8 +920,11 @@ export const checkScheduleConflicts = async (data) => {
 
 // ── 新版选课系统（jwxk）──────────────────────────────────────────────────────
 
-export const getJwxkStatus = async () => {
-  const response = await api.get('/api/course-selection/jwxk/status');
+export const getJwxkStatus = async (config = {}) => {
+  const response = await api.get('/api/course-selection/jwxk/status', {
+    authRecoveryScope: 'jwxk',
+    ...config,
+  });
   return response.data;
 };
 
@@ -918,14 +935,20 @@ export const updateJwxkSettings = async (networkMode) => {
   return response.data;
 };
 
-export const searchJwxkCourses = async (payload) => {
-  const response = await api.post('/api/course-selection/jwxk/courses/search', payload);
+export const searchJwxkCourses = async (payload, config = {}) => {
+  const response = await api.post('/api/course-selection/jwxk/courses/search', payload, {
+    authRecoveryScope: 'jwxk',
+    ...config,
+  });
   return response.data;
 };
 
-export const getJwxkSelected = async (batchCode) => {
+export const getJwxkSelected = async (batchCode, config = {}) => {
   const response = await api.post('/api/course-selection/jwxk/selected', {
     batch_code: batchCode,
+  }, {
+    authRecoveryScope: 'jwxk',
+    ...config,
   });
   return response.data;
 };
@@ -953,26 +976,38 @@ export const deselectJwxkCourse = async (payload) => {
 };
 
 export const searchJwxkCatalog = async (payload, config = {}) => {
-  const response = await api.post('/api/course-selection/jwxk/catalog/search', payload, config);
-  return response.data;
-};
-
-export const getJwxkCatalogDetail = async (payload) => {
-  const response = await api.post('/api/course-selection/jwxk/catalog/detail', payload);
-  return response.data;
-};
-
-export const getJwxkCatalogFilterOptions = async (batchCode) => {
-  const response = await api.post('/api/course-selection/jwxk/catalog/filter-options', {
-    batch_code: batchCode,
+  const response = await api.post('/api/course-selection/jwxk/catalog/search', payload, {
+    authRecoveryScope: 'jwxk',
+    ...config,
   });
   return response.data;
 };
 
-export const checkJwxkCatalogEligibility = async (batchCode, classIds) => {
+export const getJwxkCatalogDetail = async (payload, config = {}) => {
+  const response = await api.post('/api/course-selection/jwxk/catalog/detail', payload, {
+    authRecoveryScope: 'jwxk',
+    ...config,
+  });
+  return response.data;
+};
+
+export const getJwxkCatalogFilterOptions = async (batchCode, config = {}) => {
+  const response = await api.post('/api/course-selection/jwxk/catalog/filter-options', {
+    batch_code: batchCode,
+  }, {
+    authRecoveryScope: 'jwxk',
+    ...config,
+  });
+  return response.data;
+};
+
+export const checkJwxkCatalogEligibility = async (batchCode, classIds, config = {}) => {
   const response = await api.post('/api/course-selection/jwxk/catalog/eligibility', {
     batch_code: batchCode,
     class_ids: classIds,
+  }, {
+    authRecoveryScope: 'jwxk',
+    ...config,
   });
   return response.data;
 };
@@ -987,8 +1022,11 @@ export const deleteJwxkCatalogArchive = async (archiveId) => {
   return response.data;
 };
 
-export const getJwxkSchedule = async (batchCode) => {
-  const response = await api.post('/api/course-selection/jwxk/schedule', { batch_code: batchCode });
+export const getJwxkSchedule = async (batchCode, config = {}) => {
+  const response = await api.post('/api/course-selection/jwxk/schedule', { batch_code: batchCode }, {
+    authRecoveryScope: 'jwxk',
+    ...config,
+  });
   return response.data;
 };
 

@@ -11,6 +11,7 @@ from backend.app.schemas.course_selection import (
     CourseSelectionOptimizeRequest,
     JwxkCourseDeselectRequest,
     JwxkCourseSelectRequest,
+    JwxkBatchRequest,
     JwxkCatalogDetailRequest,
     JwxkCatalogSearchRequest,
     JwxkCatalogSearchResponse,
@@ -461,6 +462,92 @@ def test_catalog_search_uses_complete_archive_for_specific_scope_filters(monkeyp
     assert result.groups[0].classes[0].teaching_class_type == "TJKC"
 
 
+def test_catalog_local_search_returns_archive_without_remote_request(monkeypatch):
+    class Automation:
+        def get_catalog_archive_view(self, account, batch_code):
+            assert account == "student"
+            assert batch_code == "BATCH-1"
+            return {
+                "batch_code": "BATCH-1", "sync_status": "complete",
+                "courses": [{
+                    "course_code": "COURSE-1", "course_name": "本地课程",
+                    "class_id": "CLASS-1", "teaching_class_type": "TJKC",
+                    "source_scopes": ["TJKC", "ALLKC"],
+                }],
+            }
+
+        def query_catalog_archive(self, account, **kwargs):
+            assert account == "student"
+            assert kwargs["keyword"] == "本地"
+            return {
+                "total": 1, "sync_status": "complete", "groups": [{
+                    "group_id": "COURSE-1", "course_code": "COURSE-1",
+                    "course_name": "本地课程", "classes": [{
+                        "group_id": "COURSE-1", "course_code": "COURSE-1",
+                        "course_name": "本地课程", "class_id": "CLASS-1",
+                        "teaching_class_type": "TJKC",
+                    }],
+                }],
+            }
+
+    monkeypatch.setattr(course_selection, "get_course_selection_automation_service", lambda: Automation())
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: type(
+        "Auth", (), {"is_logged_in": True, "username": "student"}
+    )())
+    monkeypatch.setattr(
+        course_selection, "_run_jwxk_read",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("local search must not call JWXK")),
+    )
+
+    result = course_selection.search_jwxk_catalog(
+        JwxkCatalogSearchRequest(
+            batch_code="BATCH-1", keyword="本地", local_only=True,
+        ),
+        Response(),
+        object(),
+    )
+
+    assert result.cache_hit is True
+    assert result.data_source == "local"
+    assert result.groups[0].course_name == "本地课程"
+    assert {item["code"] for item in result.scope_options} >= {"ALL", "ROUND", "TJKC", "ALLKC"}
+
+
+def test_catalog_filter_options_use_archive_without_remote_request(monkeypatch):
+    archive = {
+        "batch_code": "BATCH-1",
+        "courses": [{
+            "course_code": "COURSE-1", "course_name": "本地课程",
+            "class_id": "CLASS-1", "teaching_class_type": "TJKC",
+            "course_nature": "选修", "course_category": "专业方向类",
+            "campus": "01", "campus_name": "浑南校区", "schedules": [],
+        }],
+    }
+
+    class Automation:
+        def get_catalog_archive_view(self, account, batch_code):
+            assert account == "student"
+            assert batch_code == "BATCH-1"
+            return archive
+
+    monkeypatch.setattr(course_selection, "get_course_selection_automation_service", lambda: Automation())
+    monkeypatch.setattr(
+        course_selection, "_run_jwxk_read",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("local options must not call JWXK")),
+    )
+
+    result = course_selection.get_jwxk_catalog_filter_options(
+        JwxkBatchRequest(batch_code="BATCH-1"),
+        Response(),
+        type("Auth", (), {"username": "student"})(),
+        object(),
+    )
+
+    assert result["course_natures"] == [{"value": "选修", "label": "选修"}]
+    assert result["course_categories"] == [{"value": "专业方向类", "label": "专业方向类"}]
+    assert result["campuses"] == [{"value": "01", "label": "浑南校区"}]
+
+
 def test_jwxk_catalog_detail_route_returns_sanitized_course_and_class(monkeypatch):
     class FakeClient:
         def get_catalog_detail(self, **kwargs):
@@ -617,24 +704,23 @@ def test_jwxk_mutation_expired_login_is_exposed_as_401(monkeypatch):
     assert caught.value.detail == "统一认证会话已过期"
 
 
-def test_jwxk_plan_preview_uses_live_personal_timetable(monkeypatch):
-    class Timetable:
-        def get_schedule(self, **kwargs):
-            assert kwargs == {
-                "mode": "personal", "term_code": "2026-2027-1",
-                "campus_code": "all", "target_id": "", "week": None,
-            }
-            return {"courses": [{
+def test_jwxk_plan_preview_uses_cached_personal_timetable(monkeypatch):
+    entry = type("Entry", (), {"payload": {
+        "term_code": "2026-2027-1",
+        "courses": [{
                 "id": "mine", "course_code": "MATH", "course_name": "高等数学",
                 "weeks": [1, 2], "weekday": 1, "start_section": 1, "end_section": 2,
-            }]}
+        }],
+    }})()
 
     monkeypatch.setattr(
         course_selection,
         "get_cache_coordinator",
-        lambda: (_ for _ in ()).throw(AssertionError("live preview must not read timetable cache")),
+        lambda: type("Coordinator", (), {
+            "read": lambda self, **kwargs: (entry, False),
+        })(),
     )
-    auth = type("Auth", (), {"username": "student", "timetable": Timetable()})()
+    auth = type("Auth", (), {"username": "student"})()
     response = course_selection.preview_jwxk_plan(
         JwxkPlanPreviewRequest(
             batch_code="BATCH-1", term_code="2026-2027-1",
@@ -649,3 +735,45 @@ def test_jwxk_plan_preview_uses_live_personal_timetable(monkeypatch):
     assert response.baseline_stale is False
     assert response.results[0]["status"] == "conflict"
     assert response.results[0]["matches"][0]["baseline_course_name"] == "高等数学"
+
+
+def test_jwxk_plan_read_returns_archived_batch_snapshot_without_remote_status(monkeypatch):
+    class Storage:
+        def load_config(self):
+            return {"course_selection_plans": {}}
+
+    class Automation:
+        def get_catalog_archive_view(self, account, batch_code):
+            assert account == "student"
+            assert batch_code == "BATCH-1"
+            return {
+                "batch_code": "BATCH-1",
+                "batch_name": "轮次3 选修课初选",
+                "term_code": "2026-2027-1",
+                "term_name": "2026-2027学年秋季学期",
+                "selection_type_code": "04",
+                "begin_time": "2026-08-15 13:00:00",
+                "end_time": "2026-08-17 00:00:00",
+                "courses": (),
+            }
+
+    monkeypatch.setattr(
+        course_selection, "get_course_selection_automation_service", lambda: Automation(),
+    )
+    result = course_selection.read_jwxk_plan(
+        JwxkBatchRequest(batch_code="BATCH-1"),
+        type("Auth", (), {"username": "student"})(),
+        Storage(),
+    )
+
+    assert result["term_code"] == "2026-2027-1"
+    assert result["batch"] == {
+        "code": "BATCH-1",
+        "name": "轮次3 选修课初选",
+        "term_code": "2026-2027-1",
+        "term_name": "2026-2027学年秋季学期",
+        "selection_type_code": "04",
+        "selection_type": "权重",
+        "begin_time": "2026-08-15 13:00:00",
+        "end_time": "2026-08-17 00:00:00",
+    }

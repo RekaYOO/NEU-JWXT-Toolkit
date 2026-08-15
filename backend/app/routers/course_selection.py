@@ -73,13 +73,18 @@ from backend.core.course_selection.model import TieRule
 from backend.core.log import log_application_error
 from backend.core.cache.resources import personal_timetable_variant
 from backend.core.scheduling import check_conflicts, normalize_meeting
-from backend.core.timetable import TimetableError
 
 
 router = APIRouter(prefix="/course-selection", tags=["course-selection"])
 logger = logging.getLogger(__name__)
 _solver_slots = BoundedSemaphore(value=2)
 _JWXK_CONFIG_KEY = "course_selection"
+_JWXK_SCOPE_NAMES = {
+    "TJKC": "任务推荐班课程", "FANKC": "培养方案内课",
+    "FAWKC": "培养方案外课程", "XGKC": "通识选修课",
+    "CXKC": "重修课程", "TYKC": "体育项目", "FXKC": "辅修课程",
+    "ALLKC": "全校课程查询", "BYKC": "本研课程", "ZYNKC": "专业内课程",
+}
 
 
 def _read_jwxk_preference(storage: Storage) -> str:
@@ -241,6 +246,24 @@ def _merge_catalog_option_values(options: dict, archive: dict | None) -> dict:
     return merged
 
 
+def _archive_scope_options(archive: dict | None) -> list[dict[str, str]]:
+    courses = archive.get("courses") if isinstance(archive, dict) else []
+    codes = sorted({
+        str(scope or "")
+        for course in courses or []
+        for scope in [
+            course.get("teaching_class_type"),
+            *(course.get("source_scopes") or []),
+        ]
+        if str(scope or "") not in {"", "ALL", "ROUND"}
+    })
+    return [
+        {"code": "ALL", "name": "所有课程"},
+        {"code": "ROUND", "name": "本轮课程"},
+        *[{"code": code, "name": _JWXK_SCOPE_NAMES.get(code, code)} for code in codes],
+    ]
+
+
 @router.post("/jwxk/courses/search", response_model=JwxkCourseSearchResponse)
 def search_jwxk_courses(
     request: JwxkCourseSearchRequest,
@@ -294,7 +317,7 @@ def get_jwxk_selected(
                     order_by="",
                     filters={},
                 )
-            except (JwxkError, requests.RequestException):
+            except (NEULoginError, JwxkError, requests.RequestException):
                 continue
             for course in live.get("courses") or []:
                 class_id = str(course.get("class_id") or "")
@@ -328,6 +351,33 @@ def search_jwxk_catalog(
     storage: Storage = Depends(get_storage),
 ) -> JwxkCatalogSearchResponse:
     response.headers["Cache-Control"] = "no-store"
+    automation = get_course_selection_automation_service()
+    if request.local_only:
+        primary = peek_auth_client()
+        if not primary or not getattr(primary, "is_logged_in", False):
+            raise HTTPException(status_code=401, detail="请先登录后再访问选课系统")
+        account = str(getattr(primary, "username", "") or "")
+        archive = automation.get_catalog_archive_view(account, request.batch_code)
+        archived = automation.query_catalog_archive(
+            account,
+            batch_code=request.batch_code,
+            page_number=request.page_number,
+            page_size=request.page_size,
+            scope=request.scope,
+            keyword=request.keyword.strip(),
+            campus=request.campus,
+            filters=request.filters,
+            time_slot=request.time_slot.model_dump() if request.time_slot else None,
+        )
+        return JwxkCatalogSearchResponse.model_validate({
+            "total": int((archived or {}).get("total") or 0),
+            "scope": request.scope,
+            "scope_options": _archive_scope_options(archive),
+            "groups": (archived or {}).get("groups") or [],
+            "cache_hit": archived is not None,
+            "data_source": "local",
+            "sync_status": str((archived or {}).get("sync_status") or ""),
+        })
     result = _run_jwxk_read(storage, lambda client: client.search_catalog(
         batch_code=request.batch_code,
         page_number=request.page_number,
@@ -341,7 +391,6 @@ def search_jwxk_catalog(
     ))
     account = str(result.pop("_account", "") or "")
     batch = result.pop("_batch", {})
-    automation = get_course_selection_automation_service()
     automation.merge_catalog_archive(
         account,
         batch=batch,
@@ -367,6 +416,11 @@ def search_jwxk_catalog(
     ):
         result["total"] = archived["total"]
         result["groups"] = archived["groups"]
+    result.update({
+        "cache_hit": False,
+        "data_source": "remote",
+        "sync_status": str((archived or {}).get("sync_status") or ""),
+    })
     return JwxkCatalogSearchResponse.model_validate(result)
 
 
@@ -454,12 +508,30 @@ def get_jwxk_catalog_filter_options(
     storage: Storage = Depends(get_storage),
 ):
     response.headers["Cache-Control"] = "no-store"
+    archive = get_course_selection_automation_service().get_catalog_archive_view(
+        str(auth.username), request.batch_code,
+    )
+    if archive and archive.get("courses"):
+        return _merge_catalog_option_values({
+            "scopes": _archive_scope_options(archive),
+            "availability": [
+                {"value": "selectable", "label": "本轮可选"},
+                {"value": "available", "label": "仍有余量"},
+                {"value": "conflict_free", "label": "官方无冲突"},
+                {"value": "selected", "label": "已经选择"},
+            ],
+            "weekdays": [
+                {"value": str(day), "label": f"周{label}"}
+                for day, label in enumerate("一二三四五六日", 1)
+            ],
+            "sections": [
+                {"value": str(section), "label": f"第{section}节"}
+                for section in range(1, 31)
+            ],
+        }, archive)
     result = _run_jwxk_read(
         storage, lambda client: client.get_catalog_filter_options(batch_code=request.batch_code)
     )
-    archive = next((item for item in (
-        get_course_selection_automation_service().list_catalog_archives(str(auth.username))
-    ) if item.get("batch_code") == request.batch_code), None)
     return _merge_catalog_option_values(result, archive)
 
 
@@ -527,20 +599,21 @@ def get_jwxk_schedule(
 @router.post("/jwxk/plan/preview", response_model=JwxkPlanPreviewResponse)
 def preview_jwxk_plan(
     request: JwxkPlanPreviewRequest,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
 ) -> JwxkPlanPreviewResponse:
-    try:
-        payload = auth.timetable.get_schedule(
-            mode="personal", term_code=request.term_code,
-            campus_code="all", target_id="", week=None,
-        )
-    except NEULoginError as error:
-        raise HTTPException(status_code=401, detail="统一认证会话已过期") from error
-    except TimetableError as error:
-        raise HTTPException(status_code=502, detail="无法实时读取该学期个人课表") from error
+    entry, baseline_stale = get_cache_coordinator().read(
+        account_id=str(auth.username),
+        resource="personal-timetable",
+        variant=personal_timetable_variant(request.term_code),
+    )
+    payload = (
+        entry.payload
+        if entry is not None
+        and isinstance(entry.payload, dict)
+        and str(entry.payload.get("term_code") or "") == request.term_code
+        else None
+    )
     baseline_available = isinstance(payload, dict) and isinstance(payload.get("courses"), list)
-    if not baseline_available:
-        raise HTTPException(status_code=502, detail="个人课表响应缺少课程数据")
     baseline = [
         normalize_meeting(item, term_code=request.term_code, default_source="personal_timetable")
         for item in (payload.get("courses") if baseline_available else []) if isinstance(item, dict)
@@ -581,7 +654,7 @@ def preview_jwxk_plan(
     return JwxkPlanPreviewResponse(
         term_code=request.term_code,
         baseline_available=baseline_available,
-        baseline_stale=False,
+        baseline_stale=bool(baseline_stale),
         results=results,
     )
 
@@ -591,24 +664,55 @@ def _plan_config(storage: Storage) -> dict:
     return dict(config) if isinstance(config, dict) else {}
 
 
+def _archived_batch_snapshot(batch_code: str, archive: dict | None) -> dict | None:
+    if not isinstance(archive, dict):
+        return None
+    selection_type_code = str(archive.get("selection_type_code") or "")
+    return {
+        "code": batch_code,
+        "name": str(archive.get("batch_name") or "选课轮次"),
+        "term_code": str(archive.get("term_code") or ""),
+        "term_name": str(archive.get("term_name") or ""),
+        "selection_type_code": selection_type_code,
+        "selection_type": {"02": "抢选", "04": "权重"}.get(selection_type_code, "选课"),
+        "begin_time": str(archive.get("begin_time") or ""),
+        "end_time": str(archive.get("end_time") or ""),
+    }
+
+
 @router.post("/jwxk/plan/read")
 def read_jwxk_plan(
     request: JwxkBatchRequest,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
     storage: Storage = Depends(get_storage),
 ):
     config = _plan_config(storage)
     key = f"{auth.username}:{request.batch_code}"
+    archive = get_course_selection_automation_service().get_catalog_archive_view(
+        str(auth.username), request.batch_code,
+    )
+    batch_snapshot = _archived_batch_snapshot(request.batch_code, archive)
     payload = (config.get("course_selection_plans") or {}).get(key) or {
-        "batch_code": request.batch_code, "term_code": "", "groups": [], "items": []
+        "batch_code": request.batch_code,
+        "term_code": str((archive or {}).get("term_code") or ""),
+        "groups": [],
+        "items": [],
     }
     # A payload written by an older frontend race must never leak into another
     # round merely because it happens to sit under the wrong config key.
     if str(payload.get("batch_code") or request.batch_code) != request.batch_code:
-        return {"batch_code": request.batch_code, "term_code": "", "groups": [], "items": []}
+        return {
+            "batch_code": request.batch_code,
+            "term_code": str((archive or {}).get("term_code") or ""),
+            "batch": batch_snapshot,
+            "groups": [],
+            "items": [],
+        }
     return {
         **payload,
         "batch_code": request.batch_code,
+        "term_code": str(payload.get("term_code") or (archive or {}).get("term_code") or ""),
+        "batch": batch_snapshot,
         "groups": payload.get("groups") if isinstance(payload.get("groups"), list) else [],
         "items": normalize_saved_plan_items(payload.get("items")),
     }
@@ -617,7 +721,7 @@ def read_jwxk_plan(
 @router.post("/jwxk/plan/save")
 def save_jwxk_plan(
     request: JwxkSavedPlanRequest,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
     storage: Storage = Depends(get_storage),
 ):
     config = _plan_config(storage)
@@ -661,7 +765,7 @@ def create_jwxk_automation_task(
 @router.get("/jwxk/automation/tasks")
 def list_jwxk_automation_tasks(
     batch_code: str = Query(default="", max_length=64, pattern=r"^[A-Za-z0-9_-]*$"),
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
 ):
     return {
         "tasks": get_course_selection_automation_service().list(
@@ -674,7 +778,7 @@ def list_jwxk_automation_tasks(
 def action_jwxk_automation_task(
     action: str,
     request: JwxkAutomationTaskAction,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
 ):
     if action not in {"start", "pause", "cancel"}:
         raise HTTPException(status_code=404, detail="未知任务操作")

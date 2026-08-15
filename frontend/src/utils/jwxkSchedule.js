@@ -25,6 +25,14 @@ export const selectionParticipantLabel = (course, selectionTypeCode = '') => (
   || (String(selectionTypeCode || course?.selection_type_code || '') === '04' ? '已投注人数' : '已选人数')
 );
 
+/** 权重结果中的 0/0 记录来自其他轮次，不属于当前轮次可操作结果。 */
+export const isCurrentBatchSelectionRecord = (course, selectionTypeCode = '') => {
+  if (String(selectionTypeCode || course?.selection_type_code || '') !== '04') return true;
+  const participants = selectionParticipantCount(course, selectionTypeCode);
+  const capacity = course?.capacity == null ? null : Number(course.capacity);
+  return !(Number(participants) === 0 && capacity === 0);
+};
+
 export const matchAcademicGapCatalogFilters = (gap, filterOptions = {}) => {
   const availableCategories = (filterOptions.course_categories || []).map(item => (
     typeof item === 'string' ? item : item.value
@@ -148,6 +156,19 @@ export const sameSelectionCourse = (left, right) => {
   const rightCode = String(right.course_code || '').trim().toLocaleLowerCase();
   if (leftCode && rightCode) return leftCode === rightCode;
   return Boolean(normalizedName(left.course_name) && normalizedName(left.course_name) === normalizedName(right.course_name));
+};
+
+/**
+ * 官方写接口的 code=200 只代表请求被受理。只有已选/已投列表中出现
+ * 对应教学班（或同课程代码）时，页面才能把操作显示为成功。
+ */
+export const findMatchingSelectionRecord = (records = [], target = {}) => {
+  const classId = String(target.class_id || '').trim();
+  if (classId) {
+    const exact = records.find(item => String(item.class_id || '').trim() === classId);
+    if (exact) return exact;
+  }
+  return records.find(item => sameSelectionCourse(item, target)) || null;
 };
 
 const overlappingWeeks = (left, right) => {

@@ -304,6 +304,7 @@ class JwxkCatalogSearchRequest(JwxkBatchRequest):
     order_by: str = Field(default="", max_length=34)
     filters: dict[str, str] = Field(default_factory=dict)
     time_slot: JwxkTimeSlot | None = None
+    local_only: bool = False
 
 
 class JwxkCatalogDetailRequest(JwxkBatchRequest):
@@ -367,6 +368,9 @@ class JwxkCatalogSearchResponse(StrictModel):
     scope: str
     scope_options: list[dict[str, str]] = Field(default_factory=list)
     groups: list[JwxkCourseGroup] = Field(default_factory=list)
+    cache_hit: bool = False
+    data_source: Literal["local", "remote"] = "remote"
+    sync_status: str = ""
 
 
 class JwxkCourseDetail(StrictModel):

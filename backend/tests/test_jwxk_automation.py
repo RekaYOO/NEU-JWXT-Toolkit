@@ -40,6 +40,67 @@ def test_automation_tasks_are_filtered_by_batch(tmp_path):
     assert len(service.list("student")) == 2
 
 
+def test_running_task_snapshot_exposes_poll_progress_without_sharing_mutable_state(tmp_path):
+    service = _service(tmp_path)
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "实时任务", "items": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "schedules": [{"weekday": 1}], "official_schedule": "完整安排",
+        }], "poll_seconds": 15,
+    })
+    service.action("student", task["task_id"], "start")
+    stored = service._tasks[0]
+    stored["last_attempt_at"] = datetime.now().astimezone().isoformat()
+    stored["attempt_count"] = 3
+
+    snapshot = service.list("student", "batch")[0]
+
+    assert snapshot["poll_interval_seconds"] == 15
+    assert snapshot["next_attempt_at"] is not None
+    assert snapshot["attempt_count"] == 3
+    assert "schedules" not in snapshot["items"][0]
+    snapshot["results"].append({"message": "frontend-only"})
+    assert stored["results"] == []
+
+
+def test_task_course_refresh_prefers_archived_real_scope_and_records_live_counts(tmp_path):
+    calls = []
+
+    class Client:
+        def search_courses(self, **kwargs):
+            calls.append(kwargs)
+            return {"courses": [{
+                "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+                "capacity": 50, "weight_participant_count": 12,
+                "market_participant_count": 12, "market_participant_label": "已投注人数",
+            }]}
+
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "selection_type_code": "04"},
+        scope="TJKC",
+        groups=[{"group_id": "A", "classes": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC", "source_scopes": ["ROUND", "TJKC"],
+        }]}],
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "实时任务",
+        "items": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "ROUND",
+        }],
+    })
+
+    live = service._refresh_task_course_states(Client(), task)
+
+    assert calls[0]["teaching_class_type"] == "TJKC"
+    assert live["class-1"]["weight_participant_count"] == 12
+    assert task["course_states"]["class-1"]["market_participant_count"] == 12
+
+
 def test_cancelled_automation_task_is_removed_immediately(tmp_path):
     service = _service(tmp_path)
     task = service.create("student", {

@@ -943,6 +943,22 @@ export const shouldUsePersonalTimetableCache = (mode, termCode, currentTermCode,
   && (termCode === currentTermCode || termCode === nextTermCode)
 );
 
+export const shouldUsePersonalTimetableEndpoint = (
+  mode,
+  termCode,
+  currentTermCode,
+  nextTermCode = '',
+  { embedded = false, preferredTermCode = '' } = {},
+) => (
+  shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)
+  || (
+    embedded
+    && mode === 'personal'
+    && Boolean(preferredTermCode)
+    && termCode === preferredTermCode
+  )
+);
+
 const getRealtimePersonalTerm = async termCode => {
   const context = await getTimetableContext({ mode: 'personal', term_code: termCode, target_id: '' });
   const campusCode = context.campuses?.[0]?.code || '';
@@ -985,15 +1001,15 @@ function TimetablePage({
   const requestedTerm = preferredTermCode || (typeof window === 'undefined'
     ? ''
     : new URLSearchParams(window.location.search).get('term') || '');
-  const restored = embedded ? null : restorePersonalTimetableMemory(timetableMemory.data, requestedTerm);
+  const restored = restorePersonalTimetableMemory(timetableMemory.data, requestedTerm);
   const [mode, setMode] = useState('personal');
   const [terms, setTerms] = useState(() => restored?.terms || []);
   const [currentTermCode, setCurrentTermCode] = useState(() => restored?.currentTermCode || '');
-  const [termCode, setTermCode] = useState(() => restored?.termCode || '');
+  const [termCode, setTermCode] = useState(() => restored?.termCode || (embedded ? preferredTermCode : ''));
   const [context, setContext] = useState(() => restored?.context || null);
   const [campusCode, setCampusCode] = useState(() => restored?.campusCode || '');
   const [viewMode, setViewMode] = useState(() => (
-    restored?.viewMode || (initialViewMode === 'term' ? 'term' : 'week')
+    (embedded ? null : restored?.viewMode) || (initialViewMode === 'term' ? 'term' : 'week')
   ));
   const [weekNumber, setWeekNumber] = useState(() => restored?.weekNumber || null);
   const [target, setTarget] = useState(null);
@@ -1030,6 +1046,13 @@ function TimetablePage({
   const nextTermCode = useMemo(
     () => immediateNextTerm(terms, currentTermCode),
     [currentTermCode, terms],
+  );
+  const usesPersonalTimetableEndpoint = shouldUsePersonalTimetableEndpoint(
+    mode,
+    termCode,
+    currentTermCode,
+    nextTermCode,
+    { embedded, preferredTermCode },
   );
   const [defaultTimetableOnOpen, setDefaultTimetableOnOpen] = useState(
     () => loadSetting('defaultTimetableOnOpen', false),
@@ -1069,7 +1092,7 @@ function TimetablePage({
   const loadTerms = useCallback(() => {
     if (termsRequestRef.current) return termsRequestRef.current;
     const generation = ++termsGeneration.current;
-    setLoading(true);
+    if (!(embedded && preferredTermCode)) setLoading(true);
     setError(null);
     const request = (async () => {
       try {
@@ -1079,7 +1102,10 @@ function TimetablePage({
         const detectedCurrent = selectEffectiveCurrentTerm(rows, payload.current || '');
         setTerms(rows);
         setCurrentTermCode(detectedCurrent);
-        const linkedTerm = rows.some(item => item.code === deepLink.current.term)
+        const linkedTerm = (
+          rows.some(item => item.code === deepLink.current.term)
+          || (embedded && deepLink.current.term === preferredTermCode)
+        )
           ? deepLink.current.term
           : '';
         autoDefaultResolved.current = Boolean(linkedTerm);
@@ -1087,22 +1113,24 @@ function TimetablePage({
         if (linkedTerm && deepLink.current.day) setMobileDay(deepLink.current.day);
       } catch (requestError) {
         if (generation !== termsGeneration.current) return;
-        setError({
-          stage: 'terms',
-          message: requestErrorText(
-            requestError,
-            '无法读取课表学期，请稍后重试',
-            '课表学期读取等待超时，可能有其他教务任务正在执行，请重试',
-          ),
-        });
-        setLoading(false);
+        if (!(embedded && preferredTermCode)) {
+          setError({
+            stage: 'terms',
+            message: requestErrorText(
+              requestError,
+              '无法读取课表学期，请稍后重试',
+              '课表学期读取等待超时，可能有其他教务任务正在执行，请重试',
+            ),
+          });
+          setLoading(false);
+        }
       } finally {
         if (termsRequestRef.current === request) termsRequestRef.current = null;
       }
     })();
     termsRequestRef.current = request;
     return request;
-  }, []);
+  }, [embedded, preferredTermCode]);
 
   useEffect(() => { loadTerms(); }, [loadTerms]);
 
@@ -1229,9 +1257,9 @@ function TimetablePage({
   }, [currentTermCode, setPersonalContext, terms, watchPersonalRefresh]);
 
   useEffect(() => {
-    if (!shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)) return;
+    if (!usesPersonalTimetableEndpoint) return;
     loadPersonalTimetable(termCode, { autoDetect: !autoDefaultResolved.current });
-  }, [currentTermCode, loadPersonalTimetable, mode, nextTermCode, termCode]);
+  }, [loadPersonalTimetable, termCode, usesPersonalTimetableEndpoint]);
 
   const saveModeSession = useCallback((next = {}) => {
     if (mode === 'personal') return;
@@ -1456,7 +1484,7 @@ function TimetablePage({
   }, []);
 
   useEffect(() => {
-    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)) return;
+    if (usesPersonalTimetableEndpoint) return;
     const targetId = target?.id || '';
     if (!termCode || (mode !== 'personal' && !targetId)) {
       setContext(null);
@@ -1491,10 +1519,10 @@ function TimetablePage({
         setError({ stage: 'context', message: requestErrorText(requestError, '无法读取课表查询条件') });
         setLoading(false);
       });
-  }, [contextRetry, currentTermCode, mode, target, termCode]);
+  }, [contextRetry, currentTermCode, mode, target, termCode, usesPersonalTimetableEndpoint]);
 
   const loadSchedule = useCallback(async () => {
-    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)) {
+    if (usesPersonalTimetableEndpoint) {
       await loadPersonalTimetable(termCode, { refresh: true });
       return;
     }
@@ -1519,12 +1547,12 @@ function TimetablePage({
     } finally {
       if (generation === scheduleGeneration.current) setLoading(false);
     }
-  }, [campusCode, context, currentTermCode, loadPersonalTimetable, mode, target, termCode, viewMode, weekNumber]);
+  }, [campusCode, context, loadPersonalTimetable, mode, target, termCode, usesPersonalTimetableEndpoint, viewMode, weekNumber]);
 
   useEffect(() => {
-    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)) return;
+    if (usesPersonalTimetableEndpoint) return;
     if (context && campusCode && (viewMode === 'term' || weekNumber)) loadSchedule();
-  }, [campusCode, context, currentTermCode, loadSchedule, mode, termCode, viewMode, weekNumber]);
+  }, [campusCode, context, loadSchedule, usesPersonalTimetableEndpoint, viewMode, weekNumber]);
 
   useEffect(() => {
     conflictGeneration.current += 1;
@@ -1560,7 +1588,7 @@ function TimetablePage({
 
   useEffect(() => {
     if (
-      !shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)
+      !usesPersonalTimetableEndpoint
       || !personalPayload
       || !campusCode
     ) return;
@@ -1570,7 +1598,7 @@ function TimetablePage({
       || [];
     setContext(previous => previous ? { ...previous, sections } : previous);
     setSchedule(personalScheduleView(personalPayload, campusCode, viewMode, weekNumber));
-  }, [campusCode, currentTermCode, mode, personalPayload, termCode, viewMode, weekNumber]);
+  }, [campusCode, personalPayload, usesPersonalTimetableEndpoint, viewMode, weekNumber]);
 
   useEffect(() => {
     if (
@@ -1809,7 +1837,7 @@ function TimetablePage({
 
   const switchCampus = async nextCampusCode => {
     if (nextCampusCode === campusCode) return;
-    if (shouldUsePersonalTimetableCache(mode, termCode, currentTermCode, nextTermCode)) {
+    if (usesPersonalTimetableEndpoint) {
       setCampusCode(nextCampusCode);
       setDetailCourse(null);
       setError(null);
@@ -2772,7 +2800,7 @@ function MobileWeekTimeline({ weeks, selectedWeek, currentWeek, onChange }) {
   );
 }
 
-function MobileTimetable({
+export function MobileTimetable({
   coursesByDay,
   sections = [],
   selectedDay,

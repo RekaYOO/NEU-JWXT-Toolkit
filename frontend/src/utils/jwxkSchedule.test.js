@@ -3,8 +3,10 @@ import {
   catalogAvailabilityRequestMode,
   catalogAvailabilityRemoteFilters,
   filterAcademicPlanGapsForBatch,
+  findMatchingSelectionRecord,
   inferBatchRequirementType,
   immediateSelectionConflictMap,
+  isCurrentBatchSelectionRecord,
   matchAcademicGapCatalogFilters,
   mergeCatalogFilterLayers,
   matchesCatalogAvailability,
@@ -22,6 +24,18 @@ test('participant metric follows grab and weight round semantics', () => {
   expect(selectionParticipantCount(course, '04')).toBe(63);
   expect(selectionParticipantLabel(course, '04')).toBe('已投注人数');
   expect(matchesCatalogAvailability({ ...course, selection_type_code: '04' }, 'available')).toBe(false);
+});
+
+test('weight records with zero participants and zero capacity belong to another batch', () => {
+  expect(isCurrentBatchSelectionRecord({
+    weight_participant_count: 0, capacity: 0,
+  }, '04')).toBe(false);
+  expect(isCurrentBatchSelectionRecord({
+    weight_participant_count: 0, capacity: 30,
+  }, '04')).toBe(true);
+  expect(isCurrentBatchSelectionRecord({
+    selected_count: 0, capacity: 0,
+  }, '02')).toBe(true);
 });
 
 test('batch course nature is inferred from the batch name before its notice', () => {
@@ -70,6 +84,21 @@ test('same course is ignored by code and normalized name fallback', () => {
     meeting({ course_code: '', course_name: '课程 A' }),
     meeting({ course_code: '', course_name: '课程A' }),
   )).toBe(true);
+});
+
+test('selection mutation is only confirmed by the official selected record', () => {
+  const records = [
+    { class_id: 'A113494', course_code: 'A1442000170', course_name: '物流与供应链管理' },
+  ];
+  expect(findMatchingSelectionRecord(records, {
+    class_id: 'A113494', course_code: 'A1442000170', course_name: '物流与供应链管理',
+  })).toBe(records[0]);
+  expect(findMatchingSelectionRecord(records, {
+    class_id: 'A113493', course_code: 'A1442000170', course_name: '物流与供应链管理',
+  })).toBe(records[0]);
+  expect(findMatchingSelectionRecord(records, {
+    class_id: 'OTHER', course_code: 'A0000000000', course_name: '另一门课程',
+  })).toBeNull();
 });
 
 test('immediate conflicts require matching term schedule dimensions represented by the view', () => {

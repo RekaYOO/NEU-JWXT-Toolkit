@@ -280,6 +280,19 @@ class CourseSelectionAutomationService:
         with self._lock:
             return [copy.deepcopy(item) for item in self._archives if item.get("account") == account]
 
+    def get_catalog_archive_view(self, account: str, batch_code: str) -> dict[str, Any] | None:
+        """Return a read-only shallow view without copying the complete catalog."""
+        with self._lock:
+            source = next((item for item in self._archives if (
+                item.get("account") == account and item.get("batch_code") == batch_code
+            )), None)
+            if source is None:
+                return None
+            return {
+                **{key: value for key, value in source.items() if key != "courses"},
+                "courses": tuple(source.get("courses") or ()),
+            }
+
     def query_catalog_archive(
         self,
         account: str,
@@ -295,9 +308,14 @@ class CourseSelectionAutomationService:
     ) -> dict[str, Any] | None:
         """Query the progressively-built, account-scoped union catalog."""
         with self._lock:
-            archive = next((copy.deepcopy(item) for item in self._archives if (
+            source = next((item for item in self._archives if (
                 item.get("account") == account and item.get("batch_code") == batch_code
             )), None)
+            archive = None if source is None else {
+                "courses": tuple(source.get("courses") or ()),
+                "sync_status": source.get("sync_status"),
+                "catalog_complete": source.get("catalog_complete"),
+            }
         if archive is None or not archive.get("courses"):
             return None
 
@@ -445,10 +463,40 @@ class CourseSelectionAutomationService:
     def list(self, account: str, batch_code: str = "") -> list[dict[str, Any]]:
         with self._lock:
             return [
-                dict(task) for task in self._tasks
+                self._task_snapshot(task) for task in self._tasks
                 if task.get("account") == account
                 and (not batch_code or task.get("batch_code") == batch_code)
             ]
+
+    def _task_snapshot(self, task: dict[str, Any]) -> dict[str, Any]:
+        snapshot = copy.deepcopy(task)
+        public_course_fields = {
+            "plan_group_id", "plan_group_name", "plan_group_target_count",
+            "course_code", "course_name", "class_id", "class_number",
+            "teaching_class_type", "teacher", "priority", "utility",
+            "capacity", "selected_count", "first_choice_count",
+            "weight_participant_count", "market_participant_count",
+            "market_participant_label", "devoted_weight", "weight",
+        }
+        snapshot["items"] = [
+            {key: value for key, value in item.items() if key in public_course_fields}
+            for item in snapshot.get("items") or [] if isinstance(item, dict)
+        ]
+        weight_status = snapshot.get("weight_status")
+        if isinstance(weight_status, dict):
+            weight_status["recommendation"] = [
+                {key: value for key, value in item.items() if key in public_course_fields}
+                for item in weight_status.get("recommendation") or [] if isinstance(item, dict)
+            ]
+        snapshot["results"] = list(snapshot.get("results") or [])[-20:]
+        interval = self._poll_interval(task)
+        snapshot["poll_interval_seconds"] = interval
+        snapshot["next_attempt_at"] = None
+        if task.get("desired_state") == "running" and task.get("status") in {"running", "waiting"}:
+            last_attempt = self._parse_task_time(task.get("last_attempt_at"))
+            if last_attempt is not None:
+                snapshot["next_attempt_at"] = (last_attempt + timedelta(seconds=interval)).isoformat()
+        return snapshot
 
     @staticmethod
     def _group_specs(task: dict[str, Any]) -> list[dict[str, Any]]:
@@ -669,6 +717,70 @@ class CourseSelectionAutomationService:
         ):
             return None
         return auth
+
+    def _refresh_task_course_states(
+        self, client: JwxkSessionClient, task: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        live_by_class: dict[str, dict[str, Any]] = {}
+        seen_queries: set[tuple[str, str]] = set()
+        with self._lock:
+            archive = next((item for item in self._archives if (
+                item.get("account") == task.get("account")
+                and item.get("batch_code") == task.get("batch_code")
+            )), None)
+            archived_by_class = {
+                str(item.get("class_id") or ""): item
+                for item in (archive or {}).get("courses") or []
+                if str(item.get("class_id") or "")
+            }
+        for item in task.get("items") or []:
+            query = str(item.get("course_code") or item.get("course_name") or "").strip()
+            archived = archived_by_class.get(str(item.get("class_id") or ""), {})
+            class_type = str(item.get("teaching_class_type") or "")
+            if class_type in {"", "ALL", "ROUND", "ALLKC"}:
+                class_type = str(archived.get("teaching_class_type") or "")
+            if class_type in {"", "ALL", "ROUND", "ALLKC"}:
+                class_type = next((
+                    str(value) for value in archived.get("source_scopes") or []
+                    if str(value) not in {"", "ALL", "ROUND", "ALLKC"}
+                ), "ALLKC")
+            query_key = (query.upper(), class_type)
+            if not query or query_key in seen_queries:
+                continue
+            seen_queries.add(query_key)
+            result = client.search_courses(
+                batch_code=task["batch_code"], teaching_class_type=class_type,
+                page_number=1, page_size=50, keyword=query,
+            )
+            for row in result.get("courses") or []:
+                class_id = str(row.get("class_id") or "")
+                if class_id:
+                    live_by_class[class_id] = row
+        now = datetime.now().astimezone().isoformat()
+        previous = task.get("course_states") if isinstance(task.get("course_states"), dict) else {}
+        fields = (
+            "class_id", "course_code", "course_name", "teacher", "capacity",
+            "selected_count", "first_choice_count", "weight_participant_count",
+            "market_participant_count", "market_participant_label", "full",
+            "restricted", "eligibility_status", "eligibility_reason",
+        )
+        task["course_states"] = {
+            str(item.get("class_id") or ""): {
+                **dict(previous.get(str(item.get("class_id") or "")) or {}),
+                **{
+                    field: live_by_class[str(item.get("class_id") or "")].get(field)
+                    for field in fields
+                    if str(item.get("class_id") or "") in live_by_class
+                    and field in live_by_class[str(item.get("class_id") or "")]
+                },
+                "updated_at": now if str(item.get("class_id") or "") in live_by_class else (
+                    previous.get(str(item.get("class_id") or ""), {}).get("updated_at")
+                ),
+            }
+            for item in task.get("items") or []
+            if str(item.get("class_id") or "")
+        }
+        return live_by_class
 
     def _wait_for_auth(self, task: dict[str, Any], message: str = "正在自动恢复登录，恢复后继续任务") -> None:
         self._switch_to_vacancy_watch(task)
@@ -973,6 +1085,12 @@ class CourseSelectionAutomationService:
                     else:
                         self._set_state(task, "needs_review", "程序重启或登录恢复前有一项提交结果不明确，请先核验官方已选结果")
                         return
+                live_by_class = self._refresh_task_course_states(client, task)
+                for row in confirmed_rows:
+                    class_id = str(row.get("class_id") or "")
+                    if class_id in task.get("course_states", {}):
+                        task["course_states"][class_id]["devoted_weight"] = row.get("devoted_weight")
+                        task["course_states"][class_id]["selected"] = True
                 for group_id, alternatives in grouped.items():
                     spec = specs.get(group_id) or {
                         "group_id": group_id, "name": "方案组", "target_count": 1,
@@ -1023,13 +1141,7 @@ class CourseSelectionAutomationService:
                         course_key = str(item.get("course_code") or item.get("class_id") or "")
                         if course_key in confirmed_keys or str(item.get("course_code") or "").casefold() in confirmed_by_code:
                             continue
-                        result = client.search_courses(
-                            batch_code=task["batch_code"],
-                            teaching_class_type=item.get("teaching_class_type") or "ALLKC",
-                            page_number=1, page_size=50,
-                            keyword=item.get("course_code") or item.get("course_name") or "",
-                        )
-                        candidate = next((row for row in result["courses"] if row.get("class_id") == item.get("class_id")), None)
+                        candidate = live_by_class.get(str(item.get("class_id") or ""))
                         if not candidate or candidate.get("full") or candidate.get("restricted") or candidate.get("conflict"):
                             continue
                         eligibility = client.check_course_eligibility(
@@ -1348,23 +1460,12 @@ class CourseSelectionAutomationService:
                     self._persist_task(task)
                     return
 
-                live_by_class: dict[str, dict] = {}
-                seen_queries: set[tuple[str, str]] = set()
-                for item in task.get("items") or []:
-                    query = str(item.get("course_code") or item.get("course_name") or "").strip()
-                    class_type = str(item.get("teaching_class_type") or "ALLKC")
-                    query_key = (query.upper(), class_type)
-                    if not query or query_key in seen_queries:
-                        continue
-                    seen_queries.add(query_key)
-                    result = client.search_courses(
-                        batch_code=task["batch_code"], teaching_class_type=class_type,
-                        page_number=1, page_size=50, keyword=query,
-                    )
-                    for row in result.get("courses") or []:
-                        class_id = str(row.get("class_id") or "")
-                        if class_id:
-                            live_by_class[class_id] = row
+                live_by_class = self._refresh_task_course_states(client, task)
+                for row in (*volunteered, *confirmed):
+                    class_id = str(row.get("class_id") or "")
+                    if class_id in task.get("course_states", {}):
+                        task["course_states"][class_id]["devoted_weight"] = row.get("devoted_weight")
+                        task["course_states"][class_id]["selected"] = True
 
                 targets = self._weight_task_targets(task, live_by_class)
                 if not targets:
@@ -1685,6 +1786,7 @@ class CourseSelectionAutomationService:
 
     def _persist_task(self, task: dict[str, Any]) -> None:
         with self._lock:
+            task["updated_at"] = datetime.now().astimezone().isoformat()
             existing = next((item for item in self._tasks if item.get("task_id") == task.get("task_id")), None)
             if existing is not task and existing is not None:
                 existing.update(task)
