@@ -78,12 +78,18 @@ export const ResourceProvider = ({
   const generationRef = useRef(0);
   const eventCursorRef = useRef('');
   const refreshPromisesRef = useRef(new Map());
+  const identityRef = useRef({ identity, offlineMode });
 
   useEffect(() => {
     statesRef.current = states;
   }, [states]);
 
   useEffect(() => {
+    const previous = identityRef.current;
+    if (previous.identity === identity && previous.offlineMode === offlineMode) {
+      return;
+    }
+    identityRef.current = { identity, offlineMode };
     generationRef.current += 1;
     eventCursorRef.current = '';
     refreshPromisesRef.current.clear();

@@ -25,6 +25,23 @@ export const selectionParticipantLabel = (course, selectionTypeCode = '') => (
   || (String(selectionTypeCode || course?.selection_type_code || '') === '04' ? '已投注人数' : '已选人数')
 );
 
+export const catalogGroupLiveStats = (
+  group = {}, conflictMap = {}, selectionTypeCode = '',
+) => {
+  const classes = group.classes || [];
+  return {
+    conflict_free_count: classes.filter(course => (
+      !course.conflict && conflictMap[course.class_id]?.status !== 'conflict'
+    )).length,
+    available_count: classes.filter(course => {
+      const participants = selectionParticipantCount(course, selectionTypeCode);
+      return course.capacity != null
+        && participants != null
+        && Number(course.capacity) > Number(participants);
+    }).length,
+  };
+};
+
 /** 权重结果中的 0/0 记录来自其他轮次，不属于当前轮次可操作结果。 */
 export const isCurrentBatchSelectionRecord = (course, selectionTypeCode = '') => {
   if (String(selectionTypeCode || course?.selection_type_code || '') !== '04') return true;
@@ -169,13 +186,10 @@ export const sortCatalogGroupsBySelectability = groups => [...(groups || [])]
 export const catalogGroupsForDisplay = (groups = [], {
   availability = 'all',
   weekday = 'all',
-  expandedGroupId = '',
-  expandedIndex = -1,
 } = {}) => {
-  const visible = sortCatalogGroupsBySelectability((groups || []).map(group => {
-    const preserveExpanded = Boolean(expandedGroupId && group.group_id === expandedGroupId);
+  return sortCatalogGroupsBySelectability((groups || []).map(group => {
     const classes = (group.classes || []).filter(course => {
-      if (!preserveExpanded && !matchesCatalogAvailability(course, availability)) return false;
+      if (!matchesCatalogAvailability(course, availability)) return false;
       if (weekday !== 'all' && !(course.schedules || []).some(item => String(item.weekday) === String(weekday))) {
         return false;
       }
@@ -183,11 +197,75 @@ export const catalogGroupsForDisplay = (groups = [], {
     });
     return { ...group, classes, class_count: classes.length };
   }).filter(group => group.classes.length));
-  const currentIndex = visible.findIndex(group => group.group_id === expandedGroupId);
-  if (currentIndex < 0 || expandedIndex < 0 || currentIndex === expandedIndex) return visible;
-  const [expanded] = visible.splice(currentIndex, 1);
-  visible.splice(Math.min(expandedIndex, visible.length), 0, expanded);
-  return visible;
+};
+
+const catalogGroupKey = group => String(group?.group_id || group?.course_code || group?.course_name || '');
+const catalogClassKey = course => String(course?.class_id || course?.teaching_class_id || '');
+
+export const createCatalogDisplayLayout = groups => (groups || []).map(group => ({
+  group_id: catalogGroupKey(group),
+  class_ids: (group.classes || []).map(catalogClassKey).filter(Boolean),
+})).filter(item => item.group_id);
+
+export const extendCatalogDisplayLayout = (layout = [], groups = []) => {
+  const next = (layout || []).map(item => ({ ...item, class_ids: [...(item.class_ids || [])] }));
+  const byGroup = new Map(next.map(item => [item.group_id, item]));
+  (groups || []).forEach(group => {
+    const groupId = catalogGroupKey(group);
+    if (!groupId) return;
+    let entry = byGroup.get(groupId);
+    if (!entry) {
+      entry = { group_id: groupId, class_ids: [] };
+      next.push(entry);
+      byGroup.set(groupId, entry);
+    }
+    const known = new Set(entry.class_ids);
+    (group.classes || []).forEach(course => {
+      const classId = catalogClassKey(course);
+      if (classId && !known.has(classId)) {
+        entry.class_ids.push(classId);
+        known.add(classId);
+      }
+    });
+  });
+  return next;
+};
+
+export const applyCatalogDisplayLayout = (groups = [], layout = []) => {
+  const groupMap = new Map((groups || []).map(group => [catalogGroupKey(group), group]));
+  return (layout || []).map(entry => {
+    const group = groupMap.get(entry.group_id);
+    if (!group) return null;
+    const classMap = new Map((group.classes || []).map(course => [catalogClassKey(course), course]));
+    const classes = (entry.class_ids || []).map(classId => classMap.get(classId)).filter(Boolean);
+    return classes.length ? { ...group, classes, class_count: classes.length } : null;
+  }).filter(Boolean);
+};
+
+export const mergeCatalogRefreshPreservingOrder = (previous = [], incoming = []) => {
+  const incomingMap = new Map((incoming || []).map(group => [catalogGroupKey(group), group]));
+  const previousKeys = new Set((previous || []).map(catalogGroupKey));
+  const merged = (previous || []).map(group => {
+    const nextGroup = incomingMap.get(catalogGroupKey(group));
+    if (!nextGroup) return group;
+    const nextClasses = new Map((nextGroup.classes || []).map(course => [catalogClassKey(course), course]));
+    const oldClassKeys = new Set((group.classes || []).map(catalogClassKey));
+    return {
+      ...group,
+      ...nextGroup,
+      classes: [
+        ...(group.classes || []).map(course => ({
+          ...course,
+          ...(nextClasses.get(catalogClassKey(course)) || {}),
+        })),
+        ...(nextGroup.classes || []).filter(course => !oldClassKeys.has(catalogClassKey(course))),
+      ],
+    };
+  });
+  return [
+    ...merged,
+    ...(incoming || []).filter(group => !previousKeys.has(catalogGroupKey(group))),
+  ];
 };
 
 export const sameSelectionCourse = (left, right) => {

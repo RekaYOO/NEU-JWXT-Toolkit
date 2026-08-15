@@ -35,6 +35,10 @@ describe('cached resource loading state', () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
   });
 
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   test('keeps a cache miss loading while its automatic refresh is active', () => {
     expect(deriveCachedResourceLoading({
       enabled: true,
@@ -85,6 +89,40 @@ describe('cached resource loading state', () => {
       expect.objectContaining({ reason: 'page_swr' }),
     );
     expect(container.textContent).toBe('loading|no-data');
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  test('does not discard the first cache read when the provider mounts with an identity', async () => {
+    let resolveCache;
+    getFestivalActivitiesCache.mockReturnValue(new Promise(resolve => {
+      resolveCache = resolve;
+    }));
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <ResourceProvider identity="test-account">
+          <FestivalResourceProbe />
+        </ResourceProvider>,
+      );
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(container.textContent).toBe('loading|no-data');
+
+    await act(async () => {
+      resolveCache({
+        activities: [{ id: 'cached' }],
+        cache: { revision: 'r1', is_stale: false },
+      });
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toBe('idle|data');
+    expect(getFestivalActivitiesCache).toHaveBeenCalledTimes(1);
 
     await act(async () => root.unmount());
     container.remove();

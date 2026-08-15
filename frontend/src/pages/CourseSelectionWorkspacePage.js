@@ -21,22 +21,25 @@ import {
 } from '../services/api';
 import TimetablePage from './TimetablePage';
 import {
+  applyCatalogDisplayLayout,
   catalogAvailabilityRequestMode,
   catalogAvailabilityRemoteFilters,
+  catalogGroupLiveStats,
   catalogGroupsForDisplay,
+  createCatalogDisplayLayout,
+  extendCatalogDisplayLayout,
   filterAcademicPlanGapsForBatch,
   findMatchingSelectionRecord,
   immediateSelectionConflictMap,
   isCurrentBatchSelectionRecord,
   matchAcademicGapCatalogFilters,
+  mergeCatalogRefreshPreservingOrder,
   mergeCatalogFilterLayers,
-  matchesCatalogAvailability,
   patchCatalogSelection,
   removeSelectionRecord,
   sameSelectionCourse,
   selectionParticipantCount,
   selectionParticipantLabel,
-  sortCatalogGroupsBySelectability,
   summarizeSelectionConflictsByClass,
   upsertSelectionRecord,
 } from '../utils/jwxkSchedule';
@@ -217,7 +220,14 @@ const selectionRecordsFromResponse = result => {
 const CourseSelectionWorkspacePage = () => {
   const { batchCode } = useParams();
   const navigate = useNavigate();
-  const academicReportResource = useCachedResource('academic-report');
+  // The selection workspace only consumes the report already maintained by the
+  // academic-report resource.  Do not let entering JWXK start another remote
+  // refresh, and let this small local read win the browser connection race
+  // before the slower JWXK status/catalog requests begin.
+  const academicReportResource = useCachedResource('academic-report', { autoRefresh: false });
+  const academicReportCacheSettled = Boolean(
+    academicReportResource.data || !academicReportResource.loading,
+  );
   const requestGeneration = useRef(0);
   const workspaceGeneration = useRef(0);
   const planSaveQueue = useRef(Promise.resolve());
@@ -228,7 +238,7 @@ const CourseSelectionWorkspacePage = () => {
   const capacityRefreshInFlightRef = useRef(false);
   const tasksRefreshInFlightRef = useRef(false);
   const selectedRef = useRef([]);
-  const expandedGroupPositionRef = useRef(-1);
+  const catalogDisplayLayoutRef = useRef({ signature: '', layout: [] });
   const [status, setStatus] = useState(null);
   const [localBatch, setLocalBatch] = useState(null);
   const [savedTermCode, setSavedTermCode] = useState('');
@@ -338,12 +348,19 @@ const CourseSelectionWorkspacePage = () => {
     Number(isCurrentBatchSelectionRecord(right, batch?.selection_type_code))
     - Number(isCurrentBatchSelectionRecord(left, batch?.selection_type_code))
   )), [selected, batch?.selection_type_code]);
-  const visibleGroups = useMemo(() => catalogGroupsForDisplay(groups, {
-    availability,
-    weekday,
-    expandedGroupId,
-    expandedIndex: expandedGroupPositionRef.current,
-  }), [availability, expandedGroupId, groups, weekday]);
+  const catalogDisplaySignature = useMemo(() => JSON.stringify({
+    batchCode, page, keyword, scope, availability, weekday, timeSlot,
+    filters: effectiveCatalogFilters,
+  }), [availability, batchCode, effectiveCatalogFilters, keyword, page, scope, timeSlot, weekday]);
+  const visibleGroups = useMemo(() => {
+    const currentlyMatching = catalogGroupsForDisplay(groups, { availability, weekday });
+    const previousLayout = catalogDisplayLayoutRef.current;
+    const layout = previousLayout.signature === catalogDisplaySignature
+      ? extendCatalogDisplayLayout(previousLayout.layout, currentlyMatching)
+      : createCatalogDisplayLayout(currentlyMatching);
+    catalogDisplayLayoutRef.current = { signature: catalogDisplaySignature, layout };
+    return applyCatalogDisplayLayout(groups, layout);
+  }, [availability, catalogDisplaySignature, groups, weekday]);
 
   const fetchEligibility = async classIds => {
     const ids = [...new Set(classIds.filter(Boolean))];
@@ -417,7 +434,10 @@ const CourseSelectionWorkspacePage = () => {
       };
       const applyResult = result => {
         const nextGroups = result.groups || [];
-        setGroups(nextGroups); setTotal(result.total || 0); setPage(targetPage);
+        setGroups(previous => silent
+          ? mergeCatalogRefreshPreservingOrder(previous, nextGroups)
+          : nextGroups);
+        setTotal(result.total || 0); setPage(targetPage);
         setScope(result.scope || targetScope);
         if (result.scope_options?.length) setScopeOptions(result.scope_options);
         return nextGroups;
@@ -672,6 +692,7 @@ const CourseSelectionWorkspacePage = () => {
   };
 
   useEffect(() => {
+    if (!academicReportCacheSettled) return undefined;
     const generation = ++workspaceGeneration.current;
     ++requestGeneration.current;
     setStatus(null);
@@ -698,7 +719,7 @@ const CourseSelectionWorkspacePage = () => {
     setTotal(0);
     setPage(1);
     setExpandedGroupId('');
-    expandedGroupPositionRef.current = -1;
+    catalogDisplayLayoutRef.current = { signature: '', layout: [] };
     setHoverPreviewClass(null);
     setPinnedPreviewClass(null);
     setHiddenPlanClassIds([]);
@@ -752,15 +773,16 @@ const CourseSelectionWorkspacePage = () => {
     return () => {
       if (workspaceGeneration.current === generation) ++workspaceGeneration.current;
     };
-  }, [batchCode]);
+  }, [academicReportCacheSettled, batchCode]);
 
   useEffect(() => {
+    if (!academicReportCacheSettled) return undefined;
     if (focusInProgressRef.current) return undefined;
     const timer = window.setTimeout(() => {
       loadCatalog(1, keyword, scope, timeSlot, effectiveCatalogFilters, weekday);
     }, 80);
     return () => window.clearTimeout(timer);
-  }, [batchCode, effectiveCatalogFilters, keyword, remoteAvailability, scope, timeSlot, weekday]);
+  }, [academicReportCacheSettled, batchCode, effectiveCatalogFilters, keyword, remoteAvailability, scope, timeSlot, weekday]);
 
   useEffect(() => {
     if (!batch || batch.state !== 'active' || view !== 'catalog' || loading) return undefined;
@@ -1393,6 +1415,10 @@ const CourseSelectionWorkspacePage = () => {
     ),
     [catalogCourses, catalogMeetingConflictMap, catalogScheduleOverlay, personalScheduleReady],
   );
+  const catalogGroupLiveStatsMap = useMemo(() => new Map(groups.map(group => [
+    group.group_id,
+    catalogGroupLiveStats(group, catalogClassConflictMap, batch?.selection_type_code),
+  ])), [batch?.selection_type_code, catalogClassConflictMap, groups]);
   const allScheduleOverlay = useMemo(
     () => [...selectedScheduleOverlay, ...candidateScheduleOverlay],
     [candidateScheduleOverlay, selectedScheduleOverlay],
@@ -1534,9 +1560,6 @@ const CourseSelectionWorkspacePage = () => {
 
   const toggleCourseGroup = group => {
     const opening = expandedGroupId !== group.group_id;
-    expandedGroupPositionRef.current = opening
-      ? visibleGroups.findIndex(item => item.group_id === group.group_id)
-      : -1;
     setExpandedGroupId(opening ? group.group_id : '');
     if (opening) {
       verifyEligibility((group.classes || [])
@@ -1654,6 +1677,10 @@ const CourseSelectionWorkspacePage = () => {
           <div className="jwxk-group-list">
             {visibleGroups.map(group => {
               const expanded = expandedGroupId === group.group_id;
+              const liveStats = catalogGroupLiveStatsMap.get(group.group_id) || {
+                conflict_free_count: 0,
+                available_count: 0,
+              };
               return (
                 <Card
                   key={group.group_id}
@@ -1696,10 +1723,8 @@ const CourseSelectionWorkspacePage = () => {
                     <Badge count={group.class_count} overflowCount={99} />
                   </div>
                   <div className="jwxk-course-group__stats">
-                    <span>{group.selectable_count || 0} 个已确认可选</span>
-                    {(group.eligibility_pending_count || 0) > 0 && <span>{group.eligibility_pending_count} 个待核验</span>}
-                    <span>{group.conflict_free_count} 个官方无冲突</span>
-                    <span>{group.available_count} 个{batch?.selection_type_code === '04' ? '当前未超容量' : '有余量'}</span>
+                    <span>{liveStats.conflict_free_count} 个无冲突教学班</span>
+                    <span>{liveStats.available_count} 个有容量教学班</span>
                     <b>{expanded ? '收起教学班' : '比较教学班'}</b>
                   </div>
                   {expanded && (
@@ -1776,7 +1801,6 @@ const CourseSelectionWorkspacePage = () => {
                       })}
                       <Button className="jwxk-collapse-classes" type="text" onClick={() => {
                         setExpandedGroupId('');
-                        expandedGroupPositionRef.current = -1;
                         setHoverPreviewClass(null);
                       }}>收起教学班</Button>
                     </div>

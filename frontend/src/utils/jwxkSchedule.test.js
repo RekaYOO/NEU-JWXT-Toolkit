@@ -1,14 +1,19 @@
 import {
   academicGapCatalogScope,
+  applyCatalogDisplayLayout,
   catalogAvailabilityRequestMode,
   catalogAvailabilityRemoteFilters,
+  catalogGroupLiveStats,
   catalogGroupsForDisplay,
+  createCatalogDisplayLayout,
+  extendCatalogDisplayLayout,
   filterAcademicPlanGapsForBatch,
   findMatchingSelectionRecord,
   inferBatchRequirementType,
   immediateSelectionConflictMap,
   isCurrentBatchSelectionRecord,
   matchAcademicGapCatalogFilters,
+  mergeCatalogRefreshPreservingOrder,
   mergeCatalogFilterLayers,
   matchesCatalogAvailability,
   sameSelectionCourse,
@@ -28,6 +33,24 @@ test('participant metric follows grab and weight round semantics', () => {
   expect(selectionParticipantCount(course, '04')).toBe(63);
   expect(selectionParticipantLabel(course, '04')).toBe('已投注人数');
   expect(matchesCatalogAvailability({ ...course, selection_type_code: '04' }, 'available')).toBe(false);
+});
+
+test('catalog group summary only exposes live conflict-free and capacity counts', () => {
+  const group = {
+    classes: [
+      { class_id: 'clear', capacity: 50, weight_participant_count: 20, conflict: false },
+      { class_id: 'local-conflict', capacity: 30, weight_participant_count: 30, conflict: false },
+      { class_id: 'official-conflict', capacity: 40, weight_participant_count: 10, conflict: true },
+    ],
+  };
+  expect(catalogGroupLiveStats(group, {
+    clear: { status: 'clear' },
+    'local-conflict': { status: 'conflict' },
+    'official-conflict': { status: 'clear' },
+  }, '04')).toEqual({
+    conflict_free_count: 1,
+    available_count: 2,
+  });
 });
 
 test('weight records with zero participants and zero capacity belong to another batch', () => {
@@ -235,23 +258,37 @@ test('catalog places task-recommended courses first within the same availability
   ]);
 });
 
-test('eligibility updates keep the expanded course visible at its original position', () => {
-  const groups = [{
+test('background eligibility and capacity updates preserve the loaded catalog layout', () => {
+  const initiallyVisible = catalogGroupsForDisplay([{
     group_id: 'first',
-    classes: [{ class_id: 'first-1', eligibility_status: 'selectable', schedules: [] }],
+    classes: [
+      { class_id: 'first-a', eligibility_status: 'selectable', selected_count: 8, schedules: [] },
+      { class_id: 'first-b', eligibility_status: 'selectable', selected_count: 9, schedules: [] },
+    ],
   }, {
-    group_id: 'expanded',
-    classes: [{ class_id: 'expanded-1', eligibility_status: 'unavailable', schedules: [] }],
-  }, {
-    group_id: 'last',
-    classes: [{ class_id: 'last-1', eligibility_status: 'selectable', schedules: [] }],
-  }];
+    group_id: 'second',
+    classes: [{ class_id: 'second-a', eligibility_status: 'selectable', selected_count: 10, schedules: [] }],
+  }], { availability: 'selectable' });
+  const layout = createCatalogDisplayLayout(initiallyVisible);
 
-  const visible = catalogGroupsForDisplay(groups, {
-    availability: 'selectable', expandedGroupId: 'expanded', expandedIndex: 1,
-  });
-  expect(visible.map(group => group.group_id)).toEqual(['first', 'expanded', 'last']);
-  expect(visible[1].classes[0].eligibility_status).toBe('unavailable');
+  const refreshed = mergeCatalogRefreshPreservingOrder(initiallyVisible, [{
+    group_id: 'second',
+    classes: [{ class_id: 'second-a', eligibility_status: 'selectable', selected_count: 2, schedules: [] }],
+  }, {
+    group_id: 'first',
+    classes: [
+      { class_id: 'first-b', eligibility_status: 'selectable', selected_count: 1, schedules: [] },
+      { class_id: 'first-a', eligibility_status: 'unavailable', selected_count: 30, schedules: [] },
+    ],
+  }]);
+  const visible = applyCatalogDisplayLayout(
+    refreshed,
+    extendCatalogDisplayLayout(layout, catalogGroupsForDisplay(refreshed, { availability: 'selectable' })),
+  );
+
+  expect(visible.map(group => group.group_id)).toEqual(['first', 'second']);
+  expect(visible[0].classes.map(course => course.class_id)).toEqual(['first-a', 'first-b']);
+  expect(visible[0].classes[0]).toMatchObject({ eligibility_status: 'unavailable', selected_count: 30 });
 });
 
 test('academic-plan gaps map to official task category and nature filters', () => {
