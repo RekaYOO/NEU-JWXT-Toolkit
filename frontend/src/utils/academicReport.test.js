@@ -89,7 +89,29 @@ describe('getAcademicRuleDeficitText', () => {
       remaining_credits: 0.5,
       missing_course_count: 1,
       missing_group_count: 2,
-    })).toBe('还差 0.5 学分、1 门课程、2 个类别');
+    })).toBe('还差 0.5 学分、1 门课程、2 个课程组');
+  });
+
+  test('本轮已投课程会同步满足直接挂载规则的课程组数量', () => {
+    const projected = overlayExternalSelectedCourses([{
+      wid: 'foundation-elective', name: '选修', path: '学科基础类 > 选修',
+      path_array: ['学科基础类', '选修'], requirement_type: 'elective', is_leaf: true,
+      required_credits: 4, earned_credits: 0, selected_credits: 0, remaining_credits: 4,
+      group_count_required: 2, group_count_taken: 0, missing_group_count: 2,
+      missing_course_count: 2, is_completed: false, children: [], courses: [
+        { course_code: 'F1', course_name: '基础选修一', credit: 2, is_passed: false, is_selected: false },
+        { course_code: 'F2', course_name: '基础选修二', credit: 2, is_passed: false, is_selected: false },
+      ],
+    }], [
+      { course_code: 'F1', course_name: '基础选修一', credits: 2, devoted_weight: 20 },
+      { course_code: 'F2', course_name: '基础选修二', credits: 2, devoted_weight: 20 },
+    ]);
+    const [category] = projected.categories;
+    expect(category.remaining_credits).toBe(0);
+    expect(category.missing_course_count).toBe(0);
+    expect(category.missing_group_count).toBe(0);
+    expect(category.is_completed).toBe(true);
+    expect(collectAcademicPlanDeficits(projected.categories)).toEqual([]);
   });
 
   test('学分已选够但课程未通过时显示待通过课程和学分', () => {

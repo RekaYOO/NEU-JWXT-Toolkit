@@ -52,7 +52,8 @@ from .course_selection import (
     JwxkEligibilityRequest, JwxkEligibilityResponse,
     JwxkSelectionScheduleResponse, JwxkPlanPreviewRequest,
     JwxkPlanPreviewResponse, JwxkPlanGroup, JwxkSavedPlanRequest,
-    JwxkWeightPlanRequest, JwxkWeightConfigResponse,
+    JwxkWeightPlanRequest, JwxkWeightConfigResponse, JwxkAutomationSettings,
+    JwxkAutomationSettingsResponse,
     JwxkAutomationTaskRequest, JwxkAutomationTaskAction,
 )
 from .timetable import (
@@ -109,7 +110,8 @@ __all__ = [
     "JwxkEligibilityRequest", "JwxkEligibilityResponse",
     "JwxkSelectionScheduleResponse", "JwxkPlanPreviewRequest",
     "JwxkPlanPreviewResponse", "JwxkPlanGroup", "JwxkSavedPlanRequest",
-    "JwxkWeightPlanRequest", "JwxkWeightConfigResponse",
+    "JwxkWeightPlanRequest", "JwxkWeightConfigResponse", "JwxkAutomationSettings",
+    "JwxkAutomationSettingsResponse",
     "JwxkAutomationTaskRequest", "JwxkAutomationTaskAction",
     "TimetableContextRequest", "TimetableContextResponse",
     "TimetableCourseModel", "TimetableScheduleRequest", "TimetableScheduleResponse",

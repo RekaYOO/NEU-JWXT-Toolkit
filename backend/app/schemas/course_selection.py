@@ -440,6 +440,30 @@ class JwxkWeightConfigResponse(StrictModel):
     grade_size: int | None = None
 
 
+class JwxkAutomationSettings(StrictModel):
+    """Account/round-scoped automation and notification preferences."""
+    strategy_schedule_mode: Literal["interval", "final_windows"] = "interval"
+    rebalance_seconds: int = Field(default=600, ge=600, le=86400)
+    force_final_rebalance: bool = True
+    mail_enabled: bool = False
+    notify_round_end: bool = False
+    notify_final_rebalance: bool = False
+    notify_capacity_transition: bool = False
+    notify_over_capacity: bool = False
+    notify_underfilled_warning: bool = False
+    notify_grab_result: bool = False
+    over_capacity_ratio: float = Field(default=0.20, ge=0, le=10)
+
+
+class JwxkAutomationSettingsResponse(JwxkAutomationSettings):
+    batch_code: str
+    batch_name: str = ""
+    term_code: str = ""
+    selection_type_code: str = ""
+    smtp_configured: bool = False
+    smtp_status: str = "未配置"
+
+
 class JwxkAutomationCourseRef(StrictModel):
     class_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     course_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")

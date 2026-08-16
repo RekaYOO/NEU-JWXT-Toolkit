@@ -144,6 +144,7 @@ _course_selection_automation = CourseSelectionAutomationService(
     auth_recover_provider=_jwxk_automation_auth,
     client_builder=_jwxk_automation_client,
     remote_guard=background_remote_session_guard,
+    notification_provider=lambda subject, body, key: _grade_tracker.queue_system_notification(subject, body, key),
 )
 
 

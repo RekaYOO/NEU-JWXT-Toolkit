@@ -7,6 +7,7 @@ import math
 from threading import BoundedSemaphore
 import time
 from datetime import datetime
+from typing import Any
 import requests
 
 from fastapi import APIRouter, HTTPException, Response, Depends, Query
@@ -36,6 +37,8 @@ from backend.app.schemas.course_selection import (
     JwxkSavedPlanRequest,
     JwxkWeightPlanRequest,
     JwxkWeightConfigResponse,
+    JwxkAutomationSettings,
+    JwxkAutomationSettingsResponse,
     JwxkAutomationTaskRequest,
     JwxkAutomationTaskAction,
 )
@@ -44,6 +47,7 @@ from backend.app.dependencies import (
     require_mutation_auth, require_serialized_auth,
     get_cache_coordinator,
     get_course_selection_automation_service,
+    get_grade_tracker,
 )
 from backend.core.auth.client import NEUAuthClient, NEULoginError
 from backend.core.cache import mutation_policy
@@ -86,6 +90,61 @@ _JWXK_SCOPE_NAMES = {
     "CXKC": "重修课程", "TYKC": "体育项目", "FXKC": "辅修课程",
     "ALLKC": "全校课程查询", "BYKC": "本研课程", "ZYNKC": "专业内课程",
 }
+
+
+def _automation_batch_metadata(account: str, batch_code: str, storage: Storage, auth: NEUAuthClient) -> dict[str, Any]:
+    archive = get_course_selection_automation_service().get_catalog_archive_view(account, batch_code) or {}
+    metadata = {
+        "batch_name": str(archive.get("batch_name") or ""),
+        "term_code": str(archive.get("term_code") or ""),
+        "selection_type_code": str(archive.get("selection_type_code") or ""),
+    }
+    if metadata["batch_name"] and metadata["selection_type_code"]:
+        return metadata
+    try:
+        context = _jwxk_mutation_client(auth, storage).get_context()
+        batch = next((item for item in context.get("batches") or [] if str(getattr(item, "code", "")) == batch_code), None)
+        if batch is not None:
+            metadata.update({
+                "batch_name": str(getattr(batch, "name", "") or metadata["batch_name"]),
+                "term_code": str(getattr(batch, "term_code", "") or metadata["term_code"]),
+                "selection_type_code": str(getattr(batch, "selection_type_code", "") or metadata["selection_type_code"]),
+            })
+    except Exception:
+        pass
+    return metadata
+
+
+@router.get("/jwxk/batches/{batch_code}/automation-settings", response_model=JwxkAutomationSettingsResponse)
+def get_jwxk_automation_settings(
+    batch_code: str,
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+    storage: Storage = Depends(get_storage),
+):
+    if not batch_code or len(batch_code) > 64:
+        raise HTTPException(status_code=422, detail="轮次编号无效")
+    metadata = _automation_batch_metadata(str(auth.username), batch_code, storage, auth)
+    mail = get_grade_tracker().get_mail_status()
+    return {
+        **get_course_selection_automation_service().get_automation_settings(str(auth.username), batch_code, metadata=metadata),
+        "smtp_configured": bool(mail.get("configured")),
+        "smtp_status": str(mail.get("status") or "未配置"),
+    }
+
+
+@router.put("/jwxk/batches/{batch_code}/automation-settings", response_model=JwxkAutomationSettingsResponse)
+def update_jwxk_automation_settings(
+    batch_code: str,
+    request: JwxkAutomationSettings,
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+    storage: Storage = Depends(get_storage),
+):
+    metadata = _automation_batch_metadata(str(auth.username), batch_code, storage, auth)
+    result = get_course_selection_automation_service().update_automation_settings(
+        str(auth.username), batch_code, request.model_dump(), metadata=metadata,
+    )
+    mail = get_grade_tracker().get_mail_status()
+    return {**result, "smtp_configured": bool(mail.get("configured")), "smtp_status": str(mail.get("status") or "未配置")}
 
 
 def _read_jwxk_preference(storage: Storage) -> str:

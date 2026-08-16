@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Col, Empty, Modal, Radio, Row, Space, Spin, Tag, Typography, message } from 'antd';
-import { ClockCircleOutlined, DeleteOutlined, HistoryOutlined, ReloadOutlined, SafetyOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Checkbox, Col, Divider, Empty, InputNumber, Modal, Radio, Row, Select, Space, Spin, Switch, Tag, Typography, message } from 'antd';
+import { ClockCircleOutlined, DeleteOutlined, HistoryOutlined, QuestionCircleOutlined, ReloadOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import {
   confirmJwxkBatch, deleteJwxkCatalogArchive, getJwxkCatalogArchives,
   getJwxkStatus, updateJwxkSettings,
+  getJwxkAutomationSettings, updateJwxkAutomationSettings,
 } from '../services/api';
 import { selectionParticipantCount } from '../utils/jwxkSchedule';
 import './CourseSelectionPage.css';
@@ -25,6 +26,11 @@ const CourseSelectionPage = () => {
   const [confirming, setConfirming] = useState('');
   const [archives, setArchives] = useState([]);
   const [archiveDetail, setArchiveDetail] = useState(null);
+  const [automationBatch, setAutomationBatch] = useState(null);
+  const [automationSettings, setAutomationSettings] = useState(null);
+  const [automationLoading, setAutomationLoading] = useState(false);
+  const [automationSaving, setAutomationSaving] = useState(false);
+  const [modelHelpOpen, setModelHelpOpen] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -63,6 +69,22 @@ const CourseSelectionPage = () => {
       } finally { setConfirming(''); }
     }
     navigate(`/course-selection/${encodeURIComponent(batch.code)}/catalog`);
+  };
+
+  const openAutomation = async batch => {
+    setAutomationBatch(batch);
+    setAutomationLoading(true);
+    try { setAutomationSettings(await getJwxkAutomationSettings(batch.code)); }
+    catch (error) { message.error(error.message || '读取本轮自动化配置失败'); setAutomationBatch(null); }
+    finally { setAutomationLoading(false); }
+  };
+
+  const saveAutomation = async () => {
+    if (!automationBatch || !automationSettings) return;
+    setAutomationSaving(true);
+    try { setAutomationSettings(await updateJwxkAutomationSettings(automationBatch.code, automationSettings)); message.success('本轮自动化配置已保存'); setAutomationBatch(null); }
+    catch (error) { message.error(error.message || '保存自动化配置失败'); }
+    finally { setAutomationSaving(false); }
   };
 
   const removeArchive = archive => Modal.confirm({
@@ -122,7 +144,10 @@ const CourseSelectionPage = () => {
               <Title level={4}>{batch.name}</Title><Paragraph type="secondary">{description}</Paragraph>
               <div className="course-selection-time"><ClockCircleOutlined /><span>{dayjs(batch.begin_time).format('YYYY-MM-DD HH:mm')} — {dayjs(batch.end_time).format('YYYY-MM-DD HH:mm')}</span></div>
               {batch.need_confirm && !batch.confirmed && <Paragraph className="course-selection-confirm">进入前需阅读并确认官方轮次须知</Paragraph>}
-              <Button block type={batch.state === 'active' ? 'primary' : 'default'} loading={confirming === batch.code} disabled={!status?.service_authenticated || !batch.account_selectable} onClick={() => enter(batch)}>{batch.state === 'ended' ? '查看结果' : '进入选课工作台'}</Button>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Button block type={batch.state === 'active' ? 'primary' : 'default'} loading={confirming === batch.code} disabled={!status?.service_authenticated || !batch.account_selectable} onClick={() => enter(batch)}>{batch.state === 'ended' ? '查看结果' : '进入选课工作台'}</Button>
+                {batch.selection_type_code === '04' && <Button block onClick={() => openAutomation(batch)}>本轮自动化与通知配置</Button>}
+              </Space>
             </Card></Col>;
           })}</Row>
         </section>
@@ -160,6 +185,40 @@ const CourseSelectionPage = () => {
               <div><strong>{course.course_name}</strong><span>{course.course_code || '课程代码待定'} · {course.teacher || '教师待定'}</span></div>
               <Tag color="success">{archiveDetail.selection_type_code === '04' ? '容量内余' : '余'} {Number(course.capacity || 0) - selectionParticipantCount(course, archiveDetail.selection_type_code)} / {course.capacity}</Tag>
             </div>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前备份中没有确认可选且未报满的课程" />}
+        </div>
+      </Modal>
+      <Modal open={Boolean(automationBatch)} title={<Space><span>{`本轮自动化与通知 · ${automationBatch?.name || ''}`}</span>{automationBatch?.selection_type_code === '04' && <Button type="text" shape="circle" aria-label="了解策略投权模型" title="了解策略投权模型" icon={<QuestionCircleOutlined />} onClick={() => setModelHelpOpen(true)} />}</Space>} confirmLoading={automationSaving} onOk={saveAutomation} okText="保存配置" cancelText="取消" onCancel={() => setAutomationBatch(null)} width={700}>
+        {automationLoading || !automationSettings ? <Spin /> : <div className="course-selection-automation-form">
+          {automationBatch?.selection_type_code === '04' && <section className="course-selection-automation-section">
+            <div><Title level={5}>策略任务的执行时间</Title><Text type="secondary">这里只决定已经在工作台中启动的策略任务何时检查。任务的创建、启动、暂停、年级人数和方案组仍在“自动任务”中管理。</Text></div>
+            <label className="course-selection-setting-row"><span><b>执行方式</b><small>选择持续跟踪，或只在临近结束时集中调整。</small></span><Select value={automationSettings.strategy_schedule_mode || 'interval'} onChange={value => setAutomationSettings(s => ({ ...s, strategy_schedule_mode: value }))} options={[{ value: 'interval', label: '按间隔持续重算' }, { value: 'final_windows', label: '仅结束前 5 分钟、3 分钟执行' }]} /></label>
+            {automationSettings.strategy_schedule_mode !== 'final_windows' && <>
+              <label className="course-selection-setting-row"><span><b>重算间隔</b><small>每次都会读取最新人数；最短 10 分钟，避免请求过快。</small></span><Space><InputNumber min={600} max={86400} step={60} value={automationSettings.rebalance_seconds} onChange={value => setAutomationSettings(s => ({ ...s, rebalance_seconds: value || 600 }))} /><Text>秒</Text></Space></label>
+              <label className="course-selection-setting-row"><span><b>结束前再检查一次</b><small>无论普通间隔是否到期，都在结束前 3 分钟执行。</small></span><Switch checked={automationSettings.force_final_rebalance} onChange={value => setAutomationSettings(s => ({ ...s, force_final_rebalance: value }))} /></label>
+            </>}
+            {automationSettings.strategy_schedule_mode === 'final_windows' && <Alert type="info" showIcon message="该模式不会定时投权" description="只对已经启动且仍在运行的策略任务生效，并在结束前 5 分钟、3 分钟分别读取最新数据并处理一次。" />}
+          </section>}
+          <Divider />
+          <section className="course-selection-automation-section">
+            <div><Title level={5}>邮件通知</Title><Text type="secondary">通知只报告状态，不会因为邮件失败重复执行选课或投权。</Text></div>
+            <label className="course-selection-setting-row"><span><b>启用本轮邮件通知</b><small>关闭后下面选中的通知类型也不会发送。</small></span><Switch checked={automationSettings.mail_enabled} onChange={value => setAutomationSettings(s => ({ ...s, mail_enabled: value }))} /></label>
+            <Checkbox.Group className="course-selection-notification-grid" disabled={!automationSettings.mail_enabled} value={Object.keys(automationSettings).filter(key => key.startsWith('notify_') && automationSettings[key])} onChange={keys => setAutomationSettings(s => Object.fromEntries(Object.entries(s).map(([key, value]) => [key, key.startsWith('notify_') ? keys.includes(key) : value])))} options={[
+              ['notify_round_end', '轮次结束总结'], ['notify_final_rebalance', '临近结束的策略结果'], ['notify_capacity_transition', '课程从未满变为满员或超额'], ['notify_over_capacity', '课程超额达到阈值'], ['notify_underfilled_warning', '结束前人数不足十人提醒'], ['notify_grab_result', '抢课任务成功或待核验'],
+            ].map(([value, label]) => ({ value, label }))} />
+            <label className="course-selection-setting-row"><span><b>超额提醒阈值</b><small>例如 20% 表示容量 100、已投注人数达到 120 时提醒。</small></span><Space><InputNumber min={0} max={10} step={0.05} value={automationSettings.over_capacity_ratio} formatter={value => `${Number(value || 0) * 100}%`} parser={value => Number(String(value).replace('%', '')) / 100} onChange={value => setAutomationSettings(s => ({ ...s, over_capacity_ratio: value ?? 0.2 }))} /><Text type="secondary">超额人数 ÷ 容量</Text></Space></label>
+            <Alert type={automationSettings.smtp_configured ? 'success' : 'warning'} showIcon message={automationSettings.smtp_status} description={automationSettings.smtp_configured ? '复用系统设置中的 SMTP 通道，不会在这里保存密码。' : '请先前往系统设置配置 SMTP；未配置时不会发送邮件，也不会影响自动任务。'} />
+          </section>
+        </div>}
+      </Modal>
+      <Modal open={modelHelpOpen} title="策略投权模型怎样工作？" footer={<Button type="primary" onClick={() => setModelHelpOpen(false)}>我知道了</Button>} onCancel={() => setModelHelpOpen(false)} width={760}>
+        <div className="course-selection-model-help">
+          <Alert type="info" showIcon message="这是辅助决策模型，不是录取概率预测" description="学校只公布容量、当前已投注人数和最终筛选规则。页面中的 SAFE、COMP、OUT 与成功率都是用于比较方案的代理值，不代表官方承诺。" />
+          <section><Title level={5}>1. 读取什么数据</Title><Paragraph>每次计算前读取本轮除“全校课程查询”外的真实课程目录，并刷新方案组候选课程的已投注人数、容量、官方剩余权重、最低投权和投权步长。方案组外手动投权保持不动，只继续占用官方预算。</Paragraph></section>
+          <section><Title level={5}>2. 怎样理解方案组</Title><Paragraph>每个方案组由“候选课程池 + 目标门数”组成。模型按课程代码合并同一课程的多个教学班，一门课程只占一个目标名额；教学班优先级只决定实际提交哪个班，不会重复消耗目标门数。</Paragraph></section>
+          <section><Title level={5}>3. 怎样选择课程</Title><Paragraph>模型先排除已确认的硬冲突组合，再按以下顺序比较可行方案：覆盖更多方案组目标名额、获得更高的课程意愿总分、提高中性竞争情景下的代理收益，最后在效果相同时使用更少权重。时间未知课程会产生风险警告，不会被当作已确认无冲突。</Paragraph></section>
+          <section><Title level={5}>4. 怎样计算竞争程度</Title><Paragraph>模型使用年级人数和本轮真实课程的已投注人数估计全市场平均投注次数，再计算保守、中性、激进三种需求情景。预计人数不超过容量的课程标为 SAFE；需要竞争的课程标为 COMP；未进入推荐组合的课程标为 OUT。</Paragraph></section>
+          <section><Title level={5}>5. 怎样分配权重</Title><Paragraph>SAFE 课程优先使用官方最低权重。其余预算通过 water-filling 分配给 COMP 课程，综合课程意愿和竞争强度，并遵守官方最低权重、步长和剩余预算。只有推荐权重与当前权重不同，系统才会按安全流程先撤回、核验，再重新投放。</Paragraph></section>
+          <section><Title level={5}>6. 自动运行方式</Title><Paragraph>只有在工作台“自动任务”中明确启动的策略任务才会运行。这里的配置只决定它按间隔检查，还是仅在轮次结束前 5 分钟和 3 分钟各计算一次；关闭页面或 Linux 服务端无人打开页面时仍可继续执行。</Paragraph></section>
         </div>
       </Modal>
     </main>

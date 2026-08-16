@@ -1088,6 +1088,16 @@ export const actionJwxkAutomationTask = async (taskId, action) => {
   return response.data;
 };
 
+export const getJwxkAutomationSettings = async (batchCode) => {
+  const response = await api.get(`/api/course-selection/jwxk/batches/${encodeURIComponent(batchCode)}/automation-settings`);
+  return response.data;
+};
+
+export const updateJwxkAutomationSettings = async (batchCode, payload) => {
+  const response = await api.put(`/api/course-selection/jwxk/batches/${encodeURIComponent(batchCode)}/automation-settings`, payload);
+  return response.data;
+};
+
 // ── 教学质量评价 API ─────────────────────────────────────────────────────────
 
 /**

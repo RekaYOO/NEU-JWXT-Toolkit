@@ -59,13 +59,17 @@ class CourseSelectionAutomationService:
         auth_recover_provider: Callable[[], Any] | None = None,
         client_builder: Callable[[Any], JwxkSessionClient],
         remote_guard: Callable[[], Any] | None = None,
+        notification_provider: Callable[[str, str, str], bool] | None = None,
     ) -> None:
         self.path = Path(data_dir) / "course_selection_tasks.json"
         self.archive_path = Path(data_dir) / "course_selection_catalog_history.json"
+        self.settings_path = Path(data_dir) / "course_selection_automation_settings.json"
+        self.notification_state_path = Path(data_dir) / "course_selection_notification_state.json"
         self.auth_provider = auth_provider
         self.auth_recover_provider = auth_recover_provider or auth_provider
         self.client_builder = client_builder
         self.remote_guard = remote_guard or nullcontext
+        self.notification_provider = notification_provider
         self._lock = threading.RLock()
         self._wake = threading.Event()
         # Catalog archiving is deliberately isolated from the task scheduler.
@@ -77,6 +81,8 @@ class CourseSelectionAutomationService:
         self._thread: threading.Thread | None = None
         self._catalog_thread: threading.Thread | None = None
         self._tasks = [task for task in self._read() if task.get("status") != "cancelled"]
+        self._settings = self._read_json_map(self.settings_path)
+        self._notification_state = self._read_json_map(self.notification_state_path)
         self._archives = self._read_archives()
         archives_changed = self._remove_directory_only_courses()
         for archive in self._archives:
@@ -110,6 +116,68 @@ class CourseSelectionAutomationService:
             return value if isinstance(value, list) else []
         except (OSError, ValueError, TypeError):
             return []
+
+    @staticmethod
+    def _read_json_map(path: Path) -> dict[str, Any]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    @staticmethod
+    def _write_json_map(path: Path, value: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+        secure_file(path)
+
+    @staticmethod
+    def default_automation_settings() -> dict[str, Any]:
+        return {
+            "strategy_schedule_mode": "interval",
+            "rebalance_seconds": 600,
+            "force_final_rebalance": True,
+            "mail_enabled": False,
+            "notify_round_end": False,
+            "notify_final_rebalance": False,
+            "notify_capacity_transition": False,
+            "notify_over_capacity": False,
+            "notify_underfilled_warning": False,
+            "notify_grab_result": False,
+            "over_capacity_ratio": 0.20,
+        }
+
+    def get_automation_settings(self, account: str, batch_code: str, *, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        key = f"{account}:{batch_code}"
+        with self._lock:
+            allowed = set(self.default_automation_settings())
+            stored = {k: v for k, v in (self._settings.get(key) or {}).items() if k in allowed}
+            value = {**self.default_automation_settings(), **stored}
+            value.update({"batch_code": batch_code, **(metadata or {})})
+            return copy.deepcopy(value)
+
+    def update_automation_settings(self, account: str, batch_code: str, values: dict[str, Any], *, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        key = f"{account}:{batch_code}"
+        allowed = set(self.default_automation_settings())
+        candidate = {k: copy.deepcopy(v) for k, v in values.items() if k in allowed}
+        with self._lock:
+            previous = {k: v for k, v in (self._settings.get(key) or {}).items() if k in allowed}
+            merged = {**self.default_automation_settings(), **previous, **candidate}
+            self._settings[key] = merged
+            self._write_json_map(self.settings_path, self._settings)
+            result = {**merged, "batch_code": batch_code, **(metadata or {})}
+            return copy.deepcopy(result)
+
+    def _queue_notification(self, account: str, batch_code: str, subject: str, body: str, key: str) -> bool:
+        if not self.notification_provider:
+            return False
+        try:
+            return bool(self.notification_provider(subject, body, f"{account}:{batch_code}:{key}"))
+        except Exception:
+            logger.exception("course selection notification enqueue failed")
+            return False
 
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1396,11 +1464,15 @@ class CourseSelectionAutomationService:
             end = self._archive_end_time(archive)
             if end is None:
                 continue
+            if now >= end - timedelta(hours=5) and now < end:
+                self._notify_underfilled_warning(account, archive)
             if now >= end and archive.get("final_refresh_status") == "complete":
+                self._notify_round_end_summary(account, archive)
                 self._finish_archive(account, archive["archive_id"])
                 continue
             if now < end - timedelta(minutes=10) or now > end + timedelta(minutes=15):
                 if now > end + timedelta(minutes=15):
+                    self._notify_round_end_summary(account, archive)
                     self._finish_archive(account, archive["archive_id"])
                 continue
             last_attempt = archive.get("final_refresh_attempt_at")
@@ -1411,6 +1483,60 @@ class CourseSelectionAutomationService:
                 except ValueError:
                     pass
             self._refresh_archive_counts(auth, archive)
+
+    def _notify_round_end_summary(self, account: str, archive: dict[str, Any]) -> None:
+        settings = self.get_automation_settings(account, str(archive.get("batch_code") or ""))
+        if not settings.get("mail_enabled") or not settings.get("notify_round_end"):
+            return
+        key = f"{account}:{archive.get('batch_code')}:round_end_summary_sent"
+        with self._lock:
+            if self._notification_state.get(key):
+                return
+            rows = []
+            selection_type = str(archive.get("selection_type_code") or "")
+            for course in archive.get("courses") or []:
+                if str(course.get("teaching_class_type") or "") == "ALLKC":
+                    continue
+                count = course.get("weight_participant_count") if selection_type == "04" else course.get("selected_count")
+                rows.append(f"- {course.get('course_name') or '课程'}-{course.get('course_code') or ''}：{('已投注人数' if selection_type == '04' else '已选人数')} {count if count is not None else '待更新'} / 容量 {course.get('capacity') or '待更新'}")
+        queued = self._queue_notification(
+            account, str(archive.get("batch_code") or ""),
+            f"JWXK 轮次结束总结 · {archive.get('batch_name') or archive.get('batch_code')}",
+            f"轮次：{archive.get('batch_name') or archive.get('batch_code')}\n学期：{archive.get('term_code') or ''}\n\n" + ("\n".join(rows) or "无课程数据"),
+            "round-end-summary",
+        )
+        if queued:
+            with self._lock:
+                self._notification_state[key] = datetime.now().astimezone().isoformat()
+                self._write_json_map(self.notification_state_path, self._notification_state)
+
+    def _notify_underfilled_warning(self, account: str, archive: dict[str, Any]) -> None:
+        settings = self.get_automation_settings(account, str(archive.get("batch_code") or ""))
+        if not settings.get("mail_enabled") or not settings.get("notify_underfilled_warning"):
+            return
+        selection_type = str(archive.get("selection_type_code") or "")
+        rows = []
+        with self._lock:
+            for course in archive.get("courses") or []:
+                if str(course.get("teaching_class_type") or "") == "ALLKC":
+                    continue
+                count = course.get("weight_participant_count") if selection_type == "04" else course.get("selected_count")
+                if count is not None and int(count) < 10:
+                    key = f"{account}:{archive.get('batch_code')}:underfilled:{course.get('class_id')}"
+                    if self._notification_state.get(key):
+                        continue
+                    rows.append((course, key, int(count)))
+        if not rows:
+            return
+        body = "轮次结束前 5 小时人数不足十人，仅为开课风险提示，不代表官方最终停开决定。\n\n" + "\n".join(
+            f"- {course.get('course_name')}-{course.get('course_code')}：{count} / 容量 {course.get('capacity') or '待更新'}"
+            for course, _, count in rows
+        )
+        if self._queue_notification(account, str(archive.get("batch_code") or ""), "JWXK 课程开课风险提示", body, "underfilled-warning"):
+            with self._lock:
+                for _, key, _ in rows:
+                    self._notification_state[key] = datetime.now().astimezone().isoformat()
+                self._write_json_map(self.notification_state_path, self._notification_state)
 
     def _finish_archive(self, account: str, archive_id: str) -> None:
         with self._lock:
@@ -1469,12 +1595,49 @@ class CourseSelectionAutomationService:
                         if key in latest:
                             course[key] = latest.get(key)
                     course["capacity_updated_at"] = datetime.now().astimezone().isoformat()
+            self._notify_capacity_transitions(target)
             target["final_refresh_attempt_at"] = attempt_at
             target["final_refresh_status"] = status
             if status == "complete":
                 target["final_refresh_at"] = datetime.now().astimezone().isoformat()
             target["updated_at"] = datetime.now().astimezone().isoformat()
             self._write_archives()
+
+    def _notify_capacity_transitions(self, archive: dict[str, Any]) -> None:
+        account = str(archive.get("account") or "")
+        batch_code = str(archive.get("batch_code") or "")
+        settings = self.get_automation_settings(account, batch_code)
+        if not settings.get("mail_enabled") or not (settings.get("notify_capacity_transition") or settings.get("notify_over_capacity")):
+            return
+        selection_type = str(archive.get("selection_type_code") or "")
+        changed = []
+        with self._lock:
+            for course in archive.get("courses") or []:
+                if str(course.get("teaching_class_type") or "") == "ALLKC":
+                    continue
+                capacity = int(course.get("capacity") or 0)
+                count_value = course.get("weight_participant_count") if selection_type == "04" else course.get("selected_count")
+                if capacity <= 0 or count_value is None:
+                    continue
+                count = int(count_value)
+                ratio = max(0.0, (count - capacity) / capacity)
+                state = "over" if count > capacity else "full" if count == capacity else "under"
+                key = f"{account}:{batch_code}:capacity:{course.get('class_id')}"
+                previous = self._notification_state.get(key) or {}
+                if previous.get("state") == "under" and state in {"full", "over"}:
+                    changed.append((course, previous, state, ratio))
+                elif previous.get("state") in {"under", "full"} and ratio >= float(settings.get("over_capacity_ratio") or 0.2) and settings.get("notify_over_capacity"):
+                    changed.append((course, previous, state, ratio))
+                self._notification_state[key] = {"state": state, "count": count, "capacity": capacity, "ratio": ratio}
+            self._write_json_map(self.notification_state_path, self._notification_state)
+        for course, previous, state, ratio in changed:
+            if state in {"full", "over"} and (state != "over" or settings.get("notify_over_capacity") or settings.get("notify_capacity_transition")):
+                self._queue_notification(
+                    account, batch_code,
+                    f"JWXK 人数状态变化 · {course.get('course_name') or course.get('course_code')}",
+                    f"课程：{course.get('course_name')}-{course.get('course_code')}\n旧状态：{previous.get('state')}\n新状态：{state}\n人数：{course.get('weight_participant_count') if selection_type == '04' else course.get('selected_count')} / 容量：{course.get('capacity')}\n超额比例：{ratio:.1%}",
+                    f"capacity:{course.get('class_id')}:{state}:{int(ratio * 10000)}",
+                )
 
     @classmethod
     def _inside_window(cls, task: dict[str, Any]) -> bool:
@@ -1780,6 +1943,28 @@ class CourseSelectionAutomationService:
                 self._persist_task(task)
             return
         weight_status = task.setdefault("weight_status", {})
+        settings = self.get_automation_settings(str(task.get("account") or ""), str(task.get("batch_code") or ""))
+        end = self._parse_task_time(task.get("end_at"))
+        now = datetime.now(_OFFICIAL_TIMEZONE)
+        final_mode = str(settings.get("strategy_schedule_mode") or "interval") == "final_windows"
+        window_key = ""
+        if end and now >= end - timedelta(minutes=3) and now <= end:
+            window_key = "final_3"
+        elif end and now >= end - timedelta(minutes=5) and now < end - timedelta(minutes=3):
+            window_key = "final_5"
+        force_final = bool(settings.get("force_final_rebalance", True)) and bool(end) and now >= end - timedelta(minutes=3) and now <= end
+        if final_mode and window_key and not weight_status.get(f"{window_key}_executed"):
+            weight_status["final_window_requested"] = window_key
+            task["message"] = f"已进入轮次结束前 {5 if window_key == 'final_5' else 3} 分钟策略窗口，正在读取最新人数"
+            task["last_attempt_at"] = None
+            self._append_execution_event(task, f"触发轮次结束前 {5 if window_key == 'final_5' else 3} 分钟策略", stage_code=window_key)
+            self._persist_task(task)
+        elif not final_mode and force_final and not weight_status.get("final_rebalance_executed"):
+            weight_status["final_rebalance_requested"] = True
+            task["message"] = "已进入轮次结束前 3 分钟强制策略窗口，正在读取最新人数"
+            task["last_attempt_at"] = None
+            self._append_execution_event(task, "触发轮次结束前 3 分钟强制策略", stage_code="final_rebalance")
+            self._persist_task(task)
         busy = bool(
             weight_status.get("inflight")
             or weight_status.get("pending_drop")
@@ -1854,9 +2039,22 @@ class CourseSelectionAutomationService:
                 return
         manual_check = bool(task.get("manual_check_requested_at"))
         last = task.get("last_attempt_at")
-        if last and not busy and not manual_check and not market_snapshot_ready:
+        window_requested = bool(weight_status.get("final_window_requested"))
+        if final_mode and not window_requested and not market_snapshot_ready:
+            if not last:
+                pass
+            else:
+                try:
+                    interval = max(600, int(settings.get("rebalance_seconds") or task.get("rebalance_seconds") or 600))
+                    if time.time() - datetime.fromisoformat(last).timestamp() < interval:
+                        return
+                except ValueError:
+                    pass
+                return
+        if last and not busy and not manual_check and not market_snapshot_ready and not weight_status.get("final_rebalance_requested") and not window_requested:
             try:
-                if time.time() - datetime.fromisoformat(last).timestamp() < self._poll_interval(task):
+                interval = max(600, int(settings.get("rebalance_seconds") or task.get("rebalance_seconds") or 600))
+                if time.time() - datetime.fromisoformat(last).timestamp() < interval:
                     return
             except ValueError:
                 pass
@@ -2175,7 +2373,9 @@ class CourseSelectionAutomationService:
                             "weight": int(target["weight"]),
                         })
                 now = datetime.now().astimezone().isoformat()
-                weight_status.update({
+            was_final_rebalance = bool(weight_status.get("final_rebalance_requested"))
+            completed_window = str(weight_status.get("final_window_requested") or "")
+            weight_status.update({
                     "last_calculated_at": now,
                     # Keep the complete model target, including courses whose
                     # current bid is already correct.  The UI must distinguish
@@ -2187,7 +2387,31 @@ class CourseSelectionAutomationService:
                     "pending_drop": pending_drop,
                     "pending_add": pending_add,
                     "phase": "adjusting" if pending_drop or pending_add else "idle",
-                })
+            })
+            if was_final_rebalance:
+                weight_status["final_rebalance_executed"] = True
+                weight_status.pop("final_rebalance_requested", None)
+                if settings.get("mail_enabled") and settings.get("notify_final_rebalance"):
+                    rows = "\n".join(
+                        f"- {item.get('course_name') or '课程'}-{item.get('course_code') or ''}：建议 {int(item.get('weight') or 0)}，已投注人数 {int(item.get('participants') or 0)} / 容量 {int(item.get('capacity') or 0)}"
+                        for item in desired
+                    ) or "无推荐投权课程"
+                    self._queue_notification(
+                        str(task.get("account") or ""), str(task.get("batch_code") or ""),
+                        f"JWXK 强制策略结果 · {task.get('batch_code')}",
+                        f"轮次结束前 3 分钟强制策略已完成。\n\n{rows}\n\n数据时间：{now}",
+                        "final-rebalance",
+                    )
+            if completed_window:
+                weight_status[f"{completed_window}_executed"] = True
+                weight_status.pop("final_window_requested", None)
+                if settings.get("mail_enabled") and settings.get("notify_final_rebalance"):
+                    self._queue_notification(
+                        str(task.get("account") or ""), str(task.get("batch_code") or ""),
+                        f"JWXK {completed_window} 策略结果 · {task.get('batch_code')}",
+                        f"轮次结束前窗口策略已完成：{completed_window}\n数据时间：{now}",
+                        completed_window,
+                    )
                 task["group_results"] = {
                     item["group_id"]: {
                         "status": "success" if item["satisfied"] else "pending",
@@ -2422,6 +2646,21 @@ class CourseSelectionAutomationService:
         task["status"] = status
         task["message"] = message
         task["updated_at"] = datetime.now().astimezone().isoformat()
+        if task.get("task_type") in {"selection", "vacancy_swap"} and status in {"success", "needs_review"}:
+            settings = self.get_automation_settings(str(task.get("account") or ""), str(task.get("batch_code") or ""))
+            if settings.get("mail_enabled") and settings.get("notify_grab_result"):
+                key = f"{task.get('account')}:{task.get('batch_code')}:{task.get('task_id')}:{status}"
+                with self._lock:
+                    already = self._notification_state.get(key)
+                if not already and self._queue_notification(
+                    str(task.get("account") or ""), str(task.get("batch_code") or ""),
+                    f"JWXK 抢课任务{'成功' if status == 'success' else '待核验'} · {task.get('name') or task.get('task_id')}",
+                    f"任务：{task.get('name') or task.get('task_id')}\n状态：{status}\n说明：{message}\n时间：{task.get('updated_at')}",
+                    f"grab-result:{task.get('task_id')}:{status}",
+                ):
+                    with self._lock:
+                        self._notification_state[key] = task.get("updated_at")
+                        self._write_json_map(self.notification_state_path, self._notification_state)
         self._persist_task(task)
 
     def _persist_task(self, task: dict[str, Any]) -> None:

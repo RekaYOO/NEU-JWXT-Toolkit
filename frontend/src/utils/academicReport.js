@@ -48,7 +48,7 @@ export const getAcademicRuleDeficitText = (category) => {
     deficits.push(`${formatRuleNumber(category.missing_course_count)} 门课程`);
   }
   if (Number(category?.missing_group_count || 0) > 0) {
-    deficits.push(`${formatRuleNumber(category.missing_group_count)} 个类别`);
+    deficits.push(`${formatRuleNumber(category.missing_group_count)} 个课程组`);
   }
   if (deficits.length > 0) {
     return `还差 ${deficits.join('、')}`;
@@ -198,6 +198,8 @@ export const overlayExternalSelectedCourses = (categories = [], selectedCourses 
     const rawCredits = directCredits + childRawCredits;
     const rawCount = directCount + childAdjustments.reduce((sum, item) => sum + item.rawCount, 0);
     const originalRemaining = Number(node.remaining_credits || 0);
+    const originalMissingCourseCount = Number(node.missing_course_count || 0);
+    const originalMissingGroupCount = Number(node.missing_group_count || 0);
     const nodeCreditDelta = node.requires_child_minimums_and_total
       ? childRawCredits
       : directCredits + childEffectiveCredits;
@@ -212,11 +214,15 @@ export const overlayExternalSelectedCourses = (categories = [], selectedCourses 
         Number(node.aggregate_remaining_credits || 0) - childRawCredits,
       );
     }
-    node.missing_course_count = Math.max(0, Number(node.missing_course_count || 0) - rawCount);
-    const newlyCoveredGroups = childAdjustments.filter(item => item.wasEmpty && item.rawCredits > 0).length;
+    node.missing_course_count = Math.max(0, originalMissingCourseCount - rawCount);
+    const newlyCompletedChildGroups = childAdjustments.filter(item => item.becameComplete).length;
+    // groupCountRequired/groupCountTaken 描述的是课程组规则，不是界面树的“类别数”。
+    // 课程直接挂在当前规则节点时，每门去重后的实时已选课程可覆盖一个课程组；
+    // 有子规则时则只在子规则由未完成变为完成后给父级计一个，避免仅选到部分学分就误判。
+    const newlyCoveredGroups = directCount + newlyCompletedChildGroups;
     node.missing_group_count = Math.max(
       0,
-      Number(node.missing_group_count || 0) - newlyCoveredGroups,
+      originalMissingGroupCount - newlyCoveredGroups,
     );
     node.external_selected_credits = rawCredits;
     node.external_selected_count = rawCount;
@@ -226,11 +232,20 @@ export const overlayExternalSelectedCourses = (categories = [], selectedCourses 
     ];
     delete node.__externalSelections;
 
+    const wasIncomplete = originalRemaining > 0
+      || originalMissingCourseCount > 0
+      || originalMissingGroupCount > 0
+      || node.is_completed === false;
+    const isCompleteAfter = Number(node.remaining_credits || 0) <= 0
+      && Number(node.missing_course_count || 0) <= 0
+      && Number(node.missing_group_count || 0) <= 0;
+    if (isCompleteAfter) node.is_completed = true;
+
     return {
       rawCredits,
       rawCount,
       courses: node.external_selected_courses,
-      wasEmpty: Number(node.earned_credits || 0) - appliedCredits <= 0,
+      becameComplete: wasIncomplete && isCompleteAfter,
       effectiveForParent: Number(node.required_credits || 0) > 0
         ? Math.min(nodeCreditDelta, originalRemaining)
         : 0,

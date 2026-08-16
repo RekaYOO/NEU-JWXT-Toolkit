@@ -206,6 +206,24 @@ class GradeTrackingService:
             result["smtp_password_configured"] = bool(self._config.get("smtp_password"))
             return result
 
+    def get_mail_status(self) -> dict[str, Any]:
+        """Expose only whether the shared SMTP channel is usable."""
+        with self._lock:
+            configured = bool(
+                self._config.get("smtp_host") and self._config.get("from_email")
+                and self._config.get("to_email")
+                and (self._config.get("smtp_password") or self._config.get("smtp_username"))
+            )
+            return {"configured": configured, "status": "邮件通道可用" if configured else "请前往系统设置配置邮件"}
+
+    def queue_system_notification(self, subject: str, body: str, dedupe_key: str) -> bool:
+        """Queue a non-grade notification in the existing durable SMTP outbox."""
+        if not self.get_mail_status()["configured"]:
+            return False
+        self._queue_email(subject, body, f"course-selection:{dedupe_key}")
+        self._wake.set()
+        return True
+
     def get_status(self) -> dict[str, Any]:
         with self._lock:
             return {
@@ -401,10 +419,10 @@ class GradeTrackingService:
                         )
                     )
                     may_notify = bool(
-                        self._config.get("enabled")
-                        and (
-                            self._within_window(_now())
-                            or activation_at_head
+                        self._outbox and (
+                            self._config.get("enabled")
+                            and (self._within_window(_now()) or activation_at_head)
+                            or str(self._outbox[0].get("dedupe_key") or "").startswith("course-selection:")
                         )
                     )
                 if may_notify:
