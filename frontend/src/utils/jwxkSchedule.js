@@ -459,6 +459,7 @@ export const immediateSelectionConflictMap = (personalCourses = [], candidateCou
         baseline_meeting_id: personal.meeting_id || personal.id,
         baseline_course_name: personal.course_name,
         baseline_course_code: personal.course_code || '',
+        baseline_teaching_class_id: personal.teaching_class_id || personal.source_id || '',
         baseline_weeks: personal.weeks || [],
         status: 'conflict',
         source: 'personal_timetable_local',

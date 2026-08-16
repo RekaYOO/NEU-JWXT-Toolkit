@@ -736,6 +736,13 @@
   font-size: 12px;
 }
 
+.timetable-personal-conflict-popover .timetable-conflict-overlap,
+.timetable-detail-conflicts .timetable-conflict-overlap {
+  margin-top: 2px;
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
 .timetable-detail-conflicts {
   display: grid;
   gap: 8px;

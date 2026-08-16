@@ -45,6 +45,7 @@ class ConflictMatch:
     start_section: int = 0
     end_section: int = 0
     baseline_course_code: str = ""
+    baseline_teaching_class_id: str = ""
     baseline_weeks: tuple[int, ...] = field(default_factory=tuple)
 
 

@@ -1230,7 +1230,7 @@ class JwxkSessionClient:
     def _search_raw(
         self, *, batch_code: str, teaching_class_type: str, keyword: str
     ) -> list[dict[str, Any]]:
-        student = self._activate_batch(batch_code)
+        self._activate_batch(batch_code)
         body = {
             "teachingClassType": teaching_class_type,
             "pageNumber": 1,
@@ -1238,8 +1238,11 @@ class JwxkSessionClient:
             "orderBy": "",
             "KEY": keyword,
         }
-        if teaching_class_type != "ALLKC" and _text(student.get("campus")):
-            body["campus"] = _text(student.get("campus"))
+        # Exact class lookup is used immediately before a mutation.  Do not
+        # constrain it to the student's home campus: a real round scope can
+        # contain a cross-campus class, and adding the home-campus filter makes
+        # that class appear to exist only in ALLKC even though its XGKC/TJKC/etc.
+        # mutation source is valid.
         payload = _payload(self._request(
             "POST", "/xsxk/elective/clazz/list", json=body
         ))

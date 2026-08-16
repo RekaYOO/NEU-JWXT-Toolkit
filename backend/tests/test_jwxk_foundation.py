@@ -807,6 +807,39 @@ def test_course_selection_refetches_secret_and_performs_explicit_301_confirmatio
     assert calls[2][1]["isConfirm"] == "1"
 
 
+def test_exact_mutation_lookup_does_not_filter_cross_campus_classes():
+    captured = {}
+
+    class Auth:
+        timeout = 10
+
+    class Client(JwxkSessionClient):
+        def _activate_batch(self, _batch_code):
+            return {"campus": "01"}
+
+        def _request(self, method, path, **kwargs):
+            captured.update({"method": method, "path": path, "json": kwargs.get("json")})
+            response = __import__("requests").Response()
+            response.status_code = 200
+            response.url = "https://jwxk.neu.edu.cn" + path
+            response.headers["Content-Type"] = "application/json"
+            response._content = __import__("json").dumps({
+                "code": 200,
+                "data": {"rows": [{
+                    "JXBID": "CROSS-CAMPUS-1", "KCH": "COURSE-1", "campus": "00",
+                }]},
+            }).encode()
+            return response
+
+    rows = Client(Auth())._search_raw(
+        batch_code="batch", teaching_class_type="XGKC", keyword="COURSE-1",
+    )
+
+    assert rows[0]["JXBID"] == "CROSS-CAMPUS-1"
+    assert captured["json"]["teachingClassType"] == "XGKC"
+    assert "campus" not in captured["json"]
+
+
 def test_direct_official_mutation_success_is_not_misreported_as_queued():
     class Client(JwxkSessionClient):
         def _request(self, *_args, **_kwargs):

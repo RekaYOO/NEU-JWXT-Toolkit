@@ -112,25 +112,95 @@ const conflictMeetingText = meeting => (
   `${conflictWeeksText(meeting?.weeks || meeting?.baseline_weeks || meeting?.overlapping_weeks)} · 周${SHORT_WEEKDAY_NAMES[(Number(meeting?.weekday || 1)) - 1] || '-'} · 第${meeting?.start_section || '?'}–${meeting?.end_section || '?'}节`
 );
 
-function PersonalConflictPopover({ course, conflictMap, controlledOpen, children }) {
+const conflictCourseIdentity = course => {
+  const classId = String(
+    course?.teaching_class_id || course?.class_id || course?.baseline_teaching_class_id || '',
+  ).trim();
+  if (classId) return `class:${classId}`;
+  const code = String(course?.course_code || course?.baseline_course_code || '').trim().toLocaleUpperCase();
+  if (code) return `code:${code}`;
+  return `name:${String(course?.course_name || course?.baseline_course_name || '').replace(/\s+/g, '').toLocaleLowerCase()}`;
+};
+
+const uniqueConflictMeetings = meetings => [...new Map((meetings || []).filter(Boolean).map(meeting => [
+  [
+    Number(meeting.weekday || 0), Number(meeting.start_section || 0), Number(meeting.end_section || 0),
+    [...new Set((meeting.weeks || meeting.baseline_weeks || []).map(Number))].sort((a, b) => a - b).join(','),
+  ].join(':'),
+  meeting,
+])).values()].sort((a, b) => (
+  Number(a.weekday || 0) - Number(b.weekday || 0)
+  || Number(a.start_section || 0) - Number(b.start_section || 0)
+  || Number(a.end_section || 0) - Number(b.end_section || 0)
+));
+
+export const buildConflictCourseScheduleMap = courses => {
+  const result = {};
+  (courses || []).forEach(course => {
+    const meetings = Array.isArray(course?.schedules) && course.schedules.length
+      ? course.schedules.map(meeting => ({
+        ...meeting,
+        course_code: course.course_code,
+        course_name: course.course_name,
+        teaching_class_id: meeting.teaching_class_id || course.teaching_class_id || course.class_id,
+      }))
+      : [course];
+    meetings.forEach(meeting => {
+      const identity = conflictCourseIdentity(meeting);
+      if (identity === 'name:') return;
+      result[identity] = uniqueConflictMeetings([...(result[identity] || []), meeting]);
+    });
+  });
+  return result;
+};
+
+const fullConflictSchedule = (course, scheduleMap, fallback) => (
+  scheduleMap?.[conflictCourseIdentity(course)]?.length
+    ? scheduleMap[conflictCourseIdentity(course)]
+    : uniqueConflictMeetings(fallback || [course])
+);
+
+const groupConflictMatchesByCourse = matches => [...(matches || []).reduce((groups, match) => {
+  const identity = conflictCourseIdentity(match);
+  const previous = groups.get(identity);
+  groups.set(identity, previous
+    ? { ...previous, matches: [...previous.matches, match] }
+    : { identity, course: match, matches: [match] });
+  return groups;
+}, new Map()).values()];
+
+const conflictOverlapText = (match, candidate) => {
+  const start = Math.max(Number(match.start_section || 0), Number(candidate?.start_section || match.start_section || 0));
+  const end = Math.min(Number(match.end_section || 0), Number(candidate?.end_section || match.end_section || 0));
+  const sectionText = start > 0 && end >= start ? ` · 第${start}–${end}节` : '';
+  return `${conflictWeeksText(match.overlapping_weeks)} · 周${SHORT_WEEKDAY_NAMES[(Number(match.weekday || 1)) - 1] || '-'}${sectionText}`;
+};
+
+function PersonalConflictPopover({ course, conflictMap, courseScheduleMap = {}, controlledOpen, children }) {
   const result = personalConflictForCourse(course, conflictMap);
   const matches = result?.status === 'conflict' ? mergeSelectionConflictMatches(result.matches || []) : [];
   if (!matches.length) return children;
   const hasPersonal = matches.some(match => !match.source || String(match.source).includes('personal'));
+  const groupedMatches = groupConflictMatchesByCourse(matches);
+  const currentSchedule = fullConflictSchedule(course, courseScheduleMap, [course]);
   const content = (
     <div className="timetable-personal-conflict-popover">
       <strong>{hasPersonal ? '与我的课表冲突' : '候选课程之间冲突'}</strong>
       <div className="timetable-conflict-current">
         <small>当前查看</small>
         <b>{course.course_name || '当前课程'}</b>
-        <span>{conflictMeetingText({ ...course, weeks: course.weeks || [] })}</span>
+        {currentSchedule.map((meeting, index) => <span key={`current-${index}`}>{conflictMeetingText(meeting)}</span>)}
       </div>
       <small className="timetable-conflict-list-label">冲突课程</small>
-      {matches.map(match => (
-        <div key={[match.baseline_course_code || match.baseline_course_name, match.weekday, match.start_section, match.end_section].join(':')}>
-          <b>{match.baseline_course_name}</b>
-          <span>{conflictMeetingText(match)}</span>
-          <span>实际重叠：{conflictWeeksText(match.overlapping_weeks)}</span>
+      {groupedMatches.map(group => (
+        <div key={group.identity}>
+          <b>{group.course.baseline_course_name}</b>
+          {fullConflictSchedule(group.course, courseScheduleMap, group.matches).map((meeting, index) => (
+            <span key={`baseline-${index}`}>{conflictMeetingText(meeting)}</span>
+          ))}
+          {group.matches.map((match, index) => (
+            <span className="timetable-conflict-overlap" key={`overlap-${index}`}>实际重叠：{conflictOverlapText(match, course)}</span>
+          ))}
         </div>
       ))}
     </div>
@@ -1035,6 +1105,7 @@ function TimetablePage({
   overlayCourses = [],
   presentation = 'default',
   externalConflictMap = {},
+  refreshSignal = 0,
   onSlotSelect,
   onPersonalCoursesChange,
 } = {}) {
@@ -1303,6 +1374,22 @@ function TimetablePage({
     if (!usesPersonalTimetableEndpoint) return;
     loadPersonalTimetable(termCode, { autoDetect: !autoDefaultResolved.current });
   }, [loadPersonalTimetable, termCode, usesPersonalTimetableEndpoint]);
+
+  const appliedRefreshSignal = useRef(refreshSignal);
+  useEffect(() => {
+    if (!usesPersonalTimetableEndpoint || !termCode || refreshSignal === appliedRefreshSignal.current) return;
+    appliedRefreshSignal.current = refreshSignal;
+    let cancelled = false;
+    getPersonalTimetable(termCode, true).then(payload => {
+      if (!cancelled && timetableViewState.current.termCode === termCode) {
+        applyUpdatedPersonalPayload(payload);
+      }
+    }).catch(() => {
+      // A withdrawal has already completed at the official endpoint.  Keep the
+      // optimistic UI and let the normal cache coordinator retry this refresh.
+    });
+    return () => { cancelled = true; };
+  }, [applyUpdatedPersonalPayload, refreshSignal, termCode, usesPersonalTimetableEndpoint]);
 
   const saveModeSession = useCallback((next = {}) => {
     if (mode === 'personal') return;
@@ -1987,6 +2074,10 @@ function TimetablePage({
     });
     return result;
   }, [overlayCourses, preferredTermCode, schedule, termCode, viewMode, weekNumber]);
+  const conflictCourseScheduleMap = useMemo(() => buildConflictCourseScheduleMap([
+    ...(personalPayload?.courses || schedule?.courses || []),
+    ...(overlayCourses || []),
+  ]), [overlayCourses, personalPayload, schedule]);
   const effectiveConflictMap = useMemo(
     () => ({ ...personalConflictMap, ...(externalConflictMap || {}) }),
     [externalConflictMap, personalConflictMap],
@@ -2279,6 +2370,7 @@ function TimetablePage({
                   })}
                   onCourseClick={setDetailCourse}
                   personalConflictMap={effectiveConflictMap}
+                  courseScheduleMap={conflictCourseScheduleMap}
                   presentation={presentation}
                   onSlotSelect={onSlotSelect}
                 />
@@ -2294,7 +2386,7 @@ function TimetablePage({
         </>
       ) : null}
 
-      <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} conflictMap={effectiveConflictMap} />
+      <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} conflictMap={effectiveConflictMap} courseScheduleMap={conflictCourseScheduleMap} />
 
       <Modal
         open={targetFilterOpen}
@@ -2506,6 +2598,7 @@ function DesktopTimetable({
   showToday,
   onCourseClick,
   personalConflictMap,
+  courseScheduleMap,
   presentation = 'default',
   onSlotSelect,
 }) {
@@ -2593,7 +2686,7 @@ function DesktopTimetable({
                 const sectionText = `第${course.start_section}${course.end_section !== course.start_section ? `–${course.end_section}` : ''}节`;
                 const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
                 return (
-                  <PersonalConflictPopover course={course} conflictMap={personalConflictMap}>
+                  <PersonalConflictPopover course={course} conflictMap={personalConflictMap} courseScheduleMap={courseScheduleMap}>
                   <button
                     type="button"
                     key={`${course.id}-${course.start_section}-${groupIndex}`}
@@ -2688,6 +2781,7 @@ function DesktopTimetable({
                       <PersonalConflictPopover
                         course={course}
                         conflictMap={personalConflictMap}
+                        courseScheduleMap={courseScheduleMap}
                         controlledOpen={Boolean(
                           hasPersonalConflict
                           && activeClusterCourse?.groupKey === groupKey
@@ -2763,7 +2857,7 @@ function DesktopTimetable({
           const sectionText = `第${course.start_section}${course.end_section !== course.start_section ? `–${course.end_section}` : ''}节`;
           const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
           return (
-            <PersonalConflictPopover course={course} conflictMap={personalConflictMap}>
+            <PersonalConflictPopover course={course} conflictMap={personalConflictMap} courseScheduleMap={courseScheduleMap}>
             <button
               type="button"
               className={`timetable-cluster-dialog-item${courseLayerClass(course)}${hasPersonalConflict ? ' has-personal-conflict' : ''}`}
@@ -2959,7 +3053,7 @@ function OtherCourses({ schedule }) {
   );
 }
 
-function CourseDetailContent({ course, conflictMap = {} }) {
+function CourseDetailContent({ course, conflictMap = {}, courseScheduleMap = {} }) {
   if (!course) return null;
   const content = courseCardContent(course);
   const details = uniqueTexts(course.title_details?.length ? course.title_details : course.cell_details || []);
@@ -2973,6 +3067,8 @@ function CourseDetailContent({ course, conflictMap = {} }) {
   const conflictMatches = mergeSelectionConflictMatches(
     personalConflictForCourse(course, conflictMap)?.matches || [],
   );
+  const groupedConflictMatches = groupConflictMatchesByCourse(conflictMatches);
+  const currentConflictSchedule = fullConflictSchedule(course, courseScheduleMap, [course]);
   return (
     <div className="timetable-course-detail">
       <div className="timetable-detail-lead">
@@ -3001,14 +3097,18 @@ function CourseDetailContent({ course, conflictMap = {} }) {
           <div className="timetable-conflict-current">
             <small>当前查看</small>
             <b>{course.course_name || '当前课程'}</b>
-            <span>{conflictMeetingText({ ...course, weeks: course.weeks || [] })}</span>
+            {currentConflictSchedule.map((meeting, index) => <span key={`current-${index}`}>{conflictMeetingText(meeting)}</span>)}
           </div>
           <small className="timetable-conflict-list-label">冲突课程</small>
-          {conflictMatches.map(match => (
-            <div key={[match.baseline_course_code || match.baseline_course_name, match.weekday, match.start_section, match.end_section].join(':')}>
-              <b>{match.baseline_course_name || '我的课表课程'}</b>
-              <span>{conflictMeetingText(match)}</span>
-              <span>实际重叠：{conflictWeeksText(match.overlapping_weeks)}</span>
+          {groupedConflictMatches.map(group => (
+            <div key={group.identity}>
+              <b>{group.course.baseline_course_name || '我的课表课程'}</b>
+              {fullConflictSchedule(group.course, courseScheduleMap, group.matches).map((meeting, index) => (
+                <span key={`baseline-${index}`}>{conflictMeetingText(meeting)}</span>
+              ))}
+              {group.matches.map((match, index) => (
+                <span className="timetable-conflict-overlap" key={`overlap-${index}`}>实际重叠：{conflictOverlapText(match, course)}</span>
+              ))}
             </div>
           ))}
         </section>
@@ -3023,18 +3123,18 @@ function CourseDetailContent({ course, conflictMap = {} }) {
   );
 }
 
-function CourseDetail({ course, onClose, isMobile, conflictMap }) {
+function CourseDetail({ course, onClose, isMobile, conflictMap, courseScheduleMap }) {
   const title = course?.course_name || '课程详情';
   if (isMobile) {
     return (
       <MobileDetailDrawer open={Boolean(course)} onClose={onClose} title={title}>
-        <CourseDetailContent course={course} conflictMap={conflictMap} />
+        <CourseDetailContent course={course} conflictMap={conflictMap} courseScheduleMap={courseScheduleMap} />
       </MobileDetailDrawer>
     );
   }
   return (
     <Modal open={Boolean(course)} onCancel={onClose} footer={null} title={title} width={560}>
-      <CourseDetailContent course={course} conflictMap={conflictMap} />
+      <CourseDetailContent course={course} conflictMap={conflictMap} courseScheduleMap={courseScheduleMap} />
     </Modal>
   );
 }

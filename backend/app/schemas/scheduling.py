@@ -73,6 +73,7 @@ class ScheduleConflictMatchModel(BaseModel):
     baseline_meeting_id: str
     baseline_course_name: str
     baseline_course_code: str = ""
+    baseline_teaching_class_id: str = ""
     baseline_weeks: List[int] = Field(default_factory=list)
     status: ConflictStatusValue
     reason: str

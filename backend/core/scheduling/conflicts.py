@@ -121,6 +121,7 @@ def compare_meetings(
         start_section=baseline.start_section,
         end_section=baseline.end_section,
         baseline_course_code=baseline.course_code,
+        baseline_teaching_class_id=baseline.teaching_class_id,
         baseline_weeks=baseline.weeks,
     )
 

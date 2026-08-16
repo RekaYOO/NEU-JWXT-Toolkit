@@ -147,6 +147,7 @@ def check_schedule_conflicts(
                         baseline_meeting_id=match.baseline_meeting_id,
                         baseline_course_name=match.baseline_course_name,
                         baseline_course_code=match.baseline_course_code,
+                        baseline_teaching_class_id=match.baseline_teaching_class_id,
                         baseline_weeks=list(match.baseline_weeks),
                         status=match.status.value,
                         reason=match.reason,

@@ -36,6 +36,7 @@ import {
   shouldLoadMoreTargets,
   capacityRangeInvalid,
   conflictCandidateFromCourse,
+  buildConflictCourseScheduleMap,
   personalConflictMapFromResponse,
   mergeScheduleWithSelectionOverlays,
   requestErrorText,
@@ -60,6 +61,20 @@ jest.mock('../services/api', () => ({
 
 
 describe('TimetablePage helpers', () => {
+  test('builds complete split-course schedules for conflict comparison', () => {
+    const schedules = buildConflictCourseScheduleMap([
+      { course_code: 'A1', course_name: '分段课程', weeks: [1, 2], weekday: 2, start_section: 1, end_section: 2 },
+      { course_code: 'A1', course_name: '分段课程', weeks: [5, 6], weekday: 4, start_section: 7, end_section: 8 },
+      { course_code: 'A1', course_name: '分段课程', weeks: [1, 2], weekday: 2, start_section: 1, end_section: 2 },
+    ]);
+
+    expect(schedules['code:A1']).toHaveLength(2);
+    expect(schedules['code:A1']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ weeks: [1, 2], weekday: 2, start_section: 1, end_section: 2 }),
+      expect.objectContaining({ weeks: [5, 6], weekday: 4, start_section: 7, end_section: 8 }),
+    ]));
+  });
+
   test('recognizes the official preselection tag for blue course names', () => {
     expect(courseIsPreselected({ tags: ['必修', '预选'] })).toBe(true);
     expect(courseIsPreselected({ preselected: true, tags: [] })).toBe(true);

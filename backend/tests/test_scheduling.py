@@ -119,6 +119,7 @@ def test_conflict_detection_reports_overlap_clear_and_unknown_without_guessing()
     assert results[0].matches[0].overlapping_weeks == (5, 6)
     assert results[0].matches[0].reason == "section_overlap"
     assert results[0].matches[0].baseline_course_code == "C-1"
+    assert results[0].matches[0].baseline_teaching_class_id == "TC-1"
     assert results[0].matches[0].baseline_weeks == tuple(range(1, 9))
     assert results[0].matches[0].weekday == 3
     assert (results[0].matches[0].start_section, results[0].matches[0].end_section) == (3, 4)
