@@ -120,6 +120,8 @@ def compare_meetings(
         weekday=baseline.weekday or candidate.weekday,
         start_section=baseline.start_section,
         end_section=baseline.end_section,
+        baseline_course_code=baseline.course_code,
+        baseline_weeks=baseline.weeks,
     )
 
 

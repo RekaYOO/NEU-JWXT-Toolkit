@@ -404,12 +404,45 @@ const overlappingWeeks = (left, right) => {
   return [...new Set((right.weeks || []).map(Number).filter(week => leftWeeks.has(week)))].sort((a, b) => a - b);
 };
 
+export const mergeSelectionConflictMatches = (matches = []) => {
+  const merged = new Map();
+  matches.filter(match => match && !['clear', 'unknown'].includes(match.status)).forEach(match => {
+    const identity = String(match.baseline_course_code || match.baseline_course_name || 'unknown')
+      .replace(/\s+/g, '').toLowerCase();
+    const key = [
+      identity,
+      Number(match.weekday || 0),
+      Number(match.start_section || 0),
+      Number(match.end_section || 0),
+    ].join(':');
+    const previous = merged.get(key);
+    if (!previous) {
+      merged.set(key, {
+        ...match,
+        baseline_weeks: [...new Set((match.baseline_weeks || []).map(Number))].sort((a, b) => a - b),
+        overlapping_weeks: [...new Set((match.overlapping_weeks || []).map(Number))].sort((a, b) => a - b),
+      });
+      return;
+    }
+    merged.set(key, {
+      ...previous,
+      baseline_weeks: [...new Set([
+        ...(previous.baseline_weeks || []), ...(match.baseline_weeks || []),
+      ].map(Number))].sort((a, b) => a - b),
+      overlapping_weeks: [...new Set([
+        ...(previous.overlapping_weeks || []), ...(match.overlapping_weeks || []),
+      ].map(Number))].sort((a, b) => a - b),
+    });
+  });
+  return [...merged.values()];
+};
+
 export const immediateSelectionConflictMap = (personalCourses = [], candidateCourses = []) => Object.fromEntries(
   candidateCourses.map(candidate => {
     const candidateComplete = (candidate.weeks || []).length && candidate.weekday
       && candidate.start_section && candidate.end_section;
     let hasUnknownBaseline = !candidateComplete;
-    const matches = personalCourses.flatMap(personal => {
+    const matches = mergeSelectionConflictMatches(personalCourses.flatMap(personal => {
       if (sameSelectionCourse(personal, candidate)) return [];
       if (personal.term_code && candidate.term_code && personal.term_code !== candidate.term_code) return [];
       const weeks = overlappingWeeks(personal, candidate);
@@ -425,6 +458,8 @@ export const immediateSelectionConflictMap = (personalCourses = [], candidateCou
       return [{
         baseline_meeting_id: personal.meeting_id || personal.id,
         baseline_course_name: personal.course_name,
+        baseline_course_code: personal.course_code || '',
+        baseline_weeks: personal.weeks || [],
         status: 'conflict',
         source: 'personal_timetable_local',
         overlapping_weeks: weeks,
@@ -432,7 +467,7 @@ export const immediateSelectionConflictMap = (personalCourses = [], candidateCou
         start_section: Math.max(personal.start_section, candidate.start_section),
         end_section: Math.min(personal.end_section, candidate.end_section),
       }];
-    });
+    }));
     return [candidate.meeting_id || candidate.id, {
       status: matches.length ? 'conflict' : hasUnknownBaseline ? 'unknown' : 'clear',
       matches,
@@ -462,16 +497,7 @@ export const summarizeSelectionConflictsByClass = (
       status: conflictStatusRank[conflict.status] > conflictStatusRank[result.status]
         ? conflict.status
         : result.status,
-      matches: [...new Map(nextMatches.map(match => [
-        [
-          match.baseline_meeting_id,
-          match.source,
-          match.weekday,
-          match.start_section,
-          match.end_section,
-        ].join(':'),
-        match,
-      ])).values()],
+      matches: mergeSelectionConflictMatches(nextMatches),
     };
   }, { status: 'clear', matches: [] });
   return [course.class_id, summary];

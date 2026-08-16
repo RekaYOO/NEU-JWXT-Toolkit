@@ -63,6 +63,44 @@ def test_weight_task_immediate_check_is_queued_and_uses_longer_schedule(tmp_path
     assert service._consume_manual_check(service._tasks[0]) is True
 
 
+def test_weight_task_snapshot_uses_round_level_rebalance_setting(tmp_path):
+    service = _service(tmp_path)
+    service.update_automation_settings("student", "batch", {"rebalance_seconds": 1800})
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "实时策略", "task_type": "weight_strategy",
+        "grade_size": 100, "rebalance_seconds": 60,
+        "groups": [{"group_id": "g1", "name": "组1", "target_count": 1}],
+        "items": [{"class_id": "c1", "course_code": "C1", "plan_group_id": "g1"}],
+    })
+    assert service.list("student", "batch")[0]["poll_interval_seconds"] == 1800
+
+
+def test_saved_plan_changes_sync_into_bound_tasks(tmp_path):
+    service = _service(tmp_path)
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "组1任务", "task_type": "weight_strategy",
+        "grade_size": 100,
+        "groups": [{"group_id": "g1", "name": "组1", "target_count": 1}],
+        "items": [{"class_id": "c1", "course_code": "C1", "plan_group_id": "g1"}],
+    })
+    changed = service.sync_bound_plan(
+        "student", "batch",
+        groups=[{"group_id": "g1", "name": "组1改名", "target_count": 2}],
+        items=[
+            {"class_id": "c1", "course_code": "C1", "plan_group_id": "g1"},
+            {"class_id": "c2", "course_code": "C2", "plan_group_id": "g1"},
+        ],
+    )
+    assert changed == 1
+    synced = service.list("student", "batch")[0]
+    assert synced["groups"][0]["name"] == "组1改名"
+    assert synced["groups"][0]["target_count"] == 2
+    assert {item["class_id"] for item in synced["items"]} == {"c1", "c2"}
+    assert synced["bound_group_ids"] == ["g1"]
+
+
 def test_catalog_sync_does_not_block_live_task_scheduler(tmp_path):
     service = _service(tmp_path)
     catalog_started = threading.Event()
@@ -766,6 +804,16 @@ def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tm
 
         def deselect_course(self, *, class_id, **_kwargs):
             self.dropped.append(class_id)
+            self.volunteered = [
+                item for item in self.volunteered if item["class_id"] != class_id
+            ]
+            return {"success": True, "code": "200", "message": "queued"}
+
+        def select_course(self, *, class_id, course_code, weight, **_kwargs):
+            self.volunteered.append({
+                "class_id": class_id, "course_code": course_code,
+                "course_name": "课程B", "devoted_weight": weight,
+            })
             return {"success": True, "code": "200", "message": "queued"}
 
     client = FakeClient()
@@ -788,10 +836,10 @@ def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tm
     task = service.create("student", {
         "batch_code": "batch", "term_code": "2026-2027-1", "name": "实时投权",
         "task_type": "weight_strategy", "grade_size": 126, "rebalance_seconds": 30,
-        "groups": [{"group_id": "g", "name": "选修", "target_count": 2}],
+        "groups": [{"group_id": "g", "name": "选修", "target_count": 1}],
         "items": [
-            {"plan_group_id": "g", "priority": 1, "utility": 10, "course_code": "A", "course_name": "课程A", "class_id": "class-a", "teaching_class_type": "ALLKC", "capacity": 30, "weight_participant_count": 30},
-            {"plan_group_id": "g", "priority": 2, "utility": 8, "course_code": "B", "course_name": "课程B", "class_id": "class-b", "teaching_class_type": "ALLKC", "capacity": 30, "weight_participant_count": 30},
+            {"plan_group_id": "g", "priority": 1, "utility": 8, "course_code": "A", "course_name": "课程A", "class_id": "class-a", "teaching_class_type": "ALLKC", "capacity": 30, "weight_participant_count": 30},
+            {"plan_group_id": "g", "priority": 2, "utility": 10, "course_code": "B", "course_name": "课程B", "class_id": "class-b", "teaching_class_type": "ALLKC", "capacity": 30, "weight_participant_count": 30},
         ],
     })
     task.update({"status": "running", "desired_state": "running", "last_attempt_at": None})
@@ -800,6 +848,12 @@ def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tm
 
     assert task["weight_status"]["last_calculated_at"]
     assert {item["class_id"] for item in task["weight_status"]["recommendation"]} == {"class-a", "class-b"}
+    recommendation = {
+        item["class_id"]: item for item in task["weight_status"]["recommendation"]
+    }
+    assert recommendation["class-a"]["action"] == "drop"
+    assert recommendation["class-a"]["classification"] == "OUT"
+    assert recommendation["class-b"]["action"] == "add"
     assert task["weight_status"]["pending_drop"][0]["class_id"] == "class-a"
     assert task["weight_status"]["pending_add"]
     assert task["execution"]["last_duration_ms"] is not None
@@ -809,6 +863,11 @@ def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tm
     service._tick(task)
     assert client.dropped == ["class-a"]
     assert task["weight_status"]["inflight"]["action"] == "drop"
+
+    service._tick(task)
+    assert task["course_states"]["class-a"]["devoted_weight"] is None
+    assert task["course_states"]["class-a"]["selected"] is False
+    assert task["weight_status"]["inflight"]["action"] == "add"
 
 
 def test_weight_strategy_refreshes_official_weight_before_waiting_for_catalog(tmp_path):

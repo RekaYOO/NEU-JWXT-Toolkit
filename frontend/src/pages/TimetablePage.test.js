@@ -219,7 +219,10 @@ describe('TimetablePage helpers', () => {
       ],
     }] });
     expect(mapped['meeting-1'].matches).toEqual([
-      { status: 'conflict', baseline_course_name: '高等数学' },
+      {
+        status: 'conflict', baseline_course_name: '高等数学',
+        baseline_weeks: [], overlapping_weeks: [],
+      },
     ]);
   });
 

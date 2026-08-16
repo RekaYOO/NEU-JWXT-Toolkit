@@ -14,6 +14,7 @@ import {
   isCurrentBatchSelectionRecord,
   academicPlanSelectionRecords,
   matchAcademicGapCatalogFilters,
+  mergeSelectionConflictMatches,
   mergeCatalogRefreshPreservingOrder,
   mergeCatalogFilterLayers,
   matchesCatalogAvailability,
@@ -28,6 +29,20 @@ import {
   toggleCatalogPreviewCourse,
   upsertSelectionRecord,
 } from './jwxkSchedule';
+
+test('conflict matches merge duplicate sources but keep distinct split-course times', () => {
+  const merged = mergeSelectionConflictMatches([
+    { status: 'conflict', baseline_meeting_id: 'jwxt-1', baseline_course_code: 'A1', baseline_course_name: '企业战略管理', baseline_weeks: [5, 6], overlapping_weeks: [5, 6], weekday: 2, start_section: 9, end_section: 10 },
+    { status: 'conflict', baseline_meeting_id: 'jwxk-1', baseline_course_code: 'A1', baseline_course_name: '企业战略管理', baseline_weeks: [7, 8], overlapping_weeks: [7, 8], weekday: 2, start_section: 9, end_section: 10 },
+    { status: 'conflict', baseline_meeting_id: 'jwxt-2', baseline_course_code: 'A1', baseline_course_name: '企业战略管理', baseline_weeks: [1, 2], overlapping_weeks: [1, 2], weekday: 5, start_section: 7, end_section: 8 },
+  ]);
+  expect(merged).toHaveLength(2);
+  expect(merged[0]).toMatchObject({
+    baseline_weeks: [5, 6, 7, 8], overlapping_weeks: [5, 6, 7, 8],
+    weekday: 2, start_section: 9, end_section: 10,
+  });
+  expect(merged[1]).toMatchObject({ weekday: 5, start_section: 7, end_section: 8 });
+});
 
 test('participant metric follows grab and weight round semantics', () => {
   const course = { selected_count: 40, weight_participant_count: 63, capacity: 50 };

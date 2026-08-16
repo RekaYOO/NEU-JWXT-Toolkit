@@ -848,6 +848,10 @@ def save_jwxk_plan(
     plans[key]["items"] = normalize_saved_plan_items(plans[key].get("items"))
     config["course_selection_plans"] = plans
     storage.save_config(config)
+    get_course_selection_automation_service().sync_bound_plan(
+        str(auth.username), request.batch_code,
+        groups=plans[key].get("groups") or [], items=plans[key].get("items") or [],
+    )
     return plans[key]
 
 

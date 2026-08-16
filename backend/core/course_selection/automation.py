@@ -672,6 +672,8 @@ class CourseSelectionAutomationService:
             "capacity", "selected_count", "first_choice_count",
             "weight_participant_count", "market_participant_count",
             "market_participant_label", "devoted_weight", "weight",
+            "current_weight", "action", "classification", "selected",
+            "scenario_success_rates", "forecast_participants",
         }
         snapshot["items"] = [
             {key: value for key, value in item.items() if key in public_course_fields}
@@ -2179,17 +2181,30 @@ class CourseSelectionAutomationService:
                     class_id = str(item.get("class_id") or "")
                     course_code = str(item.get("course_code") or "").casefold()
                     row = official_by_class.get(class_id) or official_by_code.get(course_code)
-                    if row is None or not class_id:
+                    if not class_id:
                         continue
                     state = course_states.setdefault(class_id, {})
-                    state.update({
-                        "class_id": class_id,
-                        "course_code": item.get("course_code") or row.get("course_code") or "",
-                        "course_name": item.get("course_name") or row.get("course_name") or "",
-                        "devoted_weight": row.get("devoted_weight"),
-                        "selected": True,
-                        "selection_updated_at": official_checked_at,
-                    })
+                    if row is None:
+                        # The current official result feed is authoritative for
+                        # active bids.  Clear a previously cached weight when a
+                        # course disappears after a confirmed withdrawal.
+                        state.update({
+                            "class_id": class_id,
+                            "course_code": item.get("course_code") or "",
+                            "course_name": item.get("course_name") or "",
+                            "devoted_weight": None,
+                            "selected": False,
+                            "selection_updated_at": official_checked_at,
+                        })
+                    else:
+                        state.update({
+                            "class_id": class_id,
+                            "course_code": item.get("course_code") or row.get("course_code") or "",
+                            "course_name": item.get("course_name") or row.get("course_name") or "",
+                            "devoted_weight": row.get("devoted_weight"),
+                            "selected": True,
+                            "selection_updated_at": official_checked_at,
+                        })
                 self._persist_task(task)
 
                 self._set_execution_stage(task, "reconcile", "正在核验上一次投权操作结果")
@@ -2401,6 +2416,9 @@ class CourseSelectionAutomationService:
                 desired = [{
                     **by_model[result["course_id"]],
                     "weight": int(result["bid"]),
+                    "classification": result.get("classification") or "",
+                    "scenario_success_rates": result.get("scenario_success_rates") or {},
+                    "forecast_participants": result.get("forecast_participants") or {},
                 } for result in optimized["courses"] if result["bid"] > 0 and not result["already_selected"]]
                 desired_by_code = {str(item["course_key"]).casefold(): item for item in desired}
                 current_by_code = {
@@ -2434,15 +2452,56 @@ class CourseSelectionAutomationService:
                             "teaching_class_type": str(target.get("teaching_class_type") or "ALLKC"),
                             "weight": int(target["weight"]),
                         })
+                optimized_by_code = {
+                    str(by_model[result["course_id"]].get("course_key") or "").casefold(): result
+                    for result in optimized["courses"]
+                    if result.get("course_id") in by_model
+                }
+                recommendation = []
+                for item in task.get("items") or []:
+                    class_id = str(item.get("class_id") or "")
+                    code = str(item.get("course_code") or class_id).casefold()
+                    result = optimized_by_code.get(code) or {}
+                    target = desired_by_code.get(code)
+                    current = current_by_code.get(code)
+                    current_class_id = str((current or {}).get("class_id") or "")
+                    current_weight = (
+                        int((current or {}).get("devoted_weight") or 0)
+                        if current is not None else None
+                    )
+                    target_class_id = str((target or {}).get("class_id") or "")
+                    recommended_weight = int((target or {}).get("weight") or 0)
+                    if target is not None and class_id == target_class_id:
+                        if current_class_id == class_id and current_weight == recommended_weight:
+                            action = "keep"
+                        elif current is not None:
+                            action = "change"
+                        else:
+                            action = "add"
+                    elif current_class_id == class_id:
+                        action = "drop"
+                    elif target is not None:
+                        action = "alternative"
+                    else:
+                        action = "out"
+                    recommendation.append({
+                        **item,
+                        "weight": recommended_weight if class_id == target_class_id else 0,
+                        "current_weight": current_weight if current_class_id == class_id else None,
+                        "action": action,
+                        "classification": result.get("classification") or "OUT",
+                        "selected": bool(result.get("selected")),
+                        "scenario_success_rates": result.get("scenario_success_rates") or {},
+                        "forecast_participants": result.get("forecast_participants") or {},
+                    })
                 now = datetime.now().astimezone().isoformat()
             was_final_rebalance = bool(weight_status.get("final_rebalance_requested"))
             completed_window = str(weight_status.get("final_window_requested") or "")
             weight_status.update({
                     "last_calculated_at": now,
-                    # Keep the complete model target, including courses whose
-                    # current bid is already correct.  The UI must distinguish
-                    # “keep current weight” from “no recommendation yet”.
-                    "recommendation": desired,
+                    # Return an explicit decision for every task row.  Missing
+                    # entries must never be interpreted by the UI as “keep”.
+                    "recommendation": recommendation,
                     "groups": optimized["groups"],
                     "warnings": optimized.get("warnings") or [],
                     "approximate": bool(optimized.get("approximate")),

@@ -40,7 +40,7 @@ import {
 } from '../services/api';
 import { useResourceMemory } from '../resources/ResourceStore';
 import { compareAcademicTermsNewestFirst } from '../utils/termSort';
-import { sameSelectionCourse } from '../utils/jwxkSchedule';
+import { mergeSelectionConflictMatches, sameSelectionCourse } from '../utils/jwxkSchedule';
 import { loadSetting, saveSetting } from '../utils/settings';
 import './TimetablePage.css';
 
@@ -97,7 +97,7 @@ export const personalConflictMapFromResponse = payload => Object.fromEntries(
     result.candidate_id || result.candidate_meeting_id,
     {
       status: result.status,
-      matches: (result.matches || []).filter(match => match.status === 'conflict'),
+      matches: mergeSelectionConflictMatches(result.matches || []),
     },
   ]),
 );
@@ -108,19 +108,29 @@ const personalConflictForCourse = (course, conflictMap) => (
 
 const conflictWeeksText = weeks => formatWeekNumbers(weeks) || '周次待确认';
 
+const conflictMeetingText = meeting => (
+  `${conflictWeeksText(meeting?.weeks || meeting?.baseline_weeks || meeting?.overlapping_weeks)} · 周${SHORT_WEEKDAY_NAMES[(Number(meeting?.weekday || 1)) - 1] || '-'} · 第${meeting?.start_section || '?'}–${meeting?.end_section || '?'}节`
+);
+
 function PersonalConflictPopover({ course, conflictMap, controlledOpen, children }) {
   const result = personalConflictForCourse(course, conflictMap);
-  const matches = result?.status === 'conflict' ? result.matches || [] : [];
+  const matches = result?.status === 'conflict' ? mergeSelectionConflictMatches(result.matches || []) : [];
   if (!matches.length) return children;
   const hasPersonal = matches.some(match => !match.source || String(match.source).includes('personal'));
   const content = (
     <div className="timetable-personal-conflict-popover">
       <strong>{hasPersonal ? '与我的课表冲突' : '候选课程之间冲突'}</strong>
-      {matches.map((match, index) => (
-        <div key={`${match.baseline_meeting_id}-${index}`}>
+      <div className="timetable-conflict-current">
+        <small>当前查看</small>
+        <b>{course.course_name || '当前课程'}</b>
+        <span>{conflictMeetingText({ ...course, weeks: course.weeks || [] })}</span>
+      </div>
+      <small className="timetable-conflict-list-label">冲突课程</small>
+      {matches.map(match => (
+        <div key={[match.baseline_course_code || match.baseline_course_name, match.weekday, match.start_section, match.end_section].join(':')}>
           <b>{match.baseline_course_name}</b>
-          <span>{conflictWeeksText(match.overlapping_weeks)} · 周{SHORT_WEEKDAY_NAMES[(match.weekday || 1) - 1]}</span>
-          <span>第{match.start_section}–{match.end_section}节</span>
+          <span>{conflictMeetingText(match)}</span>
+          <span>实际重叠：{conflictWeeksText(match.overlapping_weeks)}</span>
         </div>
       ))}
     </div>
@@ -2960,7 +2970,9 @@ function CourseDetailContent({ course, conflictMap = {} }) {
     course.grading_scheme,
   ].filter(Boolean));
   const detailTags = uniqueTexts(course.tags || []).filter(tag => !repeatedTags.has(tag));
-  const conflictMatches = personalConflictForCourse(course, conflictMap)?.matches || [];
+  const conflictMatches = mergeSelectionConflictMatches(
+    personalConflictForCourse(course, conflictMap)?.matches || [],
+  );
   return (
     <div className="timetable-course-detail">
       <div className="timetable-detail-lead">
@@ -2986,10 +2998,17 @@ function CourseDetailContent({ course, conflictMap = {} }) {
       {conflictMatches.length > 0 && (
         <section className="timetable-detail-conflicts" aria-label="与我的课表冲突">
           <strong>{conflictMatches.some(match => !match.source || String(match.source).includes('personal')) ? '与我的课表冲突' : '候选课程之间冲突'}</strong>
-          {conflictMatches.map((match, index) => (
-            <div key={`${match.baseline_meeting_id || match.baseline_course_name}-${index}`}>
+          <div className="timetable-conflict-current">
+            <small>当前查看</small>
+            <b>{course.course_name || '当前课程'}</b>
+            <span>{conflictMeetingText({ ...course, weeks: course.weeks || [] })}</span>
+          </div>
+          <small className="timetable-conflict-list-label">冲突课程</small>
+          {conflictMatches.map(match => (
+            <div key={[match.baseline_course_code || match.baseline_course_name, match.weekday, match.start_section, match.end_section].join(':')}>
               <b>{match.baseline_course_name || '我的课表课程'}</b>
-              <span>{conflictWeeksText(match.overlapping_weeks)} · 周{SHORT_WEEKDAY_NAMES[(match.weekday || 1) - 1]} · 第{match.start_section}–{match.end_section}节</span>
+              <span>{conflictMeetingText(match)}</span>
+              <span>实际重叠：{conflictWeeksText(match.overlapping_weeks)}</span>
             </div>
           ))}
         </section>

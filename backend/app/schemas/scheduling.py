@@ -72,6 +72,8 @@ class ScheduleConflictBatchRequest(BaseModel):
 class ScheduleConflictMatchModel(BaseModel):
     baseline_meeting_id: str
     baseline_course_name: str
+    baseline_course_code: str = ""
+    baseline_weeks: List[int] = Field(default_factory=list)
     status: ConflictStatusValue
     reason: str
     overlapping_weeks: List[int] = Field(default_factory=list)

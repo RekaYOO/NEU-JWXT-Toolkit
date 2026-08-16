@@ -44,6 +44,8 @@ class ConflictMatch:
     weekday: int = 0
     start_section: int = 0
     end_section: int = 0
+    baseline_course_code: str = ""
+    baseline_weeks: tuple[int, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
