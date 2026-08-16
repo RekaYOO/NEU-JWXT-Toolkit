@@ -33,6 +33,8 @@ import {
   uniqueDisplayLabels,
   toggleCatalogPreviewCourse,
   unplannedCurrentWeightSelections,
+  reconcileUngroupedWeightPlan,
+  UNGROUPED_WEIGHT_GROUP_ID,
   upsertSelectionRecord,
 } from './jwxkSchedule';
 
@@ -263,6 +265,102 @@ test('weight records with zero participants and zero capacity belong to another 
   expect(isCurrentBatchSelectionRecord({
     selected_count: 0, capacity: 0,
   }, '02')).toBe(true);
+});
+
+test('current manual weights are reconciled into the reserved ungrouped plan', () => {
+  const courses = [{
+    class_id: 'A1', course_code: 'C1', course_name: '课程一', course_category: '专业方向类',
+    selection_record_type: 'volunteered', weight_participant_count: 12, capacity: 30,
+    devoted_weight: 15,
+  }, {
+    class_id: 'A2', course_code: 'C2', course_name: '课程二',
+    selection_record_type: 'volunteered', weight_participant_count: 8, capacity: 20,
+  }];
+  const plan = [{ class_id: 'A2', plan_group_id: 'user-group', course_name: '课程二' }];
+  const groups = [{ group_id: 'user-group', name: '目标组', target_count: 1 }];
+
+  const result = reconcileUngroupedWeightPlan(courses, plan, groups, '04');
+  expect(result.changed).toBe(true);
+  expect(result.groups).toEqual([
+    groups[0],
+    expect.objectContaining({ group_id: UNGROUPED_WEIGHT_GROUP_ID, name: '未分组', target_count: 1 }),
+  ]);
+  expect(result.items).toHaveLength(2);
+  expect(result.items.find(item => item.class_id === 'A1')).toMatchObject({
+    plan_group_id: UNGROUPED_WEIGHT_GROUP_ID,
+    course_category: '专业方向类',
+    devoted_weight: 15,
+    selection_record_type: 'volunteered',
+  });
+});
+
+test('ungrouped reconciliation removes withdrawn records but keeps ordinary candidates', () => {
+  const ordinary = { class_id: 'A1', plan_group_id: 'user-group', course_name: '普通候选' };
+  const stale = {
+    class_id: 'A2', plan_group_id: UNGROUPED_WEIGHT_GROUP_ID,
+    plan_group_name: '未分组', plan_group_target_count: 1,
+  };
+  const result = reconcileUngroupedWeightPlan([], [ordinary, stale], [{
+    group_id: 'user-group', name: '目标组', target_count: 1,
+  }, {
+    group_id: UNGROUPED_WEIGHT_GROUP_ID, name: '未分组', target_count: 1,
+  }], '04');
+
+  expect(result.items).toEqual([ordinary]);
+  expect(result.groups).toEqual([{ group_id: 'user-group', name: '目标组', target_count: 1 }]);
+  expect(reconcileUngroupedWeightPlan([], result.items, result.groups, '04')).toEqual({
+    items: result.items, groups: result.groups, changed: false,
+  });
+});
+
+test('ungrouped reconciliation fills schedule and category when the archive becomes ready', () => {
+  const existing = {
+    class_id: 'A1', course_name: '课程一', plan_group_id: UNGROUPED_WEIGHT_GROUP_ID,
+    plan_group_name: '未分组', plan_group_target_count: 1, priority: 1,
+  };
+  const current = {
+    class_id: 'A1', course_name: '课程一', selection_record_type: 'volunteered',
+    weight_participant_count: 5, capacity: 20, devoted_weight: 30,
+    normalized_course_category: '专业方向类',
+    schedules: [{ meeting_id: 'm1', weekday: 1, start_section: 1, end_section: 2 }],
+  };
+  const group = { group_id: UNGROUPED_WEIGHT_GROUP_ID, name: '未分组', target_count: 1 };
+
+  const result = reconcileUngroupedWeightPlan([current], [existing], [group], '04');
+  expect(result.changed).toBe(true);
+  expect(result.items[0]).toMatchObject({
+    normalized_course_category: '专业方向类', devoted_weight: 30,
+    schedules: [expect.objectContaining({ meeting_id: 'm1' })],
+  });
+  expect(reconcileUngroupedWeightPlan([current], result.items, result.groups, '04').changed)
+    .toBe(false);
+});
+
+test('moving ungrouped weights into different groups is stable on the next reconciliation', () => {
+  const courses = ['A1', 'A2'].map((classId, index) => ({
+    class_id: classId, course_code: `C${index + 1}`,
+    selection_record_type: 'volunteered', weight_participant_count: 5, capacity: 20,
+  }));
+  const moved = courses.map((course, index) => ({
+    ...course, plan_group_id: `group-${index + 1}`, priority: 1,
+  }));
+  const groups = [{ group_id: 'group-1', name: '第一组', target_count: 1 }, {
+    group_id: 'group-2', name: '第二组', target_count: 1,
+  }];
+
+  expect(reconcileUngroupedWeightPlan(courses, moved, groups, '04')).toEqual({
+    items: moved, groups, changed: false,
+  });
+});
+
+test('other-round zero-capacity weight records do not enter the ungrouped plan', () => {
+  const items = [{
+    class_id: 'OLD', selection_record_type: 'volunteered',
+    weight_participant_count: 0, capacity: 0,
+  }];
+  expect(reconcileUngroupedWeightPlan(items, [], [], '04')).toEqual({
+    items: [], groups: [], changed: false,
+  });
 });
 
 test('academic-plan projection keeps current volunteered courses and drops other-round records', () => {

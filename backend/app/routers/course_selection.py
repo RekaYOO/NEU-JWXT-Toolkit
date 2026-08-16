@@ -426,17 +426,21 @@ def get_jwxk_selected(
                 if class_id:
                     live_by_class[class_id] = course
 
-    dynamic_fields = (
+    enrichment_fields = (
         "capacity", "selected_count", "first_choice_count",
         "weight_participant_count", "market_participant_count",
         "market_participant_label", "capacity_updated_at", "full",
+        "schedules", "location", "campus", "campus_name", "teacher",
+        "teaching_class_type", "course_nature", "course_category",
+        "normalized_course_category", "course_categories",
+        "general_elective_category", "general_elective_category_code",
     )
     for key in ("selected", "volunteered", "withdrawal"):
         result[key] = [{
             **item,
             **{
                 field: live_by_class[str(item.get("class_id") or "")][field]
-                for field in dynamic_fields
+                for field in enrichment_fields
                 if str(item.get("class_id") or "") in live_by_class
                 and field in live_by_class[str(item.get("class_id") or "")]
             },

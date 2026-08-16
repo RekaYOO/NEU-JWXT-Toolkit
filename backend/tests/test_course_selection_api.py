@@ -80,6 +80,56 @@ def test_real_http_route_serializes_success_and_validation_errors():
     assert rejected.status_code == 422
 
 
+def test_selected_results_are_enriched_with_archived_schedule_and_category(monkeypatch):
+    selected = {
+        "selected": [],
+        "volunteered": [{
+            "class_id": "CLASS-1", "course_code": "COURSE-1",
+            "course_name": "用户体验", "selection_type_code": "04",
+            "devoted_weight": 20,
+        }],
+        "withdrawal": [],
+    }
+    archived_course = {
+        "class_id": "CLASS-1", "course_code": "COURSE-1",
+        "course_name": "用户体验", "teaching_class_type": "FANKC",
+        "course_category": "专业方向类",
+        "normalized_course_category": "专业方向类",
+        "campus": "01", "campus_name": "浑南校区",
+        "capacity": 30, "weight_participant_count": 18,
+        "schedules": [{
+            "meeting_id": "meeting-1", "weekday": 2,
+            "start_section": 3, "end_section": 4, "weeks": [1, 2],
+        }],
+    }
+
+    class ArchiveService:
+        @staticmethod
+        def get_catalog_archive_view(_account, _batch_code):
+            return {"courses": [archived_course]}
+
+    monkeypatch.setattr(course_selection, "_run_jwxk_read", lambda _storage, _operation: selected)
+    monkeypatch.setattr(
+        course_selection, "peek_auth_client",
+        lambda: type("Auth", (), {"username": "student"})(),
+    )
+    monkeypatch.setattr(
+        course_selection, "get_course_selection_automation_service",
+        lambda: ArchiveService(),
+    )
+
+    result = course_selection.get_jwxk_selected(
+        JwxkBatchRequest(batch_code="batch"), Response(), include_market=False, storage=object(),
+    )
+
+    course = result.volunteered[0]
+    assert course.course_category == "专业方向类"
+    assert course.campus_name == "浑南校区"
+    assert course.capacity == 30
+    assert course.weight_participant_count == 18
+    assert course.schedules[0]["meeting_id"] == "meeting-1"
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

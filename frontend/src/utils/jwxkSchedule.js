@@ -1,5 +1,8 @@
 const normalizedName = value => String(value || '').replace(/\s+/g, '').toLocaleLowerCase();
 
+export const UNGROUPED_WEIGHT_GROUP_ID = 'ungrouped_weighted';
+export const UNGROUPED_WEIGHT_GROUP_NAME = '未分组';
+
 export const uniqueDisplayLabels = (values = [], formatter = value => value) => {
   const labels = (values || []).map(formatter).filter(Boolean);
   return [...new Set(labels)];
@@ -118,6 +121,119 @@ export const unplannedCurrentWeightSelections = (
       && Boolean(classId)
       && !plannedClassIds.has(classId);
   });
+};
+
+/**
+ * 将当前权重轮次中尚未属于用户方案组的已投课程，协调到持久化的“未分组”保留组。
+ * 普通方案组是用户维护的候选池，不会因为课程退权而被自动删改；只有保留组随官方
+ * 当前已投结果增删。返回原引用表示没有变化，便于调用方避免重复持久化和任务同步。
+ */
+export const reconcileUngroupedWeightPlan = (
+  courses = [], planItems = [], planGroups = [], selectionTypeCode = '',
+) => {
+  if (String(selectionTypeCode || '') !== '04') {
+    return { items: planItems, groups: planGroups, changed: false };
+  }
+
+  const classIdOf = item => String(item?.class_id || '').trim();
+  const ordinaryClassIds = new Set((planItems || [])
+    .filter(item => item?.plan_group_id !== UNGROUPED_WEIGHT_GROUP_ID)
+    .map(classIdOf)
+    .filter(Boolean));
+  const currentUngrouped = (courses || []).filter(course => {
+    const classId = classIdOf(course);
+    return course?.selection_record_type === 'volunteered'
+      && isCurrentBatchSelectionRecord(course, selectionTypeCode)
+      && Boolean(classId)
+      && !ordinaryClassIds.has(classId);
+  });
+  const currentByClassId = new Map(currentUngrouped.map(course => [classIdOf(course), course]));
+  const targetCount = Math.min(20, Math.max(1, currentByClassId.size));
+  const existingUngrouped = (planItems || []).filter(
+    item => item?.plan_group_id === UNGROUPED_WEIGHT_GROUP_ID,
+  );
+  const existingByClassId = new Map(existingUngrouped.map(item => [classIdOf(item), item]));
+  let nextPriority = existingUngrouped.reduce(
+    (maximum, item) => Math.max(maximum, Number(item?.priority || 0)), 0,
+  ) + 1;
+
+  const nextItems = (planItems || []).flatMap(item => {
+    if (item?.plan_group_id !== UNGROUPED_WEIGHT_GROUP_ID) return [item];
+    const classId = classIdOf(item);
+    if (!currentByClassId.has(classId)) return [];
+    const live = currentByClassId.get(classId);
+    const stableFields = [
+      'course_code', 'course_name', 'class_number', 'teaching_class_type',
+      'teacher', 'location', 'campus', 'campus_name', 'course_nature',
+      'course_category', 'normalized_course_category', 'course_categories',
+      'general_elective_category', 'general_elective_category_code', 'schedules',
+      'devoted_weight', 'selection_source', 'selection_record_type',
+    ];
+    let normalized = item;
+    const assign = (key, value) => {
+      const meaningful = Array.isArray(value) ? value.length > 0 : value !== '' && value != null;
+      const equal = typeof value === 'object'
+        ? JSON.stringify(normalized[key]) === JSON.stringify(value)
+        : normalized[key] === value;
+      if (!meaningful || equal) return;
+      if (normalized === item) normalized = { ...item };
+      normalized[key] = value;
+    };
+    stableFields.forEach(field => assign(field, live?.[field]));
+    assign('plan_group_name', UNGROUPED_WEIGHT_GROUP_NAME);
+    assign('plan_group_target_count', targetCount);
+    return [normalized];
+  });
+
+  currentUngrouped.forEach(course => {
+    const classId = classIdOf(course);
+    if (existingByClassId.has(classId)) return;
+    nextItems.push({
+      ...course,
+      plan_group_id: UNGROUPED_WEIGHT_GROUP_ID,
+      plan_group_name: UNGROUPED_WEIGHT_GROUP_NAME,
+      plan_group_target_count: targetCount,
+      group_id: course.group_id || course.course_code || classId,
+      teaching_class_type: course.teaching_class_type || 'FANKC',
+      utility: Number(course.utility || 5),
+      priority: nextPriority,
+      devoted_weight: course.devoted_weight,
+      selection_record_type: 'volunteered',
+      selection_source: course.selection_source,
+      imported_from_volunteered: true,
+    });
+    nextPriority += 1;
+  });
+
+  const existingGroup = (planGroups || []).find(
+    group => group?.group_id === UNGROUPED_WEIGHT_GROUP_ID,
+  );
+  let nextGroups = (planGroups || []).filter(
+    group => group?.group_id !== UNGROUPED_WEIGHT_GROUP_ID,
+  );
+  if (currentByClassId.size) {
+    const reservedGroup = existingGroup
+      && existingGroup.name === UNGROUPED_WEIGHT_GROUP_NAME
+      && Number(existingGroup.target_count || 1) === targetCount
+      ? existingGroup
+      : {
+        ...(existingGroup || {}),
+        group_id: UNGROUPED_WEIGHT_GROUP_ID,
+        name: UNGROUPED_WEIGHT_GROUP_NAME,
+        target_count: targetCount,
+      };
+    const insertionIndex = existingGroup ? (planGroups || []).indexOf(existingGroup) : -1;
+    if (insertionIndex >= 0) nextGroups.splice(insertionIndex, 0, reservedGroup);
+    else nextGroups.push(reservedGroup);
+  }
+
+  const changed = nextItems.length !== (planItems || []).length
+    || nextGroups.length !== (planGroups || []).length
+    || nextItems.some((item, index) => item !== planItems[index])
+    || nextGroups.some((group, index) => group !== planGroups[index]);
+  return changed
+    ? { items: nextItems, groups: nextGroups, changed: true }
+    : { items: planItems, groups: planGroups, changed: false };
 };
 
 const comparableBatchTime = value => {

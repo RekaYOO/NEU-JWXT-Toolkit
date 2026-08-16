@@ -50,7 +50,9 @@ import {
   selectionTimeConflictStatus,
   summarizeSelectionConflictsByClass,
   toggleCatalogPreviewCourse,
-  unplannedCurrentWeightSelections,
+  reconcileUngroupedWeightPlan,
+  UNGROUPED_WEIGHT_GROUP_ID,
+  UNGROUPED_WEIGHT_GROUP_NAME,
   uniqueDisplayLabels,
   upsertSelectionRecord,
 } from '../utils/jwxkSchedule';
@@ -85,6 +87,13 @@ const FILTER_LABELS = {
 const classScheduleText = course => (course.schedules || []).map(item => (
   `${item.week_text || (item.weeks || []).join('、') + ((item.weeks || []).length ? '周' : '') || '周次待定'} · 周${WEEKDAYS[(item.weekday || 1) - 1] || '-'} · ${item.start_section || '-'}-${item.end_section || '-'}节`
 )).join('；') || '时间待定';
+
+const courseCategoryLabel = course => (
+  course.normalized_course_category
+  || course.course_category
+  || course.course_categories?.[0]
+  || '课程类别待定'
+);
 
 const planItem = (group, course, scope, planGroup, priority) => ({
   plan_group_id: planGroup.group_id,
@@ -333,8 +342,9 @@ const CourseSelectionWorkspacePage = () => {
   const [weightImportOpen, setWeightImportOpen] = useState(false);
   const [weightImportLoading, setWeightImportLoading] = useState(false);
   const [weightImportCandidates, setWeightImportCandidates] = useState([]);
-  const [weightImportClassIds, setWeightImportClassIds] = useState([]);
-  const [weightImportGroupId, setWeightImportGroupId] = useState('');
+  const [weightImportAssignments, setWeightImportAssignments] = useState({});
+  const [selectedLoaded, setSelectedLoaded] = useState(false);
+  const [planLoaded, setPlanLoaded] = useState(false);
   const [vacancySwapTarget, setVacancySwapTarget] = useState(null);
   const [vacancyDropIds, setVacancyDropIds] = useState([]);
   const [activePlanGapId, setActivePlanGapId] = useState('');
@@ -616,6 +626,7 @@ const CourseSelectionWorkspacePage = () => {
       const { confirmed, merged } = selectionRecordsFromResponse(result);
       setConfirmedSelected(confirmed);
       commitSelectedRecords(merged);
+      setSelectedLoaded(true);
       if (includeMarket) setMarketDataUpdatedAt(new Date());
       return merged;
     } catch (error) {
@@ -765,8 +776,9 @@ const CourseSelectionWorkspacePage = () => {
     setWeightImportOpen(false);
     setWeightImportLoading(false);
     setWeightImportCandidates([]);
-    setWeightImportClassIds([]);
-    setWeightImportGroupId('');
+    setWeightImportAssignments({});
+    setSelectedLoaded(false);
+    setPlanLoaded(false);
     setVacancySwapTarget(null);
     setVacancyDropIds([]);
     setActivePlanGapId('');
@@ -798,11 +810,14 @@ const CourseSelectionWorkspacePage = () => {
         return result;
       }, {}));
       setPlan(savedItems); setPlanGroupConfigs(savedGroups);
-      setTaskGroupIds(savedGroups.map(group => group.group_id));
+      setTaskGroupIds(savedGroups.map(group => group.group_id).filter(
+        groupId => groupId !== UNGROUPED_WEIGHT_GROUP_ID,
+      ));
       setSavedTermCode(saved.term_code || '');
       setLocalBatch(saved.batch || null);
       const savedScopeOptions = batchScopeOptions(saved.batch);
       if (savedScopeOptions.length > 2) setScopeOptions(savedScopeOptions);
+      setPlanLoaded(true);
     }).catch(error => message.error(error.message || '读取本地选课数据失败'));
     getJwxkStatus().then(nextStatus => {
       if (generation !== workspaceGeneration.current) return;
@@ -816,6 +831,7 @@ const CourseSelectionWorkspacePage = () => {
       const { confirmed, merged } = selectionRecordsFromResponse(result);
       setConfirmedSelected(confirmed);
       commitSelectedRecords(merged);
+      setSelectedLoaded(true);
     }).catch(() => {
       // 已选结果暂不可用时仍允许浏览目录；后端提交前仍会执行同课程代码防重。
     });
@@ -966,16 +982,29 @@ const CourseSelectionWorkspacePage = () => {
     catch (error) { message.error(error.message || '保存方案失败'); }
   };
 
+  useEffect(() => {
+    if (!selectedLoaded || !planLoaded || batch?.selection_type_code !== '04') return;
+    const reconciled = reconcileUngroupedWeightPlan(
+      selected, plan, planGroupConfigs, batch.selection_type_code,
+    );
+    if (reconciled.changed) void savePlan(reconciled.items, reconciled.groups);
+  }, [batch?.selection_type_code, plan, planGroupConfigs, planLoaded, selected, selectedLoaded]);
+
   const openPlanAssignment = (group, course) => {
     const duplicate = selectedByCourseCode.get(String(course.course_code || '').toUpperCase());
-    if (duplicate) {
-      message.info(`“${duplicate.course_name || course.course_name}”已经选中；仍可加入方案组，但不会允许再次手动提交`);
+    const existingItem = plan.find(item => item.class_id === course.class_id);
+    if (existingItem && existingItem.plan_group_id !== UNGROUPED_WEIGHT_GROUP_ID) {
+      const existingGroup = planGroupConfigs.find(
+        item => item.group_id === existingItem.plan_group_id,
+      );
+      message.info(`这个教学班已在方案组“${existingGroup?.name || existingItem.plan_group_name || '方案组'}”中`);
+      return;
     }
-    if (plan.some(item => item.class_id === course.class_id)) {
-      message.info('这个教学班已经在方案中'); return;
-    }
-    setPlanAssignment({ group, course });
-    setAssignmentGroupId(planGroupConfigs[0]?.group_id || '__new__');
+    setPlanAssignment({ group, course, duplicateSelection: duplicate || null, existingItem: existingItem || null });
+    setAssignmentGroupId(
+      planGroupConfigs.find(group => group.group_id !== UNGROUPED_WEIGHT_GROUP_ID)?.group_id
+      || '__new__',
+    );
     setNewGroupName('');
     setNewGroupTargetCount(1);
   };
@@ -994,24 +1023,43 @@ const CourseSelectionWorkspacePage = () => {
       nextGroups = [...planGroupConfigs, targetGroup];
     }
     if (!targetGroup) throw new Error('请选择方案组');
-    const groupItems = plan.filter(item => item.plan_group_id === targetGroup.group_id);
-    const next = [...plan, planItem(
-      planAssignment.group,
-      planAssignment.course,
-      scope,
-      targetGroup,
-      groupItems.length + 1,
-    )];
+    const groupItems = plan.filter(item => (
+      item.plan_group_id === targetGroup.group_id
+      && item.class_id !== planAssignment.course.class_id
+    ));
+    const priority = groupItems.reduce(
+      (maximum, item) => Math.max(maximum, Number(item.priority || 0)), 0,
+    ) + 1;
+    const next = planAssignment.existingItem
+      ? plan.map(item => item.class_id === planAssignment.course.class_id ? {
+        ...item,
+        plan_group_id: targetGroup.group_id,
+        plan_group_name: targetGroup.name,
+        plan_group_target_count: targetGroup.target_count,
+        priority,
+      } : item)
+      : [...plan, planItem(
+        planAssignment.group,
+        planAssignment.course,
+        scope,
+        targetGroup,
+        priority,
+      )];
     await savePlan(next, nextGroups);
     setCatalogPreviewClasses(previous => previous.filter(
       item => item.class_id !== planAssignment.course.class_id,
     ));
     setPlanAssignment(null);
-    message.success(`已加入方案组“${targetGroup.name}”`);
+    message.success(planAssignment.existingItem
+      ? `已从“未分组”整理到“${targetGroup.name}”`
+      : `已加入方案组“${targetGroup.name}”`);
   };
 
   const saveGroupEditor = async () => {
     if (!groupEditor?.name?.trim()) throw new Error('请填写方案组名称');
+    if (groupEditor.group_id === UNGROUPED_WEIGHT_GROUP_ID) {
+      throw new Error('“未分组”由当前已投课程自动维护，不能编辑');
+    }
     const normalized = {
       group_id: groupEditor.group_id || `group_${Date.now().toString(36)}`,
       name: groupEditor.name.trim(),
@@ -1034,19 +1082,27 @@ const CourseSelectionWorkspacePage = () => {
   };
 
   const openWeightImport = async () => {
-    if (!planGroupConfigs.length) {
-      message.warning('请先新建一个方案组，再导入已投权课程');
+    const targetGroups = planGroupConfigs.filter(
+      group => group.group_id !== UNGROUPED_WEIGHT_GROUP_ID,
+    );
+    if (!targetGroups.length) {
+      message.warning('请先新建一个普通方案组，再整理未分组课程');
       return;
     }
     setWeightImportLoading(true);
     try {
       const latest = await loadSelected({ silent: true, propagateError: true, includeMarket: false });
-      const candidates = unplannedCurrentWeightSelections(
-        latest || selectedRef.current, plan, batch?.selection_type_code,
+      const reconciled = reconcileUngroupedWeightPlan(
+        latest || selectedRef.current, plan, planGroupConfigs, batch?.selection_type_code,
+      );
+      if (reconciled.changed) await savePlan(reconciled.items, reconciled.groups);
+      const candidates = reconciled.items.filter(
+        item => item.plan_group_id === UNGROUPED_WEIGHT_GROUP_ID,
       );
       setWeightImportCandidates(candidates);
-      setWeightImportClassIds(candidates.map(course => String(course.class_id)));
-      setWeightImportGroupId(planGroupConfigs[0]?.group_id || '');
+      setWeightImportAssignments(Object.fromEntries(
+        candidates.map(course => [String(course.class_id), '']),
+      ));
       setWeightImportOpen(true);
     } catch (error) {
       message.error(error.message || '刷新当前已投课程失败');
@@ -1056,37 +1112,45 @@ const CourseSelectionWorkspacePage = () => {
   };
 
   const confirmWeightImport = async () => {
-    const targetGroup = planGroupConfigs.find(group => group.group_id === weightImportGroupId);
-    if (!targetGroup) throw new Error('请选择目标方案组');
-    const selectedIds = new Set(weightImportClassIds.map(String));
-    const currentClassIds = new Set(plan.map(item => String(item.class_id || '')).filter(Boolean));
-    const importing = weightImportCandidates.filter(course => (
-      selectedIds.has(String(course.class_id)) && !currentClassIds.has(String(course.class_id))
-    ));
-    if (!importing.length) {
-      message.info('没有选择需要导入的课程');
+    const targetGroups = new Map(planGroupConfigs
+      .filter(group => group.group_id !== UNGROUPED_WEIGHT_GROUP_ID)
+      .map(group => [group.group_id, group]));
+    const assignments = new Map(Object.entries(weightImportAssignments)
+      .filter(([, groupId]) => targetGroups.has(groupId)));
+    if (!assignments.size) {
+      message.info('请至少为一门课程选择目标方案组');
       return;
     }
-    if (plan.length + importing.length > 100) {
-      throw new Error('方案候选教学班最多保存 100 个，请先移除部分候选');
+    const nextPriorities = new Map([...targetGroups.keys()].map(groupId => [
+      groupId,
+      plan.filter(item => item.plan_group_id === groupId).reduce(
+        (maximum, item) => Math.max(maximum, Number(item.priority || 0)), 0,
+      ) + 1,
+    ]));
+    let movedCount = 0;
+    const nextItems = plan.map(item => {
+      if (item.plan_group_id !== UNGROUPED_WEIGHT_GROUP_ID) return item;
+      const targetGroupId = assignments.get(String(item.class_id || ''));
+      const targetGroup = targetGroups.get(targetGroupId);
+      if (!targetGroup) return item;
+      const priority = nextPriorities.get(targetGroupId) || 1;
+      nextPriorities.set(targetGroupId, priority + 1);
+      movedCount += 1;
+      return {
+        ...item,
+        plan_group_id: targetGroup.group_id,
+        plan_group_name: targetGroup.name,
+        plan_group_target_count: targetGroup.target_count,
+        priority,
+      };
+    });
+    if (!movedCount) {
+      message.info('未分组中没有可整理的课程');
+      return;
     }
-    const targetItemCount = plan.filter(item => item.plan_group_id === targetGroup.group_id).length;
-    const importedItems = importing.map((course, index) => ({
-      ...planItem({
-        group_id: course.group_id || course.course_code || course.class_id,
-        course_name: course.course_name,
-        course_code: course.course_code,
-        course_nature: course.course_nature,
-        course_category: course.course_category,
-      }, course, course.teaching_class_type || 'FANKC', targetGroup, targetItemCount + index + 1),
-      devoted_weight: course.devoted_weight,
-      selection_record_type: 'volunteered',
-      selection_source: course.selection_source,
-      imported_from_volunteered: true,
-    }));
-    await savePlan([...plan, ...importedItems]);
+    await savePlan(nextItems, planGroupConfigs);
     setWeightImportOpen(false);
-    message.success(`已将 ${importedItems.length} 门已投权课程导入“${targetGroup.name}”`);
+    message.success(`已整理 ${movedCount} 门已投权课程`);
   };
 
   const conflictCandidates = useMemo(() => [
@@ -1434,7 +1498,9 @@ const CourseSelectionWorkspacePage = () => {
       setGradeSizeDraft(saved.grade_size || null);
       // Each opening starts from the least surprising choice: include every
       // currently available plan group, then let the user narrow it here.
-      setTaskGroupIds(planGroupConfigs.map(group => group.group_id));
+      setTaskGroupIds(planGroupConfigs
+        .map(group => group.group_id)
+        .filter(groupId => groupId !== UNGROUPED_WEIGHT_GROUP_ID));
       setWeightSetupOpen(true);
     } catch (error) {
       message.error(error.message || '读取策略配置失败');
@@ -2157,19 +2223,45 @@ const CourseSelectionWorkspacePage = () => {
             {academicReportResource.updateAvailable && <Button size="small" type="link" onClick={academicReportResource.applyAvailable}>使用刚更新的培养计划</Button>}
           </section>
           <div><ShoppingCartOutlined /><b>我的方案</b><Tag>{planGroups.length} 组 / {plan.length} 个备选</Tag></div>
-          {planGroups.map(group => <div className="jwxk-plan-aside-group" key={group.id}><strong>{group.name} · 目标 {group.target_count} 门</strong>{group.items.map(item => <button type="button" className="jwxk-plan-course-link" key={item.class_id} onClick={() => focusPlanCourse(item)}>{item.priority}. {item.course_name} · {item.teacher || '教师待定'}</button>)}</div>)}
+          {planGroups.map(group => {
+            const ungrouped = group.group_id === UNGROUPED_WEIGHT_GROUP_ID;
+            return <div className="jwxk-plan-aside-group" key={group.id}><strong>{ungrouped ? `${group.name} · ${group.items.length} 门已投课程` : `${group.name} · 目标 ${group.target_count} 门`}</strong>{group.items.map(item => <button type="button" className="jwxk-plan-course-link" key={item.class_id} onClick={() => focusPlanCourse(item)}>{ungrouped ? '' : `${item.priority}. `}{item.course_name} · {item.teacher || '教师待定'}</button>)}</div>;
+          })}
           <Space direction="vertical" className="jwxk-plan-aside-actions"><Button block onClick={() => setGroupEditor({ group_id: '', name: '', target_count: 1 })}>新建方案组</Button><Button block onClick={() => setView('plan')}>管理方案组</Button></Space>
         </aside>
       </div>
     </Spin>
   );
 
-  const planView = <div className="jwxk-plan-page"><div className="jwxk-section-actions jwxk-plan-page-actions"><Button onClick={() => setGroupEditor({ group_id: '', name: '', target_count: 1 })}>新建方案组</Button>{batch?.selection_type_code === '04' && <Button icon={<ImportOutlined />} loading={weightImportLoading} onClick={openWeightImport}>导入已投课程</Button>}<Button icon={<CalendarOutlined />} onClick={previewConflicts}>实时检查冲突</Button>{batch?.selection_type_code !== '04' && planGroups.length > 0 && <Checkbox.Group className="jwxk-task-group-picker" value={taskGroupIds} onChange={setTaskGroupIds} options={planGroups.map(group => ({ value: group.group_id, label: `自动抢课：${group.name}` }))} />}{batch?.selection_type_code !== '04' && <Button type="primary" icon={<RobotOutlined />} disabled={!plan.length || !planGroups.length} onClick={createTask}>创建所选方案组自动任务</Button>}{batch?.selection_type_code === '04' && <Button type="primary" icon={<RobotOutlined />} onClick={openWeightPlanner}>策略投权</Button>}</div>{planGroups.map(group => <Card key={group.id} title={`${group.name} · 目标 ${group.target_count} 门 · ${group.items.length} 个候选`} extra={<Space><Button size="small" onClick={() => setGroupEditor({ group_id: group.group_id, name: group.name, target_count: group.target_count })}>编辑目标</Button><Button size="small" danger onClick={() => Modal.confirm({ title: `删除方案组“${group.name}”？`, content: '组内候选课程也会一起移除。', okButtonProps: { danger: true }, okText: '删除', onOk: () => { setTaskGroupIds(previous => previous.filter(groupId => groupId !== group.group_id)); return savePlan(plan.filter(item => item.plan_group_id !== group.group_id), planGroupConfigs.filter(item => item.group_id !== group.group_id)); } })}>删除组</Button></Space>} className="jwxk-plan-group">{group.items.map(item => {
-    const conflict = conflicts[item.class_id];
-    const conflictStatus = selectionTimeConflictStatus(conflict);
-    const crossCampus = courseIsCrossCampus(item);
-    return <div className="jwxk-plan-alternative" key={item.class_id}><div><div className="jwxk-plan-alternative__title"><button type="button" className="jwxk-plan-course-link is-primary" onClick={() => focusPlanCourse(item)}>{item.priority}. {item.course_name || item.course_code || '未命名课程'}</button>{conflict && <Tag color={conflictStatus === 'conflict' ? 'error' : conflictStatus === 'unknown' ? 'warning' : 'success'}>{conflictStatus === 'conflict' ? '时间冲突' : conflictStatus === 'unknown' ? '时间待核验' : '时间无冲突'}</Tag>}{crossCampus && <Tag color="orange">跨校区</Tag>}</div><strong>{item.course_code || '课程代码待定'} · {item.teacher || '教师待定'} · {item.class_number || item.class_id}</strong><span>{item.location || '地点待定'} · {classScheduleText(item)}</span></div><Space wrap className="jwxk-plan-alternative__actions"><InputNumber min={1} max={group.items.length} value={item.priority} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, priority: value || 1 } : row))} addonBefore="优先级" />{batch?.selection_type_code === '04' && <InputNumber min={1} max={10} value={item.utility || 5} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, utility: value || 5 } : row))} addonBefore="意愿" />}<Button danger onClick={() => savePlan(plan.filter(row => row.class_id !== item.class_id))}>移出方案组</Button></Space></div>;
-  })}</Card>)}{!plan.length && <Empty description="从课程目录选择教学班加入方案组" />}</div>;
+  const planView = <div className="jwxk-plan-page">
+    <div className="jwxk-section-actions jwxk-plan-page-actions">
+      <Button onClick={() => setGroupEditor({ group_id: '', name: '', target_count: 1 })}>新建方案组</Button>
+      {batch?.selection_type_code === '04' && <Button icon={<ImportOutlined />} loading={weightImportLoading} onClick={openWeightImport}>整理未分组课程</Button>}
+      <Button icon={<CalendarOutlined />} onClick={previewConflicts}>实时检查冲突</Button>
+      {batch?.selection_type_code !== '04' && planGroups.length > 0 && <Checkbox.Group className="jwxk-task-group-picker" value={taskGroupIds} onChange={setTaskGroupIds} options={planGroups.map(group => ({ value: group.group_id, label: `自动抢课：${group.name}` }))} />}
+      {batch?.selection_type_code !== '04' && <Button type="primary" icon={<RobotOutlined />} disabled={!plan.length || !planGroups.length} onClick={createTask}>创建所选方案组自动任务</Button>}
+      {batch?.selection_type_code === '04' && <Button type="primary" icon={<RobotOutlined />} onClick={openWeightPlanner}>策略投权</Button>}
+    </div>
+    {planGroups.map(group => {
+      const ungrouped = group.group_id === UNGROUPED_WEIGHT_GROUP_ID;
+      const title = ungrouped
+        ? `${group.name} · ${group.items.length} 门已投课程`
+        : `${group.name} · 目标 ${group.target_count} 门 · ${group.items.length} 个候选`;
+      const extra = ungrouped
+        ? <Button size="small" onClick={openWeightImport}>整理到其他方案组</Button>
+        : <Space><Button size="small" onClick={() => setGroupEditor({ group_id: group.group_id, name: group.name, target_count: group.target_count })}>编辑目标</Button><Button size="small" danger onClick={() => Modal.confirm({ title: `删除方案组“${group.name}”？`, content: '组内候选课程也会一起移除。', okButtonProps: { danger: true }, okText: '删除', onOk: () => { setTaskGroupIds(previous => previous.filter(groupId => groupId !== group.group_id)); return savePlan(plan.filter(item => item.plan_group_id !== group.group_id), planGroupConfigs.filter(item => item.group_id !== group.group_id)); } })}>删除组</Button></Space>;
+      return <Card key={group.id} title={title} extra={extra} className="jwxk-plan-group">
+        {ungrouped && <Alert type="info" showIcon message="当前已投、但尚未整理进普通方案组的课程" description="这些课程已进入统一课表与冲突链路。策略投权时可以手动选择本组，但默认不会勾选。" />}
+        {group.items.map(item => {
+          const conflict = conflicts[item.class_id];
+          const conflictStatus = selectionTimeConflictStatus(conflict);
+          const crossCampus = courseIsCrossCampus(item);
+          return <div className="jwxk-plan-alternative" key={item.class_id}><div><div className="jwxk-plan-alternative__title"><button type="button" className="jwxk-plan-course-link is-primary" onClick={() => focusPlanCourse(item)}>{ungrouped ? '' : `${item.priority}. `}{item.course_name || item.course_code || '未命名课程'}</button>{conflict && <Tag color={conflictStatus === 'conflict' ? 'error' : conflictStatus === 'unknown' ? 'warning' : 'success'}>{conflictStatus === 'conflict' ? '时间冲突' : conflictStatus === 'unknown' ? '时间待核验' : '时间无冲突'}</Tag>}{crossCampus && <Tag color="orange">跨校区</Tag>}</div><strong>{item.course_code || '课程代码待定'} · {item.teacher || '教师待定'} · {item.class_number || item.class_id}</strong><span>{item.location || '地点待定'} · {classScheduleText(item)}</span></div><Space wrap className="jwxk-plan-alternative__actions">{ungrouped ? <Button onClick={openWeightImport}>分配方案组</Button> : <><InputNumber min={1} max={group.items.length} value={item.priority} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, priority: value || 1 } : row))} addonBefore="优先级" />{batch?.selection_type_code === '04' && <InputNumber min={1} max={10} value={item.utility || 5} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, utility: value || 5 } : row))} addonBefore="意愿" />}<Button danger onClick={() => savePlan(plan.filter(row => row.class_id !== item.class_id))}>移出方案组</Button></>}</Space></div>;
+        })}
+      </Card>;
+    })}
+    {!plan.length && <Empty description="从课程目录选择教学班加入方案组" />}
+  </div>;
 
   const selectedView = <Spin spinning={loading}><Alert type="info" showIcon message={schedule?.source_label || '官方实时选课结果'} description={<span>{selectedRefreshing ? '正在静默更新人数状态' : '人数状态每 30 秒静默更新'}{marketDataUpdatedAt ? ` · 最近更新 ${marketDataUpdatedAt.toLocaleTimeString('zh-CN', { hour12: false })}` : ''}</span>} /><div className="jwxk-selected-grid">{orderedSelected.map(course => {
     const participantCount = selectionParticipantCount(course, batch?.selection_type_code);
@@ -2430,10 +2522,16 @@ const CourseSelectionWorkspacePage = () => {
         <label><span>结束节次</span><Select allowClear value={filterDraft.endSection || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, endSection: value || '' }))} options={effectiveFilterOptions.sections} placeholder="不限" /></label>
       </div>
     </Modal>
-    <Modal title="加入方案组" open={!!planAssignment} onCancel={() => setPlanAssignment(null)} onOk={confirmPlanAssignment} okText="加入方案组" okButtonProps={{ disabled: assignmentGroupId === '__new__' && !newGroupName.trim() }}>
+    <Modal title={planAssignment?.existingItem ? '分配方案组' : '加入方案组'} open={!!planAssignment} onCancel={() => setPlanAssignment(null)} onOk={confirmPlanAssignment} okText={planAssignment?.existingItem ? '保存分组' : '加入方案组'} okButtonProps={{ disabled: assignmentGroupId === '__new__' && !newGroupName.trim() }}>
       <div className="jwxk-group-form">
         <Text strong>{planAssignment?.course?.course_name} · {planAssignment?.course?.teacher || '教师待定'}</Text>
-        <label><span>目标方案组</span><Select value={assignmentGroupId} onChange={setAssignmentGroupId} options={[...planGroupConfigs.map(group => ({ value: group.group_id, label: `${group.name}（目标 ${group.target_count} 门）` })), { value: '__new__', label: '新建方案组' }]} /></label>
+        {planAssignment?.duplicateSelection && <Alert
+          type="info"
+          showIcon
+          message={planAssignment.duplicateSelection.selection_record_type === 'volunteered' ? '这门课程当前已经投权' : '这门课程当前已经选中'}
+          description={planAssignment?.existingItem ? '本次只调整它所属的方案组，不会再次向官方提交。' : '仍可作为方案候选保存，但手动选课或投权按钮会保持禁用，避免重复提交。'}
+        />}
+        <label><span>目标方案组</span><Select value={assignmentGroupId} onChange={setAssignmentGroupId} options={[...planGroupConfigs.filter(group => group.group_id !== UNGROUPED_WEIGHT_GROUP_ID).map(group => ({ value: group.group_id, label: `${group.name}（目标 ${group.target_count} 门）` })), { value: '__new__', label: '新建方案组' }]} /></label>
         {assignmentGroupId === '__new__' && <><label><span>方案组名称</span><Input value={newGroupName} onChange={event => setNewGroupName(event.target.value)} placeholder="例如：A 类课程" maxLength={60} /></label><label><span>需要选中</span><InputNumber min={1} max={20} value={newGroupTargetCount} onChange={value => setNewGroupTargetCount(value || 1)} addonAfter="门" /></label></>}
       </div>
     </Modal>
@@ -2445,17 +2543,29 @@ const CourseSelectionWorkspacePage = () => {
       </div>
     </Modal>
     <Modal
-      title="导入当前已投权课程"
+      title="整理未分组已投课程"
       open={weightImportOpen}
       onCancel={() => setWeightImportOpen(false)}
       onOk={confirmWeightImport}
-      okText="导入所选课程"
-      okButtonProps={{ disabled: !weightImportGroupId || !weightImportClassIds.length }}
+      okText="保存分组"
+      okButtonProps={{ disabled: !Object.values(weightImportAssignments).some(Boolean) }}
+      width={720}
     >
       <div className="jwxk-group-form">
-        <Alert type="info" showIcon message="将方案组外的当前已投课程纳入策略管理" description="这里只列出当前轮次已投权、且尚未加入任何方案组的教学班。导入后会保存为该组候选；如果该组已有自动策略任务，任务候选也会自动同步。" />
-        <label><span>目标方案组</span><Select value={weightImportGroupId} onChange={setWeightImportGroupId} options={planGroupConfigs.map(group => ({ value: group.group_id, label: `${group.name}（目标 ${group.target_count} 门）` }))} /></label>
-        <label><span>需要导入的课程</span>{weightImportCandidates.length ? <Checkbox.Group className="jwxk-weight-import-picker" value={weightImportClassIds} onChange={setWeightImportClassIds} options={weightImportCandidates.map(course => ({ value: String(course.class_id), label: `${course.course_name || course.course_code} · ${course.teacher || '教师待定'} · 当前投权 ${course.devoted_weight ?? 0} 点` }))} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有尚未加入方案组的当前已投课程" />}</label>
+        <Alert type="info" showIcon message="把未分组课程分别整理到普通方案组" description="每门课程可以选择不同的目标组；暂不选择的课程会继续留在“未分组”。保存后，已绑定目标组的自动策略任务会沿用现有方案同步链路取得这些课程。" />
+        {weightImportCandidates.length ? <div className="jwxk-weight-import-list">{weightImportCandidates.map(course => {
+          const classId = String(course.class_id || '');
+          return <div className="jwxk-weight-import-row" key={classId}>
+            <span><strong>{course.course_name || course.course_code || '未命名课程'}</strong><small>{courseCategoryLabel(course)}</small></span>
+            <Select
+              allowClear
+              value={weightImportAssignments[classId] || undefined}
+              onChange={value => setWeightImportAssignments(previous => ({ ...previous, [classId]: value || '' }))}
+              placeholder="选择目标方案组"
+              options={planGroupConfigs.filter(group => group.group_id !== UNGROUPED_WEIGHT_GROUP_ID).map(group => ({ value: group.group_id, label: `${group.name}（目标 ${group.target_count} 门）` }))}
+            />
+          </div>;
+        })}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有未分组的已投课程" />}
       </div>
     </Modal>
     <Modal
@@ -2476,8 +2586,8 @@ const CourseSelectionWorkspacePage = () => {
     </Modal>
     <Modal title="为所选方案组配置策略投权" open={weightSetupOpen} onCancel={() => setWeightSetupOpen(false)} footer={<><Button onClick={() => setWeightSetupOpen(false)}>取消</Button><Button loading={weightBuilding} disabled={!taskGroupIds.length} onClick={buildWeightPlan}>生成所选组建议</Button><Button type="primary" icon={<RobotOutlined />} disabled={!taskGroupIds.length} onClick={createWeightStrategyTask}>为所选方案组创建策略投权</Button></>} width={620}>
       <div className="jwxk-group-form">
-        <Alert type="info" showIcon message="选择本次策略需要管理的方案组" description="打开时默认全选。任务创建后会绑定这些方案组；组内候选、目标门数或优先级发生变化时，任务会自动同步。未选中的方案组不会参与本次计算，也不会被任务调整权重。" />
-        <label><span>参与策略的方案组</span><Checkbox.Group className="jwxk-weight-group-picker" value={taskGroupIds} onChange={setTaskGroupIds} options={planGroupConfigs.map(group => ({ value: group.group_id, label: `${group.name}（目标 ${group.target_count} 门，${plan.filter(item => item.plan_group_id === group.group_id).length} 个候选）` }))} /></label>
+        <Alert type="info" showIcon message="选择本次策略需要管理的方案组" description="打开时默认选择全部普通方案组，“未分组”不会默认勾选，但可以手动加入本次策略。任务创建后会绑定所选组；组内课程、目标门数或优先级变化时，任务自动同步。" />
+        <label><span>参与策略的方案组</span><Checkbox.Group className="jwxk-weight-group-picker" value={taskGroupIds} onChange={setTaskGroupIds} options={planGroupConfigs.map(group => ({ value: group.group_id, label: group.group_id === UNGROUPED_WEIGHT_GROUP_ID ? `${group.name}（${plan.filter(item => item.plan_group_id === group.group_id).length} 门已投课程，默认不选）` : `${group.name}（目标 ${group.target_count} 门，${plan.filter(item => item.plan_group_id === group.group_id).length} 个候选）` }))} /></label>
         <label><span>年级人数</span><InputNumber min={1} max={100000} value={gradeSizeDraft} onChange={setGradeSizeDraft} placeholder="用于估计当前轮次整体竞争热度" /></label>
         <Text type="secondary">模型只在所选方案组内满足目标并分配权重。每门课程的 1–10 分意愿值在方案组列表中修改；教学班优先级只决定同一课程优先使用哪个教学班。</Text>
       </div>
