@@ -437,13 +437,13 @@ class JwxkWeightPlanRequest(JwxkSavedPlanRequest):
 
 class JwxkWeightConfigResponse(StrictModel):
     term_code: str
-    grade_size: int | None = None
+    grade_size: int = 5000
 
 
 class JwxkAutomationSettings(StrictModel):
     """Account/round-scoped automation and notification preferences."""
     strategy_schedule_mode: Literal["interval", "final_windows"] = "interval"
-    rebalance_seconds: int = Field(default=600, ge=600, le=86400)
+    rebalance_seconds: int = Field(default=1800, ge=600, le=86400)
     force_final_rebalance: bool = True
     mail_enabled: bool = False
     notify_round_end: bool = False
@@ -484,7 +484,8 @@ class JwxkAutomationTaskRequest(JwxkSavedPlanRequest):
     task_type: Literal["selection", "vacancy_swap", "weight_strategy"] = "selection"
     swap_groups: list[JwxkVacancySwapGroup] = Field(default_factory=list, max_length=20)
     grade_size: int | None = Field(default=None, ge=1, le=100_000)
-    rebalance_seconds: int = Field(default=60, ge=60, le=600)
+    rebalance_seconds: int = Field(default=1800, ge=600, le=86400)
+    replace_existing: bool = False
     start_at: str = ""
     end_at: str = ""
     # One second is reserved for the short opening burst.  Normal vacancy

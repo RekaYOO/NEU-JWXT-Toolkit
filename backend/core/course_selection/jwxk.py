@@ -732,6 +732,18 @@ def normalize_saved_plan_items(rows: Any) -> list[dict[str, Any]]:
         if not isinstance(raw, dict):
             continue
         item = dict(raw)
+        try:
+            utility = float(item.get("utility"))
+        except (TypeError, ValueError):
+            utility = 0
+        if not 1 <= utility <= 10:
+            try:
+                legacy_priority = int(item.get("priority") or 0)
+            except (TypeError, ValueError):
+                legacy_priority = 0
+            utility = max(1, min(10, 11 - legacy_priority)) if legacy_priority else 5
+        item["utility"] = int(utility) if float(utility).is_integer() else utility
+        item.pop("priority", None)
         official_schedule = _text(item.get("official_schedule"))
         legacy_location = _text(item.get("location"))
         if not official_schedule and ("/星期" in legacy_location or "/周" in legacy_location):
@@ -795,6 +807,14 @@ def normalize_saved_plan_items(rows: Any) -> list[dict[str, Any]]:
                 _text(item.get("course_name")) or "方案组",
             )
             item.setdefault("plan_group_target_count", 1)
+        utility = _number(item.get("utility"))
+        if utility is None or not 1 <= utility <= 10:
+            legacy_priority = int(_number(item.get("priority")) or 0)
+            utility = max(1, min(10, 11 - legacy_priority)) if legacy_priority else 5
+        item["utility"] = int(utility)
+        # Priority was replaced by the single, user-facing 1–10 utility value.
+        # Consume it only as a migration hint and never persist it again.
+        item.pop("priority", None)
         locations = list(dict.fromkeys(
             _text(meeting.get("location")) for meeting in schedules if _text(meeting.get("location"))
         ))

@@ -243,6 +243,7 @@ def optimize_grouped_weights(
         predict_final_bidders(grade_size, market, value)
         for value in scenario_entries
     )
+    market_scope_mismatch = average_entries_raw > max_entries + _EPS
 
     candidate_by_id = {candidate.course_id: candidate for candidate in candidates}
     if len(candidate_by_id) != len(candidates):
@@ -379,6 +380,10 @@ def optimize_grouped_weights(
             name: forecasts[index].get(candidate.course_id, float(candidate.bidders))
             for index, name in enumerate(SCENARIO_NAMES)
         }
+        forecast_status = "scope_mismatch" if market_scope_mismatch else (
+            "flat_current" if len({round(value, 6) for value in forecast_by_scenario.values()}) == 1
+            else "available"
+        )
         if candidate.already_selected:
             classification = "SELECTED"
             rates = {name: 1.0 for name in SCENARIO_NAMES}
@@ -428,6 +433,7 @@ def optimize_grouped_weights(
             "already_selected": candidate.already_selected,
             "scenario_success_rates": rates,
             "forecast_participants": forecast_by_scenario,
+            "forecast_status": forecast_status,
             "recommendation_reason": recommendation_reason,
             "blocked_by_conflicts": blocked_by,
             "time_unknown": candidate.time_unknown,
@@ -444,6 +450,11 @@ def optimize_grouped_weights(
     warnings = []
     if average_entries_raw < 1.0 - _EPS:
         warnings.append("全市场已投注次数低于年级人数，终局预测的置信度较低")
+    if market_scope_mismatch:
+        warnings.append(
+            "当前轮次累计投注次数超出年级人数模型的理论范围，三种终局人数情景暂不可区分；"
+            "实时 SAFE/COMP 分类和当前人数仍然有效"
+        )
     if any(candidate.time_unknown for candidate in candidates):
         warnings.append("部分课程时间信息待核验，模型没有将其视为无冲突")
     if any(not group["satisfied"] for group in group_results):
@@ -465,6 +476,7 @@ def optimize_grouped_weights(
             "market_course_count": len(market),
             "total_current_bidders": total_bidders,
             "average_entries_raw": average_entries_raw,
+            "market_scope_mismatch": market_scope_mismatch,
             "scenario_entries": dict(zip(SCENARIO_NAMES, scenario_entries)),
         },
     }

@@ -153,10 +153,6 @@ export const reconcileUngroupedWeightPlan = (
     item => item?.plan_group_id === UNGROUPED_WEIGHT_GROUP_ID,
   );
   const existingByClassId = new Map(existingUngrouped.map(item => [classIdOf(item), item]));
-  let nextPriority = existingUngrouped.reduce(
-    (maximum, item) => Math.max(maximum, Number(item?.priority || 0)), 0,
-  ) + 1;
-
   const nextItems = (planItems || []).flatMap(item => {
     if (item?.plan_group_id !== UNGROUPED_WEIGHT_GROUP_ID) return [item];
     const classId = classIdOf(item);
@@ -196,13 +192,11 @@ export const reconcileUngroupedWeightPlan = (
       group_id: course.group_id || course.course_code || classId,
       teaching_class_type: course.teaching_class_type || 'FANKC',
       utility: Number(course.utility || 5),
-      priority: nextPriority,
       devoted_weight: course.devoted_weight,
       selection_record_type: 'volunteered',
       selection_source: course.selection_source,
       imported_from_volunteered: true,
     });
-    nextPriority += 1;
   });
 
   const existingGroup = (planGroups || []).find(

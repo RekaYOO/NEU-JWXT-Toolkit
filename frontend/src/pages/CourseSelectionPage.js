@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Checkbox, Col, Divider, Empty, InputNumber, Modal, Radio, Row, Select, Space, Spin, Switch, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Checkbox, Col, Divider, Empty, InputNumber, Modal, Radio, Row, Select, Space, Spin, Tag, Typography, message } from 'antd';
 import { ClockCircleOutlined, DeleteOutlined, HistoryOutlined, QuestionCircleOutlined, ReloadOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -236,15 +236,15 @@ const CourseSelectionPage = () => {
             <div><Title level={5}>策略任务的执行时间</Title><Text type="secondary">这里只决定已经在工作台中启动的策略任务何时检查。任务的创建、启动、暂停、年级人数和方案组仍在“自动任务”中管理。</Text></div>
             <label className="course-selection-setting-row"><span><b>执行方式</b><small>选择持续跟踪，或只在临近结束时集中调整。</small></span><Select value={automationSettings.strategy_schedule_mode || 'interval'} onChange={value => setAutomationSettings(s => ({ ...s, strategy_schedule_mode: value }))} options={[{ value: 'interval', label: '按间隔持续重算' }, { value: 'final_windows', label: '仅结束前 5 分钟、3 分钟执行' }]} /></label>
             {automationSettings.strategy_schedule_mode !== 'final_windows' && <>
-              <label className="course-selection-setting-row"><span><b>重算间隔</b><small>每次都会读取最新人数；最短 10 分钟，避免请求过快。</small></span><Space><InputNumber min={600} max={86400} step={60} value={automationSettings.rebalance_seconds} onChange={value => setAutomationSettings(s => ({ ...s, rebalance_seconds: value || 600 }))} /><Text>秒</Text></Space></label>
-              <label className="course-selection-setting-row"><span><b>结束前再检查一次</b><small>无论普通间隔是否到期，都在结束前 3 分钟执行。</small></span><Switch checked={automationSettings.force_final_rebalance} onChange={value => setAutomationSettings(s => ({ ...s, force_final_rebalance: value }))} /></label>
+              <label className="course-selection-setting-row"><span><b>重算间隔</b><small>每次都会读取最新人数；默认 30 分钟，最短 10 分钟，避免请求过快。</small></span><Space><InputNumber min={10} max={1440} step={5} value={Math.max(10, Math.round(Number(automationSettings.rebalance_seconds || 1800) / 60))} onChange={value => setAutomationSettings(s => ({ ...s, rebalance_seconds: Math.max(600, (Number(value) || 30) * 60) }))} /><Text>分钟</Text></Space></label>
+              <label className="course-selection-setting-row"><span><b>结束前再检查一次</b><small>无论普通间隔是否到期，都在结束前 3 分钟执行。</small></span><Radio.Group className="course-selection-setting-toggle" optionType="button" buttonStyle="solid" value={automationSettings.force_final_rebalance ? 'on' : 'off'} onChange={event => setAutomationSettings(s => ({ ...s, force_final_rebalance: event.target.value === 'on' }))} options={[{ value: 'on', label: '开启' }, { value: 'off', label: '关闭' }]} /></label>
             </>}
             {automationSettings.strategy_schedule_mode === 'final_windows' && <Alert type="info" showIcon message="该模式不会定时投权" description="只对已经启动且仍在运行的策略任务生效，并在结束前 5 分钟、3 分钟分别读取最新数据并处理一次。" />}
           </section>}
           <Divider />
           <section className="course-selection-automation-section">
             <div><Title level={5}>邮件通知</Title><Text type="secondary">通知只报告状态，不会因为邮件失败重复执行选课或投权。</Text></div>
-            <label className="course-selection-setting-row"><span><b>启用本轮邮件通知</b><small>关闭后下面选中的通知类型也不会发送。</small></span><Switch checked={automationSettings.mail_enabled} onChange={value => setAutomationSettings(s => ({ ...s, mail_enabled: value }))} /></label>
+            <label className="course-selection-setting-row"><span><b>启用本轮邮件通知</b><small>关闭后下面选中的通知类型也不会发送。</small></span><Radio.Group className="course-selection-setting-toggle" optionType="button" buttonStyle="solid" value={automationSettings.mail_enabled ? 'on' : 'off'} onChange={event => setAutomationSettings(s => ({ ...s, mail_enabled: event.target.value === 'on' }))} options={[{ value: 'on', label: '开启' }, { value: 'off', label: '关闭' }]} /></label>
             <Checkbox.Group className="course-selection-notification-grid" disabled={!automationSettings.mail_enabled} value={Object.keys(automationSettings).filter(key => key.startsWith('notify_') && automationSettings[key])} onChange={keys => setAutomationSettings(s => Object.fromEntries(Object.entries(s).map(([key, value]) => [key, key.startsWith('notify_') ? keys.includes(key) : value])))} options={[
               ['notify_round_end', '轮次结束总结'], ['notify_final_rebalance', '临近结束的策略结果'], ['notify_capacity_transition', '课程从未满变为满员或超额'], ['notify_over_capacity', '课程超额达到阈值'], ['notify_underfilled_warning', '已投权课程开课风险（结束前人数不足 10）'], ['notify_grab_result', '抢课任务成功或待核验'],
             ].map(([value, label]) => ({ value, label }))} />
@@ -257,7 +257,7 @@ const CourseSelectionPage = () => {
         <div className="course-selection-model-help">
           <Alert type="info" showIcon message="这是辅助决策模型，不是录取概率预测" description="学校只公布容量、当前已投注人数和最终筛选规则。页面中的 SAFE、COMP、OUT 与成功率都是用于比较方案的代理值，不代表官方承诺。" />
           <section><Title level={5}>1. 读取什么数据</Title><Paragraph>每次计算前读取本轮除“全校课程查询”外的真实课程目录，并刷新方案组候选课程的已投注人数、容量、官方剩余权重、最低投权和投权步长。方案组外手动投权保持不动，只继续占用官方预算。</Paragraph></section>
-          <section><Title level={5}>2. 怎样理解方案组</Title><Paragraph>每个方案组由“候选课程池 + 目标门数”组成。模型按课程代码合并同一课程的多个教学班，一门课程只占一个目标名额；教学班优先级只决定实际提交哪个班，不会重复消耗目标门数。</Paragraph></section>
+          <section><Title level={5}>2. 怎样理解方案组</Title><Paragraph>每个方案组由“候选课程池 + 目标门数”组成。模型按课程代码合并同一课程的多个教学班，一门课程只占一个目标名额；同一课程的教学班按意愿值和稳定顺序选择实际提交班级，不会重复消耗目标门数。</Paragraph></section>
           <section><Title level={5}>3. 怎样选择课程</Title><Paragraph>模型先排除已确认的硬冲突组合，再按以下顺序比较可行方案：覆盖更多方案组目标名额、获得更高的课程意愿总分、提高中性竞争情景下的代理收益，最后在效果相同时使用更少权重。时间未知课程会产生风险警告，不会被当作已确认无冲突。</Paragraph></section>
           <section><Title level={5}>4. 怎样计算竞争程度</Title><Paragraph>实时策略以本次读取的官方人数分类：当前已投注人数低于容量的课程标为 SAFE；达到或超过容量的课程标为 COMP；未进入推荐组合的课程标为 OUT。模型仍根据年级人数和全市场数据计算保守、中性、激进三种终局情景，但预测只作风险参考，不会把当前未满课程改判为 COMP。</Paragraph></section>
           <section><Title level={5}>5. 怎样分配权重</Title><Paragraph>SAFE 课程固定使用官方最低权重，不会分到额外权重。其余预算通过 water-filling 分配给 COMP 课程，综合课程意愿和竞争强度，并遵守官方最低权重、步长和剩余预算。只有推荐权重与当前权重不同，系统才会按安全流程先撤回、核验，再重新投放。</Paragraph></section>

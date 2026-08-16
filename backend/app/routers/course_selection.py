@@ -885,7 +885,14 @@ def create_jwxk_automation_task(
         raise HTTPException(status_code=422, detail="策略投权只适用于权重选课轮次")
     if request.task_type in {"selection", "vacancy_swap"} and selection_type_code != "02":
         raise HTTPException(status_code=422, detail="自动抢课和空位追踪只适用于抢选轮次")
-    return get_course_selection_automation_service().create(str(auth.username), request.model_dump())
+    payload = request.model_dump()
+    replace_existing = bool(payload.pop("replace_existing", False))
+    try:
+        return get_course_selection_automation_service().create(
+            str(auth.username), payload, replace_existing=replace_existing,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.get("/jwxk/automation/tasks")
@@ -960,7 +967,9 @@ def _weight_targets(items: list[dict]) -> list[dict]:
         grouped.setdefault(course_key, []).append(item)
     targets = []
     for course_key, alternatives in grouped.items():
-        alternatives.sort(key=lambda item: (int(item.get("priority") or 999), str(item.get("class_id") or "")))
+        alternatives.sort(key=lambda item: (
+            -float(item.get("utility") or 5), str(item.get("class_id") or ""),
+        ))
         representative = alternatives[0]
         participants = max(
             int(item.get("weight_participant_count") or item.get("first_choice_count") or item.get("selected_count") or 0)
@@ -1006,7 +1015,7 @@ def get_jwxk_weight_config(
 ):
     _, values = _weight_grade_sizes(storage)
     value = values.get(f"{auth.username}:{term_code}")
-    return JwxkWeightConfigResponse(term_code=term_code, grade_size=int(value) if value else None)
+    return JwxkWeightConfigResponse(term_code=term_code, grade_size=int(value) if value else 5000)
 
 
 def _weight_market_archive(account: str, batch_code: str) -> dict:

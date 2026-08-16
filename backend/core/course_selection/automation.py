@@ -93,6 +93,7 @@ class CourseSelectionAutomationService:
         self._last_archive_scan = 0.0
         self._catalog_sync_queue: set[tuple[str, str]] = set()
         for task in self._tasks:
+            task["items"] = self._normalize_task_items(task.get("items") or [])
             self._normalize_group_results(task)
             self._normalize_swap_results(task)
             task.setdefault("weight_status", {})
@@ -137,7 +138,7 @@ class CourseSelectionAutomationService:
     def default_automation_settings() -> dict[str, Any]:
         return {
             "strategy_schedule_mode": "interval",
-            "rebalance_seconds": 600,
+            "rebalance_seconds": 1800,
             "force_final_rebalance": True,
             "mail_enabled": False,
             "notify_round_end": False,
@@ -148,6 +149,29 @@ class CourseSelectionAutomationService:
             "notify_grab_result": False,
             "over_capacity_ratio": 0.20,
         }
+
+    @staticmethod
+    def _normalize_task_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Migrate the retired priority field to the single 1–10 utility value."""
+        normalized = []
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            item = copy.deepcopy(raw)
+            try:
+                utility = float(item.get("utility"))
+            except (TypeError, ValueError):
+                utility = 0
+            if not 1 <= utility <= 10:
+                try:
+                    legacy_priority = int(item.get("priority") or 0)
+                except (TypeError, ValueError):
+                    legacy_priority = 0
+                utility = max(1, min(10, 11 - legacy_priority)) if legacy_priority else 5
+            item["utility"] = int(utility) if float(utility).is_integer() else utility
+            item.pop("priority", None)
+            normalized.append(item)
+        return normalized
 
     def get_automation_settings(self, account: str, batch_code: str, *, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         key = f"{account}:{batch_code}"
@@ -668,12 +692,13 @@ class CourseSelectionAutomationService:
         public_course_fields = {
             "plan_group_id", "plan_group_name", "plan_group_target_count",
             "course_code", "course_name", "class_id", "class_number",
-            "teaching_class_type", "teacher", "priority", "utility",
+            "teaching_class_type", "teacher", "utility",
             "capacity", "selected_count", "first_choice_count",
             "weight_participant_count", "market_participant_count",
             "market_participant_label", "devoted_weight", "weight",
             "current_weight", "action", "classification", "selected",
-            "scenario_success_rates", "forecast_participants", "recommendation_reason",
+            "scenario_success_rates", "forecast_participants", "forecast_status",
+            "recommendation_reason",
         }
         snapshot["items"] = [
             {key: value for key, value in item.items() if key in public_course_fields}
@@ -691,7 +716,7 @@ class CourseSelectionAutomationService:
             settings = self.get_automation_settings(
                 str(task.get("account") or ""), str(task.get("batch_code") or ""),
             )
-            interval = max(600, int(settings.get("rebalance_seconds") or interval))
+            interval = max(600, int(settings.get("rebalance_seconds") or 1800))
         snapshot["poll_interval_seconds"] = interval
         snapshot["next_attempt_at"] = None
         if task.get("desired_state") == "running" and task.get("status") in {"running", "waiting"}:
@@ -781,8 +806,11 @@ class CourseSelectionAutomationService:
             if str(group.get("group_id") or "")
         }
 
-    def create(self, account: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def create(
+        self, account: str, payload: dict[str, Any], *, replace_existing: bool = False,
+    ) -> dict[str, Any]:
         now = datetime.now().astimezone().isoformat()
+        payload = {**payload, "items": self._normalize_task_items(payload.get("items") or [])}
         task = {
             **payload,
             "task_id": uuid.uuid4().hex,
@@ -833,6 +861,22 @@ class CourseSelectionAutomationService:
             "events": [],
         }
         with self._lock:
+            existing = [item for item in self._tasks if (
+                item.get("account") == account
+                and item.get("batch_code") == task.get("batch_code")
+                and item.get("task_type") == "weight_strategy"
+                and task.get("task_type") == "weight_strategy"
+                and item.get("status") != "cancelled"
+                and item.get("desired_state") != "cancelled"
+            )]
+            if existing and not replace_existing:
+                raise ValueError("当前轮次已经存在策略投权任务；确认覆盖后再创建")
+            for previous in existing:
+                previous["desired_state"] = "cancelled"
+                previous["status"] = "cancelled"
+                previous["updated_at"] = now
+            if existing:
+                self._tasks = [item for item in self._tasks if item not in existing]
             self._tasks.append(task)
             self._write()
         return dict(task)
@@ -858,10 +902,10 @@ class CourseSelectionAutomationService:
                 bound = [group_id for group_id in bound if group_id]
                 task["bound_group_ids"] = bound
                 next_groups = [available_groups[group_id] for group_id in bound if group_id in available_groups]
-                next_items = [
+                next_items = self._normalize_task_items([
                     copy.deepcopy(item) for item in items
                     if str(item.get("plan_group_id") or "") in bound
-                ]
+                ])
                 if task.get("groups") == next_groups and task.get("items") == next_items:
                     continue
                 task["groups"] = next_groups
@@ -1142,7 +1186,7 @@ class CourseSelectionAutomationService:
     @staticmethod
     def _poll_interval(task: dict[str, Any]) -> int:
         if task.get("polling_mode") == "weight_rebalance":
-            return max(600, int(task.get("rebalance_seconds") or 600))
+            return max(600, int(task.get("rebalance_seconds") or 1800))
         if task.get("polling_mode") == "opening_burst":
             return 1
         return max(15, int(task.get("poll_seconds") or 15))
@@ -1972,7 +2016,10 @@ class CourseSelectionAutomationService:
                             return
                         continue
                     result["pending_checks"] = 0
-                    for item in sorted(alternatives, key=lambda value: value.get("priority", 999)):
+                    for item in sorted(
+                        alternatives,
+                        key=lambda value: -float(value.get("utility") or 5),
+                    ):
                         course_key = str(item.get("course_code") or item.get("class_id") or "")
                         if course_key in confirmed_keys or str(item.get("course_code") or "").casefold() in confirmed_by_code:
                             continue
@@ -2075,7 +2122,7 @@ class CourseSelectionAutomationService:
         targets = []
         for course_key, alternatives in grouped.items():
             alternatives.sort(key=lambda value: (
-                int(value.get("priority") or 999), str(value.get("class_id") or ""),
+                -float(value.get("utility") or 5), str(value.get("class_id") or ""),
             ))
             representative = alternatives[0]
             targets.append({
@@ -2237,7 +2284,7 @@ class CourseSelectionAutomationService:
                 pass
             else:
                 try:
-                    interval = max(600, int(settings.get("rebalance_seconds") or task.get("rebalance_seconds") or 600))
+                    interval = max(600, int(settings.get("rebalance_seconds") or task.get("rebalance_seconds") or 1800))
                     if time.time() - datetime.fromisoformat(last).timestamp() < interval:
                         return
                 except ValueError:
@@ -2245,7 +2292,7 @@ class CourseSelectionAutomationService:
                 return
         if last and not busy and not manual_check and not market_snapshot_ready and not weight_status.get("final_rebalance_requested") and not window_requested:
             try:
-                interval = max(600, int(settings.get("rebalance_seconds") or task.get("rebalance_seconds") or 600))
+                interval = max(600, int(settings.get("rebalance_seconds") or task.get("rebalance_seconds") or 1800))
                 if time.time() - datetime.fromisoformat(last).timestamp() < interval:
                     return
             except ValueError:
@@ -2547,6 +2594,7 @@ class CourseSelectionAutomationService:
                     "classification": result.get("classification") or "",
                     "scenario_success_rates": result.get("scenario_success_rates") or {},
                     "forecast_participants": result.get("forecast_participants") or {},
+                    "forecast_status": result.get("forecast_status") or "",
                 } for result in optimized["courses"] if result["bid"] > 0 and not result["already_selected"]]
                 desired_by_code = {str(item["course_key"]).casefold(): item for item in desired}
                 current_by_code = {
@@ -2621,6 +2669,7 @@ class CourseSelectionAutomationService:
                         "selected": bool(result.get("selected")),
                         "scenario_success_rates": result.get("scenario_success_rates") or {},
                         "forecast_participants": result.get("forecast_participants") or {},
+                        "forecast_status": result.get("forecast_status") or "",
                         "recommendation_reason": result.get("recommendation_reason") or "",
                     })
                 now = datetime.now().astimezone().isoformat()

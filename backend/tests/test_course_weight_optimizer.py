@@ -125,3 +125,19 @@ def test_live_safe_courses_never_receive_more_than_minimum_weight():
     assert by_id["SAFE"]["bid"] == 5
     assert by_id["COMP"]["classification"] == "COMP"
     assert by_id["COMP"]["bid"] == 100
+
+
+def test_forecast_reports_market_scope_mismatch_instead_of_claiming_three_scenarios():
+    result = optimize_grouped_weights(
+        policy=WeightPolicy(budget=10, min_bid=5),
+        grade_size=10,
+        market_courses=[WeightMarketCourse("A", 40, 54)],
+        groups=[WeightGroupTarget("g", "目标", 1)],
+        candidates=[WeightCandidate("A", "课程", 40, 54, 10, ("g",))],
+    )
+
+    course = result["courses"][0]
+    assert result["diagnostics"]["market_scope_mismatch"] is True
+    assert course["forecast_status"] == "scope_mismatch"
+    assert len(set(course["forecast_participants"].values())) == 1
+    assert any("三种终局人数情景暂不可区分" in warning for warning in result["warnings"])
