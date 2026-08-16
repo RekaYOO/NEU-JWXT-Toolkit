@@ -59,7 +59,9 @@ def test_weight_task_immediate_check_is_queued_and_uses_longer_schedule(tmp_path
 
     assert queued["manual_check_requested_at"]
     assert snapshot["next_attempt_at"] is not None
-    assert snapshot["poll_interval_seconds"] == 600
+    # Strategy tasks use the new 30-minute default/fallback even when a
+    # legacy direct-service payload supplies a shorter interval.
+    assert snapshot["poll_interval_seconds"] == 1800
     assert service._consume_manual_check(service._tasks[0]) is True
 
 
