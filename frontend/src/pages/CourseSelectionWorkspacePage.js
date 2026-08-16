@@ -375,6 +375,24 @@ const CourseSelectionWorkspacePage = () => {
   const selectedByClassId = useMemo(() => new Map(
     selected.filter(item => item.class_id).map(item => [String(item.class_id), item]),
   ), [selected]);
+  const volunteeredCourseCodes = useMemo(() => new Set(
+    selected
+      .filter(item => (
+        item.selection_record_type === 'volunteered'
+        && isCurrentBatchSelectionRecord(item, batch?.selection_type_code)
+      ))
+      .map(item => String(item.course_code || '').trim().toUpperCase())
+      .filter(Boolean),
+  ), [batch?.selection_type_code, selected]);
+  const volunteeredClassIds = useMemo(() => new Set(
+    selected
+      .filter(item => (
+        item.selection_record_type === 'volunteered'
+        && isCurrentBatchSelectionRecord(item, batch?.selection_type_code)
+      ))
+      .map(item => String(item.class_id || '').trim())
+      .filter(Boolean),
+  ), [batch?.selection_type_code, selected]);
   const orderedSelected = useMemo(() => [...selected].sort((left, right) => (
     Number(isCurrentBatchSelectionRecord(right, batch?.selection_type_code))
     - Number(isCurrentBatchSelectionRecord(left, batch?.selection_type_code))
@@ -1845,6 +1863,14 @@ const CourseSelectionWorkspacePage = () => {
                 all_classes_conflict: false,
                 available_count: 0,
               };
+              const hasVolunteeredClass = volunteeredCourseCodes.has(
+                String(group.course_code || '').trim().toUpperCase(),
+              ) || (group.classes || []).some(course => (
+                volunteeredClassIds.has(String(course.class_id || '').trim())
+                || volunteeredCourseCodes.has(
+                  String(course.course_code || '').trim().toUpperCase(),
+                )
+              ));
               return (
                 <Card
                   key={group.group_id}
@@ -1852,7 +1878,7 @@ const CourseSelectionWorkspacePage = () => {
                     if (node) courseCardRefs.current.set(group.group_id, node);
                     else courseCardRefs.current.delete(group.group_id);
                   }}
-                  className={`jwxk-course-group${expanded ? ' is-expanded' : ''}${focusedGroupId === group.group_id ? ' is-focused' : ''}${liveStats.all_classes_conflict ? ' has-all-conflicts' : ''}`}
+                  className={`jwxk-course-group${expanded ? ' is-expanded' : ''}${focusedGroupId === group.group_id ? ' is-focused' : ''}${hasVolunteeredClass ? ' has-volunteered-class' : ''}${liveStats.all_classes_conflict ? ' has-all-conflicts' : ''}`}
                   role="button"
                   tabIndex={0}
                   aria-expanded={expanded}

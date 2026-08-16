@@ -215,6 +215,7 @@
 .jwxk-course-group__main { min-width: 0; flex: 1; }
 .jwxk-course-group__title-row { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: 18px; margin: 6px 0 2px; }
 .jwxk-course-group__title-row h4 { min-width: 180px; margin: 0; }
+.jwxk-course-group.has-volunteered-class .jwxk-course-group__title-row h4 { color: var(--color-brand); }
 .jwxk-course-group.has-all-conflicts .jwxk-course-group__title-row h4 { color: var(--color-danger); }
 .jwxk-course-group__facts { display: flex; min-width: 0; align-items: baseline; justify-content: flex-end; gap: 8px 18px; color: var(--color-muted); font-size: 12px; }
 .jwxk-course-group__facts span { display: inline-flex; gap: 5px; white-space: nowrap; }
