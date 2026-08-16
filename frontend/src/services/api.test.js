@@ -4,6 +4,7 @@ const loadApiWithAxios = () => {
   const client = {
     get: jest.fn(),
     post: jest.fn(),
+    put: jest.fn(),
     request: jest.fn(),
     interceptors: {
       response: {
@@ -24,6 +25,30 @@ const loadApiWithAxios = () => {
   });
   return { client, rejectResponse, apiModule };
 };
+
+describe('JWXK automation settings API', () => {
+  test('does not submit response-only batch and SMTP fields', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.put.mockResolvedValue({ data: { strategy_schedule_mode: 'final_windows' } });
+
+    await apiModule.updateJwxkAutomationSettings('batch-1', {
+      batch_code: 'batch-1', batch_name: '轮次', smtp_configured: true,
+      smtp_status: '邮件通道可用', strategy_schedule_mode: 'final_windows',
+      rebalance_seconds: 600, mail_enabled: true, notify_round_end: true,
+      unknown_readonly_field: 'ignored',
+    });
+
+    expect(client.put).toHaveBeenCalledWith(
+      '/api/course-selection/jwxk/batches/batch-1/automation-settings',
+      {
+        strategy_schedule_mode: 'final_windows',
+        rebalance_seconds: 600,
+        mail_enabled: true,
+        notify_round_end: true,
+      },
+    );
+  });
+});
 
 describe('Evaluation API term discovery', () => {
   test('omits xnxq so the backend can discover the current evaluation cycle', async () => {

@@ -1094,7 +1094,17 @@ export const getJwxkAutomationSettings = async (batchCode) => {
 };
 
 export const updateJwxkAutomationSettings = async (batchCode, payload) => {
-  const response = await api.put(`/api/course-selection/jwxk/batches/${encodeURIComponent(batchCode)}/automation-settings`, payload);
+  const writableKeys = [
+    'strategy_schedule_mode', 'rebalance_seconds', 'force_final_rebalance',
+    'mail_enabled', 'notify_round_end', 'notify_final_rebalance',
+    'notify_capacity_transition', 'notify_over_capacity',
+    'notify_underfilled_warning', 'notify_grab_result', 'over_capacity_ratio',
+  ];
+  const writablePayload = Object.fromEntries(
+    writableKeys.filter(key => Object.prototype.hasOwnProperty.call(payload || {}, key))
+      .map(key => [key, payload[key]]),
+  );
+  const response = await api.put(`/api/course-selection/jwxk/batches/${encodeURIComponent(batchCode)}/automation-settings`, writablePayload);
   return response.data;
 };
 
