@@ -592,16 +592,16 @@ const CourseSelectionWorkspacePage = () => {
     }));
   };
 
-  const optimisticSelectionRecord = (group, course, weight) => ({
-    ...course,
-    course_name: group.course_name || course.course_name,
-    course_code: group.course_code || course.course_code,
-    devoted_weight: weight,
-    selected: batch?.selection_type_code !== '04',
-    course_already_selected: true,
-    selection_record_type: batch?.selection_type_code === '04' ? 'volunteered' : 'selected',
-    selection_source: batch?.selection_type_code === '04' ? 'fakcyx' : 'yxkcyx',
-  });
+  const refreshSelectionSnapshotInBackground = (delay = 0) => {
+    window.setTimeout(() => {
+      // An existing 30-second market refresh may already own the request. The
+      // selected result will still be updated by that request, so timetable
+      // reconciliation must not depend on this call returning a new payload.
+      void loadSelected({ silent: true, includeMarket: true }).finally(() => {
+        setTimetableRefreshSignal(value => value + 1);
+      });
+    }, delay);
+  };
 
   const loadSelected = async ({ silent = false, propagateError = false, includeMarket = false } = {}) => {
     if (includeMarket && selectedMarketRefreshInFlightRef.current) return null;
@@ -626,57 +626,6 @@ const CourseSelectionWorkspacePage = () => {
       if (includeMarket) selectedMarketRefreshInFlightRef.current = false;
       if (silent) setSelectedRefreshing(false);
       else setLoading(false);
-    }
-  };
-
-  const verifySubmittedSelection = async (group, course) => {
-    const generation = workspaceGeneration.current;
-    const actionName = batch?.selection_type_code === '04' ? '投权' : '选课';
-    setPendingVerificationClassIds(previous => [...new Set([...previous, course.class_id])]);
-    try {
-      let snapshot = null;
-      let matched = null;
-      let lastError = null;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        await new Promise(resolve => window.setTimeout(resolve, attempt === 0 ? 250 : 1200));
-        try {
-          const result = await getJwxkSelected(batchCode, {
-            includeMarket: false, skipAuthRedirect: true,
-          });
-          snapshot = selectionRecordsFromResponse(result);
-          lastError = null;
-          if (generation !== workspaceGeneration.current) return;
-          matched = findMatchingSelectionRecord(snapshot.merged, {
-            ...course,
-            course_name: group.course_name || course.course_name,
-            course_code: group.course_code || course.course_code,
-          });
-          if (matched) break;
-        } catch (error) {
-          lastError = error;
-        }
-      }
-      if (generation !== workspaceGeneration.current) return;
-      if (matched) {
-        upsertSelectedCourseLocally(matched, {
-          confirmed: matched.selection_record_type === 'selected',
-        });
-      } else if (lastError) {
-        message.warning({
-          content: `${actionName}已收到官方成功响应，但后台暂时无法读取结果；前台不会因此阻塞`,
-          duration: 7,
-        });
-      } else {
-        removeSelectedCourseLocally(course);
-        message.warning({
-          content: `后台核验未在官方结果中找到“${group.course_name || course.course_name}”，已纠正本地显示`,
-          duration: 7,
-        });
-      }
-    } finally {
-      if (generation === workspaceGeneration.current) {
-        setPendingVerificationClassIds(previous => previous.filter(value => value !== course.class_id));
-      }
     }
   };
 
@@ -1246,18 +1195,12 @@ const CourseSelectionWorkspacePage = () => {
             message.warning(result.message || '官方没有受理本次提交');
             return;
           }
-          if (!result.queued) {
-            const record = optimisticSelectionRecord(group, course, weight);
-            upsertSelectedCourseLocally(record, {
-              confirmed: record.selection_record_type === 'selected',
-            });
-          }
           message[result.queued ? 'info' : 'success'](
             result.queued
               ? (result.message || '已提交至官方队列，后台将继续核验')
               : (result.message || (batch?.selection_type_code === '04' ? '投权成功' : '选课成功')),
           );
-          void verifySubmittedSelection(group, course, result);
+          refreshSelectionSnapshotInBackground();
         } catch (error) {
           message.error(error.message || '提交失败');
         } finally { setActionLoading(''); }
@@ -1438,16 +1381,12 @@ const CourseSelectionWorkspacePage = () => {
             message.warning(reapplied.message || '重新投权失败');
             return;
           }
-          if (!reapplied.queued) {
-            const record = optimisticSelectionRecord(group, course, nextWeight);
-            upsertSelectedCourseLocally(record);
-          }
           message[reapplied.queued ? 'info' : 'success'](
             reapplied.queued
               ? `已按 ${nextWeight} 点提交至官方队列，后台将继续核验`
               : `已按 ${nextWeight} 点重新投放`,
           );
-          void verifySubmittedSelection(group, course, reapplied);
+          refreshSelectionSnapshotInBackground();
         } finally {
           setActionLoading('');
         }
@@ -1540,6 +1479,7 @@ const CourseSelectionWorkspacePage = () => {
         const result = await applyJwxkWeights({ batch_code: batchCode, term_code: termCode, items });
         result.completed ? message.success('投权方案已全部提交至官方队列') : message.warning('批量投权已停止，请核验已完成项目');
         setWeightPlan(null);
+        refreshSelectionSnapshotInBackground();
       },
     });
   };
