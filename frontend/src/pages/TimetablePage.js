@@ -652,13 +652,17 @@ const courseContextText = (course, mode) => {
   return teachers || classes;
 };
 
-const courseLayerClass = course => (
+export const courseIsPreselected = course => Boolean(
+  course?.preselected || (course?.tags || []).some(tag => String(tag).includes('预选'))
+);
+
+const courseLayerClass = course => `${(
   course.layer === 'candidate' ? ' is-plan-candidate'
     : course.layer === 'preview' ? ' is-selection-preview'
       : course.layer === 'pending' ? ' is-selection-pending'
       : course.layer === 'selected' ? ' is-selection-selected'
         : ''
-);
+)}${courseIsPreselected(course) ? ' is-preselected' : ''}`;
 
 // Compatibility helper retained for callers/tests; card rendering no longer trusts official line order.
 export const courseVisibleLines = course => {

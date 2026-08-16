@@ -575,7 +575,7 @@ def test_schedule_preserves_official_details_and_never_exposes_raw_payload():
                 "teachers": "教师甲,教师乙",
                 "cellDetail": [{"text": "软件工程"}, {"text": "3-8周"}],
                 "titleDetail": ["软件工程 COURSE-1", "3-8周 教师甲 示例校区 示例楼101", "考试 / 百分制"],
-                "tags": [{"text": "必修"}],
+                "tags": [{"text": "必修"}, {"text": "预选"}],
                 "color": "javascript:bad",
                 "privateRemoteField": "must-not-pass-through",
             }],
@@ -600,6 +600,7 @@ def test_schedule_preserves_official_details_and_never_exposes_raw_payload():
     assert course["course_nature"] == "必修"
     assert course["assessment_type"] == "考试"
     assert course["grading_scheme"] == "百分制"
+    assert course["preselected"] is True
     assert course["color"] == "#2563eb"
     assert "privateRemoteField" not in str(result)
     assert client.calls[0][1]["data"]["ZC"] == 3

@@ -1,5 +1,6 @@
 import {
   courseCardContent,
+  courseIsPreselected,
   courseMatchesWeek,
   courseVisibleLines,
   formatWeekNumbers,
@@ -59,6 +60,11 @@ jest.mock('../services/api', () => ({
 
 
 describe('TimetablePage helpers', () => {
+  test('recognizes the official preselection tag for blue course names', () => {
+    expect(courseIsPreselected({ tags: ['必修', '预选'] })).toBe(true);
+    expect(courseIsPreselected({ preselected: true, tags: [] })).toBe(true);
+    expect(courseIsPreselected({ tags: ['必修'] })).toBe(false);
+  });
   test('mobile timetable renders without reading parent-only embedded props', async () => {
     const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
     global.IS_REACT_ACT_ENVIRONMENT = true;

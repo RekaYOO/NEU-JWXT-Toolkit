@@ -778,11 +778,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
         if (col.key === 'course_name') {
           column.render = (text, record) => (
             <div className="academic-course-identity">
-              <div className="course-name">
-                <Button type="link" size="small" className="academic-outline-link" onClick={() => setOutlineCourse(record)}>
-                  {text}
-                </Button>
-              </div>
+              <div className="course-name academic-outline-link">{text}</div>
               <div className="course-code">{record.course_code || '无课程代码'}</div>
             </div>
           );
@@ -1562,11 +1558,11 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                       key={course._id}
                       role="button"
                       tabIndex={0}
-                      onClick={() => setMobileCourseDetail(course)}
+                      onClick={() => setOutlineCourse(course)}
                       onKeyDown={event => {
                         if (event.key === 'Enter' || event.key === ' ') {
                           event.preventDefault();
-                          setMobileCourseDetail(course);
+                          setOutlineCourse(course);
                         }
                       }}
                     >
@@ -1615,6 +1611,18 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                   bordered={false}
                   size="middle"
                   className="data-table"
+                  onRow={record => ({
+                    className: 'academic-course-row',
+                    role: 'button',
+                    tabIndex: 0,
+                    onClick: () => setOutlineCourse(record),
+                    onKeyDown: event => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setOutlineCourse(record);
+                      }
+                    },
+                  })}
                 />
               </div>
             )}

@@ -508,10 +508,14 @@
 
 /* Ant Design link button 默认有横向 padding；清零后名称与第二行代码同一起点。 */
 .academic-course-identity .academic-outline-link {
-  height: auto;
-  padding-inline: 0;
-  line-height: inherit;
-  text-align: left;
+  color: #262626;
+}
+
+.academic-course-row { cursor: pointer; }
+
+.academic-course-row:focus-visible > td {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
 }
 
 .course-code {

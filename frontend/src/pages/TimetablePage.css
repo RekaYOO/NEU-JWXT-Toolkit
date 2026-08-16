@@ -545,6 +545,13 @@
   color: var(--color-brand-strong);
 }
 
+.timetable-course-block.is-preselected .course-title,
+.timetable-cluster-stack-card.is-preselected > strong,
+.timetable-mobile-card.is-preselected .mobile-course-title,
+.timetable-cluster-dialog-item.is-preselected > strong {
+  color: var(--color-brand-strong);
+}
+
 .timetable-course-block.is-selection-selected,
 .timetable-cluster-stack-card.is-selection-selected,
 .timetable-mobile-card.is-selection-selected {

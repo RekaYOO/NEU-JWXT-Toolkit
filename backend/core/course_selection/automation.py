@@ -685,6 +685,11 @@ class CourseSelectionAutomationService:
             ]
         snapshot["results"] = list(snapshot.get("results") or [])[-20:]
         interval = self._poll_interval(task)
+        if task.get("task_type") == "weight_strategy":
+            settings = self.get_automation_settings(
+                str(task.get("account") or ""), str(task.get("batch_code") or ""),
+            )
+            interval = max(600, int(settings.get("rebalance_seconds") or interval))
         snapshot["poll_interval_seconds"] = interval
         snapshot["next_attempt_at"] = None
         if task.get("desired_state") == "running" and task.get("status") in {"running", "waiting"}:
@@ -787,6 +792,10 @@ class CourseSelectionAutomationService:
             "updated_at": now,
             "last_attempt_at": None,
             "attempt_count": 0,
+            "bound_group_ids": [
+                str(group.get("group_id") or "") for group in payload.get("groups") or []
+                if str(group.get("group_id") or "")
+            ],
             "results": [],
         }
         task["polling_mode"] = self._initial_polling_mode(task)
@@ -825,6 +834,59 @@ class CourseSelectionAutomationService:
             self._tasks.append(task)
             self._write()
         return dict(task)
+
+    def sync_bound_plan(
+        self, account: str, batch_code: str, *, groups: list[dict[str, Any]], items: list[dict[str, Any]],
+    ) -> int:
+        """Synchronize saved-plan changes into tasks bound to those plan groups."""
+        changed = 0
+        available_groups = {
+            str(group.get("group_id") or ""): copy.deepcopy(group)
+            for group in groups if str(group.get("group_id") or "")
+        }
+        with self._lock:
+            for task in self._tasks:
+                if task.get("account") != account or task.get("batch_code") != batch_code:
+                    continue
+                if task.get("task_type") not in {"selection", "weight_strategy"}:
+                    continue
+                bound = list(task.get("bound_group_ids") or [
+                    str(group.get("group_id") or "") for group in task.get("groups") or []
+                ])
+                bound = [group_id for group_id in bound if group_id]
+                task["bound_group_ids"] = bound
+                next_groups = [available_groups[group_id] for group_id in bound if group_id in available_groups]
+                next_items = [
+                    copy.deepcopy(item) for item in items
+                    if str(item.get("plan_group_id") or "") in bound
+                ]
+                if task.get("groups") == next_groups and task.get("items") == next_items:
+                    continue
+                task["groups"] = next_groups
+                task["items"] = next_items
+                task["updated_at"] = datetime.now().astimezone().isoformat()
+                task.setdefault("execution", {}).setdefault("events", []).append({
+                    "at": task["updated_at"], "level": "info", "stage_code": "plan_sync",
+                    "message": f"方案组已同步：{len(next_groups)} 组，{len(next_items)} 个候选教学班",
+                })
+                task["execution"]["events"] = task["execution"]["events"][-80:]
+                self._normalize_group_results(task)
+                if task.get("task_type") == "weight_strategy":
+                    status = task.setdefault("weight_status", {})
+                    status["recommendation"] = []
+                    status["warnings"] = ["方案组已变更，将在下一次策略检查时重新计算"]
+                    status["phase"] = "waiting"
+                if not next_groups or not next_items:
+                    task["desired_state"] = "paused"
+                    task["status"] = "paused"
+                    task["message"] = "绑定的方案组已删除或没有候选课程，任务已暂停"
+                else:
+                    task["message"] = "方案组内容已同步，等待下一次检查"
+                changed += 1
+            if changed:
+                self._write()
+                self._wake.set()
+        return changed
 
     def action(self, account: str, task_id: str, action: str) -> dict[str, Any]:
         with self._lock:

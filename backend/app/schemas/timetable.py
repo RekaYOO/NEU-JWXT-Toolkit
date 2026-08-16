@@ -189,6 +189,7 @@ class TimetableCourseModel(BaseModel):
     cell_details: List[str] = Field(default_factory=list)
     title_details: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
+    preselected: bool = False
     color: str = "#2563eb"
     activity_type: str = "other"
     activity_type_label: str = "课程"

@@ -766,6 +766,14 @@ class TimetableAPI:
         cell_details = cls._detail_texts(row.get("cellDetail"))
         title_details = cls._detail_texts(row.get("titleDetail"))
         tags = cls._detail_texts(row.get("tags"))
+        selection_status_text = " ".join(filter(None, [
+            *tags,
+            cls._text(row.get("selectionStatus")),
+            cls._text(row.get("courseStatus")),
+            cls._text(row.get("XKZT_DISPLAY")),
+            cls._text(row.get("ZT_DISPLAY")),
+        ]))
+        preselected = "预选" in selection_status_text
         course_name = cls._text(
             row.get("courseName") or row.get("KCM") or row.get("name")
         ) or (cell_details[0] if cell_details else "未命名课程")
@@ -867,6 +875,7 @@ class TimetableAPI:
             "cell_details": cell_details,
             "title_details": title_details,
             "tags": tags,
+            "preselected": preselected,
             "color": cls._safe_color(row.get("color")),
         }
 
