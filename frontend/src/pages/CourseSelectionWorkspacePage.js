@@ -340,7 +340,7 @@ const CourseSelectionWorkspacePage = () => {
   const [weightPlan, setWeightPlan] = useState(null);
   const [weightSetupOpen, setWeightSetupOpen] = useState(false);
   const [weightBuilding, setWeightBuilding] = useState(false);
-  const [gradeSizeDraft, setGradeSizeDraft] = useState(null);
+  const [gradeSizeDraft, setGradeSizeDraft] = useState(5000);
   const [focusedGroupId, setFocusedGroupId] = useState('');
   const [selectedRefreshing, setSelectedRefreshing] = useState(false);
   const [planAssignment, setPlanAssignment] = useState(null);
@@ -2446,7 +2446,7 @@ const CourseSelectionWorkspacePage = () => {
               ? '当前教学班不是推荐提交班'
               : ['drop', 'out'].includes(explicitAction) ? '本轮建议不投' : '生成策略后显示';
           return <div key={item.class_id} className={`jwxk-task-course-row${isWeight ? ' is-weight' : ''}`}>
-            <span className="jwxk-task-course-name"><b>{item.course_name || item.course_code}</b><small>{item.teacher || '教师待定'} · {item.class_id}</small></span>
+            <span className="jwxk-task-course-name"><b>{item.course_name || item.course_code}</b><small>{item.course_code || item.class_id} · {item.teacher || '教师待定'}</small></span>
             <span className="jwxk-task-course-metric"><b>{participantCount ?? '-'}/{merged.capacity ?? '-'}</b><small>{participantLabel} / 容量</small></span>
             {isWeight && <span className="jwxk-task-course-metric"><b>{currentWeight ?? '未投'}{currentWeight != null ? ' 点' : ''}</b><small>当前投权</small></span>}
             {isWeight && <span className="jwxk-task-course-metric" title={[recommendation.recommendation_reason, forecastText].filter(Boolean).join('\n')}><b>{recommendationText}</b><small>{classificationText}</small>{recommendation.recommendation_reason && <small>{recommendation.recommendation_reason}</small>}{forecastText && <small>{forecastText}</small>}</span>}
@@ -2458,7 +2458,7 @@ const CourseSelectionWorkspacePage = () => {
     })}</div>
         {isWeight && <Text type="secondary">最近计算 {formatTaskTimestamp(task.weight_status?.last_calculated_at)} · 最近调整 {task.weight_status?.last_adjusted_at ? formatTaskTimestamp(task.weight_status.last_adjusted_at) : '暂无'}</Text>}
         {(task.results || []).length > 0 && <div className="jwxk-task-history"><Text strong>最近操作</Text>{[...(task.results || [])].slice(-5).reverse().map((result, index) => <div key={`${result.at || index}:${result.class_id || ''}`}><span>{result.action === 'weight_drop' ? '撤回权重' : result.action === 'weight_add' ? `投放 ${result.weight || ''} 点权重` : result.action === 'drop' ? '自动退选' : '提交选课'} · {historyCourseLabel(result)}</span><small>{result.message || `官方代码 ${result.code || '-'}`} · {formatTaskTimestamp(result.at)}</small></div>)}</div>}
-        <Space wrap><Button type={isWeight && attentionTaskId === task.task_id ? 'primary' : 'default'} className={isWeight && attentionTaskId === task.task_id ? 'jwxk-start-strategy-attention' : ''} icon={<PlayCircleOutlined />} loading={taskActionLoading === `${task.task_id}:start`} disabled={active || task.status === 'success'} onClick={() => runTaskAction(task, 'start')}>{isWeight ? '启动实时策略' : isSwap ? '开始追踪空位' : '同时启动全部方案组'}</Button>{isWeight && <Button type="primary" ghost icon={<ReloadOutlined />} loading={taskActionLoading === `${task.task_id}:check_now`} disabled={!active || task.status === 'success'} onClick={() => runTaskAction(task, 'check_now')}>立即检查并执行策略</Button>}<Button icon={<PauseCircleOutlined />} loading={taskActionLoading === `${task.task_id}:pause`} disabled={!active} onClick={() => runTaskAction(task, 'pause')}>暂停</Button><Button danger loading={taskActionLoading === `${task.task_id}:cancel`} onClick={() => Modal.confirm({ title: '取消并删除这个任务？', content: '任务会立即停止，并从任务列表中移除。', okText: '取消任务', okButtonProps: { danger: true }, onOk: () => runTaskAction(task, 'cancel') })}>取消任务</Button></Space>
+        <Space wrap className="jwxk-task-actions"><Button type={isWeight && attentionTaskId === task.task_id ? 'primary' : 'default'} className={isWeight && attentionTaskId === task.task_id ? 'jwxk-start-strategy-attention' : ''} icon={<PlayCircleOutlined />} loading={taskActionLoading === `${task.task_id}:start`} disabled={active || task.status === 'success'} onClick={() => runTaskAction(task, 'start')}>{isWeight ? '启动实时策略' : isSwap ? '开始追踪空位' : '同时启动全部方案组'}</Button>{isWeight && <Button type="primary" ghost icon={<ReloadOutlined />} loading={taskActionLoading === `${task.task_id}:check_now`} disabled={!active || task.status === 'success'} onClick={() => runTaskAction(task, 'check_now')}>立即检查并执行策略</Button>}<Button icon={<PauseCircleOutlined />} loading={taskActionLoading === `${task.task_id}:pause`} disabled={!active} onClick={() => runTaskAction(task, 'pause')}>暂停</Button><Button danger loading={taskActionLoading === `${task.task_id}:cancel`} onClick={() => Modal.confirm({ title: '取消并删除这个任务？', content: '任务会立即停止，并从任务列表中移除。', okText: '取消任务', okButtonProps: { danger: true }, onOk: () => runTaskAction(task, 'cancel') })}>取消任务</Button></Space>
       </Card>;
   })}{!tasks.length && <Empty description="尚未创建自动抢课或空位追踪任务" />}</div>;
 

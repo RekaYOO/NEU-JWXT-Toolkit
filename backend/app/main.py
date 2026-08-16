@@ -155,22 +155,29 @@ def _has_unsafe_spa_path(full_path: str) -> bool:
     )
 
 
-if _FRONTEND_INDEX.is_file() and _FRONTEND_STATIC.is_dir():
-    # 挂载静态资源目录
+if _FRONTEND_STATIC.is_dir():
+    # 挂载静态资源目录；构建产物不完整时仍允许 API 启动，SPA 请求会
+    # 返回明确的 503，而不是在 FileResponse 内部抛出 RuntimeError。
     app.mount("/static", StaticFiles(directory=_FRONTEND_STATIC), name="static")
 
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        """SPA fallback：非 API 路由都返回 index.html"""
-        # API 路由已在上方注册，不会走到这里
-        if _has_unsafe_spa_path(full_path):
-            raise HTTPException(status_code=404, detail="Not Found")
-        # CRA 生成在 build 根目录的图标和 manifest 继续按原路径提供。
-        # 只允许根级单文件；嵌套静态资源由上方 StaticFiles 安全处理。
-        target = _frontend_root_file(full_path)
-        if target is not None:
-            return FileResponse(target)
-        return FileResponse(_FRONTEND_INDEX)
+
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    """SPA fallback：非 API 路由都返回 index.html。"""
+    # API 路由已在上方注册，不会走到这里。
+    if _has_unsafe_spa_path(full_path):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not _FRONTEND_INDEX.is_file() or not _FRONTEND_STATIC.is_dir():
+        raise HTTPException(
+            status_code=503,
+            detail="前端静态资源不完整，请先执行 start_all.py --build",
+        )
+    # CRA 生成在 build 根目录的图标和 manifest 继续按原路径提供。
+    # 只允许根级单文件；嵌套静态资源由上方 StaticFiles 安全处理。
+    target = _frontend_root_file(full_path)
+    if target is not None:
+        return FileResponse(target)
+    return FileResponse(_FRONTEND_INDEX)
 
 # ── 启动 ──────────────────────────────────────────────────────────────────────
 

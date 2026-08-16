@@ -380,7 +380,8 @@
 }
 
 @media (max-width: 620px) {
-  .jwxk-task-head { align-items: flex-start; }
+  .jwxk-task-head { align-items: stretch; flex-direction: column; }
+  .jwxk-task-head > .ant-tag { align-self: flex-start; }
   .jwxk-task-live-log__events span { grid-template-columns: 62px minmax(0, 1fr); }
   .jwxk-workspace-header { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .jwxk-workspace-header > div { grid-column: 1 / -1; grid-row: 1; }
@@ -415,11 +416,21 @@
   .jwxk-task-runtime { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .jwxk-task-group-summary { grid-template-columns: 1fr auto auto; }
   .jwxk-task-group-summary small { grid-column: 1 / -1; }
-  .jwxk-task-course-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .jwxk-task-course-row.is-weight { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .jwxk-task-course-name { grid-column: 1 / -1; padding-bottom: 2px; }
-  .jwxk-task-course-metric { min-height: 58px; }
-  .jwxk-task-course-status { width: 100%; min-height: 58px; align-self: stretch; }
+  .jwxk-task-course-row,
+  .jwxk-task-course-row.is-weight { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 10px; }
+  .jwxk-task-course-name { grid-column: 1 / -1; padding: 2px 0 4px; }
+  .jwxk-task-course-row > span:first-child b { white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
+  .jwxk-task-course-row > span:first-child small { overflow-wrap: anywhere; }
+  .jwxk-task-course-metric { min-height: 58px; display: flex; justify-content: center; }
+  .jwxk-task-course-row.is-weight > span:nth-child(4),
+  .jwxk-task-course-row.is-weight > span:nth-child(5),
+  .jwxk-task-course-row.is-weight > span:nth-child(6),
+  .jwxk-task-course-row:not(.is-weight) > span:nth-child(3) { grid-column: 1 / -1; }
+  .jwxk-task-course-status { width: 100%; min-height: 42px; align-self: stretch; }
+  .jwxk-task-actions { display: grid !important; grid-template-columns: 1fr 1fr; width: 100%; gap: 8px !important; }
+  .jwxk-task-actions .ant-space-item { min-width: 0; display: flex; }
+  .jwxk-task-actions .ant-btn { width: 100%; min-width: 0; min-height: 42px; padding-inline: 8px; }
+  .jwxk-task-actions .ant-space-item:last-child { grid-column: 1 / -1; }
   .jwxk-task-history > div { flex-direction: column; gap: 2px; }
 }
 

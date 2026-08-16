@@ -17,9 +17,11 @@ import atexit
 import hashlib
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 # ── 配置 ──────────────────────────────────────────────────────────────────────
 
@@ -28,6 +30,7 @@ DEFAULT_BACKEND_PORT = 8000
 DEFAULT_FRONTEND_PORT = 3000
 
 _procs = []
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -38,8 +41,23 @@ def is_windows():
 
 def get_venv_python():
     if is_windows():
-        return os.path.join(".venv", "Scripts", "python.exe")
-    return os.path.join(".venv", "bin", "python")
+        return str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe")
+    return str(PROJECT_ROOT / ".venv" / "bin" / "python")
+
+
+def _frontend_build_dir():
+    return PROJECT_ROOT / "frontend" / "build"
+
+
+def _frontend_build_is_valid(build_dir=None):
+    """Require the complete CRA shell before starting the backend."""
+    build_dir = Path(build_dir) if build_dir is not None else _frontend_build_dir()
+    index = build_dir / "index.html"
+    static = build_dir / "static"
+    try:
+        return index.is_file() and index.stat().st_size > 0 and static.is_dir()
+    except OSError:
+        return False
 
 
 def _requirements_fingerprint():
@@ -152,8 +170,7 @@ def needs_build():
     4. 有 git：frontend/src/ 的 git 指纹变了 → 需要 build
     5. 无 git：入口文件 index.js 比 build 新 → 需要 build
     """
-    build_index = os.path.join("frontend", "build", "index.html")
-    if not os.path.exists(build_index):
+    if not _frontend_build_is_valid():
         return True
 
     buildinfo_path = os.path.join("frontend", "build", ".buildinfo")
@@ -197,10 +214,20 @@ def build_frontend():
     print("正在构建前端...")
     print("=" * 60)
 
-    frontend_dir = "frontend"
-    if not os.path.exists(os.path.join(frontend_dir, "node_modules")):
+    frontend_dir = PROJECT_ROOT / "frontend"
+    if not (frontend_dir / "node_modules").exists():
         print("错误: 前端依赖未安装，请先运行: cd frontend && npm install")
         return False
+
+    build_dir = frontend_dir / "build"
+    staging_dir = frontend_dir / "build.staging"
+    backup_dir = frontend_dir / "build.previous"
+    # CRA normally writes directly to build/ and removes the old directory
+    # first.  Build into a staging directory instead so an interrupted or
+    # failed build can never leave the running service without index.html.
+    for generated_dir in (staging_dir, backup_dir):
+        if generated_dir.exists():
+            shutil.rmtree(generated_dir, ignore_errors=True)
 
     env = os.environ.copy()
     # 使用相对路径，支持同源部署
@@ -210,13 +237,30 @@ def build_frontend():
 
     try:
         # Windows 上 npm 是 npm.cmd，shell=True 更可靠
+        env["BUILD_PATH"] = "build.staging"
         subprocess.run(
             "npm run build",
-            cwd=frontend_dir,
+            cwd=str(frontend_dir),
             env=env,
             shell=True,
             check=True,
         )
+
+        if not _frontend_build_is_valid(staging_dir):
+            print("错误: 前端构建完成但未生成完整 build/index.html 与 static 目录")
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return False
+
+        if build_dir.exists():
+            build_dir.replace(backup_dir)
+        try:
+            staging_dir.replace(build_dir)
+        except Exception:
+            if backup_dir.exists() and not build_dir.exists():
+                backup_dir.replace(build_dir)
+            raise
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
 
         # 写入 buildinfo，记录版本信息
         import json
@@ -229,16 +273,23 @@ def build_frontend():
             "build_time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "build_time_epoch": time.time(),
         }
-        buildinfo_path = os.path.join(frontend_dir, "build", ".buildinfo")
+        buildinfo_path = build_dir / ".buildinfo"
         with open(buildinfo_path, "w", encoding="utf-8") as f:
             json.dump(buildinfo, f, indent=2)
 
         print("=" * 60)
         print("前端构建完成")
         print("=" * 60)
-        return True
+        return _frontend_build_is_valid(build_dir)
     except subprocess.CalledProcessError as e:
         print(f"前端构建失败: {e}")
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        return False
+    except Exception as e:
+        print(f"替换前端构建产物失败: {e}")
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        if backup_dir.exists() and not build_dir.exists():
+            backup_dir.replace(build_dir)
         return False
 
 
@@ -329,6 +380,10 @@ def start_frontend(port=DEFAULT_FRONTEND_PORT, backend_port=DEFAULT_BACKEND_PORT
 # ── 主入口 ────────────────────────────────────────────────────────────────────
 
 def main():
+    # All launcher paths are repository-relative.  Normalize the working
+    # directory so starting via an absolute path or a desktop shortcut uses
+    # the same frontend/backend resources.
+    os.chdir(PROJECT_ROOT)
     parser = argparse.ArgumentParser(
         description="一键启动 NEU 教务系统工具箱",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -422,6 +477,9 @@ def main():
         if args.build or needs_build():
             if not build_frontend():
                 sys.exit(1)
+        if not _frontend_build_is_valid():
+            print("错误: 前端静态产物不完整，未启动后端。请使用 --build 重建前端。")
+            sys.exit(1)
 
         print("=" * 60)
         print("默认模式：启动单端口服务（后端挂载前端静态文件）")
