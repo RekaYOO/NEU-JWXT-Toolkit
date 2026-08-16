@@ -259,8 +259,8 @@ const CourseSelectionPage = () => {
           <section><Title level={5}>1. 读取什么数据</Title><Paragraph>每次计算前读取本轮除“全校课程查询”外的真实课程目录，并刷新方案组候选课程的已投注人数、容量、官方剩余权重、最低投权和投权步长。方案组外手动投权保持不动，只继续占用官方预算。</Paragraph></section>
           <section><Title level={5}>2. 怎样理解方案组</Title><Paragraph>每个方案组由“候选课程池 + 目标门数”组成。模型按课程代码合并同一课程的多个教学班，一门课程只占一个目标名额；教学班优先级只决定实际提交哪个班，不会重复消耗目标门数。</Paragraph></section>
           <section><Title level={5}>3. 怎样选择课程</Title><Paragraph>模型先排除已确认的硬冲突组合，再按以下顺序比较可行方案：覆盖更多方案组目标名额、获得更高的课程意愿总分、提高中性竞争情景下的代理收益，最后在效果相同时使用更少权重。时间未知课程会产生风险警告，不会被当作已确认无冲突。</Paragraph></section>
-          <section><Title level={5}>4. 怎样计算竞争程度</Title><Paragraph>模型使用年级人数和本轮真实课程的已投注人数估计全市场平均投注次数，再计算保守、中性、激进三种需求情景。预计人数不超过容量的课程标为 SAFE；需要竞争的课程标为 COMP；未进入推荐组合的课程标为 OUT。</Paragraph></section>
-          <section><Title level={5}>5. 怎样分配权重</Title><Paragraph>SAFE 课程优先使用官方最低权重。其余预算通过 water-filling 分配给 COMP 课程，综合课程意愿和竞争强度，并遵守官方最低权重、步长和剩余预算。只有推荐权重与当前权重不同，系统才会按安全流程先撤回、核验，再重新投放。</Paragraph></section>
+          <section><Title level={5}>4. 怎样计算竞争程度</Title><Paragraph>实时策略以本次读取的官方人数分类：当前已投注人数低于容量的课程标为 SAFE；达到或超过容量的课程标为 COMP；未进入推荐组合的课程标为 OUT。模型仍根据年级人数和全市场数据计算保守、中性、激进三种终局情景，但预测只作风险参考，不会把当前未满课程改判为 COMP。</Paragraph></section>
+          <section><Title level={5}>5. 怎样分配权重</Title><Paragraph>SAFE 课程固定使用官方最低权重，不会分到额外权重。其余预算通过 water-filling 分配给 COMP 课程，综合课程意愿和竞争强度，并遵守官方最低权重、步长和剩余预算。只有推荐权重与当前权重不同，系统才会按安全流程先撤回、核验，再重新投放。</Paragraph></section>
           <section><Title level={5}>6. 自动运行方式</Title><Paragraph>只有在工作台“自动任务”中明确启动的策略任务才会运行。这里的配置只决定它按间隔检查，还是仅在轮次结束前 5 分钟和 3 分钟各计算一次；关闭页面或 Linux 服务端无人打开页面时仍可继续执行。</Paragraph></section>
         </div>
       </Modal>

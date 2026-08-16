@@ -673,7 +673,7 @@ class CourseSelectionAutomationService:
             "weight_participant_count", "market_participant_count",
             "market_participant_label", "devoted_weight", "weight",
             "current_weight", "action", "classification", "selected",
-            "scenario_success_rates", "forecast_participants",
+            "scenario_success_rates", "forecast_participants", "recommendation_reason",
         }
         snapshot["items"] = [
             {key: value for key, value in item.items() if key in public_course_fields}
@@ -2621,6 +2621,7 @@ class CourseSelectionAutomationService:
                         "selected": bool(result.get("selected")),
                         "scenario_success_rates": result.get("scenario_success_rates") or {},
                         "forecast_participants": result.get("forecast_participants") or {},
+                        "recommendation_reason": result.get("recommendation_reason") or "",
                     })
                 now = datetime.now().astimezone().isoformat()
             was_final_rebalance = bool(weight_status.get("final_rebalance_requested"))

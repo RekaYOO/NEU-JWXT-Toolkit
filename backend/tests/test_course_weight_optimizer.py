@@ -100,3 +100,28 @@ def test_live_candidate_market_value_replaces_older_round_snapshot():
 
     assert result["diagnostics"]["total_current_bidders"] == 30
     assert result["courses"][0]["forecast_participants"]["neutral"] < 90
+    assert result["courses"][0]["classification"] == "SAFE"
+    assert result["courses"][0]["bid"] == 5
+    assert "终局预测仅作风险参考" in result["courses"][0]["recommendation_reason"]
+
+
+def test_live_safe_courses_never_receive_more_than_minimum_weight():
+    result = optimize_grouped_weights(
+        policy=WeightPolicy(budget=105, min_bid=5),
+        grade_size=126,
+        market_courses=[
+            WeightMarketCourse("SAFE", 104, 68),
+            WeightMarketCourse("COMP", 104, 196),
+        ],
+        groups=[WeightGroupTarget("g", "目标", 2)],
+        candidates=[
+            WeightCandidate("SAFE", "未满课程", 104, 68, 10, ("g",)),
+            WeightCandidate("COMP", "超额课程", 104, 196, 10, ("g",)),
+        ],
+    )
+
+    by_id = {item["course_id"]: item for item in result["courses"]}
+    assert by_id["SAFE"]["classification"] == "SAFE"
+    assert by_id["SAFE"]["bid"] == 5
+    assert by_id["COMP"]["classification"] == "COMP"
+    assert by_id["COMP"]["bid"] == 100

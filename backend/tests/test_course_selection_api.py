@@ -264,7 +264,8 @@ def test_jwxk_weight_plan_uses_official_budget_and_group_optimizer(monkeypatch):
     assert result["model_version"].startswith("course-weight-optimizer-d70349b")
     assert result["groups"][0]["satisfied"] is True
     assert {item["course_code"] for item in result["items"]} == {"COURSE-A", "COURSE-B"}
-    assert sum(item["weight"] for item in result["items"]) == 105
+    assert sum(item["weight"] for item in result["items"]) == 10
+    assert all(item["weight"] == 5 for item in result["items"])
     by_code = {item["course_code"]: item for item in result["courses"]}
     assert by_code["COURSE-A"]["current_participant_label"] == "已投注人数"
     assert by_code["COURSE-A"]["current_participant_count"] == 25

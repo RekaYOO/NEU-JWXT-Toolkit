@@ -1,8 +1,9 @@
 """Adapter for NEU's independent JWXK course-selection system.
 
 Public batch discovery and authenticated reads share the same session adapter.
-Mutations are intentionally narrow: the server re-fetches the official class
-token immediately before a user-confirmed select, bid, or withdrawal request.
+Mutations are intentionally narrow: the server reuses short-lived, server-only
+official mutation material from recent reads and falls back to a fresh lookup
+when that material is missing, expired, or belongs to another service session.
 """
 
 from __future__ import annotations
@@ -1065,15 +1066,21 @@ class JwxkSessionClient:
     def _activate_batch(self, batch_code: str) -> dict[str, Any]:
         payload = self._post_form("/xsxk/elective/user", {"batchId": batch_code})
         student = (payload.get("data") or {}).get("student") or {}
+        self._remember_active_batch_student(batch_code, student)
+        return student
+
+    def _remember_active_batch_student(
+        self, batch_code: str, student: dict[str, Any],
+    ) -> None:
         try:
             setattr(self.auth, "_jwxk_active_batch_context", {
                 "batch_code": batch_code,
                 "student": student,
                 "expires_at": time.monotonic() + self._MUTATION_MATERIAL_TTL_SECONDS,
+                "service_token_fingerprint": self._service_token_fingerprint(),
             })
         except AttributeError:
             pass
-        return student
 
     def _cached_active_batch_student(self, batch_code: str) -> dict[str, Any] | None:
         cached = getattr(self.auth, "_jwxk_active_batch_context", None)
@@ -1084,8 +1091,21 @@ class JwxkSessionClient:
             or float(cached.get("expires_at") or 0) <= time.monotonic()
         ):
             return None
+        cached_fingerprint = _text(cached.get("service_token_fingerprint"))
+        if cached_fingerprint and cached_fingerprint != self._service_token_fingerprint():
+            return None
         student = cached.get("student")
         return student if isinstance(student, dict) else None
+
+    def _service_token_fingerprint(self) -> str:
+        getter = getattr(self.auth, "get_service_token", None)
+        if not callable(getter):
+            return ""
+        token = getter(
+            "jwxk", network_mode=self.network_mode,
+            request_path="/xsxk/elective/clazz/list",
+        )
+        return hashlib.sha256(str(token).encode("utf-8")).hexdigest() if token else ""
 
     def _remember_deselect_material(
         self, batch_code: str, rows_by_feed: dict[str, list[dict[str, Any]]],
@@ -1116,6 +1136,63 @@ class JwxkSessionClient:
         except AttributeError:
             pass
 
+    def _remember_select_material(
+        self, batch_code: str, query_scope: str, rows: list[dict[str, Any]],
+    ) -> None:
+        """Keep short-lived server-only mutation fields from an already loaded catalog page."""
+        now = time.monotonic()
+        existing = getattr(self.auth, "_jwxk_select_material", None)
+        cache = {
+            key: value for key, value in (existing.items() if isinstance(existing, dict) else [])
+            if isinstance(value, dict) and float(value.get("expires_at") or 0) > now
+        }
+        for item in self._raw_classes(rows or []):
+            class_id = _text(item.get("JXBID") or item.get("KXH"))
+            secret_val = _text(item.get("secretVal"))
+            official_type = _text(item.get("teachingClassType") or item.get("clazzType"))
+            mutation_type = official_type if official_type != "ALLKC" else ""
+            if not mutation_type and query_scope not in {"", "ALL", "ROUND", "ALLKC"}:
+                mutation_type = query_scope
+            if not class_id or not secret_val or not mutation_type:
+                continue
+            cache[(batch_code, class_id)] = {
+                "item": item,
+                "course_code": _text(item.get("KCH")),
+                "mutation_type": mutation_type,
+                "expires_at": now + self._MUTATION_MATERIAL_TTL_SECONDS,
+                "service_token_fingerprint": self._service_token_fingerprint(),
+            }
+        if len(cache) > 1000:
+            cache = dict(list(cache.items())[-1000:])
+        try:
+            setattr(self.auth, "_jwxk_select_material", cache)
+        except AttributeError:
+            pass
+
+    def _cached_select_material(
+        self, batch_code: str, class_id: str, course_code: str,
+    ) -> tuple[dict[str, Any], str] | None:
+        cache = getattr(self.auth, "_jwxk_select_material", None)
+        if not isinstance(cache, dict):
+            return None
+        value = cache.get((batch_code, class_id))
+        if not isinstance(value, dict) or float(value.get("expires_at") or 0) <= time.monotonic():
+            return None
+        item = value.get("item")
+        cached_fingerprint = _text(value.get("service_token_fingerprint"))
+        if cached_fingerprint and cached_fingerprint != self._service_token_fingerprint():
+            return None
+        cached_code = _text(value.get("course_code"))
+        mutation_type = _text(value.get("mutation_type"))
+        if (
+            not isinstance(item, dict)
+            or not _text(item.get("secretVal"))
+            or not mutation_type
+            or (course_code and cached_code and cached_code.casefold() != _text(course_code).casefold())
+        ):
+            return None
+        return item, mutation_type
+
     def _cached_deselect_material(
         self, batch_code: str, class_id: str, selection_source: str,
     ) -> tuple[dict[str, Any] | None, str]:
@@ -1138,10 +1215,15 @@ class JwxkSessionClient:
     ) -> dict[str, Any]:
         """Read the active round's official remaining weight."""
 
+        # The budget must remain a fresh official read, but the same response is
+        # also the authoritative active-round context needed by the immediately
+        # following weight mutation.  Reuse it instead of calling /elective/user
+        # a second time after the user confirms the dialog.
         payload = self._post_form("/xsxk/elective/user", {"batchId": batch_code})
         context = payload.get("data") or {}
         student = context.get("student") if isinstance(context, dict) else None
         student = student if isinstance(student, dict) else {}
+        self._remember_active_batch_student(batch_code, student)
         batch_rows = [
             *(student.get("electiveBatchList") or []),
             *(student.get("expElectiveBatchList") or []),
@@ -1230,7 +1312,8 @@ class JwxkSessionClient:
     def _search_raw(
         self, *, batch_code: str, teaching_class_type: str, keyword: str
     ) -> list[dict[str, Any]]:
-        self._activate_batch(batch_code)
+        if self._cached_active_batch_student(batch_code) is None:
+            self._activate_batch(batch_code)
         body = {
             "teachingClassType": teaching_class_type,
             "pageNumber": 1,
@@ -1246,7 +1329,9 @@ class JwxkSessionClient:
         payload = _payload(self._request(
             "POST", "/xsxk/elective/clazz/list", json=body
         ))
-        return (payload.get("data") or {}).get("rows") or []
+        rows = (payload.get("data") or {}).get("rows") or []
+        self._remember_select_material(batch_code, teaching_class_type, rows)
+        return rows
 
     @staticmethod
     def _raw_classes(rows: list[dict[str, Any]]):
@@ -1289,8 +1374,12 @@ class JwxkSessionClient:
         teaching_class_type: str,
         class_id: str,
         course_code: str,
-    ) -> tuple[dict[str, Any], str]:
+    ) -> tuple[dict[str, Any], str, bool]:
         """Resolve a real clazzType without ever submitting the ALLKC query scope."""
+
+        cached = self._cached_select_material(batch_code, class_id, course_code)
+        if cached is not None:
+            return cached[0], cached[1], True
 
         query_scopes = (
             [teaching_class_type]
@@ -1320,7 +1409,7 @@ class JwxkSessionClient:
             if not mutation_type and query_scope != "ALLKC":
                 mutation_type = query_scope
             if mutation_type:
-                return item, mutation_type
+                return item, mutation_type, False
         raise JwxkError("只能在全校课程查询中找到该教学班，暂时无法确认其真实投选类型，请刷新目录后重试")
 
     def get_catalog_detail(
@@ -1435,7 +1524,14 @@ class JwxkSessionClient:
         confirm_risk: bool,
         skip_preflight_checks: bool = False,
     ) -> dict[str, Any]:
-        batch = self._batch_for_mutation(batch_code)
+        started = time.monotonic()
+        activated_student = self._cached_active_batch_student(batch_code)
+        if activated_student is None:
+            activated_student = self._activate_batch(batch_code)
+        batch = self._batch_for_mutation(
+            batch_code, activated_student=activated_student,
+        )
+        batch_ready_at = time.monotonic()
         if not skip_preflight_checks:
             official = self.get_selected(batch_code=batch_code, include_withdrawal=False)
             duplicate = next((
@@ -1446,7 +1542,7 @@ class JwxkSessionClient:
                 raise JwxkError(
                     f"已选课程中已存在同课程代码“{_text(duplicate.get('course_name')) or course_code}”，不能重复选择"
                 )
-        item, mutation_class_type = self._resolve_mutation_class(
+        item, mutation_class_type, material_cache_hit = self._resolve_mutation_class(
             batch=batch,
             batch_code=batch_code,
             teaching_class_type=teaching_class_type,
@@ -1494,6 +1590,19 @@ class JwxkSessionClient:
                 "message": "该课程已经在官方选课结果中",
             })
         result["_term_code"] = batch.term_code
+        if result.get("success"):
+            cache = getattr(self.auth, "_jwxk_select_material", None)
+            if isinstance(cache, dict):
+                cache.pop((batch_code, class_id), None)
+        completed_at = time.monotonic()
+        logger.info(
+            "jwxk manual select completed class_type=%s material_cache_hit=%s batch_ms=%s lookup_and_submit_ms=%s total_ms=%s success=%s queued=%s",
+            mutation_class_type, material_cache_hit,
+            round((batch_ready_at - started) * 1000),
+            round((completed_at - batch_ready_at) * 1000),
+            round((completed_at - started) * 1000),
+            bool(result.get("success")), bool(result.get("queued")),
+        )
         return result
 
     def deselect_course(
@@ -1657,9 +1766,11 @@ class JwxkSessionClient:
                 )
                 raise
         data = payload.get("data") or {}
+        rows = data.get("rows") or []
+        self._remember_select_material(batch_code, teaching_class_type, rows)
         return {
             "total": _number(data.get("total")) or 0,
-            "courses": normalize_course_rows(data.get("rows")),
+            "courses": normalize_course_rows(rows),
         }
 
     def get_selected(self, *, batch_code: str, include_withdrawal: bool = True) -> dict[str, Any]:

@@ -763,6 +763,9 @@ def test_course_selection_refetches_secret_and_performs_explicit_301_confirmatio
         timeout = 10
 
     class Client(JwxkSessionClient):
+        def _activate_batch(self, _batch_code):
+            return {}
+
         def get_context(self):
             return {"batches": [JwxkBatch(
                 code="batch", name="抢选", term_code="2026-2027-1", term_name="秋季",
@@ -805,6 +808,67 @@ def test_course_selection_refetches_secret_and_performs_explicit_301_confirmatio
     assert calls[1][1]["secretVal"] == "server-secret"
     assert "isConfirm" not in calls[1][1]
     assert calls[2][1]["isConfirm"] == "1"
+
+
+def test_course_selection_reuses_recent_catalog_material_and_active_batch_context():
+    calls = []
+
+    class Auth:
+        timeout = 10
+
+    auth = Auth()
+    auth._jwxk_active_batch_context = {
+        "batch_code": "batch",
+        "student": {"marker": "cached-student"},
+        "expires_at": __import__("time").monotonic() + 300,
+    }
+
+    class Client(JwxkSessionClient):
+        def _batch_for_mutation(self, batch_code, *, activated_student=None):
+            assert batch_code == "batch"
+            assert activated_student == {"marker": "cached-student"}
+            return JwxkBatch(
+                code="batch", name="抢选", term_code="2026-2027-1", term_name="秋季",
+                begin_time="", end_time="", selection_type="抢选", selection_type_code="02",
+                tactic_name="", course_types=("FANKC",), need_confirm=False, notice="",
+                state="active", can_enter=True, account_selectable=True, confirmed=True,
+            )
+
+        def _search_raw(self, **_kwargs):
+            raise AssertionError("recent catalog material must avoid another clazz/list lookup")
+
+        def get_selected(self, **_kwargs):
+            raise AssertionError("verified foreground selection must avoid another selected-result read")
+
+        def _post_mutation(self, path, data, *, confirm_risk):
+            calls.append((path, data, confirm_risk))
+            return {
+                "success": True, "queued": False, "requires_confirmation": False,
+                "code": "200", "message": "选课成功",
+            }
+
+    client = Client(auth)
+    client._remember_select_material("batch", "FANKC", [{
+        "JXBID": "CLASS-1", "KCH": "COURSE-1", "secretVal": "cached-secret",
+        "teachingClassType": "FANKC",
+    }])
+
+    result = client.select_course(
+        batch_code="batch", teaching_class_type="FANKC", class_id="CLASS-1",
+        course_code="COURSE-1", weight=None, confirm_risk=True,
+        skip_preflight_checks=True,
+    )
+
+    assert result["success"] is True
+    assert calls == [(
+        "/xsxk/elective/clazz/add",
+        {
+            "clazzType": "FANKC", "clazzId": "CLASS-1",
+            "secretVal": "cached-secret", "batchId": "batch", "needBook": "",
+        },
+        True,
+    )]
+    assert auth._jwxk_select_material == {}
 
 
 def test_exact_mutation_lookup_does_not_filter_cross_campus_classes():
@@ -864,6 +928,9 @@ def test_course_selection_stops_before_mutation_when_official_check_rejects_clas
         timeout = 10
 
     class Client(JwxkSessionClient):
+        def _activate_batch(self, _batch_code):
+            return {}
+
         def get_context(self):
             return {"batches": [JwxkBatch(
                 code="batch", name="抢选", term_code="2026-2027-1", term_name="秋季",
@@ -908,6 +975,9 @@ def test_course_selection_rejects_another_class_with_the_same_selected_course_co
         timeout = 10
 
     class Client(JwxkSessionClient):
+        def _activate_batch(self, _batch_code):
+            return {}
+
         def get_context(self):
             return {"batches": [JwxkBatch(
                 code="batch", name="抢选", term_code="2026-2027-1", term_name="秋季",
@@ -936,6 +1006,9 @@ def test_course_selection_treats_official_already_selected_race_as_achieved():
         timeout = 10
 
     class Client(JwxkSessionClient):
+        def _activate_batch(self, _batch_code):
+            return {}
+
         def get_context(self):
             return {"batches": [JwxkBatch(
                 code="batch", name="抢选", term_code="2026-2027-1", term_name="秋季",

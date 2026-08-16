@@ -255,11 +255,16 @@ def optimize_grouped_weights(
         if candidate.capacity <= 0 or candidate.bidders < 0:
             raise WeightOptimizationError(f"课程“{candidate.name}”缺少有效容量或投权人数")
 
+    # This project runs the strategy repeatedly against live JWXK counts.  The
+    # upstream end-of-round forecast remains useful as a risk reference, but it
+    # must not consume weight that can protect courses which are already full.
+    # Therefore SAFE/COMP is determined by the latest official snapshot:
+    # strictly under capacity is SAFE and always receives only min_bid.
     safe_ids: set[str] = set()
     alphas_by_scenario: tuple[dict[str, float], ...] = tuple({} for _ in SCENARIO_NAMES)
     for candidate in candidates:
         predicted = [forecast.get(candidate.course_id, float(candidate.bidders)) for forecast in forecasts]
-        if max(predicted) <= candidate.capacity + _EPS:
+        if candidate.bidders < candidate.capacity:
             safe_ids.add(candidate.course_id)
         for index, count in enumerate(predicted):
             congestion = count / float(candidate.capacity)
@@ -370,21 +375,45 @@ def optimize_grouped_weights(
     for candidate in candidates:
         selected = candidate.already_selected or candidate.course_id in chosen_ids
         bid = int(bids.get(candidate.course_id, 0))
+        forecast_by_scenario = {
+            name: forecasts[index].get(candidate.course_id, float(candidate.bidders))
+            for index, name in enumerate(SCENARIO_NAMES)
+        }
         if candidate.already_selected:
             classification = "SELECTED"
             rates = {name: 1.0 for name in SCENARIO_NAMES}
+            recommendation_reason = "该课程已经形成选课结果，不参与本轮投权分配"
         elif not selected:
             classification = "OUT"
             rates = {name: 0.0 for name in SCENARIO_NAMES}
+            recommendation_reason = "该课程未进入满足方案组目标的本轮推荐组合"
         elif candidate.course_id in safe_ids:
             classification = "SAFE"
             rates = {name: 1.0 for name in SCENARIO_NAMES}
+            recommendation_reason = (
+                f"当前 {candidate.bidders}/{candidate.capacity} 尚未满，实时策略将其视为 SAFE，"
+                f"固定使用官方最低投权 {policy.min_bid} 点；终局预测仅作风险参考"
+            )
         else:
             classification = "COMP"
             rates = {
                 name: proxy_probability(bid, alphas_by_scenario[index][candidate.course_id])
                 for index, name in enumerate(SCENARIO_NAMES)
             }
+            aggressive_count = forecast_by_scenario["aggressive"]
+            if candidate.bidders < candidate.capacity and aggressive_count > candidate.capacity + _EPS:
+                competition_basis = (
+                    f"当前 {candidate.bidders}/{candidate.capacity} 尚未满，"
+                    f"但激进情景预计 {aggressive_count:.1f}/{candidate.capacity}"
+                )
+            else:
+                competition_basis = (
+                    f"当前 {candidate.bidders}/{candidate.capacity}，"
+                    f"中性情景预计 {forecast_by_scenario['neutral']:.1f}/{candidate.capacity}"
+                )
+            recommendation_reason = (
+                f"{competition_basis}；water-filling 结合意愿评分分配 {bid} 点"
+            )
         blocked_by = [
             other_id for other_id in chosen_ids | fixed_ids
             if frozenset((candidate.course_id, other_id)) in known_conflicts
@@ -398,10 +427,8 @@ def optimize_grouped_weights(
             "selected": selected,
             "already_selected": candidate.already_selected,
             "scenario_success_rates": rates,
-            "forecast_participants": {
-                name: forecasts[index].get(candidate.course_id, float(candidate.bidders))
-                for index, name in enumerate(SCENARIO_NAMES)
-            },
+            "forecast_participants": forecast_by_scenario,
+            "recommendation_reason": recommendation_reason,
             "blocked_by_conflicts": blocked_by,
             "time_unknown": candidate.time_unknown,
         })
