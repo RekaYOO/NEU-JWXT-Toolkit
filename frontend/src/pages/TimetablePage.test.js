@@ -36,6 +36,7 @@ import {
   shouldLoadMoreTargets,
   capacityRangeInvalid,
   conflictCandidateFromCourse,
+  conflictMeetingText,
   buildConflictCourseScheduleMap,
   personalConflictMapFromResponse,
   mergeScheduleWithSelectionOverlays,
@@ -61,6 +62,13 @@ jest.mock('../services/api', () => ({
 
 
 describe('TimetablePage helpers', () => {
+  test('conflict details fall back from an empty weeks array to known baseline weeks', () => {
+    expect(conflictMeetingText({
+      weeks: [], baseline_weeks: [11, 13], overlapping_weeks: [11],
+      weekday: 1, start_section: 7, end_section: 8,
+    })).toContain('11、13 周');
+  });
+
   test('builds complete split-course schedules for conflict comparison', () => {
     const schedules = buildConflictCourseScheduleMap([
       { course_code: 'A1', course_name: '分段课程', weeks: [1, 2], weekday: 2, start_section: 1, end_section: 2 },

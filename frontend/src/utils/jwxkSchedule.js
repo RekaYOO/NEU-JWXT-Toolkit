@@ -14,6 +14,29 @@ const normalizedTaxonomy = value => normalizedName(value)
 const isGeneralElective = value => ['通识选修', '通识选修类', '通识选修课', '通识选修课程']
   .some(label => normalizedName(label) === normalizedName(value));
 
+export const isGeneralElectiveCategory = value => (
+  String(value || '').replace(/\s+/g, '').includes('通识选修')
+);
+
+const campusIdentity = value => {
+  const text = String(value || '').trim();
+  if (text === '00' || text === '南湖校区') return '00';
+  if (text === '01' || text === '浑南校区') return '01';
+  return text.toLocaleLowerCase();
+};
+
+export const courseCampusIdentities = course => [...new Set([
+  course?.campus || course?.campus_name,
+  ...(course?.schedules || []).map(meeting => meeting?.campus || meeting?.campus_name),
+].map(campusIdentity).filter(Boolean))];
+
+export const isCrossCampusCourse = (course, currentCampus, currentCampusName = '') => {
+  const homeCampus = campusIdentity(currentCampus) || campusIdentity(currentCampusName);
+  if (!homeCampus) return false;
+  const campuses = courseCampusIdentities(course);
+  return campuses.length > 0 && campuses.some(campus => campus !== homeCampus);
+};
+
 export const mergeCatalogFilterLayers = (manual = {}, plan = {}, keys = []) => Object.fromEntries(
   keys.map(key => [key, manual[key] || plan[key] || '']),
 );
@@ -34,9 +57,8 @@ export const catalogGroupLiveStats = (
   group = {}, conflictMap = {}, selectionTypeCode = '',
 ) => {
   const classes = group.classes || [];
-  const isConflicting = course => (
-    Boolean(course.conflict) || conflictMap[course.class_id]?.status === 'conflict'
-  );
+  // 官方 SFCT 同时包含时间冲突和跨校区，不能直接拿来统计时间冲突。
+  const isConflicting = course => conflictMap[course.class_id]?.status === 'conflict';
   return {
     conflict_free_count: classes.filter(course => !isConflicting(course)).length,
     all_classes_conflict: classes.length > 0 && classes.every(isConflicting),

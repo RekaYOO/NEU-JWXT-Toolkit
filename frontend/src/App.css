@@ -110,6 +110,11 @@ select {
   background: var(--color-canvas);
 }
 
+.route-loading {
+  flex: 1;
+  min-height: min(420px, 60vh);
+}
+
 /* Shared workspace rhythm */
 .scores-page,
 .academic-report-page,

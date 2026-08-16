@@ -108,8 +108,12 @@ const personalConflictForCourse = (course, conflictMap) => (
 
 const conflictWeeksText = weeks => formatWeekNumbers(weeks) || '周次待确认';
 
-const conflictMeetingText = meeting => (
-  `${conflictWeeksText(meeting?.weeks || meeting?.baseline_weeks || meeting?.overlapping_weeks)} · 周${SHORT_WEEKDAY_NAMES[(Number(meeting?.weekday || 1)) - 1] || '-'} · 第${meeting?.start_section || '?'}–${meeting?.end_section || '?'}节`
+const firstKnownWeeks = (...values) => values.find(value => (
+  Array.isArray(value) && value.length > 0
+)) || [];
+
+export const conflictMeetingText = meeting => (
+  `${conflictWeeksText(firstKnownWeeks(meeting?.weeks, meeting?.baseline_weeks, meeting?.overlapping_weeks))} · 周${SHORT_WEEKDAY_NAMES[(Number(meeting?.weekday || 1)) - 1] || '-'} · 第${meeting?.start_section || '?'}–${meeting?.end_section || '?'}节`
 );
 
 const conflictCourseIdentity = course => {
@@ -125,7 +129,7 @@ const conflictCourseIdentity = course => {
 const uniqueConflictMeetings = meetings => [...new Map((meetings || []).filter(Boolean).map(meeting => [
   [
     Number(meeting.weekday || 0), Number(meeting.start_section || 0), Number(meeting.end_section || 0),
-    [...new Set((meeting.weeks || meeting.baseline_weeks || []).map(Number))].sort((a, b) => a - b).join(','),
+    [...new Set(firstKnownWeeks(meeting.weeks, meeting.baseline_weeks).map(Number))].sort((a, b) => a - b).join(','),
   ].join(':'),
   meeting,
 ])).values()].sort((a, b) => (

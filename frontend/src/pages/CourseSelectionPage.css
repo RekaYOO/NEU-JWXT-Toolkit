@@ -276,6 +276,8 @@
 .jwxk-class-detail p { margin: 0; }
 .jwxk-class-detail .ant-descriptions-title { margin: 4px 0 8px; font-size: 14px; }
 .jwxk-detail-loading { display: flex; min-height: 150px; align-items: center; justify-content: center; gap: 10px; color: var(--color-muted); }
+.jwxk-catalog-detail-modal .ant-modal-body { max-height: min(76vh, 820px); overflow-y: auto; }
+.jwxk-catalog-detail-modal .ant-tabs-nav { position: sticky; z-index: 6; top: 0; margin-bottom: 16px; background: var(--color-surface); }
 .jwxk-task-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .jwxk-task-head h5 { margin: 0; }
 .jwxk-task-head > div:first-child { min-width: 0; flex: 1; }

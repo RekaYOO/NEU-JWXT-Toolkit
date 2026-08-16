@@ -11,6 +11,8 @@ import {
   findMatchingSelectionRecord,
   inferBatchRequirementType,
   immediateSelectionConflictMap,
+  isCrossCampusCourse,
+  isGeneralElectiveCategory,
   isCurrentBatchSelectionRecord,
   academicPlanSelectionRecords,
   matchAcademicGapCatalogFilters,
@@ -74,10 +76,29 @@ test('catalog group summary only exposes live conflict-free and capacity counts'
     'local-conflict': { status: 'conflict' },
     'official-conflict': { status: 'clear' },
   }, '04')).toEqual({
-    conflict_free_count: 1,
+    conflict_free_count: 2,
     all_classes_conflict: false,
     available_count: 2,
   });
+});
+
+test('official conflict flag is not misreported as a local time conflict', () => {
+  const stats = catalogGroupLiveStats({
+    classes: [{ class_id: 'cross-campus', conflict: true, capacity: 20, selected_count: 5 }],
+  }, { 'cross-campus': { status: 'clear' } }, '02');
+  expect(stats).toMatchObject({ conflict_free_count: 1, all_classes_conflict: false });
+});
+
+test('cross-campus detection compares normalized student and teaching campuses', () => {
+  expect(isCrossCampusCourse({ campus: '00', campus_name: '南湖校区' }, '01', '浑南校区')).toBe(true);
+  expect(isCrossCampusCourse({ schedules: [{ campus_name: '浑南校区' }] }, '01')).toBe(false);
+  expect(isCrossCampusCourse({ schedules: [] }, '01')).toBe(false);
+});
+
+test('general elective subcategory is enabled for every label containing 通识选修', () => {
+  expect(isGeneralElectiveCategory('通识选修')).toBe(true);
+  expect(isGeneralElectiveCategory('本科通识选修类')).toBe(true);
+  expect(isGeneralElectiveCategory('专业方向类')).toBe(false);
 });
 
 test('catalog display coalesces duplicate groups with the same course code', () => {
@@ -101,6 +122,7 @@ test('catalog group is marked conflicting only when every teaching class conflic
       { class_id: 'local', conflict: false },
     ],
   }, {
+    official: { status: 'conflict' },
     local: { status: 'conflict' },
   }).all_classes_conflict).toBe(true);
 

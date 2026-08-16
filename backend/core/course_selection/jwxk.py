@@ -1977,7 +1977,7 @@ class JwxkSessionClient:
             "availability": [
                 {"value": "selectable", "label": "本轮可选"},
                 {"value": "available", "label": "仍有余量"},
-                {"value": "conflict_free", "label": "官方无冲突"},
+                {"value": "conflict_free", "label": "官方未标冲突"},
                 {"value": "selected", "label": "已经选择"},
             ],
             "weekdays": [{"value": str(day), "label": f"周{label}"} for day, label in enumerate("一二三四五六日", 1)],

@@ -47,7 +47,7 @@ const parseTextbook = value => {
   return String(value).split(/\r?\n|\|\|/).map(item => item.trim()).filter(Boolean);
 };
 
-export default function CourseOutlineDrawer({ open, course, onClose }) {
+export default function CourseOutlineDrawer({ open, course, onClose, embedded = false }) {
   const code = course?.course_code || course?.code || '';
   const [overview, setOverview] = useState(null);
   const [overviewError, setOverviewError] = useState('');
@@ -97,10 +97,8 @@ export default function CourseOutlineDrawer({ open, course, onClose }) {
     finally { setDownloading(false); }
   };
 
-  return (
-    <Drawer className="course-outline-drawer" width="min(980px, 96vw)" placement="right" open={open} onClose={onClose}
-      title={<div className="outline-drawer-title"><Title level={4}>{title}</Title><Text type="secondary">{code}</Text></div>}
-      extra={<Button icon={<DownloadOutlined />} loading={downloading} disabled={!overview} onClick={download}>下载大纲</Button>}>
+  const content = (
+    <>
       {overviewError ? <Alert type="error" showIcon message={overviewError} action={<Button size="small" onClick={() => setOverviewRetry(value => value + 1)}>重试</Button>} /> : !overview ? <Skeleton active paragraph={{ rows: 8 }} /> : (
         <div className="outline-layout">
           <nav className="outline-toc" aria-label="大纲目录">
@@ -129,6 +127,26 @@ export default function CourseOutlineDrawer({ open, course, onClose }) {
           </div>
         </div>
       )}
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div className="course-outline-embedded">
+        <div className="outline-embedded-head">
+          <div className="outline-drawer-title"><Title level={4}>{title}</Title><Text type="secondary">{code}</Text></div>
+          <Button icon={<DownloadOutlined />} loading={downloading} disabled={!overview} onClick={download}>下载大纲</Button>
+        </div>
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <Drawer className="course-outline-drawer" width="min(980px, 96vw)" placement="right" open={open} onClose={onClose}
+      title={<div className="outline-drawer-title"><Title level={4}>{title}</Title><Text type="secondary">{code}</Text></div>}
+      extra={<Button icon={<DownloadOutlined />} loading={downloading} disabled={!overview} onClick={download}>下载大纲</Button>}>
+      {content}
     </Drawer>
   );
 }
