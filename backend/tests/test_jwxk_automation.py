@@ -777,6 +777,55 @@ def test_catalog_final_refresh_updates_saved_selectable_course_counts(tmp_path):
     assert saved["final_refresh_at"]
 
 
+def test_underfilled_warning_only_lists_current_weighted_courses(tmp_path):
+    messages = []
+
+    class FakeClient:
+        def get_selected(self, **_kwargs):
+            return {
+                "selected": [],
+                "volunteered": [{
+                    "class_id": "weighted", "course_code": "W1",
+                    "course_name": "已投课程", "devoted_weight": 20,
+                }],
+            }
+
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: auth,
+        client_builder=lambda _auth: FakeClient(),
+        notification_provider=lambda subject, body, key: messages.append((subject, body, key)) or True,
+    )
+    archive = service.merge_catalog_archive(
+        "student",
+        batch={
+            "code": "batch", "name": "权重轮次", "term_code": "2026-2027-1",
+            "selection_type_code": "04",
+        },
+        scope="TJKC",
+        groups=[{"group_id": "catalog", "classes": [{
+            "class_id": "weighted", "course_code": "W1", "course_name": "已投课程",
+            "capacity": 30, "weight_participant_count": 8,
+        }, {
+            "class_id": "unrelated", "course_code": "U1", "course_name": "未投课程",
+            "capacity": 50, "weight_participant_count": 3,
+        }]}],
+    )
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True, "notify_underfilled_warning": True,
+    })
+
+    service._notify_underfilled_warning("student", archive, auth)
+    service._notify_underfilled_warning("student", archive, auth)
+
+    assert len(messages) == 1
+    subject, body, _ = messages[0]
+    assert subject == "JWXK 已投权课程开课风险提示"
+    assert "已投课程 - 8/30" in body
+    assert "未投课程" not in body
+
+
 def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tmp_path):
     class FakeClient:
         def __init__(self):

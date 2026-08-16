@@ -53,12 +53,28 @@ export const selectionParticipantLabel = (course, selectionTypeCode = '') => (
   || (String(selectionTypeCode || course?.selection_type_code || '') === '04' ? '已投注人数' : '已选人数')
 );
 
+export const selectionTimeConflictStatus = result => {
+  if (!result || result.status !== 'conflict') return result?.status || 'unknown';
+  const confirmed = (result.matches || []).some(match => (
+    match?.status === 'conflict'
+    && String(match?.source || '') !== 'jwxk_official'
+    && Array.isArray(match?.overlapping_weeks)
+    && match.overlapping_weeks.length > 0
+    && Number(match?.weekday || 0) > 0
+    && Number(match?.start_section || 0) > 0
+    && Number(match?.end_section || 0) >= Number(match?.start_section || 0)
+  ));
+  return confirmed ? 'conflict' : 'unknown';
+};
+
 export const catalogGroupLiveStats = (
   group = {}, conflictMap = {}, selectionTypeCode = '',
 ) => {
   const classes = group.classes || [];
   // 官方 SFCT 同时包含时间冲突和跨校区，不能直接拿来统计时间冲突。
-  const isConflicting = course => conflictMap[course.class_id]?.status === 'conflict';
+  const isConflicting = course => (
+    selectionTimeConflictStatus(conflictMap[course.class_id]) === 'conflict'
+  );
   return {
     conflict_free_count: classes.filter(course => !isConflicting(course)).length,
     all_classes_conflict: classes.length > 0 && classes.every(isConflicting),

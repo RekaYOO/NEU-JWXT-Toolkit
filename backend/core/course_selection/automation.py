@@ -1529,7 +1529,7 @@ class CourseSelectionAutomationService:
             if end is None:
                 continue
             if now >= end - timedelta(hours=5) and now < end:
-                self._notify_underfilled_warning(account, archive)
+                self._notify_underfilled_warning(account, archive, auth)
             if now >= end and archive.get("final_refresh_status") == "complete":
                 self._notify_round_end_summary(account, archive)
                 self._finish_archive(account, archive["archive_id"])
@@ -1574,29 +1574,76 @@ class CourseSelectionAutomationService:
                 self._notification_state[key] = datetime.now().astimezone().isoformat()
                 self._write_json_map(self.notification_state_path, self._notification_state)
 
-    def _notify_underfilled_warning(self, account: str, archive: dict[str, Any]) -> None:
+    def _notify_underfilled_warning(
+        self, account: str, archive: dict[str, Any], auth: Any,
+    ) -> None:
         settings = self.get_automation_settings(account, str(archive.get("batch_code") or ""))
         if not settings.get("mail_enabled") or not settings.get("notify_underfilled_warning"):
             return
         selection_type = str(archive.get("selection_type_code") or "")
-        rows = []
+        # 这项提醒属于权重轮次，只观察当前账号仍在官方已投结果中的课程。
+        # 轮次完整目录只用于补充实时人数和容量，不能把全市场低人数课程发给用户。
+        if selection_type != "04":
+            return
+        batch_code = str(archive.get("batch_code") or "")
+        scan_key = f"{account}:{batch_code}:underfilled-selection-scan"
+        now = datetime.now().astimezone()
         with self._lock:
-            for course in archive.get("courses") or []:
-                if str(course.get("teaching_class_type") or "") == "ALLKC":
+            last_scan = self._notification_state.get(scan_key)
+        if last_scan:
+            try:
+                if now - datetime.fromisoformat(str(last_scan)).astimezone() < timedelta(minutes=10):
+                    return
+            except ValueError:
+                pass
+        try:
+            with self.remote_guard():
+                if self.auth_provider() is not auth:
+                    raise NEULoginError("登录身份已切换")
+                official = self.client_builder(auth).get_selected(batch_code=batch_code)
+        except (NEULoginError, JwxkError, requests.RequestException, ValueError) as error:
+            logger.info(
+                "jwxk underfilled notification selection refresh failed batch=%s error=%s",
+                batch_code, type(error).__name__,
+            )
+            return
+        archive_courses = list(archive.get("courses") or [])
+        by_class = {
+            str(course.get("class_id") or ""): course
+            for course in archive_courses if str(course.get("class_id") or "")
+        }
+        by_code = {
+            str(course.get("course_code") or "").casefold(): course
+            for course in archive_courses if str(course.get("course_code") or "")
+        }
+        rows = []
+        seen: set[str] = set()
+        with self._lock:
+            for selection in official.get("volunteered") or []:
+                class_id = str(selection.get("class_id") or "")
+                course_code = str(selection.get("course_code") or "").casefold()
+                identity = class_id or course_code
+                if not identity or identity in seen:
                     continue
-                count = course.get("weight_participant_count") if selection_type == "04" else course.get("selected_count")
+                seen.add(identity)
+                course = by_class.get(class_id) or by_code.get(course_code) or selection
+                count = course.get("weight_participant_count")
+                if count is None:
+                    count = selection.get("weight_participant_count")
                 if count is not None and int(count) < 10:
-                    key = f"{account}:{archive.get('batch_code')}:underfilled:{course.get('class_id')}"
+                    key = f"{account}:{batch_code}:underfilled:{identity}"
                     if self._notification_state.get(key):
                         continue
                     rows.append((course, key, int(count)))
+            self._notification_state[scan_key] = now.isoformat()
+            self._write_json_map(self.notification_state_path, self._notification_state)
         if not rows:
             return
-        body = "轮次结束前 5 小时人数不足十人，仅为开课风险提示，不代表官方最终停开决定。\n\n" + "\n".join(
-            f"- {course.get('course_name')}-{course.get('course_code')}：{count} / 容量 {course.get('capacity') or '待更新'}"
+        body = "以下是你当前已投权课程中的开课风险提示；人数不足十人不代表官方最终停开决定。\n\n" + "\n".join(
+            f"- {course.get('course_name') or course.get('course_code') or '课程'} - {count}/{course.get('capacity') if course.get('capacity') is not None else '待更新'}"
             for course, _, count in rows
         )
-        if self._queue_notification(account, str(archive.get("batch_code") or ""), "JWXK 课程开课风险提示", body, "underfilled-warning"):
+        if self._queue_notification(account, batch_code, "JWXK 已投权课程开课风险提示", body, "underfilled-warning"):
             with self._lock:
                 for _, key, _ in rows:
                     self._notification_state[key] = datetime.now().astimezone().isoformat()

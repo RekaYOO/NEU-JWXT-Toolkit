@@ -43,6 +43,7 @@ import {
   sameSelectionCourse,
   selectionParticipantCount,
   selectionParticipantLabel,
+  selectionTimeConflictStatus,
   summarizeSelectionConflictsByClass,
   toggleCatalogPreviewCourse,
   uniqueDisplayLabels,
@@ -1658,7 +1659,10 @@ const CourseSelectionWorkspacePage = () => {
     const result = { ...immediateConflictMap };
     candidateScheduleOverlay.forEach(meeting => {
       const realtime = conflicts[meeting.source_id || meeting.teaching_class_id];
-      if (realtime) result[meeting.meeting_id] = realtime;
+      if (realtime) result[meeting.meeting_id] = {
+        ...realtime,
+        status: selectionTimeConflictStatus(realtime),
+      };
     });
     return result;
   }, [candidateScheduleOverlay, conflicts, immediateConflictMap]);
@@ -1991,7 +1995,7 @@ const CourseSelectionWorkspacePage = () => {
                     <div className="jwxk-inline-classes" onClick={event => event.stopPropagation()}>
                       {(group.classes || []).map(course => {
                         const conflict = conflicts[course.class_id] || catalogClassConflictMap[course.class_id];
-                        const conflictStatus = conflict?.status;
+                        const conflictStatus = selectionTimeConflictStatus(conflict);
                         const crossCampus = courseIsCrossCampus(course);
                         const officialConflictUnclassified = Boolean(
                           course.conflict && conflictStatus !== 'conflict' && !crossCampus,
@@ -2131,8 +2135,9 @@ const CourseSelectionWorkspacePage = () => {
 
   const planView = <div className="jwxk-plan-page"><div className="jwxk-section-actions jwxk-plan-page-actions"><Button onClick={() => setGroupEditor({ group_id: '', name: '', target_count: 1 })}>新建方案组</Button><Button icon={<CalendarOutlined />} onClick={previewConflicts}>实时检查冲突</Button>{batch?.selection_type_code !== '04' && planGroups.length > 0 && <Checkbox.Group className="jwxk-task-group-picker" value={taskGroupIds} onChange={setTaskGroupIds} options={planGroups.map(group => ({ value: group.group_id, label: `自动抢课：${group.name}` }))} />}{batch?.selection_type_code !== '04' && <Button type="primary" icon={<RobotOutlined />} disabled={!plan.length || !planGroups.length} onClick={createTask}>创建所选方案组自动任务</Button>}{batch?.selection_type_code === '04' && <Button type="primary" icon={<RobotOutlined />} onClick={openWeightPlanner}>策略投权</Button>}</div>{planGroups.map(group => <Card key={group.id} title={`${group.name} · 目标 ${group.target_count} 门 · ${group.items.length} 个候选`} extra={<Space><Button size="small" onClick={() => setGroupEditor({ group_id: group.group_id, name: group.name, target_count: group.target_count })}>编辑目标</Button><Button size="small" danger onClick={() => Modal.confirm({ title: `删除方案组“${group.name}”？`, content: '组内候选课程也会一起移除。', okButtonProps: { danger: true }, okText: '删除', onOk: () => { setTaskGroupIds(previous => previous.filter(groupId => groupId !== group.group_id)); return savePlan(plan.filter(item => item.plan_group_id !== group.group_id), planGroupConfigs.filter(item => item.group_id !== group.group_id)); } })}>删除组</Button></Space>} className="jwxk-plan-group">{group.items.map(item => {
     const conflict = conflicts[item.class_id];
+    const conflictStatus = selectionTimeConflictStatus(conflict);
     const crossCampus = courseIsCrossCampus(item);
-    return <div className="jwxk-plan-alternative" key={item.class_id}><div><div className="jwxk-plan-alternative__title"><button type="button" className="jwxk-plan-course-link is-primary" onClick={() => focusPlanCourse(item)}>{item.priority}. {item.course_name || item.course_code || '未命名课程'}</button>{conflict && <Tag color={conflict.status === 'conflict' ? 'error' : conflict.status === 'unknown' ? 'warning' : 'success'}>{conflict.status === 'conflict' ? '时间冲突' : conflict.status === 'unknown' ? '时间待核验' : '时间无冲突'}</Tag>}{crossCampus && <Tag color="orange">跨校区</Tag>}</div><strong>{item.course_code || '课程代码待定'} · {item.teacher || '教师待定'} · {item.class_number || item.class_id}</strong><span>{item.location || '地点待定'} · {classScheduleText(item)}</span></div><Space wrap className="jwxk-plan-alternative__actions"><InputNumber min={1} max={group.items.length} value={item.priority} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, priority: value || 1 } : row))} addonBefore="优先级" />{batch?.selection_type_code === '04' && <InputNumber min={1} max={10} value={item.utility || 5} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, utility: value || 5 } : row))} addonBefore="意愿" />}<Button danger onClick={() => savePlan(plan.filter(row => row.class_id !== item.class_id))}>移出方案组</Button></Space></div>;
+    return <div className="jwxk-plan-alternative" key={item.class_id}><div><div className="jwxk-plan-alternative__title"><button type="button" className="jwxk-plan-course-link is-primary" onClick={() => focusPlanCourse(item)}>{item.priority}. {item.course_name || item.course_code || '未命名课程'}</button>{conflict && <Tag color={conflictStatus === 'conflict' ? 'error' : conflictStatus === 'unknown' ? 'warning' : 'success'}>{conflictStatus === 'conflict' ? '时间冲突' : conflictStatus === 'unknown' ? '时间待核验' : '时间无冲突'}</Tag>}{crossCampus && <Tag color="orange">跨校区</Tag>}</div><strong>{item.course_code || '课程代码待定'} · {item.teacher || '教师待定'} · {item.class_number || item.class_id}</strong><span>{item.location || '地点待定'} · {classScheduleText(item)}</span></div><Space wrap className="jwxk-plan-alternative__actions"><InputNumber min={1} max={group.items.length} value={item.priority} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, priority: value || 1 } : row))} addonBefore="优先级" />{batch?.selection_type_code === '04' && <InputNumber min={1} max={10} value={item.utility || 5} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, utility: value || 5 } : row))} addonBefore="意愿" />}<Button danger onClick={() => savePlan(plan.filter(row => row.class_id !== item.class_id))}>移出方案组</Button></Space></div>;
   })}</Card>)}{!plan.length && <Empty description="从课程目录选择教学班加入方案组" />}</div>;
 
   const selectedView = <Spin spinning={loading}><Alert type="info" showIcon message={schedule?.source_label || '官方实时选课结果'} description={<span>{selectedRefreshing ? '正在静默更新人数状态' : '人数状态每 30 秒静默更新'}{selectedUpdatedAt ? ` · 最近更新 ${selectedUpdatedAt.toLocaleTimeString('zh-CN', { hour12: false })}` : ''}</span>} /><div className="jwxk-selected-grid">{orderedSelected.map(course => {

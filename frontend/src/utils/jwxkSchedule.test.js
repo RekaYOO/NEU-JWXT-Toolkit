@@ -25,6 +25,7 @@ import {
   removeSelectionRecord,
   selectionParticipantCount,
   selectionParticipantLabel,
+  selectionTimeConflictStatus,
   sortCatalogGroupsBySelectability,
   summarizeSelectionConflictsByClass,
   uniqueDisplayLabels,
@@ -73,7 +74,13 @@ test('catalog group summary only exposes live conflict-free and capacity counts'
   };
   expect(catalogGroupLiveStats(group, {
     clear: { status: 'clear' },
-    'local-conflict': { status: 'conflict' },
+    'local-conflict': {
+      status: 'conflict',
+      matches: [{
+        status: 'conflict', source: 'personal_timetable', overlapping_weeks: [1],
+        weekday: 1, start_section: 1, end_section: 2,
+      }],
+    },
     'official-conflict': { status: 'clear' },
   }, '04')).toEqual({
     conflict_free_count: 2,
@@ -87,6 +94,23 @@ test('official conflict flag is not misreported as a local time conflict', () =>
     classes: [{ class_id: 'cross-campus', conflict: true, capacity: 20, selected_count: 5 }],
   }, { 'cross-campus': { status: 'clear' } }, '02');
   expect(stats).toMatchObject({ conflict_free_count: 1, all_classes_conflict: false });
+});
+
+test('red time-conflict state requires a concrete non-official overlap', () => {
+  expect(selectionTimeConflictStatus({
+    status: 'conflict',
+    matches: [{
+      status: 'conflict', source: 'jwxk_official', overlapping_weeks: [1],
+      weekday: 1, start_section: 1, end_section: 2,
+    }],
+  })).toBe('unknown');
+  expect(selectionTimeConflictStatus({
+    status: 'conflict',
+    matches: [{
+      status: 'conflict', source: 'personal_timetable', overlapping_weeks: [1, 2],
+      weekday: 1, start_section: 1, end_section: 2,
+    }],
+  })).toBe('conflict');
 });
 
 test('cross-campus detection compares normalized student and teaching campuses', () => {
@@ -122,8 +146,20 @@ test('catalog group is marked conflicting only when every teaching class conflic
       { class_id: 'local', conflict: false },
     ],
   }, {
-    official: { status: 'conflict' },
-    local: { status: 'conflict' },
+    official: {
+      status: 'conflict',
+      matches: [{
+        status: 'conflict', source: 'selection_plan', overlapping_weeks: [2],
+        weekday: 2, start_section: 3, end_section: 4,
+      }],
+    },
+    local: {
+      status: 'conflict',
+      matches: [{
+        status: 'conflict', source: 'personal_timetable', overlapping_weeks: [1],
+        weekday: 1, start_section: 1, end_section: 2,
+      }],
+    },
   }).all_classes_conflict).toBe(true);
 
   expect(catalogGroupLiveStats({
