@@ -103,6 +103,46 @@ export const isCurrentBatchSelectionRecord = (course, selectionTypeCode = '') =>
   return !(Number(participants) === 0 && capacity === 0);
 };
 
+/** 当前权重轮次中已投权、但尚未归入任何方案组的教学班。 */
+export const unplannedCurrentWeightSelections = (
+  courses = [], planItems = [], selectionTypeCode = '',
+) => {
+  if (String(selectionTypeCode || '') !== '04') return [];
+  const plannedClassIds = new Set((planItems || [])
+    .map(item => String(item?.class_id || '').trim())
+    .filter(Boolean));
+  return (courses || []).filter(course => {
+    const classId = String(course?.class_id || '').trim();
+    return course?.selection_record_type === 'volunteered'
+      && isCurrentBatchSelectionRecord(course, selectionTypeCode)
+      && Boolean(classId)
+      && !plannedClassIds.has(classId);
+  });
+};
+
+const comparableBatchTime = value => {
+  const timestamp = Date.parse(String(value || ''));
+  return Number.isFinite(timestamp) ? timestamp : String(value || '').trim();
+};
+
+export const changedOfficialBatchTimes = (previousBatches = [], nextBatches = []) => {
+  const previousByCode = new Map((previousBatches || []).map(batch => [String(batch.code || ''), batch]));
+  return (nextBatches || []).flatMap(batch => {
+    const previous = previousByCode.get(String(batch.code || ''));
+    if (!previous || !batch.begin_time || !batch.end_time) return [];
+    const startChanged = comparableBatchTime(previous.begin_time) !== comparableBatchTime(batch.begin_time);
+    const endChanged = comparableBatchTime(previous.end_time) !== comparableBatchTime(batch.end_time);
+    return startChanged || endChanged ? [{
+      batch_code: String(batch.code || ''),
+      batch_name: batch.name || previous.name || '选课轮次',
+      old_start_at: previous.begin_time || '',
+      old_end_at: previous.end_time || '',
+      start_at: batch.begin_time,
+      end_at: batch.end_time,
+    }] : [];
+  });
+};
+
 /** 培养计划缺口同时计入本轮确认选中和已投权课程，排除其他轮次的只读记录。 */
 export const academicPlanSelectionRecords = (courses = [], selectionTypeCode = '') => {
   const byCourse = new Map((courses || [])
@@ -445,7 +485,10 @@ const overlappingWeeks = (left, right) => {
 export const mergeSelectionConflictMatches = (matches = []) => {
   const merged = new Map();
   matches.filter(match => match && !['clear', 'unknown'].includes(match.status)).forEach(match => {
-    const identity = String(match.baseline_course_code || match.baseline_course_name || 'unknown')
+    // The same course can arrive once from JWXT and once from a JWXK overlay.
+    // One source may omit the code or use another teaching-class id, so use
+    // the stable display name first while still keeping split meeting times.
+    const identity = String(match.baseline_course_name || match.baseline_course_code || 'unknown')
       .replace(/\s+/g, '').toLowerCase();
     const key = [
       identity,
@@ -464,6 +507,9 @@ export const mergeSelectionConflictMatches = (matches = []) => {
     }
     merged.set(key, {
       ...previous,
+      baseline_course_code: previous.baseline_course_code || match.baseline_course_code || '',
+      baseline_teaching_class_id: previous.baseline_teaching_class_id
+        || match.baseline_teaching_class_id || '',
       baseline_weeks: [...new Set([
         ...(previous.baseline_weeks || []), ...(match.baseline_weeks || []),
       ].map(Number))].sort((a, b) => a - b),
@@ -474,6 +520,31 @@ export const mergeSelectionConflictMatches = (matches = []) => {
   });
   return [...merged.values()];
 };
+
+export const selectionConflictMatchReferencesCourse = (match = {}, course = {}) => {
+  const baselineClassId = String(match.baseline_teaching_class_id || '').trim();
+  const courseClassIds = [course.class_id, course.teaching_class_id, course.source_id]
+    .map(value => String(value || '').trim()).filter(Boolean);
+  if (baselineClassId && courseClassIds.includes(baselineClassId)) return true;
+  return sameSelectionCourse({
+    course_code: match.baseline_course_code,
+    course_name: match.baseline_course_name,
+  }, course);
+};
+
+/** Remove obsolete baseline matches immediately after a successful withdrawal. */
+export const removeCourseFromSelectionConflictMap = (conflictMap = {}, course = {}) => (
+  Object.fromEntries(Object.entries(conflictMap || {}).map(([key, result]) => {
+    const matches = mergeSelectionConflictMatches((result?.matches || []).filter(
+      match => !selectionConflictMatchReferencesCourse(match, course),
+    ));
+    return [key, {
+      ...result,
+      status: matches.length ? 'conflict' : result?.status === 'unknown' ? 'unknown' : 'clear',
+      matches,
+    }];
+  }))
+);
 
 export const immediateSelectionConflictMap = (personalCourses = [], candidateCourses = []) => Object.fromEntries(
   candidateCourses.map(candidate => {
@@ -500,7 +571,7 @@ export const immediateSelectionConflictMap = (personalCourses = [], candidateCou
         baseline_teaching_class_id: personal.teaching_class_id || personal.source_id || '',
         baseline_weeks: personal.weeks || [],
         status: 'conflict',
-        source: 'personal_timetable_local',
+        source: personal.layer ? 'selection_candidate_local' : 'personal_timetable_local',
         overlapping_weeks: weeks,
         weekday: candidate.weekday,
         start_section: Math.max(personal.start_section, candidate.start_section),

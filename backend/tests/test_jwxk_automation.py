@@ -101,6 +101,47 @@ def test_saved_plan_changes_sync_into_bound_tasks(tmp_path):
     assert synced["bound_group_ids"] == ["g1"]
 
 
+def test_confirmed_round_time_change_updates_unfinished_tasks_and_archive(tmp_path):
+    service = _service(tmp_path)
+    old_start = (datetime.now().astimezone() + timedelta(hours=1)).isoformat()
+    old_end = (datetime.now().astimezone() + timedelta(hours=3)).isoformat()
+    new_start = (datetime.now().astimezone() + timedelta(hours=2)).isoformat()
+    new_end = (datetime.now().astimezone() + timedelta(hours=5)).isoformat()
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "实时策略", "task_type": "weight_strategy", "grade_size": 100,
+        "groups": [], "items": [], "start_at": old_start, "end_at": old_end,
+    })
+    service.action("student", task["task_id"], "start")
+    service._tasks[0]["weight_status"].update({
+        "final_5_executed": True, "final_3_executed": True,
+        "final_rebalance_executed": True,
+    })
+    service.merge_catalog_archive("student", batch={
+        "code": "batch", "name": "轮次", "term_code": "2026-2027-1",
+        "selection_type_code": "04", "begin_time": old_start, "end_time": old_end,
+    }, scope="ROUND", groups=[])
+
+    result = service.sync_batch_times(
+        "student", "batch", start_at=new_start, end_at=new_end,
+    )
+
+    assert result["changed_task_count"] == 1
+    synced = service.list("student", "batch")[0]
+    assert synced["start_at"] == new_start
+    assert synced["end_at"] == new_end
+    assert synced["status"] == "waiting"
+    assert "final_5_executed" not in service._tasks[0]["weight_status"]
+    archive = service.get_catalog_archive_view("student", "batch")
+    assert archive["begin_time"] == new_start
+    assert archive["end_time"] == new_end
+
+    restored = _service(tmp_path)
+    restored_task = restored.list("student", "batch")[0]
+    assert restored_task["start_at"] == new_start
+    assert restored_task["end_at"] == new_end
+
+
 def test_catalog_sync_does_not_block_live_task_scheduler(tmp_path):
     service = _service(tmp_path)
     catalog_started = threading.Event()

@@ -76,8 +76,8 @@ describe('TimetablePage helpers', () => {
       { course_code: 'A1', course_name: '分段课程', weeks: [1, 2], weekday: 2, start_section: 1, end_section: 2 },
     ]);
 
-    expect(schedules['code:A1']).toHaveLength(2);
-    expect(schedules['code:A1']).toEqual(expect.arrayContaining([
+    expect(schedules['name:分段课程']).toHaveLength(2);
+    expect(schedules['name:分段课程']).toEqual(expect.arrayContaining([
       expect.objectContaining({ weeks: [1, 2], weekday: 2, start_section: 1, end_section: 2 }),
       expect.objectContaining({ weeks: [5, 6], weekday: 4, start_section: 7, end_section: 8 }),
     ]));

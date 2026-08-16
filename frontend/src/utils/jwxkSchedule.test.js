@@ -3,6 +3,7 @@ import {
   applyCatalogDisplayLayout,
   catalogAvailabilityRequestMode,
   catalogAvailabilityRemoteFilters,
+  changedOfficialBatchTimes,
   catalogGroupLiveStats,
   catalogGroupsForDisplay,
   createCatalogDisplayLayout,
@@ -22,6 +23,7 @@ import {
   matchesCatalogAvailability,
   sameSelectionCourse,
   patchCatalogSelection,
+  removeCourseFromSelectionConflictMap,
   removeSelectionRecord,
   selectionParticipantCount,
   selectionParticipantLabel,
@@ -30,6 +32,7 @@ import {
   summarizeSelectionConflictsByClass,
   uniqueDisplayLabels,
   toggleCatalogPreviewCourse,
+  unplannedCurrentWeightSelections,
   upsertSelectionRecord,
 } from './jwxkSchedule';
 
@@ -47,6 +50,48 @@ test('conflict matches merge duplicate sources but keep distinct split-course ti
   expect(merged[1]).toMatchObject({ weekday: 5, start_section: 7, end_section: 8 });
 });
 
+test('conflict matches merge the same named course when one source lacks its code', () => {
+  const merged = mergeSelectionConflictMatches([{
+    status: 'conflict', baseline_course_name: '习近平经济思想概论',
+    baseline_course_code: 'A1', baseline_teaching_class_id: 'class-a',
+    baseline_weeks: [9, 10], overlapping_weeks: [9, 10],
+    weekday: 2, start_section: 7, end_section: 8,
+  }, {
+    status: 'conflict', baseline_course_name: '习近平经济思想概论',
+    baseline_course_code: '', baseline_teaching_class_id: 'class-b',
+    baseline_weeks: [11, 12], overlapping_weeks: [11, 12],
+    weekday: 2, start_section: 7, end_section: 8,
+  }]);
+  expect(merged).toHaveLength(1);
+  expect(merged[0]).toMatchObject({
+    baseline_course_code: 'A1', baseline_weeks: [9, 10, 11, 12],
+    overlapping_weeks: [9, 10, 11, 12],
+  });
+});
+
+test('successful withdrawal removes stale conflict matches for that course only', () => {
+  const cleaned = removeCourseFromSelectionConflictMap({
+    candidate: {
+      status: 'conflict',
+      matches: [{
+        status: 'conflict', baseline_course_code: 'A1', baseline_course_name: '已退课程',
+        overlapping_weeks: [1], weekday: 1, start_section: 1, end_section: 2,
+      }, {
+        status: 'conflict', baseline_course_code: 'B2', baseline_course_name: '仍冲突课程',
+        overlapping_weeks: [2], weekday: 2, start_section: 3, end_section: 4,
+      }],
+    },
+  }, { course_code: 'A1', course_name: '已退课程' });
+  expect(cleaned.candidate.status).toBe('conflict');
+  expect(cleaned.candidate.matches).toHaveLength(1);
+  expect(cleaned.candidate.matches[0].baseline_course_code).toBe('B2');
+
+  const cleared = removeCourseFromSelectionConflictMap(cleaned, {
+    course_code: 'B2', course_name: '仍冲突课程',
+  });
+  expect(cleared.candidate).toEqual(expect.objectContaining({ status: 'clear', matches: [] }));
+});
+
 test('participant metric follows grab and weight round semantics', () => {
   const course = { selected_count: 40, weight_participant_count: 63, capacity: 50 };
   expect(selectionParticipantCount(course, '02')).toBe(40);
@@ -54,6 +99,34 @@ test('participant metric follows grab and weight round semantics', () => {
   expect(selectionParticipantCount(course, '04')).toBe(63);
   expect(selectionParticipantLabel(course, '04')).toBe('已投注人数');
   expect(matchesCatalogAvailability({ ...course, selection_type_code: '04' }, 'available')).toBe(false);
+});
+
+test('manual batch refresh identifies official start or end time changes', () => {
+  expect(changedOfficialBatchTimes([{
+    code: 'round-1', name: '轮次1',
+    begin_time: '2026-08-16 13:00:00', end_time: '2026-08-17 00:00:00',
+  }], [{
+    code: 'round-1', name: '轮次1',
+    begin_time: '2026-08-16T14:00:00', end_time: '2026-08-17 01:00:00',
+  }])).toEqual([expect.objectContaining({
+    batch_code: 'round-1', old_start_at: '2026-08-16 13:00:00',
+    start_at: '2026-08-16T14:00:00', end_at: '2026-08-17 01:00:00',
+  })]);
+  expect(changedOfficialBatchTimes([], [{
+    code: 'round-1', begin_time: '2026-08-16 13:00:00', end_time: '2026-08-17 00:00:00',
+  }])).toEqual([]);
+});
+
+test('manual current-round weight selections can be identified for plan import', () => {
+  const courses = [
+    { class_id: 'A1', selection_record_type: 'volunteered', weight_participant_count: 12, capacity: 30 },
+    { class_id: 'A2', selection_record_type: 'volunteered', weight_participant_count: 0, capacity: 0 },
+    { class_id: 'A3', selection_record_type: 'selected', weight_participant_count: 8, capacity: 30 },
+    { class_id: 'A4', selection_record_type: 'volunteered', weight_participant_count: 9, capacity: 30 },
+  ];
+  expect(unplannedCurrentWeightSelections(courses, [{ class_id: 'A4' }], '04')
+    .map(course => course.class_id)).toEqual(['A1']);
+  expect(unplannedCurrentWeightSelections(courses, [], '02')).toEqual([]);
 });
 
 test('course source labels are deduplicated after user-facing translation', () => {
@@ -305,6 +378,30 @@ test('immediate conflicts require matching term schedule dimensions represented 
   expect(result.candidate.status).toBe('conflict');
   expect(result.candidate.matches[0]).toMatchObject({
     baseline_course_name: '课程A', overlapping_weeks: [2], start_section: 2, end_section: 2,
+  });
+});
+
+test('two volunteered courses outside plan groups receive symmetric conflict results', () => {
+  const first = meeting({
+    meeting_id: 'weighted-a', course_code: 'A', course_name: '现代艺术',
+    layer: 'pending', weeks: [1, 2, 3], start_section: 5, end_section: 6,
+  });
+  const second = meeting({
+    meeting_id: 'weighted-b', course_code: 'B', course_name: '机械制造技术基础',
+    layer: 'pending', weeks: [2, 3, 4], start_section: 5, end_section: 6,
+  });
+  const result = immediateSelectionConflictMap([first, second], [first, second]);
+  expect(result['weighted-a']).toMatchObject({ status: 'conflict' });
+  expect(result['weighted-b']).toMatchObject({ status: 'conflict' });
+  expect(result['weighted-a'].matches[0]).toMatchObject({
+    baseline_course_name: '机械制造技术基础',
+    overlapping_weeks: [2, 3],
+    source: 'selection_candidate_local',
+  });
+  expect(result['weighted-b'].matches[0]).toMatchObject({
+    baseline_course_name: '现代艺术',
+    overlapping_weeks: [2, 3],
+    source: 'selection_candidate_local',
   });
 });
 

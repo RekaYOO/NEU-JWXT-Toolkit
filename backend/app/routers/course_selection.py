@@ -41,6 +41,7 @@ from backend.app.schemas.course_selection import (
     JwxkAutomationSettingsResponse,
     JwxkAutomationTaskRequest,
     JwxkAutomationTaskAction,
+    JwxkAutomationTaskTimeSyncRequest,
 )
 from backend.app.dependencies import (
     get_storage, peek_auth_client, remote_session_guard, require_cached_auth_identity,
@@ -893,6 +894,17 @@ def list_jwxk_automation_tasks(
             str(auth.username), batch_code=batch_code,
         )
     }
+
+
+@router.post("/jwxk/automation/tasks/sync-batch-times")
+def sync_jwxk_automation_task_times(
+    request: JwxkAutomationTaskTimeSyncRequest,
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+):
+    return get_course_selection_automation_service().sync_batch_times(
+        str(auth.username), request.batch_code,
+        start_at=request.start_at, end_at=request.end_at,
+    )
 
 
 @router.post("/jwxk/automation/tasks/{action}")

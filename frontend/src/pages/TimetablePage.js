@@ -117,13 +117,16 @@ export const conflictMeetingText = meeting => (
 );
 
 const conflictCourseIdentity = course => {
+  const name = String(course?.course_name || course?.baseline_course_name || '')
+    .replace(/\s+/g, '').toLocaleLowerCase();
+  if (name) return `name:${name}`;
+  const code = String(course?.course_code || course?.baseline_course_code || '').trim().toLocaleUpperCase();
+  if (code) return `code:${code}`;
   const classId = String(
     course?.teaching_class_id || course?.class_id || course?.baseline_teaching_class_id || '',
   ).trim();
   if (classId) return `class:${classId}`;
-  const code = String(course?.course_code || course?.baseline_course_code || '').trim().toLocaleUpperCase();
-  if (code) return `code:${code}`;
-  return `name:${String(course?.course_name || course?.baseline_course_name || '').replace(/\s+/g, '').toLocaleLowerCase()}`;
+  return 'unknown:';
 };
 
 const uniqueConflictMeetings = meetings => [...new Map((meetings || []).filter(Boolean).map(meeting => [
@@ -151,7 +154,7 @@ export const buildConflictCourseScheduleMap = courses => {
       : [course];
     meetings.forEach(meeting => {
       const identity = conflictCourseIdentity(meeting);
-      if (identity === 'name:') return;
+      if (identity === 'unknown:') return;
       result[identity] = uniqueConflictMeetings([...(result[identity] || []), meeting]);
     });
   });

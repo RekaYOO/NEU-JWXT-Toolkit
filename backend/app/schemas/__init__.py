@@ -55,6 +55,7 @@ from .course_selection import (
     JwxkWeightPlanRequest, JwxkWeightConfigResponse, JwxkAutomationSettings,
     JwxkAutomationSettingsResponse,
     JwxkAutomationTaskRequest, JwxkAutomationTaskAction,
+    JwxkAutomationTaskTimeSyncRequest,
 )
 from .timetable import (
     TimetableContextRequest,

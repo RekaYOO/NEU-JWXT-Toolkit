@@ -890,6 +890,87 @@ class CourseSelectionAutomationService:
                 self._wake.set()
         return changed
 
+    def sync_batch_times(
+        self, account: str, batch_code: str, *, start_at: str, end_at: str,
+    ) -> dict[str, Any]:
+        """Persist an explicitly confirmed official round-time change."""
+        start = self._parse_task_time(start_at)
+        end = self._parse_task_time(end_at)
+        if start is None or end is None or end <= start:
+            raise ValueError("选课轮次时间无效")
+        now = datetime.now(_OFFICIAL_TIMEZONE)
+        updated_at = datetime.now().astimezone().isoformat()
+        changed_task_ids: list[str] = []
+        archive_changed = False
+        with self._lock:
+            archive = next((item for item in self._archives if (
+                item.get("account") == account and item.get("batch_code") == batch_code
+            )), None)
+            if archive is not None and (
+                str(archive.get("begin_time") or "") != start_at
+                or str(archive.get("end_time") or "") != end_at
+            ):
+                archive["begin_time"] = start_at
+                archive["end_time"] = end_at
+                archive["updated_at"] = updated_at
+                archive_changed = True
+
+            for task in self._tasks:
+                if task.get("account") != account or task.get("batch_code") != batch_code:
+                    continue
+                if task.get("status") in {"success", "cancelled"}:
+                    continue
+                old_start = str(task.get("start_at") or "")
+                old_end = str(task.get("end_at") or "")
+                if old_start == start_at and old_end == end_at:
+                    continue
+                task["start_at"] = start_at
+                task["end_at"] = end_at
+                task["polling_mode"] = self._initial_polling_mode(task)
+                task["updated_at"] = updated_at
+                if old_end != end_at and task.get("task_type") == "weight_strategy":
+                    weight_status = task.setdefault("weight_status", {})
+                    for key in (
+                        "final_5_executed", "final_3_executed", "final_rebalance_executed",
+                        "final_window_requested", "final_rebalance_requested",
+                    ):
+                        weight_status.pop(key, None)
+                if task.get("desired_state") == "running":
+                    if now < start:
+                        task["status"] = "waiting"
+                        task["message"] = "轮次时间已同步，等待新的开放时间"
+                    elif now > end:
+                        task["desired_state"] = "paused"
+                        task["status"] = "paused"
+                        task["message"] = "同步后的轮次已经结束，任务已暂停"
+                    elif task.get("status") in {"running", "waiting"}:
+                        task["status"] = "running"
+                        task["message"] = "轮次时间已同步，按新时间继续运行"
+                else:
+                    task["message"] = "轮次时间已同步，启动后按新时间执行"
+                execution = task.setdefault("execution", {})
+                execution.setdefault("events", []).append({
+                    "at": updated_at,
+                    "level": "info",
+                    "stage_code": "round_time_sync",
+                    "message": f"轮次时间已同步：{start_at} 至 {end_at}",
+                })
+                execution["events"] = execution["events"][-80:]
+                changed_task_ids.append(str(task.get("task_id") or ""))
+
+            if changed_task_ids:
+                self._write()
+                self._wake.set()
+            if archive_changed:
+                self._write_archives()
+        return {
+            "batch_code": batch_code,
+            "start_at": start_at,
+            "end_at": end_at,
+            "changed_task_count": len(changed_task_ids),
+            "changed_task_ids": changed_task_ids,
+        }
+
     def action(self, account: str, task_id: str, action: str) -> dict[str, Any]:
         with self._lock:
             task = next((item for item in self._tasks if item.get("task_id") == task_id and item.get("account") == account), None)

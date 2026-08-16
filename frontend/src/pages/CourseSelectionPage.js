@@ -7,8 +7,9 @@ import {
   confirmJwxkBatch, deleteJwxkCatalogArchive, getJwxkCatalogArchives,
   getJwxkStatus, updateJwxkSettings,
   getJwxkAutomationSettings, updateJwxkAutomationSettings,
+  syncJwxkAutomationTaskTimes,
 } from '../services/api';
-import { selectionParticipantCount } from '../utils/jwxkSchedule';
+import { changedOfficialBatchTimes, selectionParticipantCount } from '../utils/jwxkSchedule';
 import './CourseSelectionPage.css';
 
 const { Paragraph, Text, Title } = Typography;
@@ -32,10 +33,51 @@ const CourseSelectionPage = () => {
   const [automationSaving, setAutomationSaving] = useState(false);
   const [modelHelpOpen, setModelHelpOpen] = useState(false);
 
-  const load = async () => {
+  const promptTaskTimeSync = changes => Modal.confirm({
+    title: '官方选课轮次时间已变更',
+    width: 680,
+    content: (
+      <div className="course-selection-time-change-list">
+        <Paragraph>是否将新的起止时间同步到这些轮次中尚未完成的自动任务？同步后，抢课开放时刻、任务停止时间及策略投权结束前 5/3 分钟窗口都会按新时间计算。</Paragraph>
+        {changes.map(change => (
+          <div key={change.batch_code}>
+            <strong>{change.batch_name}</strong>
+            <span>原时间：{dayjs(change.old_start_at).format('YYYY-MM-DD HH:mm')} — {dayjs(change.old_end_at).format('YYYY-MM-DD HH:mm')}</span>
+            <span>新时间：{dayjs(change.start_at).format('YYYY-MM-DD HH:mm')} — {dayjs(change.end_at).format('YYYY-MM-DD HH:mm')}</span>
+          </div>
+        ))}
+      </div>
+    ),
+    okText: '同步自动任务时间',
+    cancelText: '暂不同步',
+    onOk: async () => {
+      try {
+        const results = await Promise.all(changes.map(change => syncJwxkAutomationTaskTimes({
+          batch_code: change.batch_code,
+          start_at: change.start_at,
+          end_at: change.end_at,
+        })));
+        const changedTaskCount = results.reduce((sum, result) => (
+          sum + Number(result.changed_task_count || 0)
+        ), 0);
+        message.success(changedTaskCount
+          ? `已同步 ${changedTaskCount} 个自动任务的轮次时间`
+          : '轮次时间已确认，当前没有需要更新的未完成任务');
+      } catch (error) {
+        message.error(error.message || '同步自动任务时间失败');
+        throw error;
+      }
+    },
+  });
+
+  const load = async ({ manual = false } = {}) => {
     setLoading(true);
+    let timeChanges = [];
     try {
       const nextStatus = await getJwxkStatus();
+      if (manual) {
+        timeChanges = changedOfficialBatchTimes(status?.batches || [], nextStatus.batches || []);
+      }
       setStatus(nextStatus);
       if (nextStatus.primary_authenticated) {
         try { setArchives((await getJwxkCatalogArchives()).archives || []); }
@@ -46,6 +88,7 @@ const CourseSelectionPage = () => {
     }
     catch (error) { message.error(error.message || '读取选课批次失败'); }
     finally { setLoading(false); }
+    if (timeChanges.length) promptTaskTimeSync(timeChanges);
   };
 
   useEffect(() => { load(); }, []);
@@ -117,7 +160,7 @@ const CourseSelectionPage = () => {
     <main className="course-selection-page">
       <section className="course-selection-heading">
         <div><Title level={2}>选课系统</Title><Paragraph>选择一个轮次后进入独立工作台，统一完成课程检索、方案比较、课表冲突检查与提交。</Paragraph></div>
-        <Button icon={<ReloadOutlined />} loading={loading} onClick={load}>刷新批次</Button>
+        <Button icon={<ReloadOutlined />} loading={loading} onClick={() => load({ manual: true })}>刷新批次</Button>
       </section>
       <Alert showIcon type="info" icon={<SafetyOutlined />} message="课程和批次状态实时读取" description="登录状态失效时，页面会引导你重新登录选课系统。" />
       <Card className="course-selection-settings" title="选课系统线路">

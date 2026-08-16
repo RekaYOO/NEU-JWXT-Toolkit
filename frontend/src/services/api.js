@@ -1088,6 +1088,11 @@ export const actionJwxkAutomationTask = async (taskId, action) => {
   return response.data;
 };
 
+export const syncJwxkAutomationTaskTimes = async (payload) => {
+  const response = await api.post('/api/course-selection/jwxk/automation/tasks/sync-batch-times', payload);
+  return response.data;
+};
+
 export const getJwxkAutomationSettings = async (batchCode) => {
   const response = await api.get(`/api/course-selection/jwxk/batches/${encodeURIComponent(batchCode)}/automation-settings`);
   return response.data;

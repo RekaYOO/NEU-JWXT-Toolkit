@@ -500,3 +500,19 @@ class JwxkAutomationTaskRequest(JwxkSavedPlanRequest):
 
 class JwxkAutomationTaskAction(StrictModel):
     task_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class JwxkAutomationTaskTimeSyncRequest(JwxkBatchRequest):
+    start_at: str = Field(min_length=1, max_length=40)
+    end_at: str = Field(min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def validate_time_range(self):
+        try:
+            start = datetime.fromisoformat(self.start_at)
+            end = datetime.fromisoformat(self.end_at)
+        except ValueError as error:
+            raise ValueError("invalid automation task time") from error
+        if end <= start:
+            raise ValueError("automation task end time must be after start time")
+        return self
