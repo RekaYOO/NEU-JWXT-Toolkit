@@ -1019,6 +1019,11 @@ export const getJwxkCatalogArchives = async () => {
   return response.data;
 };
 
+export const getJwxkCatalogArchive = async (archiveId) => {
+  const response = await api.get(`/api/course-selection/jwxk/catalog/archives/${encodeURIComponent(archiveId)}`);
+  return response.data;
+};
+
 export const deleteJwxkCatalogArchive = async (archiveId) => {
   const response = await api.delete(`/api/course-selection/jwxk/catalog/archives/${encodeURIComponent(archiveId)}`);
   return response.data;

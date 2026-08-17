@@ -721,10 +721,11 @@ def test_union_catalog_archive_merges_sources_filters_and_paginates(tmp_path):
     all_school = service.query_catalog_archive(
         "student", batch_code="batch", page_number=1, page_size=20, scope="ALLKC",
     )
-    assert all_school["total"] == 0
+    assert all_school["total"] == 2
+    assert {group["course_code"] for group in all_school["groups"]} == {"A", "B"}
 
 
-def test_legacy_all_school_directory_rows_are_removed_on_restart(tmp_path):
+def test_all_school_directory_rows_are_preserved_on_restart(tmp_path):
     path = tmp_path / "course_selection_catalog_history.json"
     path.write_text(json.dumps([{
         "archive_id": "archive", "account": "student", "batch_code": "batch",
@@ -743,10 +744,44 @@ def test_legacy_all_school_directory_rows_are_removed_on_restart(tmp_path):
     service = _service(tmp_path)
     archive = service.list_catalog_archives("student")[0]
 
-    assert [course["class_id"] for course in archive["courses"]] == ["recommended"]
-    assert archive["courses"][0]["source_scopes"] == ["TJKC"]
-    assert archive["courses"][0]["source_tags"] == ["任务推荐班课程"]
-    assert archive["sync_scopes"] == ["TJKC"]
+    assert {course["class_id"] for course in archive["courses"]} == {
+        "recommended", "directory-only",
+    }
+    recommended = next(course for course in archive["courses"] if course["class_id"] == "recommended")
+    assert recommended["source_scopes"] == ["TJKC", "ALLKC"]
+    assert recommended["source_tags"] == ["任务推荐班课程", "全校课程查询"]
+    assert archive["sync_scopes"] == ["TJKC", "ALLKC"]
+
+    round_catalog = service.query_catalog_archive(
+        "student", batch_code="batch", page_number=1, page_size=20, scope="ROUND",
+    )
+    assert {group["course_code"] for group in round_catalog["groups"]} == {"A"}
+    all_school = service.query_catalog_archive(
+        "student", batch_code="batch", page_number=1, page_size=20, scope="ALLKC",
+    )
+    assert {group["course_code"] for group in all_school["groups"]} == {"A", "B"}
+
+
+def test_all_school_exact_query_cache_survives_restart(tmp_path):
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "name": "轮次"},
+        scope="ALLKC",
+        groups=[],
+        query_key="exact-query",
+        query_result={
+            "total": 1, "scope": "ALLKC", "scope_options": [],
+            "groups": [{"group_id": "A", "course_name": "缓存课程", "classes": []}],
+        },
+    )
+
+    restored = _service(tmp_path).get_catalog_query(
+        "student", batch_code="batch", query_key="exact-query",
+    )
+
+    assert restored is not None
+    assert restored["groups"][0]["course_name"] == "缓存课程"
 
 
 def test_archive_filters_match_campus_code_name_and_category_aliases(tmp_path):

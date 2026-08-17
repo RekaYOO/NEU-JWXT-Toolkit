@@ -84,7 +84,7 @@ class CourseSelectionAutomationService:
         self._settings = self._read_json_map(self.settings_path)
         self._notification_state = self._read_json_map(self.notification_state_path)
         self._archives = self._read_archives()
-        archives_changed = self._remove_directory_only_courses()
+        archives_changed = self._normalize_archived_courses()
         for archive in self._archives:
             if not archive.get("archived") and archive.get("sync_status") in {"queued", "running"}:
                 archive["sync_status"] = "pending"
@@ -229,12 +229,11 @@ class CourseSelectionAutomationService:
 
     @staticmethod
     def _persistable_archive_course(course: dict[str, Any]) -> dict[str, Any] | None:
-        """Drop ALLKC-only discovery rows from durable round data.
+        """Normalize one durable row while preserving its source provenance.
 
-        ALLKC is the school's global search directory.  It is useful for a
-        live explicit search, but it is not a round-owned course source and is
-        mostly duplicate data.  A class is durable only when another official
-        round scope (for example TJKC/FANKC/XGKC) also contains it.
+        ALLKC remains a separate discovery scope and is excluded from ROUND
+        queries and strategy samples, but users still expect an already loaded
+        directory page to survive navigation, restart and round archival.
         """
         value = copy.deepcopy(course)
         scopes = [
@@ -247,18 +246,18 @@ class CourseSelectionAutomationService:
             item for item in scopes
             if item not in {"ALL", "ROUND", "ALLKC"}
         ]
-        if not real_scopes:
-            return None
-        value["source_scopes"] = [item for item in scopes if item != "ALLKC"]
-        value["source_tags"] = [
-            item for item in value.get("source_tags") or []
-            if str(item or "") not in {"ALLKC", "全校课程查询"}
-        ]
-        if str(value.get("teaching_class_type") or "") in {"", "ALL", "ROUND", "ALLKC"}:
+        value["source_scopes"] = list(dict.fromkeys(scopes))
+        if (
+            real_scopes
+            and str(value.get("teaching_class_type") or "")
+            in {"", "ALL", "ROUND", "ALLKC"}
+        ):
             value["teaching_class_type"] = real_scopes[0]
+        elif not str(value.get("teaching_class_type") or ""):
+            value["teaching_class_type"] = "ALLKC"
         return value
 
-    def _remove_directory_only_courses(self) -> bool:
+    def _normalize_archived_courses(self) -> bool:
         changed = False
         for archive in self._archives:
             previous = list(archive.get("courses") or [])
@@ -268,16 +267,6 @@ class CourseSelectionAutomationService:
             ]
             if cleaned != previous:
                 archive["courses"] = cleaned
-                archive["sync_scopes"] = [
-                    scope for scope in archive.get("sync_scopes") or []
-                    if str(scope or "") != "ALLKC"
-                ]
-                archive["sync_loaded"] = min(
-                    int(archive.get("sync_loaded") or 0), len(cleaned),
-                )
-                archive["sync_total"] = min(
-                    int(archive.get("sync_total") or 0), len(cleaned),
-                )
                 archive["updated_at"] = datetime.now().astimezone().isoformat()
                 changed = True
         return changed
@@ -314,6 +303,8 @@ class CourseSelectionAutomationService:
         batch: dict[str, Any],
         scope: str,
         groups: list[dict[str, Any]],
+        query_key: str = "",
+        query_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         batch_code = str(batch.get("code") or "")
         if not account or not batch_code:
@@ -335,7 +326,7 @@ class CourseSelectionAutomationService:
             for group in groups if isinstance(group, dict)
             for course in (group.get("classes") or []) if isinstance(course, dict)
             and str(course.get("class_id") or "")
-        ] if scope != "ALLKC" else []
+        ]
         with self._lock:
             archive = next((item for item in self._archives if item.get("account") == account and item.get("batch_code") == batch_code), None)
             if archive is None:
@@ -408,6 +399,14 @@ class CourseSelectionAutomationService:
                     course["source_scopes"] = [str(course.get("teaching_class_type") or scope)]
                 by_class[class_id] = course
             archive["courses"] = list(by_class.values())
+            if query_key and isinstance(query_result, dict):
+                query_cache = archive.setdefault("query_cache", {})
+                query_cache[query_key] = {
+                    "saved_at": now,
+                    "payload": copy.deepcopy(query_result),
+                }
+                while len(query_cache) > 256:
+                    query_cache.pop(next(iter(query_cache)))
             archive["updated_at"] = now
             self._write_archives()
             self._wake.set()
@@ -421,7 +420,15 @@ class CourseSelectionAutomationService:
         batch_code = str(batch.get("code") or "")
         if not account or not batch_code:
             return
-        self.merge_catalog_archive(account, batch=batch, scope="ROUND", groups=[])
+        with self._lock:
+            archive = next((item for item in self._archives if (
+                item.get("account") == account and item.get("batch_code") == batch_code
+            )), None)
+        if archive is None:
+            # Callers normally persist the page before scheduling.  Keep the
+            # standalone scheduler usable without rewriting an existing large
+            # archive on every page request.
+            self.merge_catalog_archive(account, batch=batch, scope="ROUND", groups=[])
         with self._lock:
             archive = next((item for item in self._archives if (
                 item.get("account") == account and item.get("batch_code") == batch_code
@@ -474,7 +481,36 @@ class CourseSelectionAutomationService:
 
     def list_catalog_archives(self, account: str) -> list[dict[str, Any]]:
         with self._lock:
-            return [copy.deepcopy(item) for item in self._archives if item.get("account") == account]
+            return [
+                copy.deepcopy({key: value for key, value in item.items() if key != "query_cache"})
+                for item in self._archives if item.get("account") == account
+            ]
+
+    def get_catalog_archive(self, account: str, archive_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            source = next((item for item in self._archives if (
+                item.get("account") == account and item.get("archive_id") == archive_id
+            )), None)
+            if source is None:
+                return None
+            return copy.deepcopy({
+                key: value for key, value in source.items()
+                if key not in {"account", "query_cache"}
+            })
+
+    def get_catalog_query(
+        self, account: str, *, batch_code: str, query_key: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            source = next((item for item in self._archives if (
+                item.get("account") == account and item.get("batch_code") == batch_code
+            )), None)
+            cached = (
+                (source.get("query_cache") or {}).get(query_key)
+                if isinstance(source, dict) else None
+            )
+            payload = cached.get("payload") if isinstance(cached, dict) else None
+            return copy.deepcopy(payload) if isinstance(payload, dict) else None
 
     def get_catalog_archive_view(self, account: str, batch_code: str) -> dict[str, Any] | None:
         """Return a read-only shallow view without copying the complete catalog."""
@@ -485,7 +521,10 @@ class CourseSelectionAutomationService:
             if source is None:
                 return None
             return {
-                **{key: value for key, value in source.items() if key != "courses"},
+                **{
+                    key: value for key, value in source.items()
+                    if key not in {"courses", "query_cache"}
+                },
                 "courses": tuple(source.get("courses") or ()),
             }
 

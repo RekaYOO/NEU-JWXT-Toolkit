@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, Empty, Input, Pagination, Select, Space, Spin, Tag, Typography, message } from 'antd';
 import { ArrowLeftOutlined, HistoryOutlined, SearchOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
-import { getJwxkCatalogArchives } from '../services/api';
+import { getJwxkCatalogArchive } from '../services/api';
 import TimetablePage from './TimetablePage';
 import {
   matchesCatalogAvailability, selectionParticipantCount, selectionParticipantLabel,
@@ -82,15 +82,17 @@ export default function CourseSelectionArchivePage() {
   const [preview, setPreview] = useState(null);
 
   useEffect(() => {
-    getJwxkCatalogArchives().then(result => {
-      const found = (result.archives || []).find(item => item.archive_id === archiveId);
-      setArchive(found || null);
+    getJwxkCatalogArchive(archiveId).then(result => {
+      setArchive(result || null);
     }).catch(error => message.error(error.message || '读取课程备份失败'))
       .finally(() => setLoading(false));
   }, [archiveId]);
 
   const scopeOptions = useMemo(() => {
-    const values = new Set((archive?.courses || []).map(course => course.teaching_class_type).filter(Boolean));
+    const values = new Set((archive?.scope_options || []).map(item => item.code).filter(Boolean));
+    (archive?.courses || []).flatMap(course => (
+      course.source_scopes?.length ? course.source_scopes : [course.teaching_class_type]
+    )).filter(Boolean).forEach(value => values.add(value));
     return [{ value: 'all', label: '全部课程来源' }, ...[...values].map(value => ({
       value,
       label: COURSE_SCOPE_LABELS[value] || '其他课程',
@@ -100,7 +102,9 @@ export default function CourseSelectionArchivePage() {
   const groups = useMemo(() => {
     const needle = keyword.trim().toLocaleLowerCase();
     return groupArchiveCourses((archive?.courses || []).filter(course => {
-      if (scope !== 'all' && course.teaching_class_type !== scope) return false;
+      if (scope !== 'all' && !new Set([
+        course.teaching_class_type, ...(course.source_scopes || []),
+      ]).has(scope)) return false;
       if (!matchesCatalogAvailability(course, availability, archive?.selection_type_code)) return false;
       if (weekday !== 'all' && !(course.schedules || []).some(item => String(item.weekday) === weekday)) return false;
       if (!needle) return true;
@@ -143,7 +147,9 @@ export default function CourseSelectionArchivePage() {
           <Space className="jwxk-inline-class__actions"><Button size="small" onClick={() => setPreview(previous => previous?.class_id === course.class_id ? null : course)}>{preview?.class_id === course.class_id ? '取消课表预览' : '在课表中预览'}</Button></Space>
         </article>)}<Button className="jwxk-collapse-classes" type="text" onClick={() => setExpanded('')}>收起教学班</Button></div>}
       </Card>)}
-      {!visibleGroups.length && <Empty description="当前条件下没有课程" />}
+      {!visibleGroups.length && <Empty description={scope === 'ALLKC'
+        ? '这份历史备份中没有已保存的全校课程查询结果'
+        : '当前条件下没有课程'} />}
     </div>
     {groups.length > PAGE_SIZE && <Pagination current={page} pageSize={PAGE_SIZE} total={groups.length} showSizeChanger={false} onChange={setPage} />}
   </main>;

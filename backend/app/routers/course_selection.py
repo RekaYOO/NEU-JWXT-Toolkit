@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import math
+import hashlib
+import json
 from threading import BoundedSemaphore
 import time
 from datetime import datetime
@@ -91,6 +93,14 @@ _JWXK_SCOPE_NAMES = {
     "CXKC": "重修课程", "TYKC": "体育项目", "FXKC": "辅修课程",
     "ALLKC": "全校课程查询", "BYKC": "本研课程", "ZYNKC": "专业内课程",
 }
+
+
+def _catalog_query_cache_key(request: JwxkCatalogSearchRequest) -> str:
+    payload = request.model_dump(exclude={"local_only"}, mode="json")
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _automation_batch_metadata(account: str, batch_code: str, storage: Storage, auth: NEUAuthClient) -> dict[str, Any]:
@@ -491,10 +501,18 @@ def search_jwxk_catalog(
         account = str(getattr(primary, "username", "") or "")
         archive = automation.get_catalog_archive_view(account, request.batch_code)
         if request.scope == "ALLKC":
-            # The global directory is intentionally live-only and never part
-            # of the durable real-round archive.  Report a cache miss so the
-            # local-first frontend immediately continues to JWXK instead of
-            # briefly accepting an empty archived page.
+            cached = automation.get_catalog_query(
+                account,
+                batch_code=request.batch_code,
+                query_key=_catalog_query_cache_key(request),
+            )
+            if cached is not None:
+                cached.update({
+                    "cache_hit": True,
+                    "data_source": "local",
+                    "sync_status": str((archive or {}).get("sync_status") or ""),
+                })
+                return JwxkCatalogSearchResponse.model_validate(cached)
             return JwxkCatalogSearchResponse.model_validate({
                 "total": 0,
                 "scope": "ALLKC",
@@ -537,13 +555,14 @@ def search_jwxk_catalog(
     ))
     account = str(result.pop("_account", "") or "")
     batch = result.pop("_batch", {})
-    automation.merge_catalog_archive(
-        account,
-        batch=batch,
-        scope=str(result.get("scope") or request.scope),
-        groups=result.get("groups") or [],
-    )
-    automation.schedule_catalog_sync(account, batch=batch)
+    if request.scope != "ALLKC":
+        automation.merge_catalog_archive(
+            account,
+            batch=batch,
+            scope=str(result.get("scope") or request.scope),
+            groups=result.get("groups") or [],
+        )
+        automation.schedule_catalog_sync(account, batch=batch)
     archived = automation.query_catalog_archive(
         account,
         batch_code=request.batch_code,
@@ -571,7 +590,18 @@ def search_jwxk_catalog(
         "data_source": "remote",
         "sync_status": str((archived or {}).get("sync_status") or ""),
     })
-    return JwxkCatalogSearchResponse.model_validate(result)
+    validated = JwxkCatalogSearchResponse.model_validate(result)
+    if request.scope == "ALLKC":
+        automation.merge_catalog_archive(
+            account,
+            batch=batch,
+            scope="ALLKC",
+            groups=validated.model_dump()["groups"],
+            query_key=_catalog_query_cache_key(request),
+            query_result=validated.model_dump(),
+        )
+        automation.schedule_catalog_sync(account, batch=batch)
+    return validated
 
 
 @router.post("/jwxk/catalog/classes")
@@ -713,10 +743,62 @@ def list_jwxk_catalog_archives(
     auth: NEUAuthClient = Depends(require_cached_auth_identity),
 ):
     archives = get_course_selection_automation_service().list_catalog_archives(str(auth.username))
-    return {"archives": [
-        {key: value for key, value in archive.items() if key != "account"}
-        for archive in archives
-    ]}
+    summaries = []
+    for archive in archives:
+        selection_type = str(archive.get("selection_type_code") or "")
+        real_courses = []
+        underfilled_courses = []
+        for course in archive.get("courses") or []:
+            scopes = set(course.get("source_scopes") or [course.get("teaching_class_type")])
+            if not any(scope and scope not in {"ALL", "ROUND", "ALLKC"} for scope in scopes):
+                continue
+            real_courses.append(course)
+            count = course.get("market_participant_count")
+            if count is None:
+                count = (
+                    course.get("weight_participant_count")
+                    if selection_type == "04" else course.get("selected_count")
+                )
+            capacity = course.get("capacity")
+            try:
+                is_underfilled = int(capacity) > 0 and count is not None and int(count) < int(capacity)
+            except (TypeError, ValueError):
+                is_underfilled = False
+            eligible = str(course.get("eligibility_status") or "") != "unavailable"
+            if eligible and is_underfilled:
+                underfilled_courses.append(course)
+        summary = {
+            key: value for key, value in archive.items()
+            if key not in {"account", "courses", "query_cache"}
+        }
+        summary.update({
+            "course_count": len(real_courses),
+            "selectable_count": sum(
+                str(course.get("eligibility_status") or "") == "selectable"
+                for course in real_courses
+            ),
+            # The homepage only needs these rows for its existing compact
+            # underfilled dialog.  The full archive is fetched after entering
+            # one specific read-only workspace.
+            "courses": underfilled_courses,
+        })
+        summaries.append(summary)
+    return {"archives": summaries}
+
+
+@router.get("/jwxk/catalog/archives/{archive_id}")
+def get_jwxk_catalog_archive(
+    archive_id: str,
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+):
+    if len(archive_id) != 32 or not archive_id.isalnum():
+        raise HTTPException(status_code=422, detail="历史记录标识无效")
+    archive = get_course_selection_automation_service().get_catalog_archive(
+        str(auth.username), archive_id,
+    )
+    if archive is None:
+        raise HTTPException(status_code=404, detail="历史课程备份不存在")
+    return archive
 
 
 @router.delete("/jwxk/catalog/archives/{archive_id}")

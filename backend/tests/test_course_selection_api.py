@@ -712,6 +712,9 @@ def test_catalog_local_search_returns_archive_without_remote_request(monkeypatch
 
 def test_catalog_local_search_uses_persisted_menu_for_live_only_allkc_option(monkeypatch):
     class Automation:
+        def get_catalog_query(self, *_args, **_kwargs):
+            return None
+
         def get_catalog_archive_view(self, *_args):
             return {
                 "batch_code": "BATCH-1", "sync_status": "complete",
@@ -745,6 +748,9 @@ def test_catalog_local_search_uses_persisted_menu_for_live_only_allkc_option(mon
 
 def test_allkc_local_first_probe_reports_cache_miss(monkeypatch):
     class Automation:
+        def get_catalog_query(self, *_args, **_kwargs):
+            return None
+
         def get_catalog_archive_view(self, *_args):
             return {
                 "batch_code": "BATCH-1", "sync_status": "complete",
@@ -772,6 +778,73 @@ def test_allkc_local_first_probe_reports_cache_miss(monkeypatch):
 
     assert result.cache_hit is False
     assert result.groups == []
+
+
+def test_allkc_local_first_probe_returns_exact_persisted_query(monkeypatch):
+    class Automation:
+        def get_catalog_archive_view(self, *_args):
+            return {"batch_code": "BATCH-1", "sync_status": "complete"}
+
+        def get_catalog_query(self, *_args, **_kwargs):
+            return {
+                "total": 1,
+                "scope": "ALLKC",
+                "scope_options": [{"code": "ALLKC", "name": "全校课程查询"}],
+                "groups": [{
+                    "group_id": "GLOBAL",
+                    "course_code": "GLOBAL",
+                    "course_name": "已缓存课程",
+                    "classes": [],
+                }],
+            }
+
+    monkeypatch.setattr(course_selection, "get_course_selection_automation_service", lambda: Automation())
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: type(
+        "Auth", (), {"is_logged_in": True, "username": "student"}
+    )())
+
+    result = course_selection.search_jwxk_catalog(
+        JwxkCatalogSearchRequest(
+            batch_code="BATCH-1", scope="ALLKC", keyword="缓存", local_only=True,
+        ),
+        Response(), object(),
+    )
+
+    assert result.cache_hit is True
+    assert result.data_source == "local"
+    assert result.groups[0].course_name == "已缓存课程"
+
+
+def test_archive_list_returns_compact_summary_without_directory_rows(monkeypatch):
+    class Automation:
+        def list_catalog_archives(self, account):
+            assert account == "student"
+            return [{
+                "archive_id": "a" * 32,
+                "account": account,
+                "selection_type_code": "04",
+                "courses": [{
+                    "class_id": "real", "teaching_class_type": "TJKC",
+                    "source_scopes": ["TJKC", "ALLKC"],
+                    "eligibility_status": "selectable", "capacity": 30,
+                    "weight_participant_count": 20,
+                }, {
+                    "class_id": "directory", "teaching_class_type": "ALLKC",
+                    "source_scopes": ["ALLKC"], "capacity": 30,
+                    "weight_participant_count": 10,
+                }],
+            }]
+
+    monkeypatch.setattr(course_selection, "get_course_selection_automation_service", lambda: Automation())
+
+    result = course_selection.list_jwxk_catalog_archives(
+        type("Auth", (), {"username": "student"})(),
+    )
+
+    archive = result["archives"][0]
+    assert archive["course_count"] == 1
+    assert archive["selectable_count"] == 1
+    assert [course["class_id"] for course in archive["courses"]] == ["real"]
 
 
 def test_catalog_filter_options_use_archive_without_remote_request(monkeypatch):

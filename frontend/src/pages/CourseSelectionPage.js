@@ -293,7 +293,7 @@ const CourseSelectionPage = () => {
           <div className="course-selection-section__title"><div><Title level={4}>课程备份</Title><Text type="secondary">进入轮次后后台静默整理本轮完整课程目录；轮次结束后保留，直到你手动删除</Text></div></div>
           <Row gutter={[16, 16]}>{archives.map(archive => {
             const underfilled = archiveUnderfilled(archive);
-            const selectable = (archive.courses || []).filter(course => course.eligibility_status === 'selectable').length;
+            const selectable = archive.selectable_count ?? (archive.courses || []).filter(course => course.eligibility_status === 'selectable').length;
             return <Col xs={24} md={12} xl={8} key={archive.archive_id}><Card className="course-selection-archive-card">
               <Space wrap>
                 <Tag color={archive.archived ? 'default' : 'processing'}>{archive.archived ? '历史备份' : '持续记录中'}</Tag>
@@ -302,7 +302,7 @@ const CourseSelectionPage = () => {
                 {archive.term_name && <Tag>{archive.term_name}</Tag>}
               </Space>
               <Title level={4}>{archive.batch_name}</Title>
-              <div className="course-selection-archive-stats"><span><b>{archive.courses?.length || 0}</b> 个教学班</span><span><b>{selectable}</b> 个确认可选</span><span><b>{underfilled.length}</b> 个未报满</span></div>
+              <div className="course-selection-archive-stats"><span><b>{archive.course_count ?? archive.courses?.length ?? 0}</b> 个教学班</span><span><b>{selectable}</b> 个确认可选</span><span><b>{underfilled.length}</b> 个未报满</span></div>
               <Text type="secondary">{archive.final_refresh_at ? `最终人数更新：${dayjs(archive.final_refresh_at).format('YYYY-MM-DD HH:mm')}` : `最近记录：${dayjs(archive.updated_at).format('YYYY-MM-DD HH:mm')}`}</Text>
               <Space wrap className="course-selection-archive-actions">
                 <Button type="primary" onClick={() => navigate(`/course-selection/archive/${encodeURIComponent(archive.archive_id)}`)}>进入只读工作台</Button>
