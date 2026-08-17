@@ -44,7 +44,7 @@ from backend.app.schemas.course_selection import (
     JwxkAutomationTaskTimeSyncRequest,
 )
 from backend.app.dependencies import (
-    get_storage, peek_auth_client, remote_session_guard, require_cached_auth_identity,
+    attach_saved_auth_credentials, get_storage, peek_auth_client, remote_session_guard, require_cached_auth_identity,
     require_mutation_auth, require_serialized_auth,
     get_cache_coordinator,
     get_course_selection_automation_service,
@@ -167,9 +167,16 @@ def get_jwxk_status(
     effective = resolve_network_mode(preference, primary_mode)
     primary_authenticated = bool(primary and getattr(primary, "is_logged_in", False))
     service_authenticated = False
+    service_auth_state = "login_required" if effective == "webvpn" else "unavailable"
     authenticated_batches = None
     account_context = {}
     if primary_authenticated:
+        credentials_attached = attach_saved_auth_credentials(primary)
+        if credentials_attached:
+            logger.info(
+                "jwxk service recovery credentials attached mode=%s account_match=true",
+                effective,
+            )
         try:
             with remote_session_guard():
                 if peek_auth_client() is primary:
@@ -177,8 +184,23 @@ def get_jwxk_status(
                     account_context = context
                     authenticated_batches = context["batches"]
                     service_authenticated = True
+                    service_auth_state = "authenticated"
         except (NEULoginError, JwxkError, requests.RequestException, ValueError, RuntimeError) as error:
-            logger.info("jwxk service session unavailable error=%s", type(error).__name__)
+            # Do not expose remote URLs, credentials or response bodies.  The
+            # distinction is still useful to the UI: a WebVPN service session
+            # normally needs an interactive WebVPN login, while a direct
+            # session failure can be retried without changing the route.
+            service_auth_state = (
+                "login_required"
+                if effective == "webvpn"
+                else "unavailable"
+            )
+            logger.info(
+                "jwxk service session unavailable mode=%s primary_authenticated=%s error=%s",
+                effective,
+                primary_authenticated,
+                type(error).__name__,
+            )
     try:
         source_batches = authenticated_batches
         if source_batches is None:
@@ -192,6 +214,7 @@ def get_jwxk_status(
             primary_authenticated=primary_authenticated,
             service_authenticated=service_authenticated,
             authenticated=service_authenticated,
+            service_auth_state=service_auth_state,
             official_time=str(account_context.get("official_time") or ""),
             online_count=account_context.get("online_count"),
             current_campus=str(account_context.get("current_campus") or ""),
@@ -200,7 +223,11 @@ def get_jwxk_status(
             message=(
                 "已按账号资格和官方时间读取全部轮次。"
                 if service_authenticated
-                else "当前仅展示公开批次；登录后可读取账号轮次和课程。"
+                else (
+                    "当前已选择 WebVPN，但尚未完成 WebVPN 登录；请先完成 WebVPN 认证。"
+                    if service_auth_state == "login_required"
+                    else "当前仅展示公开批次；登录后可读取账号轮次和课程。"
+                )
             ),
         )
     except (JwxkError, requests.RequestException) as error:
@@ -213,6 +240,7 @@ def get_jwxk_status(
             primary_authenticated=primary_authenticated,
             service_authenticated=service_authenticated,
             authenticated=service_authenticated,
+            service_auth_state=service_auth_state,
             official_time=str(account_context.get("official_time") or ""),
             online_count=account_context.get("online_count"),
             current_campus=str(account_context.get("current_campus") or ""),

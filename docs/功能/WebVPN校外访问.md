@@ -142,6 +142,14 @@ JWXK；不能只从通用教务登录状态推断选课系统是否可用。JWXK
 子会话失效处理。即使 JWXT 的全局登录标记暂时不可用，只要当前账号的 JWXK token 仍有效，后台
 自动任务仍可继续读取；token 被服务端拒绝后才进入上述服务级恢复。
 
+选课系统主页选择 WebVPN 作为线路后，会单独检查 JWXK 的 WebVPN 子会话。Cookie 恢复的客户端若缺少内存密码，会在账号一致时挂载本地已保存凭据并自动尝试 WebVPN 账密恢复；只有恢复仍失败时才提示重新认证。用户可直接在选课主页弹出的二维码中完成认证，成功后页面自动重新读取账号资格、轮次和课程目录，无需跳转到登录页。
+
+二维码必须从没有既有 CAS 身份的干净 Session 打开，否则统一认证会直接跳转而不会生成二维码。系统因此将它保存为“待认证候选 Session”：扫码成功前业务请求仍使用原活动 Session，扫码成功后才原子替换活动身份；取消或失败只丢弃候选 Session，不影响原有登录。候选 Session 不得被课程、成绩或后台任务用于业务请求。
+
+JWXK 的 WebVPN CAS 链可能从代理后的 `/xsxk/auth/cas` 返回普通的 `http://pass.neu.edu.cn/tpass/login`，CAS 又返回普通 JWXK 回调地址。客户端只接受官方 CAS 精确路径和登记过的 JWXK 主机，先将明文 CAS 跳转升级为 HTTPS，再把 CAS 与 JWXK 回调转换回 WebVPN URL；不会放宽到其他主机或通过 HTTP 发送 Cookie、ticket。
+
+WebVPN 不会把上游 JWXK 的 `token` 直接写入本地 HTTP Cookie Jar；浏览器端由网关注入脚本通过 `/wengine-vpn/cookie?method=get` 读取虚拟 Cookie。后端在 WebVPN 模式下复用同一官方机制，从受控的 JWXK 主机和请求路径读取虚拟 `token`，只在内存中缓存并映射为 `Authorization`。直连模式仍读取 `jwxk.neu.edu.cn` 的真实 Cookie，二者不能混用。
+
 截至 2026 年 8 月 15 日，JWXK 的 HTTPS 服务入口实际会返回指向
 `http://pass.neu.edu.cn/tpass/login` 的绝对重定向。客户端只对“官方统一认证域名 + 精确
 `/tpass/login` 路径 + 标准 HTTP 端口”这一种情况在发送下一跳前强制升级为 HTTPS；不会真的通过

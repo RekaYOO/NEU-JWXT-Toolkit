@@ -167,6 +167,7 @@ class JwxkStatusResponse(StrictModel):
     primary_authenticated: bool = False
     service_authenticated: bool = False
     authenticated: bool = False
+    service_auth_state: Literal["authenticated", "login_required", "unavailable"] = "unavailable"
     official_time: str = ""
     online_count: int | None = None
     current_campus: str = ""

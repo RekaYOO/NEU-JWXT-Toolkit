@@ -4,6 +4,22 @@ import time
 from backend.core.auth.session_manager import AuthSessionManager
 
 
+def test_pending_login_candidate_does_not_replace_active_identity():
+    manager = AuthSessionManager()
+    active = object()
+    candidate = object()
+    manager.set_client(active)
+    epoch = manager.epoch()
+
+    manager.set_pending_client(candidate)
+
+    assert manager.peek_client() is active
+    assert manager.peek_pending_client() is candidate
+    assert manager.epoch() == epoch
+    assert manager.clear_pending_client(candidate) is candidate
+    assert manager.peek_client() is active
+
+
 def test_remote_guard_prioritizes_mutation_over_queued_background_work():
     manager = AuthSessionManager()
     first_started = threading.Event()

@@ -19,6 +19,7 @@ import re
 import time
 import logging
 import uuid
+from http.cookies import SimpleCookie
 from functools import wraps
 from typing import Optional, Callable, Dict, Any
 from urllib.parse import urlencode, urljoin, urlparse, parse_qs
@@ -353,6 +354,7 @@ class NEUAuthClient:
         self._timetable = None        # 课表查询 API
         self._webvpn_qr_flow: Optional[Dict[str, Any]] = None
         self._webvpn_sms_flow: Optional[Dict[str, Any]] = None
+        self._service_token_cache: Dict[tuple[str, str], str] = {}
         
         # 自动恢复入口可以读取历史会话；用户主动登录必须从干净会话开始，
         # 避免旧 WebVPN Cookie 将新登录导向错误页面。
@@ -1186,14 +1188,13 @@ class NEUAuthClient:
         if not any(normalized_path.startswith(prefix) for prefix in config["allowed_prefixes"]):
             raise ValueError("service path is not allowed")
         network_mode = self._service_network_mode(config, network_mode_override)
-        usable_service_token = bool(
-            config.get("token_cookie")
-            and self.get_service_token(
+        usable_service_token = False
+        if not self._logged_in and config.get("token_cookie"):
+            usable_service_token = bool(self.get_service_token(
                 service,
                 network_mode=network_mode,
                 request_path=normalized_path,
-            )
-        )
+            ))
         if not self._logged_in and not usable_service_token:
             recovered = self.ensure_login()
             if (
@@ -1322,10 +1323,49 @@ class NEUAuthClient:
             and cookie.domain.lstrip(".") in allowed_domains
             and (network_mode == "webvpn" or path_matches(cookie.path))
         ]
-        if not candidates:
+        if candidates:
+            candidates.sort(key=lambda cookie: len(cookie.path or ""), reverse=True)
+            return str(candidates[0].value or "") or None
+        if network_mode == "webvpn":
+            cache_key = (service, network_mode)
+            cached = self._service_token_cache.get(cache_key)
+            if cached:
+                return cached
+            token = self._get_webvpn_virtual_cookie(
+                config["host"], request_path or "/", cookie_name,
+            )
+            if token:
+                self._service_token_cache[cache_key] = token
+            return token
+        return None
+
+    def _get_webvpn_virtual_cookie(
+        self, host: str, request_path: str, cookie_name: str,
+    ) -> Optional[str]:
+        """Read an upstream cookie from WebVPN's virtual cookie store."""
+        response = self._session.get(
+            f"{WEBVPN_ORIGIN}/wengine-vpn/cookie",
+            params={
+                "method": "get",
+                "host": host,
+                "scheme": "https",
+                "path": request_path or "/",
+                "vpn_timestamp": str(int(time.time() * 1000)),
+            },
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        response.raise_for_status()
+        cookies = SimpleCookie()
+        try:
+            cookies.load(str(response.text or ""))
+        except Exception:
             return None
-        candidates.sort(key=lambda cookie: len(cookie.path or ""), reverse=True)
-        return str(candidates[0].value or "") or None
+        morsel = cookies.get(cookie_name)
+        if morsel is None:
+            return None
+        return str(morsel.value or "") or None
 
     def _service_request_options(
         self, service: str, config: Dict[str, Any], kwargs: Dict[str, Any],
@@ -1346,6 +1386,7 @@ class NEUAuthClient:
         config = SERVICE_CONFIGS.get(service)
         if config is None or not config.get("token_cookie"):
             return
+        self._service_token_cache.pop((service, network_mode), None)
         domain = "webvpn.neu.edu.cn" if network_mode == "webvpn" else config["host"]
         matches = [
             (cookie.domain, cookie.path, cookie.name)
@@ -1360,6 +1401,29 @@ class NEUAuthClient:
                 )
             except KeyError:
                 pass
+        if network_mode == "webvpn":
+            try:
+                self._session.post(
+                    f"{WEBVPN_ORIGIN}/wengine-vpn/cookie",
+                    params={
+                        "method": "set",
+                        "host": config["host"],
+                        "scheme": "https",
+                        "path": "/xsxk/auth/cas",
+                        "ck_data": (
+                            f"{config['token_cookie']}=; Max-Age=0; Path=/"
+                        ),
+                    },
+                    timeout=self.timeout,
+                    verify=self.verify_ssl,
+                    headers={"X-Requested-With": "XMLHttpRequest"},
+                ).raise_for_status()
+            except requests.RequestException as error:
+                logger.warning(
+                    "failed to clear WebVPN virtual service token service=%s error=%s",
+                    service,
+                    type(error).__name__,
+                )
 
     def _login_direct_service(self, config: Dict[str, Any]) -> bool:
         original_target = self.target
@@ -1638,6 +1702,21 @@ class NEUAuthClient:
                 current_url = parsed_next._replace(
                     scheme="https", netloc="pass.neu.edu.cn",
                 ).geturl()
+                parsed_next = urlparse(current_url)
+            # WebVPN service entry points may emit ordinary official CAS and
+            # service callback URLs.  Keep the same trusted-host checks, then
+            # route those next hops back through WebVPN before any request is
+            # sent.  Without this bridge JWXK's http://pass CAS redirect is
+            # upgraded safely but rejected on the following WebVPN hop.
+            if (
+                network_mode == "webvpn"
+                and parsed_next.scheme == "https"
+                and parsed_next.port in {None, 443}
+                and parsed_next.username is None
+                and parsed_next.password is None
+                and parsed_next.hostname in {"pass.neu.edu.cn", config["host"]}
+            ):
+                current_url = WebVPNUrlCodec.convert_url(current_url)
             try:
                 response.close()
             except AttributeError:

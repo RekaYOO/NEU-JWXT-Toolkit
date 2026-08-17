@@ -566,6 +566,37 @@ def peek_auth_client() -> Optional[NEUAuthClient]:
     return _auth_sessions.peek_client()
 
 
+def set_pending_auth_client(client: Optional[NEUAuthClient]) -> None:
+    _auth_sessions.set_pending_client(client)
+
+
+def peek_pending_auth_client() -> Optional[NEUAuthClient]:
+    return _auth_sessions.peek_pending_client()
+
+
+def clear_pending_auth_client(
+    expected: Optional[NEUAuthClient] = None,
+) -> Optional[NEUAuthClient]:
+    return _auth_sessions.clear_pending_client(expected)
+
+
+def attach_saved_auth_credentials(client: Optional[NEUAuthClient]) -> bool:
+    """Hydrate a cookie-restored client with same-account saved credentials."""
+    if client is None or getattr(client, "password", ""):
+        return False
+    account = str(getattr(client, "username", "") or "")
+    if not account:
+        return False
+    try:
+        credentials = _storage.load_credentials()
+    except (OSError, ValueError, TypeError):
+        return False
+    if not credentials or str(credentials[0] or "") != account:
+        return False
+    client.password = str(credentials[1] or "")
+    return bool(client.password)
+
+
 def get_auth_generation() -> int:
     """Return the current identity epoch used to fence background commits."""
     return _auth_sessions.epoch()
@@ -600,6 +631,9 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
         if active_client._webvpn_qr_flow or active_client._webvpn_sms_flow:
             return active_client if active_client.is_logged_in else None
 
+        # Cookie 恢复的客户端可能没有内存密码；同账号保存过凭据时补齐，
+        # 让 WebVPN 及其他业务子会话可以继续静默恢复。
+        attach_saved_auth_credentials(active_client)
         # 尝试确保登录（内部会优先用 Cookie 刷新）
         attempted_password_login = bool(
             getattr(active_client, "username", "")
@@ -627,6 +661,7 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
     session_client = NEUAuthClient(cookie_file=COOKIE_FILE)
     try:
         if session_client.ensure_login():
+            attach_saved_auth_credentials(session_client)
             set_auth_client(session_client)
             schedule_login_bootstrap(session_client)
             log_security_event(
@@ -706,7 +741,7 @@ def _start_tracking_qr_login():
 
 
 def _interactive_login_pending() -> bool:
-    client = _auth_sessions.peek_client()
+    client = _auth_sessions.peek_pending_client() or _auth_sessions.peek_client()
     return bool(
         client
         and (client._webvpn_qr_flow or client._webvpn_sms_flow)

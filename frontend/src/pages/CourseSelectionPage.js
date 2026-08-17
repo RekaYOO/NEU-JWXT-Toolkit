@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Checkbox, Col, Divider, Empty, InputNumber, Modal, Radio, Row, Select, Space, Spin, Tag, Typography, message } from 'antd';
-import { ClockCircleOutlined, DeleteOutlined, HistoryOutlined, QuestionCircleOutlined, ReloadOutlined, SafetyOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Checkbox, Col, Divider, Empty, InputNumber, Modal, QRCode, Radio, Row, Select, Space, Spin, Tag, Typography, message } from 'antd';
+import { ClockCircleOutlined, DeleteOutlined, HistoryOutlined, QrcodeOutlined, QuestionCircleOutlined, ReloadOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import {
@@ -8,6 +8,7 @@ import {
   getJwxkStatus, updateJwxkSettings,
   getJwxkAutomationSettings, updateJwxkAutomationSettings,
   syncJwxkAutomationTaskTimes,
+  startWebVPNQRLogin, getWebVPNQRStatus, cancelWebVPNQRLogin,
 } from '../services/api';
 import { changedOfficialBatchTimes, selectionParticipantCount } from '../utils/jwxkSchedule';
 import './CourseSelectionPage.css';
@@ -32,6 +33,10 @@ const CourseSelectionPage = () => {
   const [automationLoading, setAutomationLoading] = useState(false);
   const [automationSaving, setAutomationSaving] = useState(false);
   const [modelHelpOpen, setModelHelpOpen] = useState(false);
+  const [webvpnLoginOpen, setWebvpnLoginOpen] = useState(false);
+  const [webvpnQrFlow, setWebvpnQrFlow] = useState(null);
+  const [webvpnQrLoading, setWebvpnQrLoading] = useState(false);
+  const [webvpnQrMessage, setWebvpnQrMessage] = useState('');
 
   const promptTaskTimeSync = changes => Modal.confirm({
     title: '官方选课轮次时间已变更',
@@ -92,6 +97,57 @@ const CourseSelectionPage = () => {
   };
 
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    if (!webvpnQrFlow?.flow_id) return undefined;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const result = await getWebVPNQRStatus(webvpnQrFlow.flow_id);
+        if (stopped) return;
+        if (result.success && result.status === 'authenticated') {
+          setWebvpnQrFlow(null);
+          setWebvpnLoginOpen(false);
+          message.success('WebVPN 登录成功，正在重新读取选课轮次');
+          await load();
+        } else if (result.status === 'expired' || result.status === 'missing') {
+          setWebvpnQrFlow(null);
+          setWebvpnQrMessage('二维码已失效，请重新获取。');
+        } else if (!result.success || result.status === 'error') {
+          setWebvpnQrFlow(null);
+          setWebvpnQrMessage(result.message || '二维码登录失败，请重新获取。');
+        }
+      } catch (_error) {
+        if (!stopped) setWebvpnQrMessage('暂时无法检查二维码状态，系统会继续重试。');
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, Math.max(1, Number(webvpnQrFlow.poll_interval || 2)) * 1000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [webvpnQrFlow]);
+
+  const openWebvpnQrLogin = async () => {
+    setWebvpnLoginOpen(true);
+    setWebvpnQrMessage('');
+    setWebvpnQrLoading(true);
+    try {
+      const result = await startWebVPNQRLogin('');
+      if (!result.success) throw new Error(result.message || '无法获取二维码');
+      setWebvpnQrFlow(result);
+    } catch (error) {
+      setWebvpnQrMessage(error.message || '无法获取 WebVPN 登录二维码。');
+    } finally {
+      setWebvpnQrLoading(false);
+    }
+  };
+
+  const closeWebvpnQrLogin = async () => {
+    const flowId = webvpnQrFlow?.flow_id;
+    setWebvpnQrFlow(null);
+    setWebvpnLoginOpen(false);
+    setWebvpnQrMessage('');
+    if (flowId) await cancelWebVPNQRLogin(flowId).catch(() => {});
+  };
 
   const groups = useMemo(() => {
     const result = { active: [], not_started: [], ended: [], unknown: [] };
@@ -176,7 +232,44 @@ const CourseSelectionPage = () => {
           <Text type="secondary">当前有效线路：{status?.effective_network_mode === 'webvpn' ? 'WebVPN' : '直连'}</Text>
         </div>
       </Card>
-      {!status?.service_authenticated && <Alert type="warning" showIcon message={status?.message || '请先完成统一认证登录'} />}
+      {!status?.service_authenticated && (
+        <Alert
+          type="warning"
+          showIcon
+          message={status?.message || '请先完成登录'}
+          action={status?.service_auth_state === 'login_required' ? (
+            <Button size="small" type="primary" icon={<QrcodeOutlined />} onClick={openWebvpnQrLogin}>
+              扫码登录 WebVPN
+            </Button>
+          ) : (
+            <Button size="small" onClick={() => load({ manual: true })}>重新检查</Button>
+          )}
+          description={status?.service_auth_state === 'login_required'
+            ? '选课线路已切换为 WebVPN。完成登录后返回本页并刷新，即可读取账号轮次和课程。'
+            : undefined}
+        />
+      )}
+      <Modal
+        open={webvpnLoginOpen}
+        title="登录 WebVPN"
+        footer={null}
+        onCancel={closeWebvpnQrLogin}
+        destroyOnHidden
+      >
+        <div style={{ minHeight: 250, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+          {webvpnQrMessage && <Alert type="warning" showIcon message={webvpnQrMessage} style={{ width: '100%' }} />}
+          {webvpnQrFlow?.qr_content ? (
+            <>
+              <QRCode value={webvpnQrFlow.qr_content} size={210} status="active" />
+              <Text type="secondary">使用已关注东北大学微信企业号的微信扫码</Text>
+            </>
+          ) : (
+            <Button type="primary" icon={<QrcodeOutlined />} loading={webvpnQrLoading} onClick={openWebvpnQrLogin}>
+              {webvpnQrLoading ? '正在获取二维码' : '重新获取二维码'}
+            </Button>
+          )}
+        </div>
+      </Modal>
       {[['active', '正在进行'], ['not_started', '即将开始'], ['ended', '已结束'], ['unknown', '状态待确认']].map(([key, title]) => groups[key]?.length > 0 && (
         <section className="course-selection-section" key={key}>
           <div className="course-selection-section__title"><div><Title level={4}>{title}</Title><Text type="secondary">{groups[key].length} 个轮次</Text></div></div>

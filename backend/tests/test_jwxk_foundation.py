@@ -376,6 +376,69 @@ def test_status_route_is_no_store_and_preserves_public_batch_contract(monkeypatc
     assert result.authenticated is False
     assert result.primary_authenticated is False
     assert result.service_authenticated is False
+    assert result.service_auth_state == "unavailable"
+
+
+def test_status_route_explains_webvpn_login_requirement(monkeypatch):
+    storage = MemoryStorage({"course_selection": {"network_mode": "webvpn"}})
+
+    class Primary:
+        active_mode = "direct"
+        is_logged_in = True
+
+    primary = Primary()
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: primary)
+    monkeypatch.setattr(
+        course_selection,
+        "JwxkSessionClient",
+        lambda *_args, **_kwargs: type(
+            "SessionClient",
+            (),
+            {"get_context": lambda _self: (_ for _ in ()).throw(NEULoginError("需要 WebVPN 登录"))},
+        )(),
+    )
+    monkeypatch.setattr(course_selection.JwxkPublicClient, "get_batches", lambda _self: [])
+
+    result = course_selection.get_jwxk_status(Response(), storage)
+
+    assert result.service_authenticated is False
+    assert result.service_auth_state == "login_required"
+    assert "WebVPN" in result.message
+
+
+def test_status_route_attaches_same_account_saved_password_for_webvpn_recovery(monkeypatch):
+    storage = MemoryStorage({"course_selection": {"network_mode": "webvpn"}})
+
+    class Primary:
+        active_mode = "webvpn"
+        is_logged_in = True
+        username = "student"
+        password = ""
+
+    primary = Primary()
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: primary)
+    monkeypatch.setattr(
+        course_selection,
+        "attach_saved_auth_credentials",
+        lambda client: setattr(client, "password", "saved-password") or True,
+    )
+
+    class SessionClient:
+        def __init__(self, auth, *, network_mode):
+            assert auth.password == "saved-password"
+            assert network_mode == "webvpn"
+
+        @staticmethod
+        def get_context():
+            return {"batches": []}
+
+    monkeypatch.setattr(course_selection, "JwxkSessionClient", SessionClient)
+    monkeypatch.setattr(course_selection.JwxkPublicClient, "get_batches", lambda _self: [])
+
+    result = course_selection.get_jwxk_status(Response(), storage)
+
+    assert result.service_authenticated is True
+    assert primary.password == "saved-password"
 
 
 def test_status_route_reuses_primary_client_under_remote_guard(monkeypatch):
@@ -592,7 +655,10 @@ def test_jwxk_webvpn_override_routes_only_service_request(monkeypatch):
     assert result.url == WebVPNUrlCodec.convert_url(
         "https://jwxk.neu.edu.cn/xsxk/profile/index.html"
     )
-    assert calls == [result.url]
+    assert calls == [
+        "https://webvpn.neu.edu.cn/wengine-vpn/cookie",
+        result.url,
+    ]
     assert client.active_mode == "direct"
 
 
@@ -621,6 +687,59 @@ def test_jwxk_webvpn_cas_callback_also_targets_webvpn(monkeypatch):
     assert "webvpn.neu.edu.cn" in calls[0]
     assert calls[0] == expected_callback
     assert client.active_mode == "direct"
+
+
+def test_jwxk_webvpn_reads_token_from_gateway_virtual_cookie_store(monkeypatch):
+    client = NEUAuthClient(network_mode="webvpn", restore_session=False)
+    calls = []
+
+    def virtual_cookie_response(url, **kwargs):
+        calls.append((url, kwargs.get("params")))
+        item = __import__("requests").Response()
+        item.status_code = 200
+        item.url = url
+        item._content = b"route=node; token=opaque-token; JSESSIONID=session"
+        return item
+
+    monkeypatch.setattr(client.session, "get", virtual_cookie_response)
+
+    first = client.get_service_token(
+        "jwxk", network_mode="webvpn", request_path="/xsxk/web/studentInfo",
+    )
+    second = client.get_service_token(
+        "jwxk", network_mode="webvpn", request_path="/xsxk/web/now",
+    )
+
+    assert first == "opaque-token"
+    assert second == "opaque-token"
+    assert len(calls) == 1
+    assert calls[0][1]["method"] == "get"
+    assert calls[0][1]["host"] == "jwxk.neu.edu.cn"
+    assert calls[0][1]["path"] == "/xsxk/web/studentInfo"
+
+
+def test_jwxk_webvpn_virtual_token_satisfies_service_session(monkeypatch):
+    client = NEUAuthClient(network_mode="webvpn", restore_session=False)
+
+    def virtual_cookie_response(url, **_kwargs):
+        item = __import__("requests").Response()
+        item.status_code = 200
+        item.url = url
+        item._content = b"token=opaque-token"
+        return item
+
+    monkeypatch.setattr(client.session, "get", virtual_cookie_response)
+    monkeypatch.setattr(
+        client,
+        "_request_service_redirects",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("existing virtual token must avoid redundant CAS")
+        ),
+    )
+
+    assert client.ensure_service_session(
+        "jwxk", network_mode_override="webvpn"
+    ) is True
 
 
 def test_jwxk_cas_http_pass_redirect_is_upgraded_before_request(monkeypatch):
@@ -665,6 +784,53 @@ def test_jwxk_cas_http_pass_redirect_is_upgraded_before_request(monkeypatch):
     assert result.url == "https://jwxk.neu.edu.cn/xsxk/profile/index.html"
     assert calls[1].startswith("https://pass.neu.edu.cn/tpass/login?")
     assert all(not url.startswith("http://") for url in calls)
+
+
+def test_jwxk_webvpn_cas_converts_direct_pass_and_callback_redirects(monkeypatch):
+    client = NEUAuthClient(network_mode="webvpn", restore_session=False)
+    calls = []
+
+    def response(url, status=200, location=""):
+        item = __import__("requests").Response()
+        item.status_code = status
+        item.url = url
+        item._content = b"ok"
+        if location:
+            item.headers["Location"] = location
+        return item
+
+    initial = WebVPNUrlCodec.convert_url(
+        "https://jwxk.neu.edu.cn/xsxk/auth/cas"
+    )
+    pass_url = WebVPNUrlCodec.convert_url(
+        "https://pass.neu.edu.cn/tpass/login?service=jwxk"
+    )
+    callback_url = WebVPNUrlCodec.convert_url(
+        "https://jwxk.neu.edu.cn/xsxk/auth/cas?ticket=opaque"
+    )
+    profile_url = WebVPNUrlCodec.convert_url(
+        "https://jwxk.neu.edu.cn/xsxk/profile/index.html"
+    )
+    results = iter([
+        response(initial, 302, "http://pass.neu.edu.cn/tpass/login?service=jwxk"),
+        response(pass_url, 302, "https://jwxk.neu.edu.cn/xsxk/auth/cas?ticket=opaque"),
+        response(callback_url, 302, "https://jwxk.neu.edu.cn/xsxk/profile/index.html"),
+        response(profile_url),
+    ])
+
+    def fake_request(_method, url, **_kwargs):
+        calls.append(url)
+        return next(results)
+
+    monkeypatch.setattr(client.session, "request", fake_request)
+    result = client._request_service_redirects(
+        "GET", initial,
+        service_config=SERVICE_CONFIGS["jwxk"], network_mode="webvpn",
+    )
+
+    assert result.url == profile_url
+    assert calls == [initial, pass_url, callback_url, profile_url]
+    assert all(url.startswith("https://webvpn.neu.edu.cn/") for url in calls)
 
 
 def test_jwxk_business_401_does_not_invalidate_a_working_session(monkeypatch):

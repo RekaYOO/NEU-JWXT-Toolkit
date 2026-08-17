@@ -23,6 +23,7 @@ class AuthSessionManager:
 
     def __init__(self) -> None:
         self._client: Any | None = None
+        self._pending_client: Any | None = None
         self._identity_epoch = 0
         self._state_lock = threading.RLock()
         self._remote_condition = threading.Condition(threading.Lock())
@@ -129,6 +130,23 @@ class AuthSessionManager:
         with self._state_lock:
             return self._client
 
+    def set_pending_client(self, client: Any | None) -> None:
+        """Store one interactive login candidate without replacing identity."""
+        with self._state_lock:
+            self._pending_client = client
+
+    def peek_pending_client(self) -> Any | None:
+        with self._state_lock:
+            return self._pending_client
+
+    def clear_pending_client(self, expected: Any | None = None) -> Any | None:
+        with self._state_lock:
+            if expected is not None and self._pending_client is not expected:
+                return None
+            pending = self._pending_client
+            self._pending_client = None
+            return pending
+
     def epoch(self) -> int:
         with self._state_lock:
             return self._identity_epoch
@@ -156,6 +174,7 @@ class AuthSessionManager:
             )
             self._identity_epoch += 1
             self._client = None
+            self._pending_client = None
             if cleanup and account:
                 cleanup(account)
             return account

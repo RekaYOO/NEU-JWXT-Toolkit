@@ -4,8 +4,9 @@ from fastapi import APIRouter, HTTPException, Query
 from backend.app.dependencies import (
     _cache_coordinator, _cache_registry, _cache_store,
     _storage, _auto_login, _api_logger, COOKIE_FILE,
-    get_auth_client, peek_auth_client, remote_session_guard,
-    logout_auth_client, schedule_login_bootstrap, set_auth_client
+    clear_pending_auth_client, get_auth_client, peek_auth_client,
+    peek_pending_auth_client, remote_session_guard, set_pending_auth_client,
+    logout_auth_client, schedule_login_bootstrap, set_auth_client,
 )
 from backend.app.schemas import (
     LoginRequest, LoginResponse, WebVPNQRStartRequest, WebVPNQRStatusRequest,
@@ -192,14 +193,19 @@ def start_webvpn_qr_login(request: WebVPNQRStartRequest):
     """Create an application-managed QR login session for WebVPN."""
     try:
         with remote_session_guard():
+            previous = clear_pending_auth_client()
+            if previous is not None:
+                previous.cancel_webvpn_qr_login()
+            active = peek_auth_client()
+            account = request.username or str(getattr(active, "username", "") or "")
             client = NEUAuthClient(
-                username=request.username or "",
+                username=account,
                 cookie_file=COOKIE_FILE,
                 network_mode="webvpn",
                 restore_session=False,
             )
             flow = client.start_webvpn_qr_login()
-            set_auth_client(client)
+            set_pending_auth_client(client)
         log_security_event(
             "webvpn_qr_login",
             "pending",
@@ -224,8 +230,8 @@ def start_webvpn_qr_login(request: WebVPNQRStartRequest):
 
 @router.post("/api/webvpn/qr/status")
 def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
-    """Poll an in-memory WebVPN QR flow without creating a second session."""
-    client = peek_auth_client()
+    """Poll a candidate WebVPN session and commit it only after success."""
+    client = peek_pending_auth_client()
     if client is None:
         log_security_event(
             "webvpn_qr_login",
@@ -237,7 +243,7 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
         return {"success": False, "status": "missing", "message": "二维码登录流程不存在"}
     try:
         with remote_session_guard():
-            if peek_auth_client() is not client:
+            if peek_pending_auth_client() is not client:
                 log_security_event(
                     "webvpn_qr_login",
                     "failure",
@@ -252,6 +258,7 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
                 }
             result = client.poll_webvpn_qr_login(request.flow_id)
             if result.get("status") == "authenticated":
+                clear_pending_auth_client(client)
                 set_auth_client(client, force_epoch=True)
                 schedule_login_bootstrap(client)
                 log_security_event(
@@ -261,8 +268,12 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
                     auth_method="qr",
                     network_mode="webvpn",
                 )
+            elif result.get("status") == "expired":
+                clear_pending_auth_client(client)
         return {"success": True, **result}
     except WebVPNLoginError as e:
+        diagnostics = client.get_webvpn_qr_diagnostics()
+        clear_pending_auth_client(client)
         log_security_event(
             "webvpn_qr_login",
             "failure",
@@ -276,9 +287,10 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
             "success": False,
             "status": "error",
             "message": str(e),
-            "diagnostics": client.get_webvpn_qr_diagnostics(),
+            "diagnostics": diagnostics,
         }
     except Exception as e:
+        clear_pending_auth_client(client)
         error_id = log_application_error("auth.webvpn_qr_poll", e, 500)
         log_security_event(
             "webvpn_qr_login",
@@ -294,11 +306,12 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
 
 @router.post("/api/webvpn/qr/cancel")
 def cancel_webvpn_qr_login(request: WebVPNQRStatusRequest):
-    client = peek_auth_client()
+    client = peek_pending_auth_client()
     try:
         if client:
             with remote_session_guard():
                 client.cancel_webvpn_qr_login(request.flow_id)
+                clear_pending_auth_client(client)
         log_security_event("webvpn_qr_login", "success", auth_method="qr_cancel")
     except Exception as error:
         error_id = log_application_error("auth.webvpn_qr_cancel", error, 500)
@@ -517,6 +530,7 @@ def logout(clear_data: bool = Query(True, description="是否清理用户数据"
 
     # 清除当前内存会话及其持久化 Cookie。
     client = peek_auth_client()
+    pending_client = peek_pending_auth_client()
     account = str(getattr(client, "username", "") or "") or None
     with remote_session_guard():
         if client:
@@ -524,6 +538,11 @@ def logout(clear_data: bool = Query(True, description="是否清理用户数据"
             client.cancel_webvpn_sms_login()
             client.clear_cookies()
             client.session.cookies.clear()
+        if pending_client:
+            pending_client.cancel_webvpn_qr_login()
+            pending_client.cancel_webvpn_sms_login()
+            pending_client.session.cookies.clear()
+            clear_pending_auth_client(pending_client)
         logout_auth_client(clear_cache=clear_data)
         _auto_login.clear_login()
         # Keep file cleanup in the same session critical section. A concurrent
