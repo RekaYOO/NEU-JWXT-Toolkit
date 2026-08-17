@@ -621,8 +621,6 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
     2. 尝试用保存的 Cookie 恢复（免密）
     3. 尝试用保存的密码重新登录
     """
-    attempted_password_login = False
-
     # 1. 检查内存中的客户端
     active_client = _auth_sessions.peek_client()
     if active_client is not None:
@@ -635,10 +633,6 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
         # 让 WebVPN 及其他业务子会话可以继续静默恢复。
         attach_saved_auth_credentials(active_client)
         # 尝试确保登录（内部会优先用 Cookie 刷新）
-        attempted_password_login = bool(
-            getattr(active_client, "username", "")
-            and getattr(active_client, "password", "")
-        )
         try:
             if active_client.ensure_login():
                 return active_client
@@ -655,7 +649,12 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
                 auth_method="session_cookie",
                 error_type=type(error).__name__,
             )
-        set_auth_client(None)
+        # Do not clear the process-wide identity yet.  A transient probe or a
+        # polluted requests.Session can still be repaired by a clean client
+        # below.  Clearing here used to advance the identity epoch before the
+        # replacement was ready, cancelling freshly submitted cache work with
+        # ``identity_changed``.  Commit a successful replacement atomically,
+        # and expose a logged-out state only after every recovery path fails.
 
     # 2. 先尝试恢复二维码/WebVPN Cookie 会话，不要求保存密码
     session_client = NEUAuthClient(cookie_file=COOKIE_FILE)
@@ -687,7 +686,7 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
 
     # 3. 尝试加载保存的凭证并创建客户端
     creds = _storage.load_credentials()
-    if creds and not attempted_password_login:
+    if creds:
         username, password = creds
         # 创建客户端时会自动尝试从 Cookie 文件恢复
         client = NEUAuthClient(
@@ -722,6 +721,8 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
                 error_type=type(error).__name__,
             )
 
+    if active_client is not None:
+        set_auth_client(None)
     return None
 
 

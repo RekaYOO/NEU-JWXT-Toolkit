@@ -1434,6 +1434,35 @@ class NEUAuthClient:
             self.target = original_target
             self.active_mode = original_mode
 
+    def _login_webvpn_service_identity(self) -> Dict[str, Any]:
+        """Authenticate WebVPN without changing a direct primary login.
+
+        A user may keep JWXT on the direct route while selecting WebVPN only
+        for JWXK.  The official WebVPN password flow temporarily needs
+        ``active_mode=webvpn`` and may clear its cookie jar while recovering
+        from an unexpected gateway page.  Preserve the non-WebVPN cookies and
+        primary route, then merge the newly issued gateway cookies back into
+        the one shared Session.
+        """
+        original_mode = self.active_mode
+        original_logged_in = self._logged_in
+        preserved = [
+            cookie
+            for cookie in self._session.cookies.copy()
+            if cookie.domain.lstrip(".") != "webvpn.neu.edu.cn"
+        ]
+        try:
+            return self.start_webvpn_password_login()
+        finally:
+            self.active_mode = original_mode
+            for cookie in preserved:
+                self._session.cookies.set_cookie(cookie)
+            if original_logged_in:
+                self._logged_in = True
+            # start_webvpn_password_login persists while its temporary mode is
+            # active.  Persist once more after restoring the primary route.
+            self._save_cookies()
+
     def ensure_service_session(
         self, service: str, *, network_mode_override: Optional[str] = None,
         force_refresh: bool = False,
@@ -1474,12 +1503,30 @@ class NEUAuthClient:
             self._close_response_safely(ticket_response)
             return established
 
+        def try_establish() -> bool:
+            try:
+                return establish()
+            except NEULoginError as error:
+                if network_mode != "webvpn":
+                    raise
+                # A direct primary identity commonly reaches a WebVPN login or
+                # verification trampoline that is not a valid JWXK callback.
+                # Treat that as a missing gateway identity so the saved-password
+                # flow below actually runs; credentials are still submitted only
+                # to the fixed official WebVPN entry and CAS form.
+                logger.info(
+                    "WebVPN service identity is not established service=%s error=%s",
+                    service,
+                    type(error).__name__,
+                )
+                return False
+
         # A rejected bearer token must not be accepted as evidence that the
         # CAS callback issued a fresh JWXK session.  Remove only this route's
         # service token; primary JWXT/CAS cookies remain untouched.
         if force_refresh:
             self._clear_service_token(service, network_mode=network_mode)
-        established = establish()
+        established = try_establish()
         if established and config.get("token_cookie"):
             established = bool(self.get_service_token(
                 service, network_mode=network_mode,
@@ -1487,11 +1534,43 @@ class NEUAuthClient:
             ))
         if not established:
             logger.info("跨系统 CAS 会话已过期，尝试恢复统一认证后重建业务会话...")
-            primary_recovered = self.ensure_login()
-            identity_recovered = bool(primary_recovered)
+            cross_route_webvpn = (
+                network_mode == "webvpn" and self.active_mode != "webvpn"
+            )
+            webvpn_password_attempted = False
+            identity_recovered = False
+
+            # A working direct JWXT login says nothing about the gateway login.
+            # When JWXK explicitly uses WebVPN, first use same-account saved
+            # credentials to establish that gateway identity without replacing
+            # or clearing the direct primary Session.
+            if cross_route_webvpn and self.username and self.password:
+                webvpn_password_attempted = True
+                try:
+                    webvpn_result = self._login_webvpn_service_identity()
+                except NEULoginError as error:
+                    logger.info(
+                        "WebVPN silent password login unavailable service=%s error=%s",
+                        service,
+                        type(error).__name__,
+                    )
+                    webvpn_result = {}
+                if webvpn_result.get("status") == "authenticated":
+                    identity_recovered = True
+                    self._clear_service_token(service, network_mode=network_mode)
+                    established = try_establish()
+                elif webvpn_result.get("status") == "sms_required":
+                    # Captcha/SMS protection is intentionally not completed in
+                    # the background.  The page will offer the visible QR flow.
+                    self._webvpn_sms_flow = None
+
+            primary_recovered = False
+            if not cross_route_webvpn:
+                primary_recovered = self.ensure_login()
+                identity_recovered = bool(primary_recovered)
             if primary_recovered:
                 self._clear_service_token(service, network_mode=network_mode)
-                established = establish()
+                established = try_establish()
             if established and config.get("token_cookie"):
                 established = bool(self.get_service_token(
                     service, network_mode=network_mode,
@@ -1519,15 +1598,16 @@ class NEUAuthClient:
                 not established
                 and network_mode == "webvpn"
                 and self.username and self.password
+                and not webvpn_password_attempted
             ):
                 try:
-                    webvpn_result = self.start_webvpn_password_login()
+                    webvpn_result = self._login_webvpn_service_identity()
                 except NEULoginError:
                     webvpn_result = {}
                 if webvpn_result.get("status") == "authenticated":
                     identity_recovered = True
                     self._clear_service_token(service, network_mode=network_mode)
-                    established = establish()
+                    established = try_establish()
                     if established and config.get("token_cookie"):
                         established = bool(self.get_service_token(
                             service, network_mode=network_mode,

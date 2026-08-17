@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from backend.app.routers import auth
@@ -9,9 +10,46 @@ from backend.app.schemas.auth import (
     WebVPNQRStartRequest,
 )
 from backend.core.auth.client import WebVPNRequiredError
+from backend.core.auth.session_manager import AuthSessionManager
 
 
 class AuthRouteTests(unittest.TestCase):
+    def test_failed_active_session_is_replaced_without_intermediate_identity_gap(self):
+        manager = AuthSessionManager()
+        active = SimpleNamespace(
+            username="20250001",
+            password="saved-password",
+            is_logged_in=False,
+            _webvpn_qr_flow=None,
+            _webvpn_sms_flow=None,
+            ensure_login=lambda: False,
+        )
+        replacement = SimpleNamespace(
+            username="20250001",
+            password="saved-password",
+            is_logged_in=True,
+            ensure_login=lambda: True,
+            active_mode="direct",
+        )
+        manager.set_client(active)
+        initial_epoch = manager.epoch()
+        storage = Mock()
+        storage.load_credentials.return_value = ("20250001", "saved-password")
+
+        with (
+            patch.object(dependencies, "_auth_sessions", manager),
+            patch.object(dependencies, "_storage", storage),
+            patch.object(dependencies, "NEUAuthClient", return_value=replacement),
+            patch.object(dependencies, "schedule_login_bootstrap") as bootstrap,
+            patch.object(dependencies, "log_security_event"),
+        ):
+            resolved = dependencies._get_auth_client_unlocked()
+
+        self.assertIs(resolved, replacement)
+        self.assertIs(manager.peek_client(), replacement)
+        self.assertEqual(manager.epoch(), initial_epoch + 1)
+        bootstrap.assert_called_once_with(replacement)
+
     def test_saved_credentials_hydrate_cookie_restored_same_account(self):
         client = Mock(username="20250001", password="")
         storage = Mock()

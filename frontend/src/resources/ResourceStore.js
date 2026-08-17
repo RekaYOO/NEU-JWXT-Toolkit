@@ -20,6 +20,8 @@ const JOB_POLL_MS = 900;
 const EVENT_POLL_MS = 15000;
 const TERMINAL_JOB_STATES = new Set(['completed', 'failed', 'cancelled']);
 const ACTIVE_SYNC_STATES = new Set(['starting', 'queued', 'running']);
+const IDENTITY_RETRY_ERRORS = new Set(['identity_changed']);
+const IDENTITY_RETRY_DELAY_MS = 250;
 
 export const deriveCachedResourceLoading = ({
   enabled = true, displayedData = null, state = {},
@@ -186,6 +188,11 @@ export const ResourceProvider = ({
     const detail = job.error || job.error_kind || (
       job.status === 'cancelled' ? '后台同步已取消' : '后台同步失败'
     );
+    if (IDENTITY_RETRY_ERRORS.has(detail)) {
+      const superseded = new Error(detail);
+      superseded.identitySuperseded = true;
+      throw superseded;
+    }
     mergeState(resource, {
       syncState: job.status,
       syncError: detail,
@@ -204,40 +211,56 @@ export const ResourceProvider = ({
     const generation = generationRef.current;
     const promise = (async () => {
       mergeState(resource, { syncState: 'starting', syncError: null });
-      const result = await requestCacheRefresh(resource, { force, reason });
-      if (generation !== generationRef.current) return result;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const result = await requestCacheRefresh(resource, { force, reason });
+          if (generation !== generationRef.current) return result;
 
-      mergeState(resource, { syncState: result.status, job: result });
-      if (result.status === 'fresh') {
-        await load(resource, { quiet: true });
-        return result;
-      }
-      const jobId = result.job_id || result.id;
-      if (!jobId) {
-        // Transitional compatibility: a refresh endpoint may return the payload.
-        if (result.cache || result.scores || result.categories || result.topics || result.activities) {
-          const meta = metadataOf(result);
-          mergeState(resource, {
-            availableData: result,
-            availableRevision: meta.revision,
-            metadata: meta,
-            syncState: 'completed',
-          });
-          return result;
+          mergeState(resource, { syncState: result.status, job: result });
+          if (result.status === 'fresh') {
+            await load(resource, { quiet: true });
+            return result;
+          }
+          const jobId = result.job_id || result.id;
+          if (!jobId) {
+            // Transitional compatibility: a refresh endpoint may return the payload.
+            if (result.cache || result.scores || result.categories || result.topics || result.activities) {
+              const meta = metadataOf(result);
+              mergeState(resource, {
+                availableData: result,
+                availableRevision: meta.revision,
+                metadata: meta,
+                syncState: 'completed',
+              });
+              return result;
+            }
+            const detail = result.error || result.error_kind || (
+              result.status === 'throttled'
+                ? '最近一次后台同步失败，系统将在一分钟后自动重试；也可手动刷新'
+                : '后台同步未能启动'
+            );
+            mergeState(resource, {
+              syncState: result.status || 'failed',
+              syncError: detail,
+              loading: false,
+            });
+            throw new Error(detail);
+          }
+          return await pollJob(resource, jobId, generation);
+        } catch (error) {
+          if (
+            !error.identitySuperseded
+            || attempt > 0
+            || generation !== generationRef.current
+          ) throw error;
+          // A successful same-account re-login intentionally fences the old
+          // job.  Retry once against the newly committed identity instead of
+          // surfacing the internal fencing reason to the user.
+          mergeState(resource, { syncState: 'starting', syncError: null });
+          await wait(IDENTITY_RETRY_DELAY_MS);
         }
-        const detail = result.error || result.error_kind || (
-          result.status === 'throttled'
-            ? '最近一次后台同步失败，系统将在一分钟后自动重试；也可手动刷新'
-            : '后台同步未能启动'
-        );
-        mergeState(resource, {
-          syncState: result.status || 'failed',
-          syncError: detail,
-          loading: false,
-        });
-        throw new Error(detail);
       }
-      return pollJob(resource, jobId, generation);
+      return null;
     })()
       .catch(error => {
         if (generation === generationRef.current) {

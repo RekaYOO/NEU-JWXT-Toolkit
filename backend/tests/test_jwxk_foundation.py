@@ -410,7 +410,9 @@ def test_status_route_attaches_same_account_saved_password_for_webvpn_recovery(m
     storage = MemoryStorage({"course_selection": {"network_mode": "webvpn"}})
 
     class Primary:
-        active_mode = "webvpn"
+        # The main academic system may remain direct while only JWXK is routed
+        # through WebVPN.
+        active_mode = "direct"
         is_logged_in = True
         username = "student"
         password = ""
@@ -687,6 +689,98 @@ def test_jwxk_webvpn_cas_callback_also_targets_webvpn(monkeypatch):
     assert "webvpn.neu.edu.cn" in calls[0]
     assert calls[0] == expected_callback
     assert client.active_mode == "direct"
+
+
+def test_direct_primary_uses_saved_password_for_webvpn_jwxk_without_changing_route(monkeypatch):
+    client = NEUAuthClient(
+        username="student", password="saved-password",
+        network_mode="direct", restore_session=False,
+    )
+    client._logged_in = True
+    client.session.cookies.set(
+        "direct-session", "keep-me", domain="jwxt.neu.edu.cn", path="/",
+    )
+    state = {"gateway_authenticated": False, "redirect_calls": 0}
+
+    def fake_redirects(_method, url, **_kwargs):
+        state["redirect_calls"] += 1
+        if not state["gateway_authenticated"]:
+            raise NEULoginError("WebVPN login trampoline")
+        item = __import__("requests").Response()
+        item.status_code = 200
+        item.url = WebVPNUrlCodec.convert_url(
+            "https://jwxk.neu.edu.cn/xsxk/profile/index.html"
+        )
+        item._content = b"profile"
+        return item
+
+    def fake_password_login():
+        assert client.active_mode == "direct"
+        # Mirror the real method's temporary mutation and clean-cookie retry.
+        client.active_mode = "webvpn"
+        client.session.cookies.clear()
+        client.session.cookies.set(
+            "webvpn_auth", "fresh", domain="webvpn.neu.edu.cn", path="/",
+        )
+        state["gateway_authenticated"] = True
+        return {"status": "authenticated", "username": "student"}
+
+    def fake_token(_service, *, network_mode=None, request_path=""):
+        assert network_mode == "webvpn"
+        return "fresh-token" if state["gateway_authenticated"] else None
+
+    monkeypatch.setattr(client, "_request_service_redirects", fake_redirects)
+    monkeypatch.setattr(client, "start_webvpn_password_login", fake_password_login)
+    monkeypatch.setattr(client, "get_service_token", fake_token)
+    monkeypatch.setattr(client, "_clear_service_token", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(client, "_save_cookies", lambda: None)
+
+    assert client.ensure_service_session(
+        "jwxk", network_mode_override="webvpn",
+    ) is True
+    assert state["redirect_calls"] == 2
+    assert client.active_mode == "direct"
+    assert client.is_logged_in is True
+    assert client.session.cookies.get(
+        "direct-session", domain="jwxt.neu.edu.cn", path="/",
+    ) == "keep-me"
+    assert client.session.cookies.get(
+        "webvpn_auth", domain="webvpn.neu.edu.cn", path="/",
+    ) == "fresh"
+
+
+def test_direct_primary_webvpn_verification_falls_back_to_visible_login(monkeypatch):
+    client = NEUAuthClient(
+        username="student", password="saved-password",
+        network_mode="direct", restore_session=False,
+    )
+    client._logged_in = True
+    attempts = []
+
+    monkeypatch.setattr(
+        client, "_request_service_redirects",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            NEULoginError("WebVPN login trampoline")
+        ),
+    )
+    monkeypatch.setattr(client, "get_service_token", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(client, "_save_cookies", lambda: None)
+
+    def verification_required():
+        attempts.append(True)
+        client.active_mode = "webvpn"
+        client._webvpn_sms_flow = {"id": "hidden-flow"}
+        return {"status": "sms_required", "flow_id": "hidden-flow"}
+
+    monkeypatch.setattr(client, "start_webvpn_password_login", verification_required)
+
+    with pytest.raises(NEULoginError, match="统一认证会话已过期"):
+        client.ensure_service_session("jwxk", network_mode_override="webvpn")
+
+    assert attempts == [True]
+    assert client.active_mode == "direct"
+    assert client.is_logged_in is True
+    assert client._webvpn_sms_flow is None
 
 
 def test_jwxk_webvpn_reads_token_from_gateway_virtual_cookie_store(monkeypatch):
