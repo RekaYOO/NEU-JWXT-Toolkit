@@ -1078,6 +1078,95 @@ def test_final_check_without_running_task_is_read_only_and_reports_proxy(tmp_pat
     assert "市场课程" not in messages[0][1]
 
 
+def test_capacity_notifications_rearm_after_falling_below_each_threshold(tmp_path):
+    messages = []
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        client_builder=lambda _auth: None,
+        plan_provider=lambda *_args: {
+            "groups": [{"group_id": "g1", "name": "关注组"}],
+            "items": [{
+                "class_id": "course", "course_code": "C1", "course_name": "关注课程",
+                "plan_group_id": "g1",
+            }],
+        },
+        notification_provider=lambda subject, body, key, html_body: messages.append(
+            (subject, body, key, html_body)
+        ) or True,
+    )
+    archive = service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "name": "权重轮次", "selection_type_code": "04"},
+        scope="TJKC",
+        groups=[{"group_id": "g", "classes": [{
+            "class_id": "course", "course_code": "C1", "course_name": "关注课程",
+            "capacity": 30, "weight_participant_count": 29,
+        }]}],
+    )
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True,
+        "notify_capacity_transition": True,
+        "notify_over_capacity": True,
+        "over_capacity_ratio": 0.20,
+    })
+
+    service._notify_capacity_transitions(archive)  # Establish under-capacity baseline.
+    archive["courses"][0]["weight_participant_count"] = 30
+    service._notify_capacity_transitions(archive)
+    archive["courses"][0]["weight_participant_count"] = 29
+    service._notify_capacity_transitions(archive)
+    archive["courses"][0]["weight_participant_count"] = 30
+    service._notify_capacity_transitions(archive)
+    assert len(messages) == 2
+
+    archive["courses"][0]["weight_participant_count"] = 36
+    service._notify_capacity_transitions(archive)
+    archive["courses"][0]["weight_participant_count"] = 33
+    service._notify_capacity_transitions(archive)
+    archive["courses"][0]["weight_participant_count"] = 36
+    service._notify_capacity_transitions(archive)
+
+    assert len(messages) == 4
+    assert len({message[2] for message in messages}) == 4
+    assert "重新达到超额提醒阈值" in messages[-1][1]
+
+
+def test_over_capacity_only_does_not_send_plain_full_transition(tmp_path):
+    messages = []
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        client_builder=lambda _auth: None,
+        plan_provider=lambda *_args: {
+            "groups": [{"group_id": "g1", "name": "关注组"}],
+            "items": [{"class_id": "course", "course_code": "C1", "plan_group_id": "g1"}],
+        },
+        notification_provider=lambda *args: messages.append(args) or True,
+    )
+    archive = service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "selection_type_code": "04"},
+        scope="TJKC",
+        groups=[{"group_id": "g", "classes": [{
+            "class_id": "course", "course_code": "C1", "course_name": "关注课程",
+            "capacity": 30, "weight_participant_count": 29,
+        }]}],
+    )
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True,
+        "notify_capacity_transition": False,
+        "notify_over_capacity": True,
+        "over_capacity_ratio": 0.20,
+    })
+
+    service._notify_capacity_transitions(archive)
+    archive["courses"][0]["weight_participant_count"] = 30
+    service._notify_capacity_transitions(archive)
+
+    assert messages == []
+
+
 def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tmp_path):
     class FakeClient:
         def __init__(self):
