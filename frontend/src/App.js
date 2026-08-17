@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ConfigProvider, Layout, Modal, Spin, message } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import dayjs from 'dayjs';
@@ -7,6 +7,23 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import LoginPage from './pages/LoginPage';
 import MainLayout from './layouts/MainLayout';
 import AccessLoginPage from './pages/AccessLoginPage';
+import ScoresPage from './pages/ScoresPage';
+import AcademicReportPage from './pages/AcademicReportPage';
+import ExperimentCoursePage from './pages/ExperimentCoursePage';
+import EvaluationPage from './pages/EvaluationPage';
+import ExamPage from './pages/ExamPage';
+import GradeTrackingPage from './pages/GradeTrackingPage';
+import GradeTrackingRecoveryPage from './pages/GradeTrackingRecoveryPage';
+import ResearchTrainingPage from './pages/ResearchTrainingPage';
+import ExportPage from './pages/ExportPage';
+import FestivalActivitiesPage from './pages/FestivalActivitiesPage';
+import TimetablePage from './pages/TimetablePage';
+import CourseOutlinePage from './pages/CourseOutlinePage';
+import AcademicDocumentsPage from './pages/AcademicDocumentsPage';
+import CourseSelectionPage from './pages/CourseSelectionPage';
+import CourseSelectionWorkspacePage from './pages/CourseSelectionWorkspacePage';
+import CourseSelectionArchivePage from './pages/CourseSelectionArchivePage';
+import SystemSettingsPage from './pages/SystemSettingsPage';
 import { checkStatus, getAccessStatus, getHealth, getOfflineStatus } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
 import { isExportToolAvailable } from './export/exportTools';
@@ -22,26 +39,6 @@ import {
 import './App.css';
 import { loadSetting } from './utils/settings';
 
-// 业务页面按路由加载，避免未访问的完整功能进入首页主包。
-// 登录页和主布局保持同步加载，确保认证入口与导航框架可立即渲染。
-const ScoresPage = lazy(() => import('./pages/ScoresPage'));
-const AcademicReportPage = lazy(() => import('./pages/AcademicReportPage'));
-const ExperimentCoursePage = lazy(() => import('./pages/ExperimentCoursePage'));
-const EvaluationPage = lazy(() => import('./pages/EvaluationPage'));
-const ExamPage = lazy(() => import('./pages/ExamPage'));
-const GradeTrackingPage = lazy(() => import('./pages/GradeTrackingPage'));
-const GradeTrackingRecoveryPage = lazy(() => import('./pages/GradeTrackingRecoveryPage'));
-const ResearchTrainingPage = lazy(() => import('./pages/ResearchTrainingPage'));
-const ExportPage = lazy(() => import('./pages/ExportPage'));
-const FestivalActivitiesPage = lazy(() => import('./pages/FestivalActivitiesPage'));
-const TimetablePage = lazy(() => import('./pages/TimetablePage'));
-const CourseOutlinePage = lazy(() => import('./pages/CourseOutlinePage'));
-const AcademicDocumentsPage = lazy(() => import('./pages/AcademicDocumentsPage'));
-const CourseSelectionPage = lazy(() => import('./pages/CourseSelectionPage'));
-const CourseSelectionWorkspacePage = lazy(() => import('./pages/CourseSelectionWorkspacePage'));
-const CourseSelectionArchivePage = lazy(() => import('./pages/CourseSelectionArchivePage'));
-const SystemSettingsPage = lazy(() => import('./pages/SystemSettingsPage'));
-
 const { Content } = Layout;
 dayjs.locale('zh-cn');
 const OFFLINE_SESSION_KEY = 'neu_offline_mode';
@@ -52,13 +49,6 @@ const EMPTY_OFFLINE_CAPABILITIES = {
   resources: [],
   has_festival_activities: false,
 };
-
-const RouteLoading = () => (
-  <div className="loading route-loading" role="status" aria-live="polite">
-    <Spin size="large" />
-    <span>正在加载页面</span>
-  </div>
-);
 
 const appTheme = {
   token: {
@@ -328,9 +318,7 @@ function App() {
   if (recoveryToken) {
     return (
       <ConfigProvider theme={appTheme} locale={zhCN}>
-        <Suspense fallback={<RouteLoading />}>
-          <GradeTrackingRecoveryPage token={recoveryToken} />
-        </Suspense>
+        <GradeTrackingRecoveryPage token={recoveryToken} />
       </ConfigProvider>
     );
   }
@@ -363,7 +351,6 @@ function App() {
         <Router>
           <Layout className="app-layout">
             <Content className="app-content">
-              <Suspense fallback={<RouteLoading />}>
               <Routes>
             <Route 
               path="/login" 
@@ -446,7 +433,6 @@ function App() {
               />
             </Route>
               </Routes>
-              </Suspense>
             </Content>
           </Layout>
         </Router>
