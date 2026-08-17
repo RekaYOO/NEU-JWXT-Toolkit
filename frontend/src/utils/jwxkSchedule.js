@@ -643,6 +643,13 @@ export const findMatchingSelectionRecord = (records = [], target = {}) => {
   return records.find(item => sameSelectionCourse(item, target)) || null;
 };
 
+/** 远端写操作前使用教学班 ID 精确定位，禁止按同课程代码回退到另一个备选班。 */
+export const findExactSelectionClassRecord = (records = [], target = {}) => {
+  const classId = String(target?.class_id || '').trim();
+  if (!classId) return null;
+  return records.find(item => String(item?.class_id || '').trim() === classId) || null;
+};
+
 const overlappingWeeks = (left, right) => {
   const leftWeeks = new Set((left.weeks || []).map(Number));
   return [...new Set((right.weeks || []).map(Number).filter(week => leftWeeks.has(week)))].sort((a, b) => a - b);

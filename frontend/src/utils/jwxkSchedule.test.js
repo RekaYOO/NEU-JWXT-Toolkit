@@ -10,6 +10,7 @@ import {
   createCatalogDisplayLayout,
   extendCatalogDisplayLayout,
   filterAcademicPlanGapsForBatch,
+  findExactSelectionClassRecord,
   findMatchingSelectionRecord,
   inferBatchRequirementType,
   immediateSelectionConflictMap,
@@ -103,6 +104,19 @@ test('participant metric follows grab and weight round semantics', () => {
   expect(selectionParticipantCount(course, '04')).toBe(63);
   expect(selectionParticipantLabel(course, '04')).toBe('已投注人数');
   expect(matchesCatalogAvailability({ ...course, selection_type_code: '04' }, 'available')).toBe(false);
+});
+
+test('destructive selection actions never fall back to another class of the same course', () => {
+  const records = [{ class_id: 'weighted-a', course_code: 'COURSE-1', devoted_weight: 10 }];
+  expect(findMatchingSelectionRecord(records, {
+    class_id: 'alternative-b', course_code: 'COURSE-1',
+  })).toBe(records[0]);
+  expect(findExactSelectionClassRecord(records, {
+    class_id: 'alternative-b', course_code: 'COURSE-1',
+  })).toBeNull();
+  expect(findExactSelectionClassRecord(records, {
+    class_id: 'weighted-a', course_code: 'COURSE-1',
+  })).toBe(records[0]);
 });
 
 test('archive campus labels normalize stored codes and schedule campus names', () => {

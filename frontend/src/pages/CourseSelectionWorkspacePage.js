@@ -30,6 +30,7 @@ import {
   createCatalogDisplayLayout,
   extendCatalogDisplayLayout,
   filterAcademicPlanGapsForBatch,
+  findExactSelectionClassRecord,
   findMatchingSelectionRecord,
   immediateSelectionConflictMap,
   isCrossCampusCourse,
@@ -352,6 +353,8 @@ const CourseSelectionWorkspacePage = () => {
   const [weightImportLoading, setWeightImportLoading] = useState(false);
   const [weightImportCandidates, setWeightImportCandidates] = useState([]);
   const [weightImportAssignments, setWeightImportAssignments] = useState({});
+  const [planRemoval, setPlanRemoval] = useState(null);
+  const [planRemovalAction, setPlanRemovalAction] = useState('');
   const [selectedLoaded, setSelectedLoaded] = useState(false);
   const [planLoaded, setPlanLoaded] = useState(false);
   const [vacancySwapTarget, setVacancySwapTarget] = useState(null);
@@ -793,6 +796,8 @@ const CourseSelectionWorkspacePage = () => {
     setWeightImportLoading(false);
     setWeightImportCandidates([]);
     setWeightImportAssignments({});
+    setPlanRemoval(null);
+    setPlanRemovalAction('');
     setSelectedLoaded(false);
     setPlanLoaded(false);
     setVacancySwapTarget(null);
@@ -1003,8 +1008,8 @@ const CourseSelectionWorkspacePage = () => {
       items: next,
     }));
     planSaveQueue.current = operation.catch(() => undefined);
-    try { await operation; }
-    catch (error) { message.error(error.message || '保存方案失败'); }
+    try { await operation; return true; }
+    catch (error) { message.error(error.message || '保存方案失败'); return false; }
   };
 
   useEffect(() => {
@@ -1337,6 +1342,33 @@ const CourseSelectionWorkspacePage = () => {
     manualSelect(group, verifiedCourse);
   };
 
+  const performDeselect = async course => {
+    setActionLoading(course.class_id);
+    try {
+      const result = await deselectJwxkCourse({
+        batch_code: batchCode, class_id: course.class_id,
+        selection_source: course.selection_source || '', confirm_risk: true,
+      });
+      if (!result.success) {
+        message.warning(result.message || '官方没有受理本次退选');
+        return false;
+      }
+      if (!result.queued) {
+        removeSelectedCourseLocally(course);
+        window.setTimeout(() => {
+          setTimetableRefreshSignal(value => value + 1);
+        }, 0);
+      }
+      message[result.queued ? 'info' : 'success'](
+        result.queued ? (result.message || '退选已进入官方队列') : (result.message || '退选成功'),
+      );
+      void verifyDeselectedCourse(course, { optimisticRemoved: !result.queued });
+      return true;
+    } finally {
+      setActionLoading('');
+    }
+  };
+
   const confirmDeselect = course => {
     if (!isCurrentBatchSelectionRecord(course, batch?.selection_type_code)) {
       message.warning('这不是当前轮次的课程记录，不能在本轮执行退选');
@@ -1350,31 +1382,55 @@ const CourseSelectionWorkspacePage = () => {
       okButtonProps: { danger: true },
       okText: '确认退选',
       cancelText: '取消',
-      onOk: async () => {
-        setActionLoading(course.class_id);
-        try {
-          const result = await deselectJwxkCourse({
-            batch_code: batchCode, class_id: course.class_id, selection_source: course.selection_source || '', confirm_risk: true,
-          });
-          if (!result.success) {
-            message.warning(result.message || '官方没有受理本次退选');
-            return;
-          }
-          if (!result.queued) {
-            removeSelectedCourseLocally(course);
-            window.setTimeout(() => {
-              setTimetableRefreshSignal(value => value + 1);
-            }, 0);
-          }
-          message[result.queued ? 'info' : 'success'](
-            result.queued ? (result.message || '退选已进入官方队列') : (result.message || '退选成功'),
-          );
-          void verifyDeselectedCourse(course, { optimisticRemoved: !result.queued });
-        } finally {
-          setActionLoading('');
-        }
-      },
+      onOk: () => performDeselect(course),
     });
+  };
+
+  const requestPlanItemRemoval = item => {
+    // 这里只能按教学班精确匹配。一个课程代码可能在方案中保存多个备选班，
+    // 移除未投的备选班绝不能误撤回同课程另一个教学班的官方权重。
+    const selectedRecord = findExactSelectionClassRecord(selectedRef.current, item)
+      || (item.selection_record_type === 'volunteered' ? item : null);
+    const isCurrentWeight = batch?.selection_type_code === '04'
+      && selectedRecord?.selection_record_type === 'volunteered'
+      && isCurrentBatchSelectionRecord(selectedRecord, batch.selection_type_code);
+    if (!isCurrentWeight) {
+      void savePlan(plan.filter(row => row.class_id !== item.class_id));
+      return;
+    }
+    setPlanRemoval({ item, selectedRecord });
+  };
+
+  const removePlanItemOnly = async () => {
+    if (!planRemoval) return;
+    const { item } = planRemoval;
+    setPlanRemovalAction('only');
+    try {
+      const saved = await savePlan(plan.filter(row => row.class_id !== item.class_id));
+      if (!saved) return;
+      message.success(`已将“${item.course_name}”移出当前方案组，官方投权保持不变`);
+      setPlanRemoval(null);
+    } finally {
+      setPlanRemovalAction('');
+    }
+  };
+
+  const removePlanItemAndDeselect = async () => {
+    if (!planRemoval) return;
+    const { item, selectedRecord } = planRemoval;
+    setPlanRemovalAction('deselect');
+    try {
+      const deselected = await performDeselect(selectedRecord);
+      const saved = await savePlan(plan.filter(row => row.class_id !== item.class_id));
+      if (!deselected) {
+        message.warning(`“${item.course_name}”已移出当前方案组，但官方投权未撤回；课程将保留在“未分组”中`);
+      } else if (!saved) {
+        message.warning('官方退选已经处理，但方案变更未能持久化；请刷新后确认方案状态');
+      }
+      setPlanRemoval(null);
+    } finally {
+      setPlanRemovalAction('');
+    }
   };
 
   const adjustCourseWeight = (group, course, selectedRecord) => {
@@ -2309,7 +2365,7 @@ const CourseSelectionWorkspacePage = () => {
           const conflict = conflicts[item.class_id];
           const conflictStatus = selectionTimeConflictStatus(conflict);
           const crossCampus = courseIsCrossCampus(item);
-          return <div className="jwxk-plan-alternative" key={item.class_id}><div><div className="jwxk-plan-alternative__title"><button type="button" className="jwxk-plan-course-link is-primary" onClick={() => focusPlanCourse(item)}>{item.course_name || item.course_code || '未命名课程'}</button>{conflict && <Tag color={conflictStatus === 'conflict' ? 'error' : conflictStatus === 'unknown' ? 'warning' : 'success'}>{conflictStatus === 'conflict' ? '时间冲突' : conflictStatus === 'unknown' ? '时间待核验' : '时间无冲突'}</Tag>}{crossCampus && <Tag color="orange">跨校区</Tag>}</div><strong>{item.course_code || '课程代码待定'} · {item.teacher || '教师待定'} · {item.class_number || item.class_id}</strong><span>{item.location || '地点待定'} · {classScheduleText(item)}</span></div><Space wrap className="jwxk-plan-alternative__actions">{ungrouped ? <Button onClick={openWeightImport}>分配方案组</Button> : <><InputNumber min={1} max={10} value={item.utility || 5} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, utility: value || 5 } : row))} addonBefore="意愿值" title="1–10 分，分数越高表示越重视这门课" /><Button danger onClick={() => savePlan(plan.filter(row => row.class_id !== item.class_id))}>移出方案组</Button></>}</Space></div>;
+          return <div className="jwxk-plan-alternative" key={item.class_id}><div><div className="jwxk-plan-alternative__title"><button type="button" className="jwxk-plan-course-link is-primary" onClick={() => focusPlanCourse(item)}>{item.course_name || item.course_code || '未命名课程'}</button>{conflict && <Tag color={conflictStatus === 'conflict' ? 'error' : conflictStatus === 'unknown' ? 'warning' : 'success'}>{conflictStatus === 'conflict' ? '时间冲突' : conflictStatus === 'unknown' ? '时间待核验' : '时间无冲突'}</Tag>}{crossCampus && <Tag color="orange">跨校区</Tag>}</div><strong>{item.course_code || '课程代码待定'} · {item.teacher || '教师待定'} · {item.class_number || item.class_id}</strong><span>{item.location || '地点待定'} · {classScheduleText(item)}</span></div><Space wrap className="jwxk-plan-alternative__actions">{ungrouped ? <Button onClick={openWeightImport}>分配方案组</Button> : <><InputNumber min={1} max={10} value={item.utility || 5} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, utility: value || 5 } : row))} addonBefore="意愿值" title="1–10 分，分数越高表示越重视这门课" /><Button danger onClick={() => requestPlanItemRemoval(item)}>移出方案组</Button></>}</Space></div>;
         })}
       </Card>;
     })}
@@ -2589,6 +2645,25 @@ const CourseSelectionWorkspacePage = () => {
         <label><span>开始节次</span><Select allowClear value={filterDraft.startSection || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, startSection: value || '' }))} options={effectiveFilterOptions.sections} placeholder="不限" /></label>
         <label><span>结束节次</span><Select allowClear value={filterDraft.endSection || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, endSection: value || '' }))} options={effectiveFilterOptions.sections} placeholder="不限" /></label>
       </div>
+    </Modal>
+    <Modal
+      title={`“${planRemoval?.item?.course_name || '该课程'}”已经投放权重`}
+      open={Boolean(planRemoval)}
+      onCancel={() => { if (!planRemovalAction) setPlanRemoval(null); }}
+      closable={!planRemovalAction}
+      maskClosable={!planRemovalAction}
+      footer={<>
+        <Button disabled={Boolean(planRemovalAction)} onClick={() => setPlanRemoval(null)}>取消</Button>
+        <Button loading={planRemovalAction === 'only'} disabled={planRemovalAction === 'deselect'} onClick={removePlanItemOnly}>仅移出方案组</Button>
+        <Button danger type="primary" loading={planRemovalAction === 'deselect'} disabled={planRemovalAction === 'only'} onClick={removePlanItemAndDeselect}>移出并退选</Button>
+      </>}
+    >
+      <Alert
+        type="warning"
+        showIcon
+        message={`当前已投 ${planRemoval?.selectedRecord?.devoted_weight ?? 0} 点权重，是否同步从官方退选？`}
+        description="选择“仅移出方案组”不会撤回官方投权，该课程会自动归入“未分组”；选择“移出并退选”会同时向官方提交退选，成功后更新已选结果、课表和冲突状态。"
+      />
     </Modal>
     <Modal title={planAssignment?.existingItem ? '分配方案组' : '加入方案组'} open={!!planAssignment} onCancel={() => setPlanAssignment(null)} onOk={confirmPlanAssignment} okText={planAssignment?.existingItem ? '保存分组' : '加入方案组'} okButtonProps={{ disabled: assignmentGroupId === '__new__' && !newGroupName.trim() }}>
       <div className="jwxk-group-form">
