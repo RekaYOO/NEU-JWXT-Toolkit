@@ -515,6 +515,23 @@
   min-width: 250px;
 }
 
+.course-selection-setting-control {
+  justify-self: end;
+  justify-content: flex-end;
+}
+
+.course-selection-inline-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+
+.course-selection-time-input {
+  width: 112px;
+}
+
 .course-selection-setting-toggle {
   justify-self: end;
   white-space: nowrap;
@@ -562,6 +579,17 @@
   .course-selection-setting-row .ant-input-number,
   .course-selection-setting-toggle {
     width: 100%;
+  }
+
+  .course-selection-setting-control,
+  .course-selection-inline-control {
+    width: 100%;
+    justify-self: stretch;
+    justify-content: flex-end;
+  }
+
+  .course-selection-inline-control > .ant-space {
+    justify-content: flex-end;
   }
 
   .course-selection-setting-toggle .ant-radio-button-wrapper {

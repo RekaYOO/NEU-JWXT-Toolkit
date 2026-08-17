@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import copy
+import html
 import logging
 import threading
 import time
@@ -24,12 +25,19 @@ from .jwxk import (
     group_course_rows, normalize_jwxk_campus_code,
 )
 from .weight_optimizer import (
+    SCENARIO_MULTIPLIERS,
+    SCENARIO_NAMES,
     WeightCandidate,
     WeightGroupTarget,
     WeightMarketCourse,
     WeightOptimizationError,
     WeightPolicy,
+    clamp,
+    compute_alpha,
+    compute_overlap_stats,
     optimize_grouped_weights,
+    predict_final_bidders,
+    proxy_probability,
 )
 
 
@@ -59,7 +67,8 @@ class CourseSelectionAutomationService:
         auth_recover_provider: Callable[[], Any] | None = None,
         client_builder: Callable[[Any], JwxkSessionClient],
         remote_guard: Callable[[], Any] | None = None,
-        notification_provider: Callable[[str, str, str], bool] | None = None,
+        notification_provider: Callable[[str, str, str, str], bool] | None = None,
+        plan_provider: Callable[[str, str], dict[str, Any]] | None = None,
     ) -> None:
         self.path = Path(data_dir) / "course_selection_tasks.json"
         self.archive_path = Path(data_dir) / "course_selection_catalog_history.json"
@@ -70,6 +79,7 @@ class CourseSelectionAutomationService:
         self.client_builder = client_builder
         self.remote_guard = remote_guard or nullcontext
         self.notification_provider = notification_provider
+        self.plan_provider = plan_provider
         self._lock = threading.RLock()
         self._wake = threading.Event()
         # Catalog archiving is deliberately isolated from the task scheduler.
@@ -140,7 +150,11 @@ class CourseSelectionAutomationService:
             "strategy_schedule_mode": "interval",
             "rebalance_seconds": 1800,
             "force_final_rebalance": True,
+            "final_check_minutes": 3,
+            "final_notice_minutes": 5,
+            "final_notice_latest_time": "23:00",
             "mail_enabled": False,
+            "notify_round_start": False,
             "notify_round_end": False,
             "notify_final_rebalance": False,
             "notify_capacity_transition": False,
@@ -149,6 +163,32 @@ class CourseSelectionAutomationService:
             "notify_grab_result": False,
             "over_capacity_ratio": 0.20,
         }
+
+    @classmethod
+    def _normalize_automation_settings(cls, value: dict[str, Any]) -> dict[str, Any]:
+        normalized = {**cls.default_automation_settings(), **value}
+        if normalized.get("strategy_schedule_mode") not in {"interval", "final_windows"}:
+            normalized["strategy_schedule_mode"] = "interval"
+        for key, fallback, low, high in (
+            ("rebalance_seconds", 1800, 600, 86400),
+            ("final_check_minutes", 3, 1, 1440),
+            ("final_notice_minutes", 5, 1, 1440),
+        ):
+            try:
+                normalized[key] = max(low, min(high, int(normalized.get(key) or fallback)))
+            except (TypeError, ValueError):
+                normalized[key] = fallback
+        try:
+            datetime.strptime(str(normalized.get("final_notice_latest_time") or ""), "%H:%M")
+        except ValueError:
+            normalized["final_notice_latest_time"] = "23:00"
+        try:
+            normalized["over_capacity_ratio"] = max(
+                0.0, min(10.0, float(normalized.get("over_capacity_ratio"))),
+            )
+        except (TypeError, ValueError):
+            normalized["over_capacity_ratio"] = 0.20
+        return normalized
 
     @staticmethod
     def _normalize_task_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -178,7 +218,7 @@ class CourseSelectionAutomationService:
         with self._lock:
             allowed = set(self.default_automation_settings())
             stored = {k: v for k, v in (self._settings.get(key) or {}).items() if k in allowed}
-            value = {**self.default_automation_settings(), **stored}
+            value = self._normalize_automation_settings(stored)
             value.update({"batch_code": batch_code, **(metadata or {})})
             return copy.deepcopy(value)
 
@@ -188,20 +228,219 @@ class CourseSelectionAutomationService:
         candidate = {k: copy.deepcopy(v) for k, v in values.items() if k in allowed}
         with self._lock:
             previous = {k: v for k, v in (self._settings.get(key) or {}).items() if k in allowed}
-            merged = {**self.default_automation_settings(), **previous, **candidate}
+            merged = self._normalize_automation_settings({**previous, **candidate})
             self._settings[key] = merged
             self._write_json_map(self.settings_path, self._settings)
             result = {**merged, "batch_code": batch_code, **(metadata or {})}
             return copy.deepcopy(result)
 
-    def _queue_notification(self, account: str, batch_code: str, subject: str, body: str, key: str) -> bool:
+    def _queue_notification(
+        self, account: str, batch_code: str, subject: str, body: str, key: str,
+        *, html_body: str = "",
+    ) -> bool:
         if not self.notification_provider:
             return False
         try:
-            return bool(self.notification_provider(subject, body, f"{account}:{batch_code}:{key}"))
+            return bool(self.notification_provider(
+                subject, body, f"{account}:{batch_code}:{key}", html_body,
+            ))
         except Exception:
             logger.exception("course selection notification enqueue failed")
             return False
+
+    @staticmethod
+    def _course_identity(course: dict[str, Any]) -> str:
+        return str(
+            course.get("class_id") or course.get("course_code") or ""
+        ).strip().casefold()
+
+    def _notification_audience(
+        self,
+        account: str,
+        batch_code: str,
+        archive: dict[str, Any],
+        *,
+        official: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return only user-owned bids, saved-plan rows and task rows.
+
+        The full round archive is a market data source, never a notification
+        subscription list.  Official volunteered rows are persisted as the
+        latest account-owned bid snapshot so later background notifications
+        can remain scoped even when JWXK is temporarily unavailable.
+        """
+        official_key = f"{account}:{batch_code}:notification-official-bids"
+        if official is not None:
+            official_rows = [
+                copy.deepcopy(item) for item in official.get("volunteered") or []
+                if isinstance(item, dict)
+            ]
+            with self._lock:
+                self._notification_state[official_key] = official_rows
+                self._write_json_map(self.notification_state_path, self._notification_state)
+        else:
+            with self._lock:
+                official_rows = copy.deepcopy(self._notification_state.get(official_key) or [])
+
+        try:
+            plan = self.plan_provider(account, batch_code) if self.plan_provider else {}
+        except Exception:
+            logger.exception("course selection notification plan read failed")
+            plan = {}
+        plan_items = [item for item in plan.get("items") or [] if isinstance(item, dict)]
+        plan_group_names = {
+            str(group.get("group_id") or ""): str(group.get("name") or "方案组")
+            for group in plan.get("groups") or [] if isinstance(group, dict)
+        }
+        with self._lock:
+            tasks = [copy.deepcopy(task) for task in self._tasks if (
+                task.get("account") == account and task.get("batch_code") == batch_code
+            )]
+
+        archived = [item for item in archive.get("courses") or [] if isinstance(item, dict)]
+        archive_by_class = {
+            str(item.get("class_id") or "").casefold(): item
+            for item in archived if item.get("class_id")
+        }
+        archive_by_code = {
+            str(item.get("course_code") or "").casefold(): item
+            for item in archived if item.get("course_code")
+        }
+        merged: dict[str, dict[str, Any]] = {}
+
+        def add(raw: dict[str, Any], source: str, *, group_name: str = "", task_name: str = "") -> None:
+            class_key = str(raw.get("class_id") or "").casefold()
+            code_key = str(raw.get("course_code") or "").casefold()
+            base = archive_by_class.get(class_key) or archive_by_code.get(code_key) or raw
+            identity = self._course_identity(raw) or self._course_identity(base)
+            if not identity:
+                return
+            current = merged.setdefault(identity, {**copy.deepcopy(base), "notification_sources": []})
+            current.update({key: value for key, value in raw.items() if value not in (None, "")})
+            if source not in current["notification_sources"]:
+                current["notification_sources"].append(source)
+            if group_name:
+                current.setdefault("notification_group_names", [])
+                if group_name not in current["notification_group_names"]:
+                    current["notification_group_names"].append(group_name)
+            if task_name:
+                current.setdefault("notification_task_names", [])
+                if task_name not in current["notification_task_names"]:
+                    current["notification_task_names"].append(task_name)
+
+        for item in plan_items:
+            group_id = str(item.get("plan_group_id") or "")
+            add(
+                item, "方案组课程",
+                group_name=str(item.get("plan_group_name") or plan_group_names.get(group_id) or "方案组"),
+            )
+        for task in tasks:
+            recommendation = task.get("weight_status", {}).get("recommendation") or []
+            recommendation_by_class = {
+                str(item.get("class_id") or "").casefold(): item
+                for item in recommendation if isinstance(item, dict) and item.get("class_id")
+            }
+            recommendation_by_code = {
+                str(item.get("course_code") or "").casefold(): item
+                for item in recommendation if isinstance(item, dict) and item.get("course_code")
+            }
+            for item in task.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                enriched = {
+                    **item,
+                    **(
+                        recommendation_by_class.get(str(item.get("class_id") or "").casefold())
+                        or recommendation_by_code.get(str(item.get("course_code") or "").casefold())
+                        or {}
+                    ),
+                }
+                add(enriched, "自动任务课程", task_name=str(task.get("name") or "自动任务"))
+        if str(archive.get("selection_type_code") or "") == "04":
+            for item in official_rows:
+                add(item, "我的投权")
+        return sorted(merged.values(), key=lambda item: (
+            str(item.get("course_name") or ""), str(item.get("class_id") or ""),
+        ))
+
+    @staticmethod
+    def _notification_probability(course: dict[str, Any]) -> str:
+        rates = course.get("scenario_success_rates") or {}
+        value = rates.get("neutral") if isinstance(rates, dict) else None
+        try:
+            return f"{float(value) * 100:.1f}%（模型代理值）"
+        except (TypeError, ValueError):
+            return "待策略模型计算"
+
+    def _notification_content(
+        self,
+        archive: dict[str, Any],
+        *,
+        heading: str,
+        reason: str,
+        courses: list[dict[str, Any]],
+    ) -> tuple[str, str]:
+        selection_type = str(archive.get("selection_type_code") or "")
+        is_weight = selection_type == "04"
+        count_label = "已投注人数" if selection_type == "04" else "已选人数"
+        plain_rows = []
+        html_rows = []
+        for course in courses:
+            count = (
+                course.get("weight_participant_count")
+                if selection_type == "04" else course.get("selected_count")
+            )
+            if count is None:
+                count = course.get("market_participant_count")
+            sources = "、".join(course.get("notification_sources") or []) or "关注课程"
+            group_text = "、".join(course.get("notification_group_names") or [])
+            task_text = "、".join(course.get("notification_task_names") or [])
+            weight = course.get("devoted_weight")
+            probability = self._notification_probability(course)
+            title = f"{course.get('course_name') or '课程'}-{course.get('course_code') or '代码待定'}"
+            detail_bits = [sources]
+            if group_text:
+                detail_bits.append(f"方案组：{group_text}")
+            if task_text:
+                detail_bits.append(f"自动任务：{task_text}")
+            weight_details = (
+                f"；当前投权：{weight if weight is not None else '未投权'}；预测选中概率：{probability}"
+                if is_weight else ""
+            )
+            plain_rows.append(
+                f"- {title}\n  {'；'.join(detail_bits)}\n  {count_label}：{count if count is not None else '待更新'} / "
+                f"容量：{course.get('capacity') if course.get('capacity') is not None else '待更新'}"
+                f"{weight_details}"
+            )
+            badges = "".join(
+                f'<span style="display:inline-block;margin:0 6px 4px 0;padding:2px 8px;border-radius:999px;background:#e8f1ff;color:#1456b8;font-size:12px">{html.escape(label)}</span>'
+                for label in course.get("notification_sources") or ["关注课程"]
+            )
+            html_rows.append(
+                '<tr><td style="padding:14px 12px;border-bottom:1px solid #edf0f5;vertical-align:top">'
+                f'<div style="font-weight:700;color:#17233d">{html.escape(title)}</div>'
+                f'<div style="margin-top:6px">{badges}</div>'
+                f'<div style="margin-top:4px;color:#667085;font-size:12px">{html.escape(" · ".join(filter(None, [f"方案组：{group_text}" if group_text else "", f"自动任务：{task_text}" if task_text else ""])))}</div>'
+                '</td>'
+                f'<td style="padding:14px 12px;border-bottom:1px solid #edf0f5;text-align:center">{html.escape(str(count if count is not None else "待更新"))} / {html.escape(str(course.get("capacity") if course.get("capacity") is not None else "待更新"))}</td>'
+                + (
+                    f'<td style="padding:14px 12px;border-bottom:1px solid #edf0f5;text-align:center">{html.escape(str(weight if weight is not None else "未投权"))}</td>'
+                    f'<td style="padding:14px 12px;border-bottom:1px solid #edf0f5;text-align:center">{html.escape(probability)}</td>'
+                    if is_weight else ""
+                )
+                + '</tr>'
+            )
+        plain = (
+            f"{heading}\n\n轮次：{archive.get('batch_name') or archive.get('batch_code')}\n"
+            f"学期：{archive.get('term_name') or archive.get('term_code') or '待定'}\n"
+            f"触发原因：{reason}\n数据时间：{datetime.now().astimezone().isoformat()}\n\n"
+            + ("\n\n".join(plain_rows) or "当前没有我的投权、方案组或自动任务课程。")
+        )
+        extra_headers = '<th style="padding:10px 12px">当前投权</th><th style="padding:10px 12px">预测选中概率</th>' if is_weight else ''
+        column_count = 4 if is_weight else 2
+        footer = "预测值是策略模型代理值，不是官方录取承诺。邮件发送失败不会触发或重放选课写操作。" if is_weight else "邮件发送失败不会触发或重放选课写操作。"
+        html_body = f'''<!doctype html><html><body style="margin:0;background:#f3f6fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;color:#25324b"><div style="max-width:760px;margin:0 auto;padding:24px 12px"><div style="background:linear-gradient(135deg,#1769e0,#6b8cff);padding:24px;border-radius:16px 16px 0 0;color:white"><div style="font-size:12px;opacity:.85">NEU JWXT TOOLKIT · 选课通知</div><h1 style="margin:8px 0 0;font-size:22px">{html.escape(heading)}</h1></div><div style="background:white;padding:20px;border-radius:0 0 16px 16px;box-shadow:0 8px 28px rgba(31,53,90,.08)"><div style="padding:12px 14px;background:#f7f9fc;border-radius:10px;line-height:1.8"><b>{html.escape(str(archive.get('batch_name') or archive.get('batch_code') or '选课轮次'))}</b><br>{html.escape(str(archive.get('term_name') or archive.get('term_code') or '学期待定'))}<br><span style="color:#667085">{html.escape(reason)}</span></div><div style="overflow-x:auto;margin-top:18px"><table style="width:100%;border-collapse:collapse;min-width:620px"><thead><tr style="background:#f7f9fc;color:#475467"><th style="padding:10px 12px;text-align:left">课程与来源</th><th style="padding:10px 12px">{html.escape(count_label)} / 容量</th>{extra_headers}</tr></thead><tbody>{''.join(html_rows) or f'<tr><td colspan="{column_count}" style="padding:24px;text-align:center;color:#667085">当前没有需要通知的课程</td></tr>'}</tbody></table></div><p style="margin:18px 0 0;color:#98a2b3;font-size:12px;line-height:1.6">{html.escape(footer)}</p></div></div></body></html>'''
+        return plain, html_body
 
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1015,6 +1254,7 @@ class CourseSelectionAutomationService:
                     weight_status = task.setdefault("weight_status", {})
                     for key in (
                         "final_5_executed", "final_3_executed", "final_rebalance_executed",
+                        "final_notice_executed", "final_check_executed",
                         "final_window_requested", "final_rebalance_requested",
                     ):
                         weight_status.pop(key, None)
@@ -1677,6 +1917,183 @@ class CourseSelectionAutomationService:
         except ValueError:
             return None
 
+    @staticmethod
+    def _archive_begin_time(archive: dict[str, Any]) -> datetime | None:
+        try:
+            value = datetime.fromisoformat(str(archive.get("begin_time") or ""))
+            return value.astimezone() if value.tzinfo else value.astimezone()
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _final_notification_times(
+        end: datetime, settings: dict[str, Any],
+    ) -> tuple[datetime, datetime]:
+        notice = end - timedelta(minutes=max(1, int(settings.get("final_notice_minutes") or 5)))
+        latest_text = str(settings.get("final_notice_latest_time") or "23:00")
+        try:
+            hour, minute = (int(part) for part in latest_text.split(":", 1))
+            latest = notice.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            notice = min(notice, latest)
+        except (TypeError, ValueError):
+            pass
+        check = end - timedelta(minutes=max(1, int(settings.get("final_check_minutes") or 3)))
+        return notice, check
+
+    def _running_weight_task(self, account: str, batch_code: str) -> dict[str, Any] | None:
+        with self._lock:
+            return next((task for task in self._tasks if (
+                task.get("account") == account
+                and task.get("batch_code") == batch_code
+                and task.get("task_type") == "weight_strategy"
+                and task.get("desired_state") == "running"
+                and task.get("status") in {"running", "waiting"}
+            )), None)
+
+    def _attach_notification_probabilities(
+        self,
+        courses: list[dict[str, Any]],
+        archive: dict[str, Any],
+        *,
+        budget: int,
+        minimum: int,
+        grade_size: int,
+    ) -> None:
+        market = [WeightMarketCourse(
+            course_id=str(item.get("class_id") or ""),
+            capacity=max(1, int(item.get("capacity") or 0)),
+            bidders=max(0, int(
+                item.get("weight_participant_count")
+                if item.get("weight_participant_count") is not None
+                else item.get("market_participant_count") or 0
+            )),
+        ) for item in archive.get("courses") or [] if (
+            str(item.get("class_id") or "") and int(item.get("capacity") or 0) > 0
+            and str(item.get("teaching_class_type") or "") != "ALLKC"
+        )]
+        if not market or budget < minimum or grade_size <= 0:
+            return
+        _, average_raw, max_entries = compute_overlap_stats(
+            grade_size, market, WeightPolicy(budget=budget, min_bid=minimum),
+        )
+        average = clamp(average_raw, 1.0, max_entries)
+        entries = [clamp(average * factor, 1.0, max_entries) for factor in SCENARIO_MULTIPLIERS]
+        forecasts = [predict_final_bidders(grade_size, market, value) for value in entries]
+        typical_bids = [budget / max(value, 1e-9) for value in entries]
+        for course in courses:
+            class_id = str(course.get("class_id") or "")
+            try:
+                capacity = max(1, int(course.get("capacity") or 0))
+                bidders = max(0, int(
+                    course.get("weight_participant_count")
+                    if course.get("weight_participant_count") is not None
+                    else course.get("market_participant_count") or 0
+                ))
+                bid = max(minimum, int(course.get("devoted_weight") or minimum))
+            except (TypeError, ValueError):
+                continue
+            if bidders < capacity:
+                rates = {name: 1.0 for name in SCENARIO_NAMES}
+            else:
+                rates = {}
+                for index, name in enumerate(SCENARIO_NAMES):
+                    predicted = forecasts[index].get(class_id, float(bidders))
+                    alpha = compute_alpha(
+                        capacity, predicted / float(capacity), typical_bids[index],
+                    )
+                    rates[name] = proxy_probability(bid, alpha)
+            course["scenario_success_rates"] = rates
+
+    def _refresh_notification_audience(
+        self,
+        auth: Any,
+        account: str,
+        archive: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        batch_code = str(archive.get("batch_code") or "")
+        client = self.client_builder(auth)
+        with self.remote_guard():
+            if self.auth_provider() is not auth:
+                raise NEULoginError("登录身份已切换")
+            official = client.get_selected(batch_code=batch_code)
+            budget_info = client.get_weight_budget(batch_code=batch_code)
+        audience = self._notification_audience(
+            account, batch_code, archive, official=official,
+        )
+        refreshed = []
+        for course in audience:
+            class_id = str(course.get("class_id") or "")
+            course_code = str(course.get("course_code") or "")
+            scope = str(course.get("teaching_class_type") or "")
+            if not class_id or not course_code or scope in {"", "ALL", "ROUND", "ALLKC"}:
+                refreshed.append(course)
+                continue
+            with self.remote_guard():
+                if self.auth_provider() is not auth:
+                    raise NEULoginError("登录身份已切换")
+                result = client.search_courses(
+                    batch_code=batch_code, teaching_class_type=scope,
+                    page_number=1, page_size=50, keyword=course_code,
+                )
+            latest = next((item for item in result.get("courses") or [] if (
+                str(item.get("class_id") or "") == class_id
+            )), None)
+            refreshed.append({**course, **(latest or {})})
+        current_weight = sum(
+            int(item.get("devoted_weight") or 0) for item in official.get("volunteered") or []
+        )
+        task = self._running_weight_task(account, batch_code)
+        grade_size = int((task or {}).get("grade_size") or 5000)
+        self._attach_notification_probabilities(
+            refreshed, archive,
+            budget=int(budget_info.get("remaining") or 0) + current_weight,
+            minimum=max(1, int(budget_info.get("minimum") or 5)),
+            grade_size=grade_size,
+        )
+        return refreshed
+
+    def _notify_scheduled_snapshot(
+        self,
+        account: str,
+        archive: dict[str, Any],
+        auth: Any,
+        *,
+        event: str,
+    ) -> None:
+        batch_code = str(archive.get("batch_code") or "")
+        settings = self.get_automation_settings(account, batch_code)
+        if not settings.get("mail_enabled") or not settings.get("notify_final_rebalance"):
+            return
+        state_key = f"{account}:{batch_code}:{event}_notification_sent"
+        with self._lock:
+            if self._notification_state.get(state_key):
+                return
+        try:
+            courses = self._refresh_notification_audience(auth, account, archive)
+        except (NEULoginError, JwxkError, requests.RequestException, ValueError) as error:
+            logger.info(
+                "jwxk scheduled notification refresh failed batch=%s event=%s error=%s",
+                batch_code, event, type(error).__name__,
+            )
+            return
+        is_check = event == "final_check"
+        heading = "结束前最终检查结果" if is_check else "临近结束的策略状态"
+        reason = (
+            "当前没有运行中的自动投权任务，因此本次只读检查人数、容量、投权和模型代理值，没有执行投权。"
+            if is_check else
+            "已到你设置的临近结束通知时间；本邮件展示此刻最新状态。"
+        )
+        plain, html_body = self._notification_content(
+            archive, heading=heading, reason=reason, courses=courses,
+        )
+        if self._queue_notification(
+            account, batch_code, f"JWXK {heading} · {archive.get('batch_name') or batch_code}",
+            plain, event, html_body=html_body,
+        ):
+            with self._lock:
+                self._notification_state[state_key] = datetime.now().astimezone().isoformat()
+                self._write_json_map(self.notification_state_path, self._notification_state)
+
     def _tick_catalog_archives(self) -> None:
         auth = self.auth_recover_provider()
         if not auth:
@@ -1689,9 +2106,32 @@ class CourseSelectionAutomationService:
                 if item.get("account") == account and not item.get("archived")
             ]
         for archive in candidates:
+            begin = self._archive_begin_time(archive)
             end = self._archive_end_time(archive)
             if end is None:
                 continue
+            if begin is not None and now >= begin and now < end:
+                self._notify_round_start(account, archive)
+            if str(archive.get("selection_type_code") or "") == "04" and now < end:
+                settings = self.get_automation_settings(
+                    account, str(archive.get("batch_code") or ""),
+                )
+                notice_at, check_at = self._final_notification_times(end, settings)
+                if begin is not None:
+                    notice_at = max(notice_at, begin)
+                    check_at = max(check_at, begin)
+                running = self._running_weight_task(
+                    account, str(archive.get("batch_code") or ""),
+                )
+                final_mode = str(settings.get("strategy_schedule_mode") or "interval") == "final_windows"
+                if now >= notice_at and (running is None or not final_mode):
+                    self._notify_scheduled_snapshot(
+                        account, archive, auth, event="final_notice",
+                    )
+                if settings.get("force_final_rebalance", True) and now >= check_at and running is None:
+                    self._notify_scheduled_snapshot(
+                        account, archive, auth, event="final_check",
+                    )
             if now >= end - timedelta(hours=5) and now < end:
                 self._notify_underfilled_warning(account, archive, auth)
             if now >= end and archive.get("final_refresh_status") == "complete":
@@ -1712,6 +2152,31 @@ class CourseSelectionAutomationService:
                     pass
             self._refresh_archive_counts(auth, archive)
 
+    def _notify_round_start(self, account: str, archive: dict[str, Any]) -> None:
+        batch_code = str(archive.get("batch_code") or "")
+        settings = self.get_automation_settings(account, batch_code)
+        if not settings.get("mail_enabled") or not settings.get("notify_round_start"):
+            return
+        key = f"{account}:{batch_code}:round_start_sent"
+        with self._lock:
+            if self._notification_state.get(key):
+                return
+        courses = self._notification_audience(account, batch_code, archive)
+        plain, html_body = self._notification_content(
+            archive,
+            heading="选课轮次已经开始",
+            reason="轮次已到官方开始时间；以下仅列出你的投权、方案组和自动任务课程。",
+            courses=courses,
+        )
+        if self._queue_notification(
+            account, batch_code,
+            f"JWXK 轮次开始 · {archive.get('batch_name') or batch_code}",
+            plain, "round-start", html_body=html_body,
+        ):
+            with self._lock:
+                self._notification_state[key] = datetime.now().astimezone().isoformat()
+                self._write_json_map(self.notification_state_path, self._notification_state)
+
     def _notify_round_end_summary(self, account: str, archive: dict[str, Any]) -> None:
         settings = self.get_automation_settings(account, str(archive.get("batch_code") or ""))
         if not settings.get("mail_enabled") or not settings.get("notify_round_end"):
@@ -1720,18 +2185,21 @@ class CourseSelectionAutomationService:
         with self._lock:
             if self._notification_state.get(key):
                 return
-            rows = []
-            selection_type = str(archive.get("selection_type_code") or "")
-            for course in archive.get("courses") or []:
-                if str(course.get("teaching_class_type") or "") == "ALLKC":
-                    continue
-                count = course.get("weight_participant_count") if selection_type == "04" else course.get("selected_count")
-                rows.append(f"- {course.get('course_name') or '课程'}-{course.get('course_code') or ''}：{('已投注人数' if selection_type == '04' else '已选人数')} {count if count is not None else '待更新'} / 容量 {course.get('capacity') or '待更新'}")
+        courses = self._notification_audience(
+            account, str(archive.get("batch_code") or ""), archive,
+        )
+        plain, html_body = self._notification_content(
+            archive,
+            heading="选课轮次结束总结",
+            reason="轮次已结束；报告只包含你的投权、方案组和自动任务课程。",
+            courses=courses,
+        )
         queued = self._queue_notification(
             account, str(archive.get("batch_code") or ""),
             f"JWXK 轮次结束总结 · {archive.get('batch_name') or archive.get('batch_code')}",
-            f"轮次：{archive.get('batch_name') or archive.get('batch_code')}\n学期：{archive.get('term_code') or ''}\n\n" + ("\n".join(rows) or "无课程数据"),
+            plain,
             "round-end-summary",
+            html_body=html_body,
         )
         if queued:
             with self._lock:
@@ -1745,8 +2213,9 @@ class CourseSelectionAutomationService:
         if not settings.get("mail_enabled") or not settings.get("notify_underfilled_warning"):
             return
         selection_type = str(archive.get("selection_type_code") or "")
-        # 这项提醒属于权重轮次，只观察当前账号仍在官方已投结果中的课程。
-        # 轮次完整目录只用于补充实时人数和容量，不能把全市场低人数课程发给用户。
+        # This warning belongs to weight rounds.  The official bid feed and
+        # saved plan/task rows define the audience; the complete archive only
+        # supplies counts and must never turn the whole market into recipients.
         if selection_type != "04":
             return
         batch_code = str(archive.get("batch_code") or "")
@@ -1771,29 +2240,18 @@ class CourseSelectionAutomationService:
                 batch_code, type(error).__name__,
             )
             return
-        archive_courses = list(archive.get("courses") or [])
-        by_class = {
-            str(course.get("class_id") or ""): course
-            for course in archive_courses if str(course.get("class_id") or "")
-        }
-        by_code = {
-            str(course.get("course_code") or "").casefold(): course
-            for course in archive_courses if str(course.get("course_code") or "")
-        }
+        audience = self._notification_audience(
+            account, batch_code, archive, official=official,
+        )
         rows = []
         seen: set[str] = set()
         with self._lock:
-            for selection in official.get("volunteered") or []:
-                class_id = str(selection.get("class_id") or "")
-                course_code = str(selection.get("course_code") or "").casefold()
-                identity = class_id or course_code
+            for course in audience:
+                identity = self._course_identity(course)
                 if not identity or identity in seen:
                     continue
                 seen.add(identity)
-                course = by_class.get(class_id) or by_code.get(course_code) or selection
                 count = course.get("weight_participant_count")
-                if count is None:
-                    count = selection.get("weight_participant_count")
                 if count is not None and int(count) < 10:
                     key = f"{account}:{batch_code}:underfilled:{identity}"
                     if self._notification_state.get(key):
@@ -1803,11 +2261,17 @@ class CourseSelectionAutomationService:
             self._write_json_map(self.notification_state_path, self._notification_state)
         if not rows:
             return
-        body = "以下是你当前已投权课程中的开课风险提示；人数不足十人不代表官方最终停开决定。\n\n" + "\n".join(
-            f"- {course.get('course_name') or course.get('course_code') or '课程'} - {count}/{course.get('capacity') if course.get('capacity') is not None else '待更新'}"
-            for course, _, count in rows
+        risky = [course for course, _, _ in rows]
+        body, html_body = self._notification_content(
+            archive,
+            heading="关注课程开课风险提示",
+            reason="结束前检查发现人数不足 10；这只是风险提示，不代表官方最终停开决定。",
+            courses=risky,
         )
-        if self._queue_notification(account, batch_code, "JWXK 已投权课程开课风险提示", body, "underfilled-warning"):
+        if self._queue_notification(
+            account, batch_code, "JWXK 关注课程开课风险提示", body,
+            "underfilled-warning", html_body=html_body,
+        ):
             with self._lock:
                 for _, key, _ in rows:
                     self._notification_state[key] = datetime.now().astimezone().isoformat()
@@ -1839,6 +2303,20 @@ class CourseSelectionAutomationService:
         refreshed: dict[str, dict[str, Any]] = {}
         try:
             client = self.client_builder(auth)
+            if str(archive.get("selection_type_code") or "") == "04":
+                try:
+                    with self.remote_guard():
+                        if self.auth_provider() is not auth:
+                            raise NEULoginError("登录身份已切换")
+                        official = client.get_selected(batch_code=archive["batch_code"])
+                    self._notification_audience(
+                        str(archive.get("account") or ""), str(archive.get("batch_code") or ""),
+                        archive, official=official,
+                    )
+                except (AttributeError, NEULoginError, JwxkError, requests.RequestException, ValueError):
+                    # Final market snapshots remain useful even when the
+                    # account-owned bid feed is temporarily unavailable.
+                    pass
             for (scope, course_code), class_ids in targets.items():
                 if self._stop.is_set():
                     return
@@ -1886,8 +2364,13 @@ class CourseSelectionAutomationService:
             return
         selection_type = str(archive.get("selection_type_code") or "")
         changed = []
+        threshold = float(settings.get("over_capacity_ratio") or 0.2)
+        audience = self._notification_audience(account, batch_code, archive)
+        audience_ids = {self._course_identity(course) for course in audience}
         with self._lock:
             for course in archive.get("courses") or []:
+                if self._course_identity(course) not in audience_ids:
+                    continue
                 if str(course.get("teaching_class_type") or "") == "ALLKC":
                     continue
                 capacity = int(course.get("capacity") or 0)
@@ -1899,20 +2382,60 @@ class CourseSelectionAutomationService:
                 state = "over" if count > capacity else "full" if count == capacity else "under"
                 key = f"{account}:{batch_code}:capacity:{course.get('class_id')}"
                 previous = self._notification_state.get(key) or {}
-                if previous.get("state") == "under" and state in {"full", "over"}:
-                    changed.append((course, previous, state, ratio))
-                elif previous.get("state") in {"under", "full"} and ratio >= float(settings.get("over_capacity_ratio") or 0.2) and settings.get("notify_over_capacity"):
-                    changed.append((course, previous, state, ratio))
-                self._notification_state[key] = {"state": state, "count": count, "capacity": capacity, "ratio": ratio}
+                threshold_reached = state == "over" and ratio >= threshold
+                previous_threshold_reached = bool(previous.get(
+                    "threshold_reached",
+                    previous.get("state") == "over"
+                    and float(previous.get("ratio") or 0) >= threshold,
+                ))
+                reasons = []
+                if (
+                    settings.get("notify_capacity_transition")
+                    and previous.get("state") == "under"
+                    and state in {"full", "over"}
+                ):
+                    reasons.append("课程从未满变为满员或超额")
+                if (
+                    settings.get("notify_over_capacity")
+                    and previous
+                    and not previous_threshold_reached
+                    and threshold_reached
+                ):
+                    reasons.append(f"课程重新达到超额提醒阈值 {threshold:.1%}")
+                event_sequence = int(previous.get("event_sequence") or 0)
+                if reasons:
+                    event_sequence += 1
+                    changed.append((course, previous, state, ratio, reasons, event_sequence))
+                self._notification_state[key] = {
+                    "state": state,
+                    "count": count,
+                    "capacity": capacity,
+                    "ratio": ratio,
+                    "threshold_reached": threshold_reached,
+                    "event_sequence": event_sequence,
+                }
             self._write_json_map(self.notification_state_path, self._notification_state)
-        for course, previous, state, ratio in changed:
-            if state in {"full", "over"} and (state != "over" or settings.get("notify_over_capacity") or settings.get("notify_capacity_transition")):
-                self._queue_notification(
-                    account, batch_code,
-                    f"JWXK 人数状态变化 · {course.get('course_name') or course.get('course_code')}",
-                    f"课程：{course.get('course_name')}-{course.get('course_code')}\n旧状态：{previous.get('state')}\n新状态：{state}\n人数：{course.get('weight_participant_count') if selection_type == '04' else course.get('selected_count')} / 容量：{course.get('capacity')}\n超额比例：{ratio:.1%}",
-                    f"capacity:{course.get('class_id')}:{state}:{int(ratio * 10000)}",
-                )
+        for course, previous, state, ratio, reasons, event_sequence in changed:
+            decorated = next((
+                item for item in audience
+                if self._course_identity(item) == self._course_identity(course)
+            ), course)
+            body, html_body = self._notification_content(
+                archive,
+                heading="关注课程人数状态变化",
+                reason=(
+                    f"{'；'.join(reasons)}。人数状态由 {previous.get('state') or '未知'} 变为 {state}，"
+                    f"当前超额比例 {ratio:.1%}。回落到对应阈值以下后，再次上涨会重新提醒。"
+                ),
+                courses=[decorated],
+            )
+            self._queue_notification(
+                account, batch_code,
+                f"JWXK 人数状态变化 · {course.get('course_name') or course.get('course_code')}",
+                body,
+                f"capacity:{course.get('class_id')}:event:{event_sequence}",
+                html_body=html_body,
+            )
 
     @classmethod
     def _inside_window(cls, task: dict[str, Any]) -> bool:
@@ -2225,23 +2748,41 @@ class CourseSelectionAutomationService:
         end = self._parse_task_time(task.get("end_at"))
         now = datetime.now(_OFFICIAL_TIMEZONE)
         final_mode = str(settings.get("strategy_schedule_mode") or "interval") == "final_windows"
+        notice_at, check_at = self._final_notification_times(end, settings) if end else (None, None)
         window_key = ""
-        if end and now >= end - timedelta(minutes=3) and now <= end:
-            window_key = "final_3"
-        elif end and now >= end - timedelta(minutes=5) and now < end - timedelta(minutes=3):
-            window_key = "final_5"
-        force_final = bool(settings.get("force_final_rebalance", True)) and bool(end) and now >= end - timedelta(minutes=3) and now <= end
+        if (
+            final_mode and settings.get("force_final_rebalance", True)
+            and check_at and now >= check_at and now <= end
+            and not weight_status.get("final_check_executed")
+        ):
+            window_key = "final_check"
+        elif (
+            final_mode and notice_at and now >= notice_at and now <= end
+            and not weight_status.get("final_notice_executed")
+        ):
+            window_key = "final_notice"
+        force_final = (
+            bool(settings.get("force_final_rebalance", True))
+            and bool(end) and bool(check_at) and now >= check_at and now <= end
+        )
         if final_mode and window_key and not weight_status.get(f"{window_key}_executed"):
             weight_status["final_window_requested"] = window_key
-            task["message"] = f"已进入轮次结束前 {5 if window_key == 'final_5' else 3} 分钟策略窗口，正在读取最新人数"
+            minutes = int(
+                (
+                    settings.get("final_notice_minutes")
+                    if window_key == "final_notice" else settings.get("final_check_minutes")
+                ) or 3
+            )
+            task["message"] = f"已进入轮次结束前 {minutes} 分钟策略窗口，正在读取最新人数"
             task["last_attempt_at"] = None
-            self._append_execution_event(task, f"触发轮次结束前 {5 if window_key == 'final_5' else 3} 分钟策略", stage_code=window_key)
+            self._append_execution_event(task, f"触发轮次结束前 {minutes} 分钟策略", stage_code=window_key)
             self._persist_task(task)
         elif not final_mode and force_final and not weight_status.get("final_rebalance_executed"):
             weight_status["final_rebalance_requested"] = True
-            task["message"] = "已进入轮次结束前 3 分钟强制策略窗口，正在读取最新人数"
+            minutes = int(settings.get("final_check_minutes") or 3)
+            task["message"] = f"已进入轮次结束前 {minutes} 分钟最终检查窗口，正在读取最新人数"
             task["last_attempt_at"] = None
-            self._append_execution_event(task, "触发轮次结束前 3 分钟强制策略", stage_code="final_rebalance")
+            self._append_execution_event(task, f"触发轮次结束前 {minutes} 分钟最终检查", stage_code="final_rebalance")
             self._persist_task(task)
         busy = bool(
             weight_status.get("inflight")
@@ -2377,6 +2918,16 @@ class CourseSelectionAutomationService:
                 task["status"] = "running"
                 self._set_execution_stage(task, "selected_results", "正在读取官方已投结果和当前权重")
                 official = client.get_selected(batch_code=task["batch_code"])
+                with self._lock:
+                    notification_archive = next((copy.deepcopy(item) for item in self._archives if (
+                        item.get("account") == task.get("account")
+                        and item.get("batch_code") == task.get("batch_code")
+                    )), None)
+                if notification_archive is not None:
+                    self._notification_audience(
+                        str(task.get("account") or ""), str(task.get("batch_code") or ""),
+                        notification_archive, official=official,
+                    )
                 volunteered = list(official.get("volunteered") or [])
                 confirmed = list(official.get("selected") or [])
                 official_by_class = {
@@ -2730,25 +3281,68 @@ class CourseSelectionAutomationService:
                 weight_status["final_rebalance_executed"] = True
                 weight_status.pop("final_rebalance_requested", None)
                 if settings.get("mail_enabled") and settings.get("notify_final_rebalance"):
-                    rows = "\n".join(
-                        f"- {item.get('course_name') or '课程'}-{item.get('course_code') or ''}：建议 {int(item.get('weight') or 0)}，已投注人数 {int(item.get('participants') or 0)} / 容量 {int(item.get('capacity') or 0)}"
-                        for item in desired
-                    ) or "无推荐投权课程"
+                    audience = self._notification_audience(
+                        str(task.get("account") or ""), str(task.get("batch_code") or ""),
+                        archive, official=official,
+                    )
+                    rec_by_class = {
+                        str(item.get("class_id") or ""): item for item in recommendation
+                    }
+                    audience = [
+                        {**item, **rec_by_class.get(str(item.get("class_id") or ""), {})}
+                        for item in audience
+                    ]
+                    body, html_body = self._notification_content(
+                        archive,
+                        heading="结束前最终策略检查结果",
+                        reason=(
+                            f"已按结束前 {int(settings.get('final_check_minutes') or 3)} 分钟配置重新计算。"
+                            + (f"准备调整 {len(pending_drop)} 项旧权重并提交 {len(pending_add)} 项新权重。" if pending_drop or pending_add else "本次建议无需调整权重。")
+                        ),
+                        courses=audience,
+                    )
                     self._queue_notification(
                         str(task.get("account") or ""), str(task.get("batch_code") or ""),
-                        f"JWXK 强制策略结果 · {task.get('batch_code')}",
-                        f"轮次结束前 3 分钟强制策略已完成。\n\n{rows}\n\n数据时间：{now}",
+                        f"JWXK 最终策略检查结果 · {task.get('batch_code')}",
+                        body,
                         "final-rebalance",
+                        html_body=html_body,
                     )
             if completed_window:
                 weight_status[f"{completed_window}_executed"] = True
+                if completed_window == "final_check":
+                    # A later, fresher final check supersedes a missed notice
+                    # window after service downtime; do not run the older
+                    # calculation out of order.
+                    weight_status["final_notice_executed"] = True
                 weight_status.pop("final_window_requested", None)
                 if settings.get("mail_enabled") and settings.get("notify_final_rebalance"):
+                    audience = self._notification_audience(
+                        str(task.get("account") or ""), str(task.get("batch_code") or ""),
+                        archive, official=official,
+                    )
+                    rec_by_class = {
+                        str(item.get("class_id") or ""): item for item in recommendation
+                    }
+                    audience = [
+                        {**item, **rec_by_class.get(str(item.get("class_id") or ""), {})}
+                        for item in audience
+                    ]
+                    label = "临近结束策略结果" if completed_window == "final_notice" else "结束前最终策略检查结果"
+                    body, html_body = self._notification_content(
+                        archive,
+                        heading=label,
+                        reason=(
+                            "已读取最新人数并完成策略计算；运行中的自动投权任务将按安全流程处理发生变化的权重。"
+                        ),
+                        courses=audience,
+                    )
                     self._queue_notification(
                         str(task.get("account") or ""), str(task.get("batch_code") or ""),
-                        f"JWXK {completed_window} 策略结果 · {task.get('batch_code')}",
-                        f"轮次结束前窗口策略已完成：{completed_window}\n数据时间：{now}",
+                        f"JWXK {label} · {task.get('batch_code')}",
+                        body,
                         completed_window,
+                        html_body=html_body,
                     )
                 task["group_results"] = {
                     item["group_id"]: {
@@ -2990,11 +3584,32 @@ class CourseSelectionAutomationService:
                 key = f"{task.get('account')}:{task.get('batch_code')}:{task.get('task_id')}:{status}"
                 with self._lock:
                     already = self._notification_state.get(key)
+                    archive = next((copy.deepcopy(item) for item in self._archives if (
+                        item.get("account") == task.get("account")
+                        and item.get("batch_code") == task.get("batch_code")
+                    )), None)
+                courses = self._notification_audience(
+                    str(task.get("account") or ""), str(task.get("batch_code") or ""),
+                    archive or {
+                        "batch_code": task.get("batch_code"), "batch_name": task.get("name"),
+                        "term_code": task.get("term_code"), "selection_type_code": "02",
+                    },
+                )
+                body, html_body = self._notification_content(
+                    archive or {
+                        "batch_code": task.get("batch_code"), "batch_name": task.get("name"),
+                        "term_code": task.get("term_code"), "selection_type_code": "02",
+                    },
+                    heading=f"抢课任务{'成功' if status == 'success' else '需要核验'}",
+                    reason=f"任务“{task.get('name') or task.get('task_id')}”：{message}",
+                    courses=courses,
+                )
                 if not already and self._queue_notification(
                     str(task.get("account") or ""), str(task.get("batch_code") or ""),
                     f"JWXK 抢课任务{'成功' if status == 'success' else '待核验'} · {task.get('name') or task.get('task_id')}",
-                    f"任务：{task.get('name') or task.get('task_id')}\n状态：{status}\n说明：{message}\n时间：{task.get('updated_at')}",
+                    body,
                     f"grab-result:{task.get('task_id')}:{status}",
+                    html_body=html_body,
                 ):
                     with self._lock:
                         self._notification_state[key] = task.get("updated_at")

@@ -34,7 +34,9 @@ describe('JWXK automation settings API', () => {
     await apiModule.updateJwxkAutomationSettings('batch-1', {
       batch_code: 'batch-1', batch_name: '轮次', smtp_configured: true,
       smtp_status: '邮件通道可用', strategy_schedule_mode: 'final_windows',
-      rebalance_seconds: 600, mail_enabled: true, notify_round_end: true,
+      rebalance_seconds: 600, final_check_minutes: 4,
+      final_notice_minutes: 20, final_notice_latest_time: '21:30',
+      mail_enabled: true, notify_round_start: true, notify_round_end: true,
       unknown_readonly_field: 'ignored',
     });
 
@@ -43,7 +45,11 @@ describe('JWXK automation settings API', () => {
       {
         strategy_schedule_mode: 'final_windows',
         rebalance_seconds: 600,
+        final_check_minutes: 4,
+        final_notice_minutes: 20,
+        final_notice_latest_time: '21:30',
         mail_enabled: true,
+        notify_round_start: true,
         notify_round_end: true,
       },
     );

@@ -1106,7 +1106,8 @@ export const getJwxkAutomationSettings = async (batchCode) => {
 export const updateJwxkAutomationSettings = async (batchCode, payload) => {
   const writableKeys = [
     'strategy_schedule_mode', 'rebalance_seconds', 'force_final_rebalance',
-    'mail_enabled', 'notify_round_end', 'notify_final_rebalance',
+    'final_check_minutes', 'final_notice_minutes', 'final_notice_latest_time',
+    'mail_enabled', 'notify_round_start', 'notify_round_end', 'notify_final_rebalance',
     'notify_capacity_transition', 'notify_over_capacity',
     'notify_underfilled_warning', 'notify_grab_result', 'over_capacity_ratio',
   ];

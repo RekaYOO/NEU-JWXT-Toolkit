@@ -732,6 +732,23 @@ def test_test_email_is_a_general_system_mail_check(tmp_path, monkeypatch):
     assert "具体业务功能" in sent[0][1]
 
 
+def test_system_notification_outbox_delivers_plain_and_html_alternatives(tmp_path, monkeypatch):
+    service, _, _ = build_service(tmp_path)
+    service.update_config(mail_config())
+    sent = []
+    monkeypatch.setattr(
+        service, "_send_email",
+        lambda config, subject, body, html_body="": sent.append((subject, body, html_body)),
+    )
+
+    assert service.queue_system_notification(
+        "选课提醒", "纯文本内容", "batch:event", "<html><body>美观内容</body></html>",
+    ) is True
+    service._flush_outbox()
+
+    assert sent == [("选课提醒", "纯文本内容", "<html><body>美观内容</body></html>")]
+
+
 def test_configured_site_uses_one_time_page_before_starting_qr(tmp_path, monkeypatch):
     academic = FakeAcademic()
     storage = FakeStorage()

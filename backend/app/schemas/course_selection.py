@@ -446,7 +446,11 @@ class JwxkAutomationSettings(StrictModel):
     strategy_schedule_mode: Literal["interval", "final_windows"] = "interval"
     rebalance_seconds: int = Field(default=1800, ge=600, le=86400)
     force_final_rebalance: bool = True
+    final_check_minutes: int = Field(default=3, ge=1, le=1440)
+    final_notice_minutes: int = Field(default=5, ge=1, le=1440)
+    final_notice_latest_time: str = Field(default="23:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     mail_enabled: bool = False
+    notify_round_start: bool = False
     notify_round_end: bool = False
     notify_final_rebalance: bool = False
     notify_capacity_transition: bool = False

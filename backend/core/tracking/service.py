@@ -13,6 +13,7 @@ import uuid
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from email.header import Header
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
 from pathlib import Path
@@ -216,11 +217,15 @@ class GradeTrackingService:
             )
             return {"configured": configured, "status": "邮件通道可用" if configured else "请前往系统设置配置邮件"}
 
-    def queue_system_notification(self, subject: str, body: str, dedupe_key: str) -> bool:
+    def queue_system_notification(
+        self, subject: str, body: str, dedupe_key: str, html_body: str = "",
+    ) -> bool:
         """Queue a non-grade notification in the existing durable SMTP outbox."""
         if not self.get_mail_status()["configured"]:
             return False
-        self._queue_email(subject, body, f"course-selection:{dedupe_key}")
+        self._queue_email(
+            subject, body, f"course-selection:{dedupe_key}", html_body=html_body,
+        )
         self._wake.set()
         return True
 
@@ -1133,7 +1138,9 @@ class GradeTrackingService:
             f"检查时间：{current['updated_at']}"
         )
 
-    def _queue_email(self, subject: str, body: str, dedupe_key: str) -> None:
+    def _queue_email(
+        self, subject: str, body: str, dedupe_key: str, *, html_body: str = "",
+    ) -> None:
         with self._lock:
             if any(item.get("dedupe_key") == dedupe_key for item in self._outbox):
                 return
@@ -1142,6 +1149,7 @@ class GradeTrackingService:
                 "dedupe_key": dedupe_key,
                 "subject": subject,
                 "body": body,
+                "html_body": html_body,
                 "created_at": _iso(),
                 "attempts": 0,
             }
@@ -1167,7 +1175,12 @@ class GradeTrackingService:
                 return
         try:
             self._validate_config(config, require_complete=True)
-            self._send_email(config, message["subject"], message["body"])
+            if message.get("html_body"):
+                self._send_email(
+                    config, message["subject"], message["body"], message["html_body"],
+                )
+            else:
+                self._send_email(config, message["subject"], message["body"])
         except Exception as error:
             with self._lock:
                 if self._outbox and self._outbox[0]["id"] == message["id"]:
@@ -1192,8 +1205,15 @@ class GradeTrackingService:
                 self._save_state()
 
     @staticmethod
-    def _send_email(config: dict[str, Any], subject: str, body: str) -> None:
-        message = MIMEText(body, "plain", "utf-8")
+    def _send_email(
+        config: dict[str, Any], subject: str, body: str, html_body: str = "",
+    ) -> None:
+        if html_body:
+            message: Any = MIMEMultipart("alternative")
+            message.attach(MIMEText(body, "plain", "utf-8"))
+            message.attach(MIMEText(html_body, "html", "utf-8"))
+        else:
+            message = MIMEText(body, "plain", "utf-8")
         message["Subject"] = Header(subject, "utf-8")
         message["From"] = config["from_email"]
         message["To"] = config["to_email"]

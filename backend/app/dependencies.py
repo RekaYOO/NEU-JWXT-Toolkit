@@ -135,6 +135,17 @@ def _jwxk_automation_auth() -> Optional[NEUAuthClient]:
     return _get_auth_client_unlocked()
 
 
+def _jwxk_automation_plan(account: str, batch_code: str) -> dict:
+    config = _storage.load_config()
+    if not isinstance(config, dict):
+        return {}
+    plans = config.get("course_selection_plans")
+    if not isinstance(plans, dict):
+        return {}
+    value = plans.get(f"{account}:{batch_code}")
+    return value if isinstance(value, dict) else {}
+
+
 _course_selection_automation = CourseSelectionAutomationService(
     _storage.config.data_dir,
     auth_provider=lambda: _auth_sessions.peek_client(),
@@ -144,7 +155,10 @@ _course_selection_automation = CourseSelectionAutomationService(
     auth_recover_provider=_jwxk_automation_auth,
     client_builder=_jwxk_automation_client,
     remote_guard=background_remote_session_guard,
-    notification_provider=lambda subject, body, key: _grade_tracker.queue_system_notification(subject, body, key),
+    notification_provider=lambda subject, body, key, html_body="": _grade_tracker.queue_system_notification(
+        subject, body, key, html_body,
+    ),
+    plan_provider=_jwxk_automation_plan,
 )
 
 

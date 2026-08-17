@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Checkbox, Col, Divider, Empty, InputNumber, Modal, QRCode, Radio, Row, Select, Space, Spin, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Checkbox, Col, Divider, Empty, Input, InputNumber, Modal, QRCode, Radio, Row, Select, Space, Spin, Tag, Typography, message } from 'antd';
 import { ClockCircleOutlined, DeleteOutlined, HistoryOutlined, QrcodeOutlined, QuestionCircleOutlined, ReloadOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -43,7 +43,7 @@ const CourseSelectionPage = () => {
     width: 680,
     content: (
       <div className="course-selection-time-change-list">
-        <Paragraph>是否将新的起止时间同步到这些轮次中尚未完成的自动任务？同步后，抢课开放时刻、任务停止时间及策略投权结束前 5/3 分钟窗口都会按新时间计算。</Paragraph>
+        <Paragraph>是否将新的起止时间同步到这些轮次中尚未完成的自动任务？同步后，抢课开放时刻、任务停止时间及你配置的临近结束通知和最终检查时间都会按新时间计算。</Paragraph>
         {changes.map(change => (
           <div key={change.batch_code}>
             <strong>{change.batch_name}</strong>
@@ -327,21 +327,25 @@ const CourseSelectionPage = () => {
         {automationLoading || !automationSettings ? <Spin /> : <div className="course-selection-automation-form">
           {automationBatch?.selection_type_code === '04' && <section className="course-selection-automation-section">
             <div><Title level={5}>策略任务的执行时间</Title><Text type="secondary">这里只决定已经在工作台中启动的策略任务何时检查。任务的创建、启动、暂停、年级人数和方案组仍在“自动任务”中管理。</Text></div>
-            <label className="course-selection-setting-row"><span><b>执行方式</b><small>选择持续跟踪，或只在临近结束时集中调整。</small></span><Select value={automationSettings.strategy_schedule_mode || 'interval'} onChange={value => setAutomationSettings(s => ({ ...s, strategy_schedule_mode: value }))} options={[{ value: 'interval', label: '按间隔持续重算' }, { value: 'final_windows', label: '仅结束前 5 分钟、3 分钟执行' }]} /></label>
+            <label className="course-selection-setting-row"><span><b>执行方式</b><small>选择持续跟踪，或只在你设置的两个临近结束时间集中处理。</small></span><Select value={automationSettings.strategy_schedule_mode || 'interval'} onChange={value => setAutomationSettings(s => ({ ...s, strategy_schedule_mode: value }))} options={[{ value: 'interval', label: '按间隔持续重算' }, { value: 'final_windows', label: '仅在临近结束时处理' }]} /></label>
             {automationSettings.strategy_schedule_mode !== 'final_windows' && <>
-              <label className="course-selection-setting-row"><span><b>重算间隔</b><small>每次都会读取最新人数；默认 30 分钟，最短 10 分钟，避免请求过快。</small></span><Space><InputNumber min={10} max={1440} step={5} value={Math.max(10, Math.round(Number(automationSettings.rebalance_seconds || 1800) / 60))} onChange={value => setAutomationSettings(s => ({ ...s, rebalance_seconds: Math.max(600, (Number(value) || 30) * 60) }))} /><Text>分钟</Text></Space></label>
-              <label className="course-selection-setting-row"><span><b>结束前再检查一次</b><small>无论普通间隔是否到期，都在结束前 3 分钟执行。</small></span><Radio.Group className="course-selection-setting-toggle" optionType="button" buttonStyle="solid" value={automationSettings.force_final_rebalance ? 'on' : 'off'} onChange={event => setAutomationSettings(s => ({ ...s, force_final_rebalance: event.target.value === 'on' }))} options={[{ value: 'on', label: '开启' }, { value: 'off', label: '关闭' }]} /></label>
+              <label className="course-selection-setting-row"><span><b>重算间隔</b><small>每次都会读取最新人数；默认 30 分钟，最短 10 分钟，避免请求过快。</small></span><Space className="course-selection-setting-control"><InputNumber min={10} max={1440} step={5} value={Math.max(10, Math.round(Number(automationSettings.rebalance_seconds || 1800) / 60))} onChange={value => setAutomationSettings(s => ({ ...s, rebalance_seconds: Math.max(600, (Number(value) || 30) * 60) }))} /><Text>分钟</Text></Space></label>
             </>}
-            {automationSettings.strategy_schedule_mode === 'final_windows' && <Alert type="info" showIcon message="该模式不会定时投权" description="只对已经启动且仍在运行的策略任务生效，并在结束前 5 分钟、3 分钟分别读取最新数据并处理一次。" />}
+            <label className="course-selection-setting-row"><span><b>结束前再检查一次</b><small>可自行设置提前量。自动投权任务运行时会重新计算并按安全流程调整；未运行时只读检查并发送结果。</small></span><div className="course-selection-setting-control course-selection-inline-control"><Radio.Group className="course-selection-setting-toggle" optionType="button" buttonStyle="solid" value={automationSettings.force_final_rebalance ? 'on' : 'off'} onChange={event => setAutomationSettings(s => ({ ...s, force_final_rebalance: event.target.value === 'on' }))} options={[{ value: 'on', label: '开启' }, { value: 'off', label: '关闭' }]} /><Space><Text type="secondary">结束前</Text><InputNumber disabled={!automationSettings.force_final_rebalance} min={1} max={1440} value={automationSettings.final_check_minutes ?? 3} onChange={value => setAutomationSettings(s => ({ ...s, final_check_minutes: Number(value) || 3 }))} /><Text>分钟</Text></Space></div></label>
+            {automationSettings.strategy_schedule_mode === 'final_windows' && <Alert type="info" showIcon message="该模式不会按固定间隔投权" description="运行中的策略任务只在“临近结束通知时间”和“结束前最终检查时间”读取最新数据并处理；未启动任务时只发送只读检查结果。" />}
           </section>}
           <Divider />
           <section className="course-selection-automation-section">
-            <div><Title level={5}>邮件通知</Title><Text type="secondary">通知只报告状态，不会因为邮件失败重复执行选课或投权。</Text></div>
+            <div><Title level={5}>邮件通知</Title><Text type="secondary">所有邮件只包含“我的投权、方案组课程、自动任务课程”，不会发送全市场其他课程。通知失败也不会重复执行选课或投权。</Text></div>
             <label className="course-selection-setting-row"><span><b>启用本轮邮件通知</b><small>关闭后下面选中的通知类型也不会发送。</small></span><Radio.Group className="course-selection-setting-toggle" optionType="button" buttonStyle="solid" value={automationSettings.mail_enabled ? 'on' : 'off'} onChange={event => setAutomationSettings(s => ({ ...s, mail_enabled: event.target.value === 'on' }))} options={[{ value: 'on', label: '开启' }, { value: 'off', label: '关闭' }]} /></label>
             <Checkbox.Group className="course-selection-notification-grid" disabled={!automationSettings.mail_enabled} value={Object.keys(automationSettings).filter(key => key.startsWith('notify_') && automationSettings[key])} onChange={keys => setAutomationSettings(s => Object.fromEntries(Object.entries(s).map(([key, value]) => [key, key.startsWith('notify_') ? keys.includes(key) : value])))} options={[
-              ['notify_round_end', '轮次结束总结'], ['notify_final_rebalance', '临近结束的策略结果'], ['notify_capacity_transition', '课程从未满变为满员或超额'], ['notify_over_capacity', '课程超额达到阈值'], ['notify_underfilled_warning', '已投权课程开课风险（结束前人数不足 10）'], ['notify_grab_result', '抢课任务成功或待核验'],
-            ].map(([value, label]) => ({ value, label }))} />
-            <label className="course-selection-setting-row"><span><b>超额提醒阈值</b><small>例如 20% 表示容量 100、已投注人数达到 120 时提醒。</small></span><Space><InputNumber min={0} max={10} step={0.05} value={automationSettings.over_capacity_ratio} formatter={value => `${Number(value || 0) * 100}%`} parser={value => Number(String(value).replace('%', '')) / 100} onChange={value => setAutomationSettings(s => ({ ...s, over_capacity_ratio: value ?? 0.2 }))} /><Text type="secondary">超额人数 ÷ 容量</Text></Space></label>
+              ['notify_round_start', '轮次开始提醒'], ['notify_round_end', '轮次结束总结'], ['notify_final_rebalance', '临近结束与最终检查结果'], ['notify_capacity_transition', '关注课程从未满变为满员或超额'], ['notify_over_capacity', '关注课程超额达到阈值'], ['notify_underfilled_warning', '关注课程开课风险（结束前人数不足 10）'], ['notify_grab_result', '抢课任务成功或待核验'],
+            ].filter(([value]) => automationBatch?.selection_type_code === '04'
+              ? value !== 'notify_grab_result'
+              : !['notify_final_rebalance', 'notify_over_capacity', 'notify_underfilled_warning'].includes(value))
+              .map(([value, label]) => ({ value, label }))} />
+            {automationBatch?.selection_type_code === '04' && <label className="course-selection-setting-row"><span><b>临近结束的策略结果通知</b><small>默认结束前 5 分钟；若这个时刻晚于“最晚发送时间”，则提前到当天该时刻发送。</small></span><div className="course-selection-setting-control course-selection-inline-control"><Space><Text type="secondary">结束前</Text><InputNumber min={1} max={1440} value={automationSettings.final_notice_minutes ?? 5} onChange={value => setAutomationSettings(s => ({ ...s, final_notice_minutes: Number(value) || 5 }))} /><Text>分钟</Text></Space><Space><Text type="secondary">最晚</Text><Input className="course-selection-time-input" type="time" value={automationSettings.final_notice_latest_time || '23:00'} onChange={event => setAutomationSettings(s => ({ ...s, final_notice_latest_time: event.target.value || '23:00' }))} /></Space></div></label>}
+            <label className="course-selection-setting-row"><span><b>超额提醒阈值</b><small>例如 20% 表示容量 100、已投注人数达到 120 时提醒。</small></span><Space className="course-selection-setting-control"><InputNumber min={0} max={10} step={0.05} value={automationSettings.over_capacity_ratio} formatter={value => `${Number(value || 0) * 100}%`} parser={value => Number(String(value).replace('%', '')) / 100} onChange={value => setAutomationSettings(s => ({ ...s, over_capacity_ratio: value ?? 0.2 }))} /><Text type="secondary">超额人数 ÷ 容量</Text></Space></label>
             <Alert type={automationSettings.smtp_configured ? 'success' : 'warning'} showIcon message={automationSettings.smtp_status} description={automationSettings.smtp_configured ? '复用系统设置中的 SMTP 通道，不会在这里保存密码。' : '请先前往系统设置配置 SMTP；未配置时不会发送邮件，也不会影响自动任务。'} />
           </section>
         </div>}
@@ -354,7 +358,7 @@ const CourseSelectionPage = () => {
           <section><Title level={5}>3. 怎样选择课程</Title><Paragraph>模型先排除已确认的硬冲突组合，再按以下顺序比较可行方案：覆盖更多方案组目标名额、获得更高的课程意愿总分、提高中性竞争情景下的代理收益，最后在效果相同时使用更少权重。时间未知课程会产生风险警告，不会被当作已确认无冲突。</Paragraph></section>
           <section><Title level={5}>4. 怎样计算竞争程度</Title><Paragraph>实时策略以本次读取的官方人数分类：当前已投注人数低于容量的课程标为 SAFE；达到或超过容量的课程标为 COMP；未进入推荐组合的课程标为 OUT。模型仍根据年级人数和全市场数据计算保守、中性、激进三种终局情景，但预测只作风险参考，不会把当前未满课程改判为 COMP。</Paragraph></section>
           <section><Title level={5}>5. 怎样分配权重</Title><Paragraph>SAFE 课程固定使用官方最低权重，不会分到额外权重。其余预算通过 water-filling 分配给 COMP 课程，综合课程意愿和竞争强度，并遵守官方最低权重、步长和剩余预算。只有推荐权重与当前权重不同，系统才会按安全流程先撤回、核验，再重新投放。</Paragraph></section>
-          <section><Title level={5}>6. 自动运行方式</Title><Paragraph>只有在工作台“自动任务”中明确启动的策略任务才会运行。这里的配置只决定它按间隔检查，还是仅在轮次结束前 5 分钟和 3 分钟各计算一次；关闭页面或 Linux 服务端无人打开页面时仍可继续执行。</Paragraph></section>
+          <section><Title level={5}>6. 自动运行方式</Title><Paragraph>只有在工作台“自动任务”中明确启动的策略任务才会执行投权。这里可以选择按间隔检查，或仅在自定义的临近结束通知与最终检查时刻计算；没有运行任务时，最终检查只读取人数、容量、当前投权和模型代理值，不执行远端写操作。关闭页面或 Linux 服务端无人打开页面时仍可继续。</Paragraph></section>
         </div>
       </Modal>
     </main>

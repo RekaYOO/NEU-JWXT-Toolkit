@@ -117,6 +117,7 @@ def test_confirmed_round_time_change_updates_unfinished_tasks_and_archive(tmp_pa
     service.action("student", task["task_id"], "start")
     service._tasks[0]["weight_status"].update({
         "final_5_executed": True, "final_3_executed": True,
+        "final_notice_executed": True, "final_check_executed": True,
         "final_rebalance_executed": True,
     })
     service.merge_catalog_archive("student", batch={
@@ -134,6 +135,7 @@ def test_confirmed_round_time_change_updates_unfinished_tasks_and_archive(tmp_pa
     assert synced["end_at"] == new_end
     assert synced["status"] == "waiting"
     assert "final_5_executed" not in service._tasks[0]["weight_status"]
+    assert "final_notice_executed" not in service._tasks[0]["weight_status"]
     archive = service.get_catalog_archive_view("student", "batch")
     assert archive["begin_time"] == new_start
     assert archive["end_time"] == new_end
@@ -873,7 +875,7 @@ def test_underfilled_warning_only_lists_current_weighted_courses(tmp_path):
         tmp_path,
         auth_provider=lambda: auth,
         client_builder=lambda _auth: FakeClient(),
-        notification_provider=lambda subject, body, key: messages.append((subject, body, key)) or True,
+        notification_provider=lambda subject, body, key, html_body: messages.append((subject, body, key, html_body)) or True,
     )
     archive = service.merge_catalog_archive(
         "student",
@@ -898,10 +900,182 @@ def test_underfilled_warning_only_lists_current_weighted_courses(tmp_path):
     service._notify_underfilled_warning("student", archive, auth)
 
     assert len(messages) == 1
-    subject, body, _ = messages[0]
-    assert subject == "JWXK 已投权课程开课风险提示"
-    assert "已投课程 - 8/30" in body
+    subject, body, _, html_body = messages[0]
+    assert subject == "JWXK 关注课程开课风险提示"
+    assert "已投课程-W1" in body
+    assert "已投注人数：8 / 容量：30" in body
+    assert "我的投权" in html_body
     assert "未投课程" not in body
+
+
+def test_final_notification_times_apply_latest_clock_cutoff(tmp_path):
+    service = _service(tmp_path)
+    end = datetime.fromisoformat("2026-08-17T23:59:00+08:00")
+
+    notice, final_check = service._final_notification_times(end, {
+        "final_notice_minutes": 5,
+        "final_notice_latest_time": "21:00",
+        "final_check_minutes": 7,
+    })
+
+    assert notice.isoformat() == "2026-08-17T21:00:00+08:00"
+    assert final_check.isoformat() == "2026-08-17T23:52:00+08:00"
+
+
+def test_notification_audience_only_contains_manual_plan_and_task_courses(tmp_path):
+    plan = {
+        "groups": [{"group_id": "g1", "name": "我的方案"}],
+        "items": [{
+            "class_id": "plan", "course_code": "P1", "course_name": "方案课程",
+            "plan_group_id": "g1",
+        }],
+    }
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        client_builder=lambda _auth: None,
+        plan_provider=lambda account, batch: plan if (account, batch) == ("student", "batch") else {},
+    )
+    service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "策略任务", "task_type": "weight_strategy", "grade_size": 5000,
+        "groups": [{"group_id": "g2", "name": "任务方案", "target_count": 1}],
+        "items": [{
+            "class_id": "task", "course_code": "T1", "course_name": "任务课程",
+            "plan_group_id": "g2",
+        }],
+    })
+    archive = service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "name": "权重轮次", "selection_type_code": "04"},
+        scope="TJKC",
+        groups=[{"group_id": "all", "classes": [
+            {"class_id": "plan", "course_code": "P1", "course_name": "方案课程"},
+            {"class_id": "task", "course_code": "T1", "course_name": "任务课程"},
+            {"class_id": "manual", "course_code": "M1", "course_name": "手动投权"},
+            {"class_id": "other", "course_code": "O1", "course_name": "市场其他课程"},
+        ]}],
+    )
+
+    audience = service._notification_audience("student", "batch", archive, official={
+        "volunteered": [{
+            "class_id": "manual", "course_code": "M1", "course_name": "手动投权",
+            "devoted_weight": 20,
+        }],
+    })
+
+    assert {item["course_code"] for item in audience} == {"P1", "T1", "M1"}
+    sources = {item["course_code"]: item["notification_sources"] for item in audience}
+    assert sources["P1"] == ["方案组课程"]
+    assert sources["T1"] == ["自动任务课程"]
+    assert sources["M1"] == ["我的投权"]
+
+
+def test_round_start_notification_is_scoped_and_html_formatted(tmp_path):
+    messages = []
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        client_builder=lambda _auth: None,
+        plan_provider=lambda *_args: {
+            "groups": [{"group_id": "g1", "name": "第一组"}],
+            "items": [{
+                "class_id": "plan", "course_code": "P1", "course_name": "方案课程",
+                "plan_group_id": "g1",
+            }],
+        },
+        notification_provider=lambda subject, body, key, html_body: messages.append(
+            (subject, body, key, html_body)
+        ) or True,
+    )
+    archive = service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "name": "权重轮次", "selection_type_code": "04"},
+        scope="TJKC",
+        groups=[{"group_id": "all", "classes": [
+            {"class_id": "plan", "course_code": "P1", "course_name": "方案课程"},
+            {"class_id": "other", "course_code": "O1", "course_name": "无关课程"},
+        ]}],
+    )
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True, "notify_round_start": True,
+    })
+
+    service._notify_round_start("student", archive)
+    service._notify_round_start("student", archive)
+
+    assert len(messages) == 1
+    assert "方案课程-P1" in messages[0][1]
+    assert "无关课程" not in messages[0][1]
+    assert "<!doctype html>" in messages[0][3]
+    assert "方案组课程" in messages[0][3]
+
+
+def test_final_check_without_running_task_is_read_only_and_reports_proxy(tmp_path):
+    messages = []
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+
+    class FakeClient:
+        mutation_calls = 0
+
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": [{
+                "class_id": "manual", "course_code": "M1", "course_name": "手动投权",
+                "devoted_weight": 5,
+            }]}
+
+        def get_weight_budget(self, **_kwargs):
+            return {"remaining": 100, "minimum": 5, "step": 1}
+
+        def search_courses(self, **_kwargs):
+            return {"courses": [{
+                "class_id": "manual", "course_code": "M1", "course_name": "手动投权",
+                "teaching_class_type": "TJKC", "capacity": 30,
+                "weight_participant_count": 20,
+            }]}
+
+        def select_course(self, **_kwargs):
+            self.mutation_calls += 1
+
+        def deselect_course(self, **_kwargs):
+            self.mutation_calls += 1
+
+    client = FakeClient()
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: auth,
+        client_builder=lambda _auth: client,
+        notification_provider=lambda subject, body, key, html_body: messages.append(
+            (subject, body, key, html_body)
+        ) or True,
+    )
+    archive = service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "name": "权重轮次", "selection_type_code": "04"},
+        scope="TJKC",
+        groups=[{"group_id": "all", "classes": [{
+            "class_id": "manual", "course_code": "M1", "course_name": "手动投权",
+            "teaching_class_type": "TJKC", "capacity": 30,
+            "weight_participant_count": 20,
+        }, {
+            "class_id": "market", "course_code": "X1", "course_name": "市场课程",
+            "teaching_class_type": "TJKC", "capacity": 30,
+            "weight_participant_count": 40,
+        }]}],
+    )
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True, "notify_final_rebalance": True,
+    })
+
+    service._notify_scheduled_snapshot(
+        "student", archive, auth, event="final_check",
+    )
+
+    assert client.mutation_calls == 0
+    assert len(messages) == 1
+    assert "只读检查" in messages[0][1]
+    assert "100.0%（模型代理值）" in messages[0][1]
+    assert "市场课程" not in messages[0][1]
 
 
 def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tmp_path):
