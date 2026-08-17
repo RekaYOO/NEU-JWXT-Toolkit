@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Card, Empty, Input, Pagination, Select, Space, Spin, Tag, Typography, message } from 'antd';
-import { ArrowLeftOutlined, HistoryOutlined, SearchOutlined } from '@ant-design/icons';
+import { Alert, Badge, Button, Card, Empty, Input, Modal, Pagination, Select, Space, Spin, Tag, Typography, message } from 'antd';
+import { ArrowLeftOutlined, FilterOutlined, HistoryOutlined, SearchOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getJwxkCatalogArchive } from '../services/api';
 import TimetablePage from './TimetablePage';
 import {
-  matchesCatalogAvailability, selectionParticipantCount, selectionParticipantLabel,
-  uniqueDisplayLabels,
+  courseCampusLabels, isGeneralElectiveCategory, matchesArchivedCourseFilters,
+  matchesCatalogAvailability, selectionParticipantCount, selectionParticipantLabel, uniqueDisplayLabels,
 } from '../utils/jwxkSchedule';
 import './CourseSelectionPage.css';
 
@@ -19,6 +19,12 @@ const COURSE_SCOPE_LABELS = {
 const { Text, Title } = Typography;
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 const PAGE_SIZE = 20;
+const EMPTY_FILTERS = {
+  campus: '', courseNature: '', courseCategory: '', generalElectiveCategory: '',
+  department: '', startSection: '', endSection: '',
+};
+const option = value => ({ value, label: value });
+const sortedOptions = values => uniqueDisplayLabels(values).sort((a, b) => a.localeCompare(b, 'zh-CN')).map(option);
 const courseScopeLabel = value => COURSE_SCOPE_LABELS[value]
   || (/^[A-Z0-9_]+$/.test(String(value || '')) ? '其他课程' : value)
   || '其他课程';
@@ -77,6 +83,10 @@ export default function CourseSelectionArchivePage() {
   const [scope, setScope] = useState('all');
   const [availability, setAvailability] = useState('all');
   const [weekday, setWeekday] = useState('all');
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [filterDraft, setFilterDraft] = useState(EMPTY_FILTERS);
+  const [weekdayDraft, setWeekdayDraft] = useState('all');
+  const [filterOpen, setFilterOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState('');
   const [preview, setPreview] = useState(null);
@@ -87,6 +97,24 @@ export default function CourseSelectionArchivePage() {
     }).catch(error => message.error(error.message || '读取课程备份失败'))
       .finally(() => setLoading(false));
   }, [archiveId]);
+
+  const filterOptions = useMemo(() => {
+    const courses = archive?.courses || [];
+    return {
+      campuses: sortedOptions(courses.flatMap(courseCampusLabels)),
+      courseNatures: sortedOptions(courses.map(course => course.course_nature)),
+      courseCategories: sortedOptions(courses.flatMap(course => [
+        course.normalized_course_category, ...(course.course_categories || []), course.course_category,
+      ])),
+      generalElectiveCategories: sortedOptions(courses.map(course => course.general_elective_category)),
+      departments: sortedOptions(courses.map(course => course.department)),
+      sections: Array.from({ length: 30 }, (_, index) => ({ value: String(index + 1), label: `第 ${index + 1} 节` })),
+    };
+  }, [archive]);
+  const categoryHasGeneralElectiveField = value => Boolean(value) && (archive?.courses || []).some(course => (
+    course.general_elective_category
+    && matchesArchivedCourseFilters(course, { courseCategory: value })
+  ));
 
   const scopeOptions = useMemo(() => {
     const values = new Set((archive?.scope_options || []).map(item => item.code).filter(Boolean));
@@ -106,13 +134,27 @@ export default function CourseSelectionArchivePage() {
         course.teaching_class_type, ...(course.source_scopes || []),
       ]).has(scope)) return false;
       if (!matchesCatalogAvailability(course, availability, archive?.selection_type_code)) return false;
-      if (weekday !== 'all' && !(course.schedules || []).some(item => String(item.weekday) === weekday)) return false;
+      if (!matchesArchivedCourseFilters(course, { ...filters, weekday })) return false;
       if (!needle) return true;
       return [course.course_name, course.course_code, course.teacher, course.department]
         .some(value => String(value || '').toLocaleLowerCase().includes(needle));
     }));
-  }, [archive, availability, keyword, scope, weekday]);
+  }, [archive, availability, filters, keyword, scope, weekday]);
   const visibleGroups = groups.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const advancedFilterCount = [
+    filters.courseNature, filters.courseCategory, filters.generalElectiveCategory,
+    filters.department, filters.startSection, filters.endSection,
+    weekday === 'all' ? '' : weekday,
+  ].filter(Boolean).length;
+  const clearFilter = key => {
+    setFilters(previous => ({ ...previous, [key]: '' }));
+    setPage(1);
+  };
+  const openFilters = () => {
+    setFilterDraft(filters);
+    setWeekdayDraft(weekday);
+    setFilterOpen(true);
+  };
 
   if (loading) return <main className="course-selection-page"><Spin tip="读取历史轮次课程…" /></main>;
   if (!archive) return <main className="course-selection-page"><Alert type="error" showIcon message="课程备份不存在或已经删除" action={<Button onClick={() => navigate('/course-selection')}>返回批次</Button>} /></main>;
@@ -135,14 +177,27 @@ export default function CourseSelectionArchivePage() {
       <Input.Search allowClear enterButton="搜索" prefix={<SearchOutlined />} value={keywordDraft} onChange={event => setKeywordDraft(event.target.value)} onSearch={value => { setKeyword(value.trim()); setPage(1); }} placeholder="输入课程名称、代码、教师或单位" />
       <Select value={scope} options={scopeOptions} onChange={value => { setScope(value); setPage(1); }} />
       <Select value={availability} onChange={value => { setAvailability(value); setPage(1); }} options={[{ value: 'all', label: '全部状态' }, { value: 'selectable', label: '本轮可选' }, { value: 'available', label: archive.selection_type_code === '04' ? '当时未超容量' : '未报满' }, { value: 'conflict_free', label: '官方无冲突' }, { value: 'selected', label: '当时已选' }]} />
-      <Select value={weekday} onChange={value => { setWeekday(value); setPage(1); }} options={[{ value: 'all', label: '全部星期' }, ...WEEKDAYS.map((label, index) => ({ value: String(index + 1), label: `周${label}` }))]} />
+      <Select allowClear placeholder="全部校区" value={filters.campus || undefined} options={filterOptions.campuses} onChange={value => { setFilters(previous => ({ ...previous, campus: value || '' })); setPage(1); }} />
+      <Button icon={<FilterOutlined />} onClick={openFilters}>更多筛选{advancedFilterCount ? ` (${advancedFilterCount})` : ''}</Button>
+    </div>
+    <div className="jwxk-active-filters">
+      <Text type="secondary">本地归档 {archive.courses?.length || 0} 个教学班，当前筛出 {groups.reduce((sum, group) => sum + group.class_count, 0)} 个</Text>
+      {filters.campus && <Tag closable onClose={() => clearFilter('campus')}>校区 · {filters.campus}</Tag>}
+      {filters.courseNature && <Tag closable onClose={() => clearFilter('courseNature')}>课程性质 · {filters.courseNature}</Tag>}
+      {filters.courseCategory && <Tag closable onClose={() => clearFilter('courseCategory')}>课程类别 · {filters.courseCategory}</Tag>}
+      {filters.generalElectiveCategory && <Tag closable onClose={() => clearFilter('generalElectiveCategory')}>通识类别 · {filters.generalElectiveCategory}</Tag>}
+      {filters.department && <Tag closable onClose={() => clearFilter('department')}>开课单位 · {filters.department}</Tag>}
+      {weekday !== 'all' && <Tag closable onClose={() => { setWeekday('all'); setPage(1); }}>星期 · 周{WEEKDAYS[Number(weekday) - 1]}</Tag>}
+      {filters.startSection && <Tag closable onClose={() => clearFilter('startSection')}>开始节次 · 第 {filters.startSection} 节</Tag>}
+      {filters.endSection && <Tag closable onClose={() => clearFilter('endSection')}>结束节次 · 第 {filters.endSection} 节</Tag>}
+      {(advancedFilterCount || filters.campus) && <Button type="link" size="small" onClick={() => { setFilters(EMPTY_FILTERS); setWeekday('all'); setPage(1); }}>清除筛选</Button>}
     </div>
     <div className="jwxk-group-list">
       {visibleGroups.map(group => <Card key={group.group_id} className={`jwxk-course-group${expanded === group.group_id ? ' is-expanded' : ''}`} onClick={() => setExpanded(previous => previous === group.group_id ? '' : group.group_id)}>
-        <div className="jwxk-course-group__head"><div><Space wrap>{uniqueDisplayLabels(group.source_tags, courseScopeLabel).map(label => <Tag key={label}>{label}</Tag>)}</Space><Title level={4}>{group.course_name}</Title><Text type="secondary">{group.course_code || '课程代码待定'} · {group.credits || '-'} 学分 · {group.department || '开课单位待定'}</Text></div><Badge count={group.class_count} /></div>
+        <div className="jwxk-course-group__head"><div><Space wrap>{uniqueDisplayLabels(group.source_tags, courseScopeLabel).map(label => <Tag key={label}>{label}</Tag>)}{uniqueDisplayLabels(group.classes.flatMap(courseCampusLabels)).map(label => <Tag color="blue" key={label}>{label}</Tag>)}</Space><Title level={4}>{group.course_name}</Title><Text type="secondary">{group.course_code || '课程代码待定'} · {group.credits || '-'} 学分 · {group.department || '开课单位待定'}{group.classes[0]?.course_nature ? ` · ${group.classes[0].course_nature}` : ''}{group.classes[0]?.normalized_course_category || group.classes[0]?.course_category ? ` · ${group.classes[0].normalized_course_category || group.classes[0].course_category}` : ''}</Text></div><Badge count={group.class_count} /></div>
         <div className="jwxk-course-group__stats"><span>{group.classes.filter(item => item.eligibility_status === 'selectable').length} 个确认可选</span><span>{group.classes.filter(item => selectionParticipantCount(item, archive.selection_type_code) != null && Number(item.capacity || 0) > selectionParticipantCount(item, archive.selection_type_code)).length} 个{archive.selection_type_code === '04' ? '当时未超容量' : '未报满'}</span><b>{expanded === group.group_id ? '收起教学班' : '查看教学班'}</b></div>
         {expanded === group.group_id && <div className="jwxk-inline-classes" onClick={event => event.stopPropagation()}>{group.classes.map(course => <article className={`jwxk-inline-class${preview?.class_id === course.class_id ? ' is-previewing' : ''}`} key={course.class_id}>
-          <div className="jwxk-inline-class__summary"><strong>{course.teacher || '教师待定'}</strong><span>{course.official_schedule || '时间待定'}</span><small>{selectionParticipantLabel(course, archive.selection_type_code)} {selectionParticipantCount(course, archive.selection_type_code) ?? '-'} / 容量 {course.capacity ?? '-'}</small></div>
+          <div className="jwxk-inline-class__summary"><strong>{course.teacher || '教师待定'}</strong><span>{course.official_schedule || '时间待定'}</span><small>{courseCampusLabels(course).join('、') || '校区待定'} · {selectionParticipantLabel(course, archive.selection_type_code)} {selectionParticipantCount(course, archive.selection_type_code) ?? '-'} / 容量 {course.capacity ?? '-'}</small></div>
           <Space wrap className="jwxk-inline-class__states">{course.eligibility_status === 'selectable' && <Tag color="success">本轮可选</Tag>}{course.full && <Tag>已满</Tag>}{course.conflict && <Tag color="error">官方冲突</Tag>}</Space>
           <Space className="jwxk-inline-class__actions"><Button size="small" onClick={() => setPreview(previous => previous?.class_id === course.class_id ? null : course)}>{preview?.class_id === course.class_id ? '取消课表预览' : '在课表中预览'}</Button></Space>
         </article>)}<Button className="jwxk-collapse-classes" type="text" onClick={() => setExpanded('')}>收起教学班</Button></div>}
@@ -152,5 +207,17 @@ export default function CourseSelectionArchivePage() {
         : '当前条件下没有课程'} />}
     </div>
     {groups.length > PAGE_SIZE && <Pagination current={page} pageSize={PAGE_SIZE} total={groups.length} showSizeChanger={false} onChange={setPage} />}
+    <Modal open={filterOpen} title="更多本地筛选" okText="应用筛选" cancelText="取消" onCancel={() => setFilterOpen(false)} onOk={() => { setFilters(filterDraft); setWeekday(weekdayDraft); setPage(1); setFilterOpen(false); }} footer={(_, { OkBtn, CancelBtn }) => <><Button onClick={() => { setFilterDraft(EMPTY_FILTERS); setWeekdayDraft('all'); }}>重置</Button><CancelBtn /><OkBtn /></>}>
+      <Alert type="info" showIcon message="筛选仅使用这份归档中已保存的数据，不会访问学校系统。" />
+      <div className="jwxk-filter-grid jwxk-archive-filter-grid">
+        <label>课程性质<Select allowClear placeholder="全部课程性质" value={filterDraft.courseNature || undefined} options={filterOptions.courseNatures} onChange={value => setFilterDraft(previous => ({ ...previous, courseNature: value || '' }))} /></label>
+        <label>课程类别<Select allowClear placeholder="全部课程类别" value={filterDraft.courseCategory || undefined} options={filterOptions.courseCategories} onChange={value => setFilterDraft(previous => ({ ...previous, courseCategory: value || '', generalElectiveCategory: (isGeneralElectiveCategory(value) || categoryHasGeneralElectiveField(value)) ? previous.generalElectiveCategory : '' }))} /></label>
+        {(isGeneralElectiveCategory(filterDraft.courseCategory) || categoryHasGeneralElectiveField(filterDraft.courseCategory)) && <label>通识选修课类别<Select allowClear placeholder="全部通识类别" value={filterDraft.generalElectiveCategory || undefined} options={filterOptions.generalElectiveCategories} onChange={value => setFilterDraft(previous => ({ ...previous, generalElectiveCategory: value || '' }))} /></label>}
+        <label>星期<Select value={weekdayDraft} options={[{ value: 'all', label: '全部星期' }, ...WEEKDAYS.map((label, index) => ({ value: String(index + 1), label: `周${label}` }))]} onChange={setWeekdayDraft} /></label>
+        <label>开课单位<Select showSearch allowClear optionFilterProp="label" placeholder="全部开课单位" value={filterDraft.department || undefined} options={filterOptions.departments} onChange={value => setFilterDraft(previous => ({ ...previous, department: value || '' }))} /></label>
+        <label>开始节次<Select allowClear placeholder="不限" value={filterDraft.startSection || undefined} options={filterOptions.sections} onChange={value => setFilterDraft(previous => ({ ...previous, startSection: value || '' }))} /></label>
+        <label>结束节次<Select allowClear placeholder="不限" value={filterDraft.endSection || undefined} options={filterOptions.sections} onChange={value => setFilterDraft(previous => ({ ...previous, endSection: value || '' }))} /></label>
+      </div>
+    </Modal>
   </main>;
 }

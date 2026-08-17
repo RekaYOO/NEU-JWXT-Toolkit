@@ -10,7 +10,7 @@ import {
   syncJwxkAutomationTaskTimes,
   startWebVPNQRLogin, getWebVPNQRStatus, cancelWebVPNQRLogin,
 } from '../services/api';
-import { changedOfficialBatchTimes, selectionParticipantCount } from '../utils/jwxkSchedule';
+import { changedOfficialBatchTimes, courseCampusLabels, selectionParticipantCount } from '../utils/jwxkSchedule';
 import './CourseSelectionPage.css';
 
 const { Paragraph, Text, Title } = Typography;
@@ -28,6 +28,7 @@ const CourseSelectionPage = () => {
   const [confirming, setConfirming] = useState('');
   const [archives, setArchives] = useState([]);
   const [archiveDetail, setArchiveDetail] = useState(null);
+  const [archiveCampus, setArchiveCampus] = useState('all');
   const [automationBatch, setAutomationBatch] = useState(null);
   const [automationSettings, setAutomationSettings] = useState(null);
   const [automationLoading, setAutomationLoading] = useState(false);
@@ -209,6 +210,17 @@ const CourseSelectionPage = () => {
     && selectionParticipantCount(course, archive.selection_type_code) != null
     && selectionParticipantCount(course, archive.selection_type_code) < Number(course.capacity || 0)
   ));
+  const archiveUnderfilledGroups = archive => {
+    const grouped = new Map();
+    archiveUnderfilled(archive).forEach(course => {
+      const campus = courseCampusLabels(course).join('、') || '校区待定';
+      if (archiveCampus !== 'all' && campus !== archiveCampus) return;
+      if (!grouped.has(campus)) grouped.set(campus, []);
+      grouped.get(campus).push(course);
+    });
+    const order = value => ({ 浑南校区: 0, 南湖校区: 1, 校区待定: 99 }[value] ?? 50);
+    return [...grouped.entries()].sort(([left], [right]) => order(left) - order(right) || left.localeCompare(right, 'zh-CN'));
+  };
 
   if (loading && !status) return <div className="course-selection-loading"><Spin size="large" tip="读取官方选课批次…" /></div>;
 
@@ -306,7 +318,7 @@ const CourseSelectionPage = () => {
               <Text type="secondary">{archive.final_refresh_at ? `最终人数更新：${dayjs(archive.final_refresh_at).format('YYYY-MM-DD HH:mm')}` : `最近记录：${dayjs(archive.updated_at).format('YYYY-MM-DD HH:mm')}`}</Text>
               <Space wrap className="course-selection-archive-actions">
                 <Button type="primary" onClick={() => navigate(`/course-selection/archive/${encodeURIComponent(archive.archive_id)}`)}>进入只读工作台</Button>
-                <Button icon={<HistoryOutlined />} onClick={() => setArchiveDetail(archive)}>查看未报满课程</Button>
+                <Button icon={<HistoryOutlined />} onClick={() => { setArchiveCampus('all'); setArchiveDetail(archive); }}>查看未报满课程</Button>
                 <Button danger icon={<DeleteOutlined />} onClick={() => removeArchive(archive)}>删除</Button>
               </Space>
             </Card></Col>;
@@ -315,12 +327,17 @@ const CourseSelectionPage = () => {
       )}
       <Modal open={Boolean(archiveDetail)} title={archiveDetail?.batch_name || '课程备份'} footer={null} width={760} onCancel={() => setArchiveDetail(null)}>
         <div className="course-selection-archive-list">
-          {archiveDetail && archiveUnderfilled(archiveDetail).length > 0 ? archiveUnderfilled(archiveDetail)
-            .sort((left, right) => (Number(left.capacity || 0) - selectionParticipantCount(left, archiveDetail.selection_type_code)) - (Number(right.capacity || 0) - selectionParticipantCount(right, archiveDetail.selection_type_code)))
-            .map(course => <div className="course-selection-archive-row" key={course.class_id}>
+          {archiveDetail && archiveUnderfilled(archiveDetail).length > 0 && <div className="course-selection-archive-campus-toolbar">
+            <Text type="secondary">按校区查看</Text>
+            <Select value={archiveCampus} onChange={setArchiveCampus} options={[{ value: 'all', label: '全部校区' }, ...[...new Set(archiveUnderfilled(archiveDetail).map(course => courseCampusLabels(course).join('、') || '校区待定'))].map(value => ({ value, label: value }))]} />
+          </div>}
+          {archiveDetail && archiveUnderfilledGroups(archiveDetail).length > 0 ? archiveUnderfilledGroups(archiveDetail).map(([campus, courses]) => <section className="course-selection-archive-campus-group" key={campus}>
+            <div className="course-selection-archive-campus-head"><strong>{campus}</strong><Tag>{courses.length} 个教学班</Tag></div>
+            {courses.sort((left, right) => (Number(left.capacity || 0) - selectionParticipantCount(left, archiveDetail.selection_type_code)) - (Number(right.capacity || 0) - selectionParticipantCount(right, archiveDetail.selection_type_code))).map(course => <div className="course-selection-archive-row" key={course.class_id}>
               <div><strong>{course.course_name}</strong><span>{course.course_code || '课程代码待定'} · {course.teacher || '教师待定'}</span></div>
               <Tag color="success">{archiveDetail.selection_type_code === '04' ? '容量内余' : '余'} {Number(course.capacity || 0) - selectionParticipantCount(course, archiveDetail.selection_type_code)} / {course.capacity}</Tag>
-            </div>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前备份中没有确认可选且未报满的课程" />}
+            </div>)}
+          </section>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={archiveCampus === 'all' ? '当前备份中没有确认可选且未报满的课程' : '该校区没有确认可选且未报满的课程'} />}
         </div>
       </Modal>
       <Modal open={Boolean(automationBatch)} title={<Space><span>{`本轮自动化与通知 · ${automationBatch?.name || ''}`}</span>{automationBatch?.selection_type_code === '04' && <Button type="text" shape="circle" aria-label="了解策略投权模型" title="了解策略投权模型" icon={<QuestionCircleOutlined />} onClick={() => setModelHelpOpen(true)} />}</Space>} confirmLoading={automationSaving} onOk={saveAutomation} okText="保存配置" cancelText="取消" onCancel={() => setAutomationBatch(null)} width={700}>

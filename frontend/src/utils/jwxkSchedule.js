@@ -28,10 +28,66 @@ const campusIdentity = value => {
   return text.toLocaleLowerCase();
 };
 
+export const displayJwxkCampusName = value => {
+  const text = String(value || '').trim();
+  if (text === '00') return '南湖校区';
+  if (text === '01') return '浑南校区';
+  return text;
+};
+
+export const courseCampusLabels = course => uniqueDisplayLabels([
+  course?.campus_name,
+  course?.campus,
+  ...(course?.schedules || []).flatMap(meeting => [meeting?.campus_name, meeting?.campus]),
+], displayJwxkCampusName);
+
 export const courseCampusIdentities = course => [...new Set([
   course?.campus || course?.campus_name,
   ...(course?.schedules || []).map(meeting => meeting?.campus || meeting?.campus_name),
 ].map(campusIdentity).filter(Boolean))];
+
+const archiveTaxonomyValues = (course, key) => {
+  if (key === 'courseCategory') return [
+    course?.normalized_course_category,
+    ...(course?.course_categories || []),
+    course?.course_category,
+  ];
+  if (key === 'courseNature') return [course?.course_nature];
+  if (key === 'generalElectiveCategory') return [course?.general_elective_category];
+  if (key === 'department') return [course?.department];
+  return [];
+};
+
+/** 完全基于已归档课程字段执行筛选，不触发任何官方请求。 */
+export const matchesArchivedCourseFilters = (course, filters = {}) => {
+  if (filters.campus && !courseCampusLabels(course).some(
+    value => campusIdentity(value) === campusIdentity(filters.campus),
+  )) return false;
+
+  for (const key of ['courseNature', 'courseCategory', 'generalElectiveCategory', 'department']) {
+    const selected = filters[key];
+    if (!selected) continue;
+    const normalize = key === 'courseCategory' ? normalizedTaxonomy : normalizedName;
+    if (!archiveTaxonomyValues(course, key).some(value => (
+      normalize(value) === normalize(selected)
+    ))) return false;
+  }
+
+  const weekday = filters.weekday && filters.weekday !== 'all'
+    ? Number(filters.weekday) : 0;
+  const startSection = Number(filters.startSection || 0);
+  const endSection = Number(filters.endSection || 0);
+  if (weekday || startSection || endSection) {
+    return (course?.schedules || []).some(meeting => {
+      const meetingStart = Number(meeting?.start_section || 0);
+      const meetingEnd = Number(meeting?.end_section || meetingStart || 0);
+      return (!weekday || Number(meeting?.weekday || 0) === weekday)
+        && (!startSection || meetingStart >= startSection)
+        && (!endSection || meetingEnd <= endSection);
+    });
+  }
+  return true;
+};
 
 export const isCrossCampusCourse = (course, currentCampus, currentCampusName = '') => {
   const homeCampus = campusIdentity(currentCampus) || campusIdentity(currentCampusName);

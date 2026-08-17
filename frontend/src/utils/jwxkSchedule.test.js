@@ -6,6 +6,7 @@ import {
   changedOfficialBatchTimes,
   catalogGroupLiveStats,
   catalogGroupsForDisplay,
+  courseCampusLabels,
   createCatalogDisplayLayout,
   extendCatalogDisplayLayout,
   filterAcademicPlanGapsForBatch,
@@ -20,6 +21,7 @@ import {
   mergeSelectionConflictMatches,
   mergeCatalogRefreshPreservingOrder,
   mergeCatalogFilterLayers,
+  matchesArchivedCourseFilters,
   matchesCatalogAvailability,
   sameSelectionCourse,
   patchCatalogSelection,
@@ -101,6 +103,36 @@ test('participant metric follows grab and weight round semantics', () => {
   expect(selectionParticipantCount(course, '04')).toBe(63);
   expect(selectionParticipantLabel(course, '04')).toBe('已投注人数');
   expect(matchesCatalogAvailability({ ...course, selection_type_code: '04' }, 'available')).toBe(false);
+});
+
+test('archive campus labels normalize stored codes and schedule campus names', () => {
+  expect(courseCampusLabels({
+    campus: '01',
+    schedules: [{ campus_name: '浑南校区' }, { campus: '00' }],
+  })).toEqual(['浑南校区', '南湖校区']);
+});
+
+test('archived course filters combine taxonomy, campus and one matching meeting locally', () => {
+  const course = {
+    campus: '01',
+    course_nature: '选修',
+    course_category: '通识选修课',
+    course_categories: ['通识选修'],
+    general_elective_category: '人文社会科学类',
+    department: '马克思主义学院',
+    schedules: [
+      { weekday: 2, start_section: 3, end_section: 4 },
+      { weekday: 5, start_section: 9, end_section: 10 },
+    ],
+  };
+  expect(matchesArchivedCourseFilters(course, {
+    campus: '浑南校区', courseNature: '选修', courseCategory: '通识选修',
+    generalElectiveCategory: '人文社会科学类', department: '马克思主义学院',
+    weekday: '2', startSection: '3', endSection: '4',
+  })).toBe(true);
+  expect(matchesArchivedCourseFilters(course, {
+    weekday: '2', startSection: '9', endSection: '10',
+  })).toBe(false);
 });
 
 test('manual batch refresh identifies official start or end time changes', () => {
