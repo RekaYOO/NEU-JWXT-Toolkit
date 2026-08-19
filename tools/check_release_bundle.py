@@ -80,6 +80,8 @@ def _desktop_payload_violations(root: Path) -> list[str]:
     launcher = root / "NEU-JWXT-Toolkit.exe"
     required = (
         root / "VERSION",
+        root / "LICENSE",
+        root / "backend" / "core" / "course_selection" / "THIRD_PARTY_NOTICE.md",
         root / "frontend" / "build" / "index.html",
         root / "frontend" / "build" / "favicon.ico",
         root / "frontend" / "build" / "manifest.webmanifest",
@@ -112,6 +114,8 @@ def _server_payload_violations(root: Path, executable: Path) -> list[str]:
     violations: list[str] = []
     required = (
         root / "VERSION",
+        root / "LICENSE",
+        root / "backend" / "core" / "course_selection" / "THIRD_PARTY_NOTICE.md",
         root / "frontend" / "build" / "index.html",
         root / "frontend" / "build" / "favicon.ico",
         root / "frontend" / "build" / "manifest.webmanifest",

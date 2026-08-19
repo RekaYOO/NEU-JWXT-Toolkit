@@ -104,7 +104,12 @@ def test_release_bundle_guard_rejects_unsafe_symlinks(tmp_path):
 
 def _desktop_bundle(root):
     (root / "frontend" / "build").mkdir(parents=True)
+    (root / "backend" / "core" / "course_selection").mkdir(parents=True)
     (root / "VERSION").write_text("1.0.0", encoding="utf-8")
+    (root / "LICENSE").write_text("MIT License", encoding="utf-8")
+    (root / "backend" / "core" / "course_selection" / "THIRD_PARTY_NOTICE.md").write_text(
+        "Course_Weight-Optimizer MIT License", encoding="utf-8"
+    )
     (root / "frontend" / "build" / "index.html").write_text(
         '<div id="root"></div>', encoding="utf-8"
     )
@@ -152,7 +157,12 @@ def test_portable_desktop_rejects_installer_owned_files(tmp_path):
 
 def _server_bundle(root):
     (root / "frontend" / "build").mkdir(parents=True)
+    (root / "backend" / "core" / "course_selection").mkdir(parents=True)
     (root / "VERSION").write_text("1.0.0", encoding="utf-8")
+    (root / "LICENSE").write_text("MIT License", encoding="utf-8")
+    (root / "backend" / "core" / "course_selection" / "THIRD_PARTY_NOTICE.md").write_text(
+        "Course_Weight-Optimizer MIT License", encoding="utf-8"
+    )
     (root / "frontend" / "build" / "index.html").write_text(
         '<div id="root"></div>', encoding="utf-8"
     )
@@ -195,6 +205,8 @@ def test_nuitka_build_keeps_inspectable_standalone_payload_and_windows_metadata(
     assert "--mode=onefile" not in text
     assert "--include-data-dir=" in text
     assert "--include-data-files=" in text
+    assert "THIRD_PARTY_NOTICE.md" in text
+    assert "PROJECT_ROOT / 'LICENSE'" in text
     assert '"--include-package=uvicorn"' in text
     assert '"--include-package-data=certifi"' in text
     assert '"--nofollow-import-to=pytest"' in text

@@ -1,5 +1,9 @@
 # 发行与 CI/CD
 
+正式 Windows 和 Linux 发行包必须同时包含根目录 `LICENSE`，以及位于
+`backend/core/course_selection/THIRD_PARTY_NOTICE.md` 的选课策略模型上游许可说明。
+`tools/check_release_bundle.py` 会把两者作为发行结构的一部分校验。
+
 ## 版本来源
 
 根目录 `VERSION` 是发行版本的唯一来源。后端健康检查、Nuitka 程序和发行文件名均从该文件读取。Git 标签必须使用相同版本并带 `v` 前缀，例如 `VERSION` 为 `1.4.0` 时使用标签 `v1.4.0`。

@@ -1,310 +1,74 @@
-# GPA模拟器文档
+# GPA 模拟器
 
-> 培养计划导入会合并已保存的考核方式和成绩分制，并提供实时“查看大纲”入口。导入课程时两项
-> 元数据会复制进模拟快照；成绩总表的业务列直接跟随成绩页面的列设置（显示、隐藏、
-> 顺序与列宽），并在末尾固定保留 GPA 专属的“来源”和“操作”列。完整课程大纲不会
-> 写入 GPA 文件。
+GPA 模拟器从成绩明细页进入，用于在不修改真实成绩的前提下比较课程和绩点方案。模拟结果
+仅是本地规划工具，不会写回教务系统，也不等同于官方总绩点。
 
-## 概述
+## 使用方式
 
-GPA模拟器是一个交互式工具，允许学生模拟不同成绩对总GPA的影响。支持导入真实成绩进行修改、添加虚拟课程、保存/加载模拟方案等功能。
+1. 在“成绩明细”点击“GPA 模拟”。当前成绩会作为方案基线。
+2. 修改课程成绩、绩点或学分，或添加自定义课程。
+3. 可从培养计划导入未通过或已选课程；导入时按稳定课程标识去重。
+4. 查看模拟平均绩点、有效学分和课程数量。
+5. 使用撤销恢复最近编辑，或把方案保存到账户隔离的本地文件。
 
-## 功能特性
+桌面端使用可编辑表格，手机端使用课程卡和详情编辑；两端共享同一份方案状态、校验和保存
+接口。
 
-- ✅ **真实成绩导入** - 从教务系统自动导入已有成绩
-- ✅ **成绩模拟修改** - 修改已有课程成绩，查看GPA变化
-- ✅ **虚拟课程添加** - 添加未修课程进行GPA预估
-- ✅ **培养计划导入** - 从培养计划导入课程进行模拟
-- ✅ **数据持久化** - 保存/加载GPA模拟方案
-- ✅ **冲突检测** - 导入时检测同名课程并提供选择
-- ✅ **历史撤销** - 支持撤销操作
-- ✅ **智能分类** - 自动识别真实/模拟课程
+## 课程来源和协调
 
-## 使用方法
+- 真实课程：来自成绩缓存，保留原始数据以判断用户是否修改。
+- 培养计划课程：导入时默认绩点为 0，等待用户填写预期值。
+- 自定义课程：用户手动创建，来源与课程性质分别保存，不能用“自定义”冒充课程性质。
 
-### 启动GPA模拟器
+模拟器打开期间若真实成绩资源更新：
 
-在成绩页面点击 "GPA模拟" 按钮启动模拟器。
+- 用户没有修改的真实课程自动跟随最新成绩；
+- 用户已经修改的课程保留当前值，并通过冲突确认让用户选择；
+- 新出现的真实成绩不会静默覆盖同标识的模拟课程。
 
-### 基本操作
+## 计算口径
 
-| 操作 | 说明 |
-|------|------|
-| 修改成绩 | 点击成绩列输入框，输入新成绩后按回车或失焦 |
-| 修改绩点 | 点击绩点列输入框进行修改 |
-| 修改学分 | 点击学分列输入框进行修改 |
-| 添加课程 | 点击"添加课程"按钮添加空白课程 |
-| 删除课程 | 点击删除按钮移除课程 |
-| 撤销操作 | 点击"撤销"按钮撤销最近操作 |
+只有绩点大于 0 的课程进入模拟平均值：
 
-### 课程类型
-
-| 类型 | 标签 | 说明 |
-|------|------|------|
-| 真实 | 🟢 真实 | 从教务系统导入且未修改的课程 |
-| 模拟 | ⚪ 模拟 | 被修改过的真实课程 |
-| 自定义 | 🟠 自定义 | 手动添加的新课程 |
-| 计划 | 🔵 计划 | 从培养计划导入的课程 |
-
-### 数据导入
-
-#### 从培养计划导入
-
-培养计划支持多层嵌套结构（如：通识类 → 数学与自然科学类 → 具体课程）。
-
-导入抽屉与培养计划页面使用同一规划学分口径：`earned_credits` 已包含已通过和
-已选课学分，不再与旧 `taken_credits` 字段重复相加。父类别继续展示其整体要求
-与汇总差额，展开后可以查看必修、选修等子类别的具体构成。
-
-表格筛选的“重置”会立即清空条件并关闭筛选弹层；自定义课程即使正处于编辑状态，
-也始终提供直接删除入口，删除只需要点击“删除”并完成一次确认。
-
-1. 点击 "从培养计划导入" 按钮
-2. 系统自动加载培养计划（包含层级结构）
-3. 在弹出的抽屉中选择要导入的课程
-4. 点击"导入"按钮
-
-**层级结构示例：**
-```
-通识类 (73学分)
-├── 数学与自然科学类 (20学分)
-│   ├── 线性代数 3学分 已通过
-│   ├── 高等数学①㈠ 5学分 未修读
-│   └── ...
-├── 人文与社会科学类 (18学分)
-│   └── ...
-└── ...
-
-学科基础类 (45学分)
-├── 学科基础必修课 (35学分)
-└── 学科基础选修课 (10学分)
+```text
+模拟 GPA = Σ(课程绩点 × 课程学分) / Σ课程学分
 ```
 
-**课程状态：**
-- 已通过：已修读并获得学分
-- 已选课：已选课但未完成
-- 未修读：计划中但未选课
+该口径使用课程已有的系统绩点，不根据分数重新推断绩点。补考、重修、免修和课程替代的
+最终规则仍以官方系统为准。
 
-#### 从文件导入
+## 保存与导入
 
-1. 点击 "从文件导入" 按钮
-2. 在弹出的文件列表中选择保存的模拟方案
-3. 如有同名课程冲突，选择保留导入的或现有的
+方案保存到应用数据目录的：
 
-### 数据保存
-
-1. 点击 "保存" 按钮
-2. 在弹出的对话框中输入文件名（默认：GPA模拟_YYYY-MM-DD）
-3. 点击确认保存到服务器
-
-## 技术实现
-
-### 组件架构
-
-```
-GPACalculator (React ForwardRef Component)
-│
-├─ State Management
-│   ├─ courses: Course[]
-│   ├─ editingKey: string | null
-│   ├─ activeTab: 'all' | 'real' | 'custom' | 'passed' | 'pending'
-│   ├─ history: Course[][]
-│   ├─ historyIndex: number
-│   └─ hasUnsavedChanges: boolean
-│
-├─ Refs
-│   └─ editingValuesRef: { [key: string]: any }
-│
-├─ Handlers
-│   ├─ handleScoreChange()
-│   ├─ handleGPAChange()
-│   ├─ handleCreditChange()
-│   ├─ addCustomCourse()
-│   ├─ deleteCourse()
-│   └─ saveEdit()
-│
-└─ Server API
-    ├─ exportGPASimulation()
-    ├─ listGPASimulationFiles()
-    ├─ getGPASimulationFile()
-    └─ deleteGPASimulationFile()
+```text
+成绩/gpa_simulations/<account-hash>/*.json
 ```
 
-### 课程数据结构
+文件按账号隔离，支持列出、打开、重命名和删除。旧版根目录方案会在匹配当前账号时迁移。
+方案是用户文档，不属于 `cache.db`，不会被缓存过期或自动刷新删除。
 
-```typescript
-interface Course {
-  key: string;           // 唯一标识
-  name: string;          // 课程名称
-  code: string;          // 课程代码
-  credit: number;        // 学分
-  score: string | number; // 成绩
-  gpa: number;           // 绩点
-  term: string;          // 学期
-  courseType: string;    // 课程类型
-  isReal: boolean;       // 是否真实成绩
-  isCustom: boolean;     // 是否自定义添加
-  fromPlan?: boolean;    // 是否来自培养计划
-  originalData?: any;    // 原始数据（用于检测修改）
-}
-```
+页面也支持导入兼容 JSON 文件。导入前会校验结构并处理与当前课程的冲突；无效文件不会
+部分覆盖当前方案。
 
-### 修改检测逻辑
+## API
 
-```javascript
-// 当真实课程被修改时，自动变为模拟状态
-const handleScoreChange = (key, newScore) => {
-  const newCourses = courses.map(c => {
-    if (c.key !== key) return c;
-    
-    // 检查是否修改了真实课程
-    const isModified = c.isReal && c.originalData && 
-                       c.originalData.score !== newScore;
-    
-    return { 
-      ...c, 
-      score: newScore,
-      isReal: isModified ? false : c.isReal 
-    };
-  });
-  
-  setCourses(newCourses);
-  saveToHistory(newCourses);
-};
-```
+| 接口 | 用途 |
+|---|---|
+| `POST /api/gpa-simulation/export` | 按安全文件名原子保存方案 |
+| `GET /api/gpa-simulation/files` | 列出当前账号方案 |
+| `GET /api/gpa-simulation/file/{filename}` | 读取方案 |
+| `DELETE /api/gpa-simulation/file/{filename}` | 删除方案 |
 
-### 冲突检测（导入时）
+后端拒绝路径穿越和非 JSON 文件名。前端实现位于
+`frontend/src/components/GPACalculator.js`，后端位于 `backend/app/routers/gpa.py`。
 
-```javascript
-// 检查同名课程数据是否不同
-const detectConflicts = (imported, existing) => {
-  const conflicts = [];
-  
-  imported.forEach(imp => {
-    existing.forEach(exist => {
-      if (imp.name === exist.name) {
-        const isDifferent = 
-          Math.abs((imp.gpa || 0) - (exist.gpa || 0)) > 0.01 ||
-          imp.score !== exist.score ||
-          Math.abs((imp.credit || 0) - (exist.credit || 0)) > 0.01;
-        
-        if (isDifferent) {
-          conflicts.push({
-            imported: imp,
-            existing: exist,
-            choice: 'imported' // 默认选择导入的
-          });
-        }
-      }
-    });
-  });
-  
-  return conflicts;
-};
-```
+## 边界
 
-## API 接口
+- 离线模式可基于已有成绩和培养计划缓存使用模拟器。
+- 删除方案不可撤销，但不会删除真实成绩或培养计划。
+- 保存方案不会触发成绩刷新。
+- 账号切换后不能读取另一账号的方案。
 
-### 后端 API
-
-```bash
-# 导出GPA模拟
-POST /api/gpa-simulation/export
-{
-  "filename": "GPA模拟_2024-01-15.json",
-  "data": {
-    "version": "1.0",
-    "exportTime": "...",
-    "stats": {...},
-    "courses": [...]
-  }
-}
-
-# 获取文件列表
-GET /api/gpa-simulation/files
-
-# 读取文件
-GET /api/gpa-simulation/file/{filename}
-
-# 删除文件
-DELETE /api/gpa-simulation/file/{filename}
-```
-
-### 前端 API 服务
-
-```javascript
-import { 
-  exportGPASimulation,
-  listGPASimulationFiles,
-  getGPASimulationFile,
-  deleteGPASimulationFile 
-} from '../services/api';
-
-// 导出
-await exportGPASimulation('my_simulation.json', data);
-
-// 列出文件
-const files = await listGPASimulationFiles();
-
-// 读取文件
-const data = await getGPASimulationFile('my_simulation.json');
-
-// 删除文件
-await deleteGPASimulationFile('my_simulation.json');
-```
-
-## 使用场景
-
-### 场景1：预估重修后的GPA
-
-1. 启动GPA模拟器（自动导入现有成绩）
-2. 找到需要重修的课程
-3. 修改该课程的成绩和绩点
-4. 查看总GPA变化
-5. 保存模拟方案
-
-### 场景2：规划未来学期课程
-
-1. 启动GPA模拟器
-2. 从培养计划导入未来要修的课程
-3. 预估每门课程的成绩
-4. 查看预估GPA
-5. 调整选课计划以达到目标GPA
-
-### 场景3：对比不同成绩方案
-
-1. 启动GPA模拟器
-2. 保存当前状态为方案A
-3. 修改成绩
-4. 保存为方案B
-5. 在两个方案间切换对比
-
-## 注意事项
-
-1. **数据安全** - GPA模拟文件保存在服务器本地，不要存储敏感信息
-2. **文件命名** - 建议使用有意义的文件名，如 "方案A_重修高数.json"
-3. **版本兼容** - 未来版本可能会更新数据结构，旧文件可能需要转换
-4. **GPA计算** - 使用5分制加权平均：Σ(绩点×学分)/Σ学分
-5. **真实课程保护** - 修改真实课程后变为模拟状态，原数据保留在originalData中
-
-## 常见问题
-
-**Q: 修改成绩后为什么课程变成"模拟"类型？**
-A: 为了区分原始成绩和修改后的成绩，修改真实课程后会自动标记为模拟类型。
-
-**Q: 如何恢复原始成绩？**
-A: 点击撤销按钮或重新从教务系统刷新数据。
-
-**Q: GPA模拟文件保存在哪里？**
-A: 保存在 `data/gpa_simulations/` 目录下，可以导出到其他设备。
-
-**Q: 可以同时保存多个模拟方案吗？**
-A: 可以，每个方案保存为不同的文件，可以随时切换加载。
-
-## 未来扩展
-
-- [ ] 支持更多GPA计算规则（4分制、百分制等）
-- [ ] 成绩趋势图表
-- [ ] 目标GPA计算器（计算需要多少分才能达到目标GPA）
-- [ ] 分享模拟方案给其他用户
-- [ ] 导出为Excel/PDF报告
+相关测试：`frontend/src/components/GPACalculator.test.js`、
+`backend/tests/test_application_architecture.py` 及 GPA 路由测试。

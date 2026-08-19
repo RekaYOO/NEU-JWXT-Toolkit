@@ -74,6 +74,11 @@ def build_command(target_name: str, work_dir: Path) -> list[str]:
         f"--output-filename={target.output_name}",
         f"--include-data-dir={PROJECT_ROOT / 'frontend' / 'build'}=frontend/build",
         f"--include-data-files={PROJECT_ROOT / 'VERSION'}=VERSION",
+        f"--include-data-files={PROJECT_ROOT / 'LICENSE'}=LICENSE",
+        (
+            f"--include-data-files={PROJECT_ROOT / 'backend' / 'core' / 'course_selection' / 'THIRD_PARTY_NOTICE.md'}="
+            "backend/core/course_selection/THIRD_PARTY_NOTICE.md"
+        ),
         "--include-package=uvicorn",
         "--include-package-data=certifi",
         "--nofollow-import-to=pytest",

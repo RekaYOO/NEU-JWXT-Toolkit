@@ -1,10 +1,11 @@
 """JWXK weight-allocation optimizer.
 
-The mathematical core is adapted from rtb-1005/Course_Weight-Optimizer
-(commit d70349b1e8cd5bef2ab73bdcce712614813243e6, MIT).  The upstream
-forecast, SAFE/COMP split, exponential proxy and water-filling allocation are
-kept, while the search layer is extended for this project's user-defined plan
-groups and already-selected courses.
+The mathematical core is adapted from rtb-1005/Course_Weight-Optimizer at
+commit d70349b1e8cd5bef2ab73bdcce712614813243e6. See the adjacent
+``THIRD_PARTY_NOTICE.md`` for the upstream MIT license and modification notes.
+The upstream demand forecast, SAFE/COMP split, exponential proxy and
+water-filling allocation are kept, while the search layer is extended for this
+project's user-defined plan groups and already-selected courses.
 """
 
 from __future__ import annotations

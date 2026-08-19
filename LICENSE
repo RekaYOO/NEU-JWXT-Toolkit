@@ -1,20 +1,6 @@
-# Third-party notices
-
-## Course_Weight-Optimizer
-
-The JWXK weight-allocation model in
-`backend/core/course_selection/weight_optimizer.py` is adapted from
-`rtb-1005/Course_Weight-Optimizer`, commit
-`d70349b1e8cd5bef2ab73bdcce712614813243e6`.
-
-The upstream forecasting, SAFE/COMP classification, exponential probability
-proxy, and water-filling allocation are retained. This project adds integer
-JWXK weights, user-defined group quotas, conflict constraints, bounded search,
-already-selected courses, persistence, and background recalculation.
-
 MIT License
 
-Copyright (c) 2026 rtb-1005
+Copyright (c) 2026 RekaYOO and NEU-JWXT-Toolkit contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
