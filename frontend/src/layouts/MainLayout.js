@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { Layout, Menu, Button, Avatar, Drawer, Dropdown, Grid, Tooltip, message, Modal } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
@@ -9,7 +9,12 @@ import {
   MenuOutlined,
   PoweroffOutlined,
 } from '@ant-design/icons';
-import { logout, getUserAvatar, shutdownRuntime } from '../services/api';
+import { logout, getUserAvatar, getUserAvatarCache, requestCacheRefresh, shutdownRuntime } from '../services/api';
+import {
+  readBrowserAvatarCache,
+  subscribeBrowserAvatarCache,
+  writeBrowserAvatarCache,
+} from '../resources/BrowserTimetableStore';
 import { pageTitles, visibleMenuItems } from '../features/featureRegistry';
 import './MainLayout.css';
 
@@ -30,31 +35,58 @@ const MainLayout = ({
   const [isRefreshingAvatar, setIsRefreshingAvatar] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [serviceStopped, setServiceStopped] = useState(false);
+  const avatarGeneration = useRef(0);
   const navigate = useNavigate();
   const location = useLocation();
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
   const menuItems = visibleMenuItems({ offlineMode, offlineCapabilities });
 
-  // 加载用户头像（仅使用缓存，不自动下载）
+  // 首屏先读浏览器头像，再读取服务器 cache-only 快照；过期刷新由统一协调器处理。
   useEffect(() => {
+    const generation = ++avatarGeneration.current;
+    let active = true;
+    const show = blob => {
+      if (!blob || blob.size <= 0) return;
+      setAvatarUrl(previous => {
+        if (previous && previous.startsWith('blob:')) URL.revokeObjectURL(previous);
+        return URL.createObjectURL(blob);
+      });
+    };
     const loadAvatar = async () => {
       try {
-        // 从服务器获取头像（会自动使用缓存）
-        const avatarBlob = await getUserAvatar(false);
-        if (avatarBlob && avatarBlob.size > 0) {
-          const url = URL.createObjectURL(avatarBlob);
-          setAvatarUrl(url);
+        const identity = String(userInfo || '');
+        const browser = await readBrowserAvatarCache(identity);
+        if (active && generation === avatarGeneration.current && browser?.blob) show(browser.blob);
+        const cached = await getUserAvatarCache();
+        if (!active || generation !== avatarGeneration.current) return;
+        if (cached?.blob) {
+          show(cached.blob);
+          await writeBrowserAvatarCache(identity, cached);
         }
-      } catch (error) {
-        // 头像获取失败不显示错误，使用默认头像
-        console.log('[Avatar] 使用默认头像');
+        if (cached?.stale || !cached?.blob) {
+          requestCacheRefresh('avatar', { reason: 'page_swr' }).catch(() => {});
+        }
+      } catch (_error) {
+        // 浏览器/服务器头像均不可用时保持默认头像，不阻塞页面。
       }
     };
-
-    if (userInfo && !offlineMode) {
-      loadAvatar();
-    }
+    if (userInfo && !offlineMode) loadAvatar();
+    const unsubscribe = userInfo && !offlineMode
+      ? subscribeBrowserAvatarCache(String(userInfo), async () => {
+        try {
+          const cached = await getUserAvatarCache();
+          if (active && generation === avatarGeneration.current && cached?.blob) {
+            show(cached.blob);
+            await writeBrowserAvatarCache(String(userInfo), cached);
+          }
+        } catch (_error) { /* retain the last good avatar */ }
+      })
+      : () => {};
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, [userInfo, offlineMode]);
 
   useEffect(() => () => {
@@ -69,9 +101,13 @@ const MainLayout = ({
       const update = event.detail || {};
       if (update.resource !== 'avatar' || update.changed !== true) return;
       try {
-        const avatarBlob = await getUserAvatar(false);
-        if (avatarBlob && avatarBlob.size > 0) {
-          setAvatarUrl(URL.createObjectURL(avatarBlob));
+        const cached = await getUserAvatarCache();
+        if (cached?.blob) {
+          setAvatarUrl(previous => {
+            if (previous && previous.startsWith('blob:')) URL.revokeObjectURL(previous);
+            return URL.createObjectURL(cached.blob);
+          });
+          await writeBrowserAvatarCache(String(userInfo || ''), cached);
         }
       } catch (error) {
         // SWR keeps the previous avatar when a background refresh fails.
@@ -79,7 +115,7 @@ const MainLayout = ({
     };
     window.addEventListener('neu-cache-event', onCacheEvent);
     return () => window.removeEventListener('neu-cache-event', onCacheEvent);
-  }, [offlineMode]);
+  }, [offlineMode, userInfo]);
 
   // 刷新头像（点击头像时调用）
   const refreshAvatar = async () => {
@@ -95,6 +131,10 @@ const MainLayout = ({
         }
         const url = URL.createObjectURL(avatarBlob);
         setAvatarUrl(url);
+        try {
+          const cached = await getUserAvatarCache();
+          if (cached?.blob) await writeBrowserAvatarCache(String(userInfo || ''), cached);
+        } catch (_error) { /* freshly displayed avatar remains usable */ }
         message.success('头像已更新');
       }
     } catch (error) {

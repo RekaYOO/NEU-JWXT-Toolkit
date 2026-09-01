@@ -319,8 +319,8 @@ export const ResourceProvider = ({
   }, [identity, load, offlineMode]);
 
   const value = useMemo(() => ({
-    states, load, publish, refresh, clear, offlineMode,
-  }), [states, load, publish, refresh, clear, offlineMode]);
+    states, load, publish, refresh, clear, offlineMode, identity,
+  }), [states, load, publish, refresh, clear, offlineMode, identity]);
 
   return (
     <ResourceContext.Provider value={value}>
@@ -485,4 +485,16 @@ export const useResourceMemory = (resource) => {
     publish: useCallback(payload => store.publish(resource, payload), [resource, store.publish]),
     clear: useCallback(() => store.clear(resource), [resource, store.clear]),
   };
+};
+
+export const useResourceIdentity = () => {
+  const store = useContext(ResourceContext);
+  if (!store) throw new Error('useResourceIdentity 必须在 ResourceProvider 内使用');
+  return store.identity || '';
+};
+
+export const useResourceOfflineMode = () => {
+  const store = useContext(ResourceContext);
+  if (!store) throw new Error('useResourceOfflineMode 必须在 ResourceProvider 内使用');
+  return Boolean(store.offlineMode);
 };

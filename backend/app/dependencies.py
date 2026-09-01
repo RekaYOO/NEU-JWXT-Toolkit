@@ -52,6 +52,8 @@ from backend.core.cache.resources import (
     diff_score_detail,
     canonicalize_personal_timetable,
     diff_personal_timetable,
+    canonicalize_timetable_index,
+    diff_timetable_index,
     fetch_academic_report,
     fetch_research_training,
     fetch_scores,
@@ -319,6 +321,14 @@ def _fetch_personal_timetable_resource(context):
     }
 
 
+def _fetch_timetable_index_resource(context):
+    """Fetch only the small term index; personal timetable data stays separate."""
+    api = _cache_client(context).timetable
+    terms = api.get_terms()
+    current = next((str(item.get("code") or "") for item in terms if item.get("current")), "")
+    return {"terms": terms, "current": current}
+
+
 def _fetch_avatar_resource(context):
     client = _cache_client(context)
     user_info = client.get_user_info()
@@ -437,6 +447,19 @@ _cache_registry = CacheRegistry(
             fetch=_fetch_festival_resource,
             canonicalize=canonicalize_festival_activities,
             diff=diff_festival_activities,
+        ),
+        CacheResourceSpec(
+            resource="timetable-index",
+            schema_version=1,
+            revision_algorithm_version=1,
+            account_scope=AccountScope.ACCOUNT,
+            payload_type=PayloadType.JSON,
+            max_age=timedelta(minutes=30),
+            offline_readable=False,
+            sensitivity="private-academic-index",
+            fetch=_fetch_timetable_index_resource,
+            canonicalize=canonicalize_timetable_index,
+            diff=diff_timetable_index,
         ),
         CacheResourceSpec(
             resource="personal-timetable",

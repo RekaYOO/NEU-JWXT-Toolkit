@@ -23,6 +23,10 @@ from backend.app.schemas.timetable import (
     TimetableTargetFilterOptionsResponse,
     TimetableTermsResponse,
     PersonalTimetableResponse,
+    TimetableBootstrapResponse,
+    TimetableSyncRequest,
+    TimetableSyncResponse,
+    TimetableSyncJob,
 )
 from backend.core.auth import NEUAuthClient
 from backend.core.auth.client import NEULoginError
@@ -33,6 +37,125 @@ from backend.core.timetable import TimetableError
 
 
 router = APIRouter(prefix="/timetable", tags=["timetable"])
+
+
+def _personal_cache_response(entry, stale: bool, source: str = "server") -> PersonalTimetableResponse | None:
+    if entry is None:
+        return None
+    try:
+        return PersonalTimetableResponse(
+            **entry.payload,
+            source=source,
+            is_fresh=not stale,
+            last_update=entry.saved_at,
+            cache=entry.metadata(is_stale=stale),
+        )
+    except Exception:
+        # A schema-incompatible row must never cross the HTTP boundary.
+        return None
+
+
+@router.get("/bootstrap", response_model=TimetableBootstrapResponse)
+def get_timetable_bootstrap(
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+):
+    """Return only server-side timetable snapshots; never waits for NEU."""
+    coordinator = get_cache_coordinator()
+    account = str(auth.username)
+    index_entry, index_stale = coordinator.read(
+        account_id=account, resource="timetable-index", variant="default",
+    )
+    index_spec = coordinator.registry.get("timetable-index")
+    terms: list[dict] = []
+    current = None
+    if _cache_entry_is_compatible(index_entry, index_spec) and isinstance(index_entry.payload, dict):
+        terms = list(index_entry.payload.get("terms") or [])
+        current = index_entry.payload.get("current") or None
+    ordered_terms = sorted(
+        {str(item.get("code") or "") for item in terms if item.get("code")},
+        key=_term_order_key,
+    )
+    next_term = ""
+    if current in ordered_terms:
+        index = ordered_terms.index(current)
+        if index + 1 < len(ordered_terms):
+            next_term = ordered_terms[index + 1]
+    allowed = {value for value in (current, next_term) if value}
+    personal_spec = coordinator.registry.get("personal-timetable")
+    entries = coordinator.store.list_entries(account_id=account, resource="personal-timetable")
+    snapshots: list[PersonalTimetableResponse] = []
+    for entry_index, entry in enumerate(entries):
+        term_code = str(entry.key.variant).removeprefix("term:")
+        if allowed and term_code not in allowed:
+            continue
+        if not allowed and entry_index >= 2:
+            # Without a cached term index, expose only the two newest variants
+            # as a conservative fallback; never turn bootstrap into history.
+            break
+        if not _cache_entry_is_compatible(entry, personal_spec):
+            continue
+        _, stale = coordinator.read(
+            account_id=account, resource="personal-timetable", variant=entry.key.variant,
+        )
+        response = _personal_cache_response(entry, stale)
+        if response is not None:
+            snapshots.append(response)
+    snapshots.sort(key=lambda item: (item.term_code != current, _term_order_key(item.term_code)), reverse=False)
+    return TimetableBootstrapResponse(
+        terms=terms,
+        current=current,
+        index_cache=(index_entry.metadata(is_stale=index_stale) if index_entry is not None else {}),
+        personal=snapshots,
+    )
+
+
+@router.post("/sync", response_model=TimetableSyncResponse)
+def sync_timetable(
+    request: TimetableSyncRequest,
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+):
+    """Queue index/personal refreshes and return immediately."""
+    account = str(auth.username)
+    generation = get_auth_generation()
+    coordinator = get_cache_coordinator()
+    reason = "manual" if request.force else "page_swr"
+    jobs: list[TimetableSyncJob] = []
+
+    def submit(resource: str, variant: str = "default") -> None:
+        result = coordinator.submit(
+            account_id=account,
+            resource=resource,
+            variant=variant,
+            identity_epoch=generation,
+            force=request.force,
+            reason=reason,
+            priority=5 if request.force else 40,
+        )
+        jobs.append(TimetableSyncJob(
+            resource=resource,
+            variant=variant,
+            status=result.status.value,
+            job_id=result.job_id,
+            revision=result.revision,
+        ))
+
+    submit("timetable-index")
+    index_entry, _ = coordinator.read(
+        account_id=account, resource="timetable-index", variant="default",
+    )
+    index_payload = index_entry.payload if index_entry is not None else {}
+    terms = list(index_payload.get("terms") or []) if isinstance(index_payload, dict) else []
+    current = str(request.term_code or index_payload.get("current") or "") if isinstance(index_payload, dict) else str(request.term_code or "")
+    ordered = sorted({str(item.get("code") or "") for item in terms if item.get("code")}, key=_term_order_key)
+    selected = request.term_code or current
+    candidates = [selected] if selected else []
+    if request.include_next and selected in ordered:
+        position = ordered.index(selected)
+        if position + 1 < len(ordered):
+            candidates.append(ordered[position + 1])
+    for term_code in dict.fromkeys(value for value in candidates if value):
+        submit("personal-timetable", personal_timetable_variant(term_code))
+    return TimetableSyncResponse(jobs=jobs)
 
 
 def _term_order_key(code: str):

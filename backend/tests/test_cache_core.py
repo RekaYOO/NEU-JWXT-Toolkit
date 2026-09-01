@@ -108,6 +108,25 @@ def test_store_round_trip_events_and_stable_saved_at(tmp_path):
         assert (store.path.stat().st_mode & 0o777) == 0o600
 
 
+def test_store_lists_account_variants_without_cross_account_rows(tmp_path):
+    store = CacheStore(tmp_path / "cache.db")
+    for account, variant, value in (("a", "term:2026-2027-1", 1), ("a", "term:2026-2027-2", 2), ("b", "term:2026-2027-1", 3)):
+        store.commit_success(
+            key=CacheKey(account, "personal-timetable", variant),
+            schema_version=1,
+            revision_algorithm_version=1,
+            payload_type=PayloadType.JSON,
+            payload={"value": value},
+            revision=f"v{value}",
+            dependency_revisions={},
+            changes={},
+            reason="test",
+        )
+
+    rows = store.list_entries(account_id="a", resource="personal-timetable")
+    assert {row.key.variant for row in rows} == {"term:2026-2027-1", "term:2026-2027-2"}
+
+
 def test_store_blob_delete_and_account_isolation(tmp_path):
     store = CacheStore(tmp_path / "cache.db")
     for account in ("a", "b"):

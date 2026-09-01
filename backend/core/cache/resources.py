@@ -577,3 +577,33 @@ def diff_personal_timetable(previous: Any, current: Any) -> dict[str, Any]:
             for key in ("campuses", "weeks", "sections_by_campus", "unscheduled", "practices")
         ),
     }
+
+
+def canonicalize_timetable_index(payload: Any) -> dict[str, Any]:
+    """Keep the small account-scoped term index used for local-first startup."""
+    if not isinstance(payload, Mapping):
+        raise TypeError("timetable index payload must be an object")
+    terms = []
+    for item in payload.get("terms") or []:
+        if not isinstance(item, Mapping):
+            continue
+        code = str(item.get("code") or "").strip()
+        if not code:
+            continue
+        terms.append({
+            "code": code,
+            "name": str(item.get("name") or code).strip(),
+            "current": bool(item.get("current")),
+        })
+    terms.sort(key=lambda item: item["code"])
+    current = str(payload.get("current") or "").strip()
+    return {"terms": terms, "current": current}
+
+
+def diff_timetable_index(previous: Any, current: Any) -> dict[str, Any]:
+    previous = canonicalize_timetable_index(previous or {})
+    current = canonicalize_timetable_index(current or {})
+    return {
+        "terms_changed": previous.get("terms") != current.get("terms"),
+        "current_changed": previous.get("current") != current.get("current"),
+    }

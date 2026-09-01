@@ -7,6 +7,8 @@ import { shutdownRuntime } from '../services/api';
 
 jest.mock('../services/api', () => ({
   getUserAvatar: jest.fn().mockResolvedValue(null),
+  getUserAvatarCache: jest.fn().mockResolvedValue(null),
+  requestCacheRefresh: jest.fn().mockResolvedValue({}),
   logout: jest.fn().mockResolvedValue({ success: true }),
   shutdownRuntime: jest.fn().mockResolvedValue({ success: true }),
 }));

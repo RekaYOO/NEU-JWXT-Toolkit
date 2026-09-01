@@ -164,6 +164,22 @@ class CacheStore:
         finally:
             connection.close()
 
+    def list_entries(self, *, account_id: str, resource: str) -> list[CacheEntry]:
+        """Return all variants for one account/resource without remote access."""
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT * FROM cache_entries
+                WHERE account_id = ? AND resource = ?
+                ORDER BY saved_at DESC
+                """,
+                (account_id, resource),
+            ).fetchall()
+            return [self._row_to_entry(row) for row in rows]
+        finally:
+            connection.close()
+
     def commit_success(
         self,
         *,

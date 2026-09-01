@@ -228,3 +228,32 @@ class PersonalTimetableResponse(BaseModel):
     is_fresh: bool
     last_update: datetime
     cache: Dict[str, Any]
+
+
+class TimetableBootstrapResponse(BaseModel):
+    """Cache-only startup payload; it never waits for the official service."""
+
+    terms: List[TimetableTermModel] = Field(default_factory=list)
+    current: Optional[str] = None
+    index_cache: Dict[str, Any] = Field(default_factory=dict)
+    personal: List[PersonalTimetableResponse] = Field(default_factory=list)
+
+
+class TimetableSyncRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    term_code: Optional[str] = Field(default=None, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
+    include_next: bool = True
+    force: bool = False
+
+
+class TimetableSyncJob(BaseModel):
+    resource: str
+    variant: str
+    status: str
+    job_id: Optional[str] = None
+    revision: Optional[str] = None
+
+
+class TimetableSyncResponse(BaseModel):
+    jobs: List[TimetableSyncJob] = Field(default_factory=list)

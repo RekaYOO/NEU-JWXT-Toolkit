@@ -42,6 +42,7 @@ import {
   mergeScheduleWithSelectionOverlays,
   requestErrorText,
   restorePersonalTimetableMemory,
+  timetableSnapshotIsNewer,
   usableTargetFilterDefinitions,
   TIMETABLE_DAY_ORDER,
   TIMETABLE_MODES,
@@ -56,12 +57,22 @@ jest.mock('../services/api', () => ({
   getTimetableSchedule: jest.fn(),
   getTimetableTargetFilterOptions: jest.fn(),
   getTimetableTerms: jest.fn(),
+  getTimetableBootstrap: jest.fn().mockResolvedValue({ terms: [], current: null, personal: [] }),
+  syncTimetable: jest.fn().mockResolvedValue({ jobs: [] }),
   searchTimetableTargets: jest.fn(),
   checkScheduleConflicts: jest.fn(),
 }));
 
 
 describe('TimetablePage helpers', () => {
+  test('accepts a newer server snapshot but never rolls back to an older one', () => {
+    const current = { cache: { revision: 'a', last_checked_at: '2026-09-01T10:00:00Z', saved_at: '2026-09-01T09:59:00Z' } };
+    const newer = { cache: { revision: 'b', last_checked_at: '2026-09-01T10:01:00Z', saved_at: '2026-09-01T10:00:00Z' } };
+    const older = { cache: { revision: 'c', last_checked_at: '2026-09-01T09:58:00Z', saved_at: '2026-09-01T09:57:00Z' } };
+    expect(timetableSnapshotIsNewer(newer, current)).toBe(true);
+    expect(timetableSnapshotIsNewer(older, current)).toBe(false);
+  });
+
   test('conflict details fall back from an empty weeks array to known baseline weeks', () => {
     expect(conflictMeetingText({
       weeks: [], baseline_weeks: [11, 13], overlapping_weeks: [11],

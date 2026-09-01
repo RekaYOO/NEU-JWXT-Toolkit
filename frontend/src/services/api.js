@@ -886,6 +886,23 @@ export const getTimetableTerms = async () => {
   return response.data;
 };
 
+/** Read the server avatar cache only; never waits for an official refresh. */
+export const getUserAvatarCache = async () => {
+  const response = await api.get('/api/user/avatar/cache', {
+    responseType: 'blob',
+    skipAuthRedirect: true,
+  });
+  const header = name => response.headers?.[name] || response.headers?.[name.toLowerCase()] || '';
+  return {
+    blob: response.data,
+    token: header('x-avatar-token'),
+    revision: String(header('etag')).replace(/^"|"$/g, ''),
+    stale: header('x-cache-stale') === 'true',
+    saved_at: header('x-cache-saved-at'),
+    last_checked_at: header('x-cache-last-checked-at'),
+  };
+};
+
 export const getTimetableContext = async (data) => {
   const response = await api.post('/api/timetable/context', data);
   return response.data;
@@ -909,6 +926,20 @@ export const getTimetableSchedule = async (data) => {
 export const getPersonalTimetable = async (termCode, refresh = false) => {
   const response = await api.get('/api/timetable/personal', {
     params: { term_code: termCode, refresh },
+  });
+  return response.data;
+};
+
+export const getTimetableBootstrap = async () => {
+  // Bootstrap is deliberately cache-only.  A stale session must not trigger
+  // a full-page auth redirect while a usable local snapshot is already shown.
+  const response = await api.get('/api/timetable/bootstrap', { skipAuthRedirect: true });
+  return response.data;
+};
+
+export const syncTimetable = async (data = {}) => {
+  const response = await api.post('/api/timetable/sync', data, {
+    skipAuthRedirect: true,
   });
   return response.data;
 };

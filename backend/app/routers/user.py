@@ -4,7 +4,7 @@ from fastapi.responses import Response
 from backend.core.auth import NEUAuthClient
 from backend.app.dependencies import require_cached_auth_identity, require_serialized_auth
 from backend.app.cache_support import read_cache, submit_refresh, wait_for_job
-from backend.core.cache.resources import avatar_bytes
+from backend.core.cache.resources import avatar_bytes, avatar_token
 from backend.core.log import log_application_error
 
 router = APIRouter()
@@ -62,3 +62,31 @@ def get_user_avatar(
     except Exception as e:
         error_id = log_application_error("user.avatar", e, 500)
         raise HTTPException(status_code=500, detail=f"获取头像失败（错误编号：{error_id}）") from e
+
+
+@router.get("/user/avatar/cache")
+def get_user_avatar_cache(
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+):
+    """Return the current account's avatar cache without triggering refresh."""
+    try:
+        entry, stale = read_cache(auth.username, "avatar")
+        if entry is None:
+            raise HTTPException(status_code=404, detail="头像缓存不存在")
+        data = avatar_bytes(entry.payload)
+        return Response(
+            content=data,
+            media_type="image/png",
+            headers={
+                "ETag": f'"{entry.revision}"',
+                "X-Cache-Stale": "true" if stale else "false",
+                "X-Avatar-Token": avatar_token(entry.payload),
+                "X-Cache-Saved-At": entry.saved_at.isoformat(),
+                "X-Cache-Last-Checked-At": entry.last_checked_at.isoformat() if entry.last_checked_at else "",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_id = log_application_error("user.avatar_cache", e, 500)
+        raise HTTPException(status_code=500, detail=f"读取头像缓存失败（错误编号：{error_id}）") from e

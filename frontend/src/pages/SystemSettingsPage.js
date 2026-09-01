@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, Spin, Switch, Tabs, Typography, message } from 'antd';
+import { Button, Card, Col, Form, Input, InputNumber, Modal, Row, Select, Space, Spin, Switch, Tabs, Typography, message } from 'antd';
 import { FileTextOutlined, MailOutlined, SaveOutlined, SettingOutlined } from '@ant-design/icons';
 import LogsPage from './LogsPage';
 import { getGradeTrackingConfig, updateGradeTrackingConfig, testGradeTrackingEmail, getSystemCacheSettings, updateSystemCacheSettings } from '../services/api';
+import { clearBrowserAvatarCache, clearBrowserTimetableCache } from '../resources/BrowserTimetableStore';
+import { useResourceIdentity } from '../resources/ResourceStore';
 import './SystemSettingsPage.css';
 
 const { Title, Text } = Typography;
@@ -15,6 +17,7 @@ const CACHE_RESOURCE_META = {
   'research-training': { name: '科研训练', summary: '科研训练项目和报名记录。' },
   'festival-activities': { name: '四节活动', summary: '四节活动、报名状态和可导出活动数据。' },
   'personal-timetable': { name: '我的课表', summary: '当前及紧邻下一学期的个人课表，优先显示本地数据并在后台更新。' },
+  'timetable-index': { name: '课表学期索引', summary: '当前学期与紧邻下一学期目录，用于课表首屏快速定位，不直接替代课表内容。' },
   avatar: { name: '用户头像', summary: '登录后显示的个人头像资源。' },
   'course-outline-metadata': { name: '大纲元数据', summary: '课程大纲中的考核方式和成绩分制，不保存完整大纲正文。' },
 };
@@ -30,6 +33,41 @@ const CacheSettings = () => {
   return <Form form={form} layout="vertical"><Card title="缓存策略" extra={<Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={save}>保存缓存配置</Button>}><Text type="secondary">关闭某项缓存后，该功能仍可在线读取，但不会继续使用本地缓存；间隔表示后台检查新数据的最短时间。</Text><div className="system-cache-list">{resources.map((item, index) => { const meta = CACHE_RESOURCE_META[item.resource] || { name: '其他数据', summary: '该项缓存由系统功能自动使用。' }; return <Card size="small" key={item.resource}><Row gutter={16} align="middle"><Col xs={24} md={8}><div><strong>{meta.name}</strong><div className="system-cache-resource-key">{item.resource}</div><Text type="secondary">{meta.summary}</Text></div></Col><Col xs={12} md={8}><Form.Item name={['resources', index, 'enabled']} valuePropName="checked" noStyle><Switch checkedChildren="启用" unCheckedChildren="关闭" /></Form.Item></Col><Col xs={12} md={8}><Form.Item name={['resources', index, 'interval_minutes']} label="检查间隔（分钟）"><InputNumber min={1} max={52560000} style={{ width: '100%' }} /></Form.Item></Col></Row><Form.Item name={['resources', index, 'resource']} hidden><Input /></Form.Item></Card>; })}</div></Card></Form>;
 };
 
+const BrowserTimetableCacheCard = () => {
+  const identity = useResourceIdentity();
+  const [clearing, setClearing] = useState('');
+  const clear = (kind) => {
+    if (!identity) {
+      message.info('登录后才能清除当前账号的本机课表缓存');
+      return;
+    }
+    Modal.confirm({
+      title: kind === 'timetable' ? '清除本机课表缓存？' : '清除本机头像缓存？',
+      content: kind === 'timetable'
+        ? '只会删除当前浏览器保存的课表快照，不影响服务器缓存和教务系统数据。'
+        : '只会删除当前浏览器保存的头像，不影响服务器头像缓存和登录状态。',
+      okText: '清除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setClearing(kind);
+        try {
+          if (kind === 'timetable') await clearBrowserTimetableCache(identity);
+          else await clearBrowserAvatarCache(identity);
+          message.success(kind === 'timetable' ? '本机课表缓存已清除' : '本机头像缓存已清除');
+        } catch (error) {
+          message.error(error?.message || '本机课表缓存清除失败');
+        } finally {
+          setClearing('');
+        }
+      },
+    });
+  };
+  return <Card title="本机浏览器缓存" className="system-settings-card" extra={<Space wrap><Button danger loading={clearing === 'timetable'} onClick={() => clear('timetable')}>清除课表缓存</Button><Button loading={clearing === 'avatar'} onClick={() => clear('avatar')}>清除头像缓存</Button></Space>}>
+    <Text type="secondary">课表和头像会在登录后优先从当前账号的浏览器缓存显示，再由服务器缓存和官方数据在后台静默核验。这里的清除操作只影响本机，不会删除服务器缓存、登录凭据或教务系统数据。</Text>
+  </Card>;
+};
+
 const TrackingMailForm = () => {
   const [form] = Form.useForm(); const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [testing, setTesting] = useState(false); const [passwordConfigured, setPasswordConfigured] = useState(false);
   useEffect(() => { getGradeTrackingConfig().then(config => { const { smtp_password_configured, ...fields } = config; setPasswordConfigured(Boolean(smtp_password_configured)); form.setFieldsValue(fields); }).catch(() => message.error('邮件配置加载失败')).finally(() => setLoading(false)); }, [form]);
@@ -42,5 +80,5 @@ const TrackingMailForm = () => {
 export default function SystemSettingsPage() {
   const [params, setParams] = useSearchParams();
   const activeKey = params.get('tab') === 'logs' ? 'logs' : 'config';
-  return <main className="system-settings-page"><div className="system-settings-heading"><SettingOutlined /><div><Title level={2}>系统设置</Title><Text type="secondary">统一管理日志、缓存和系统通知配置</Text></div></div><Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={[{ key: 'config', label: <span><SettingOutlined /> 配置项</span>, children: <><CacheSettings /><Card title="系统邮件" className="system-settings-card"><TrackingMailForm /></Card></> }, { key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded /> }]} /></main>;
+  return <main className="system-settings-page"><div className="system-settings-heading"><SettingOutlined /><div><Title level={2}>系统设置</Title><Text type="secondary">统一管理日志、缓存和系统通知配置</Text></div></div><Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={[{ key: 'config', label: <span><SettingOutlined /> 配置项</span>, children: <><CacheSettings /><BrowserTimetableCacheCard /><Card title="系统邮件" className="system-settings-card"><TrackingMailForm /></Card></> }, { key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded /> }]} /></main>;
 }

@@ -36,9 +36,16 @@ import {
   getTimetableSchedule,
   getTimetableTargetFilterOptions,
   getTimetableTerms,
+  getTimetableBootstrap,
+  syncTimetable,
   searchTimetableTargets,
 } from '../services/api';
-import { useResourceMemory } from '../resources/ResourceStore';
+import { useResourceMemory, useResourceIdentity, useResourceOfflineMode } from '../resources/ResourceStore';
+import {
+  readBrowserTimetableCache,
+  writeBrowserTimetableCache,
+  subscribeBrowserTimetableCache,
+} from '../resources/BrowserTimetableStore';
 import { compareAcademicTermsNewestFirst } from '../utils/termSort';
 import { mergeSelectionConflictMatches, sameSelectionCourse } from '../utils/jwxkSchedule';
 import { loadSetting, saveSetting } from '../utils/settings';
@@ -986,6 +993,18 @@ export const restorePersonalTimetableMemory = (memory, requestedTerm = '') => {
   };
 };
 
+export const timetableSnapshotIsNewer = (candidate, current) => {
+  if (!candidate) return false;
+  if (!current) return true;
+  const candidateChecked = Date.parse(candidate.cache?.last_checked_at || candidate.last_update || '') || 0;
+  const currentChecked = Date.parse(current.cache?.last_checked_at || current.last_update || '') || 0;
+  if (candidateChecked !== currentChecked) return candidateChecked > currentChecked;
+  const candidateSaved = Date.parse(candidate.cache?.saved_at || candidate.last_update || '') || 0;
+  const currentSaved = Date.parse(current.cache?.saved_at || current.last_update || '') || 0;
+  if (candidateSaved !== currentSaved) return candidateSaved > currentSaved;
+  return Boolean(candidate.cache?.revision && candidate.cache.revision !== current.cache?.revision);
+};
+
 const targetDescription = target => Object.entries(target?.details || {})
   .map(([key, value]) => `${DETAIL_LABELS[key] || key}：${value}`)
   .join(' · ');
@@ -1119,6 +1138,8 @@ function TimetablePage({
   const screens = useBreakpoint();
   const isMobile = !screens.lg;
   const timetableMemory = useResourceMemory('timetable-current-personal');
+  const resourceIdentity = useResourceIdentity();
+  const offlineMode = useResourceOfflineMode();
   const requestedTerm = preferredTermCode || (typeof window === 'undefined'
     ? ''
     : new URLSearchParams(window.location.search).get('term') || '');
@@ -1153,6 +1174,17 @@ function TimetablePage({
   const [personalPayload, setPersonalPayload] = useState(() => restored?.personalPayload || null);
   const [schedule, setSchedule] = useState(() => restored?.schedule || null);
   const [loading, setLoading] = useState(() => !restored?.schedule);
+  const [cacheTier, setCacheTier] = useState(restored?.personalPayload ? 'memory' : 'remote');
+  const browserHydrationGeneration = useRef(0);
+  const browserCacheRef = useRef({ terms: [], current: '', personal: [] });
+  const currentTermCodeRef = useRef(currentTermCode);
+  const viewModeRef = useRef(viewMode);
+  const personalPayloadRef = useRef(personalPayload);
+  const termCodeRef = useRef(termCode);
+  currentTermCodeRef.current = currentTermCode;
+  viewModeRef.current = viewMode;
+  personalPayloadRef.current = personalPayload;
+  termCodeRef.current = termCode;
   const [error, setError] = useState(null);
   const [autoNotice, setAutoNotice] = useState('');
   const [detailCourse, setDetailCourse] = useState(null);
@@ -1185,6 +1217,7 @@ function TimetablePage({
   const targetPreviewGeneration = useRef(0);
   const termsGeneration = useRef(0);
   const termsRequestRef = useRef(null);
+  const browserPreferredTerm = useRef('');
   const personalGeneration = useRef(0);
   const conflictGeneration = useRef(0);
   const autoDefaultResolved = useRef(false);
@@ -1230,7 +1263,9 @@ function TimetablePage({
           ? deepLink.current.term
           : '';
         autoDefaultResolved.current = Boolean(linkedTerm);
-        setTermCode(linkedTerm || selectDefaultTerm(rows, detectedCurrent));
+        const preferredBrowser = browserPreferredTerm.current;
+        const browserTermIsValid = preferredBrowser && rows.some(item => item.code === preferredBrowser);
+        setTermCode(linkedTerm || (browserTermIsValid ? preferredBrowser : selectDefaultTerm(rows, detectedCurrent)));
         if (linkedTerm && deepLink.current.day) setMobileDay(deepLink.current.day);
       } catch (requestError) {
         if (generation !== termsGeneration.current) return;
@@ -1266,6 +1301,122 @@ function TimetablePage({
     setWeekNumber(nextWeek);
   }, []);
 
+  const browserSyncStarted = useRef(false);
+  const applyCachedSnapshot = useCallback((payload, source = 'server') => {
+    if (!payload?.term_code) return false;
+    const firstCampus = payload.campuses?.[0]?.code || '';
+    const nextWeek = selectDefaultWeek(payload.weeks || [], {
+      currentTerm: payload.term_code === currentTermCodeRef.current,
+    });
+    const decorated = source === 'browser'
+      ? {
+        ...payload,
+        source: 'browser',
+        is_fresh: false,
+        cache: { ...(payload.cache || {}), is_browser: true, is_stale: true },
+      }
+      : payload;
+    setCacheTier(source);
+    setPersonalContext(decorated, firstCampus, nextWeek);
+    setSchedule(personalScheduleView(decorated, firstCampus, viewModeRef.current, nextWeek));
+    setLoading(false);
+    return true;
+  }, [setPersonalContext]);
+
+  useEffect(() => {
+    if (!resourceIdentity || offlineMode) {
+      return undefined;
+    }
+    const generation = ++browserHydrationGeneration.current;
+    let active = true;
+    const hydrate = async () => {
+      const browser = await readBrowserTimetableCache(resourceIdentity);
+      if (!active || generation !== browserHydrationGeneration.current) return;
+      browserCacheRef.current = browser;
+      if (browser.terms?.length && !terms.length) {
+        setTerms(browser.terms);
+        setCurrentTermCode(browser.current || selectEffectiveCurrentTerm(browser.terms, ''));
+      }
+      const desiredTerm = requestedTerm || browser.current || browser.personal?.[0]?.term_code || '';
+      const candidate = browser.personal?.find(item => item.term_code === desiredTerm) || browser.personal?.[0];
+      if (candidate && !personalPayload) {
+        const saved = browser.viewState || {};
+        browserPreferredTerm.current = saved.termCode || candidate.term_code || '';
+        if (!embedded && (saved.termCode || candidate.term_code)) {
+          setTermCode(saved.termCode || candidate.term_code);
+        }
+        if (saved.viewMode === 'term' || saved.viewMode === 'week') setViewMode(saved.viewMode);
+        applyCachedSnapshot(candidate, 'browser');
+        if (saved.campusCode && candidate.campuses?.some(item => item.code === saved.campusCode)) {
+          setCampusCode(saved.campusCode);
+        }
+        if (Number.isInteger(saved.weekNumber) && candidate.weeks?.some(item => item.number === saved.weekNumber)) {
+          setWeekNumber(saved.weekNumber);
+        }
+      }
+
+      try {
+        const bootstrap = await getTimetableBootstrap();
+        if (!active || generation !== browserHydrationGeneration.current) return;
+        if (bootstrap.terms?.length) {
+          setTerms(bootstrap.terms);
+          setCurrentTermCode(bootstrap.current || selectEffectiveCurrentTerm(bootstrap.terms, ''));
+        }
+        const selected = requestedTerm || bootstrap.current || desiredTerm;
+        const serverCandidate = bootstrap.personal?.find(item => item.term_code === selected)
+          || bootstrap.personal?.[0];
+        const currentDisplayed = personalPayloadRef.current || candidate;
+        if (serverCandidate && timetableSnapshotIsNewer(serverCandidate, currentDisplayed)) {
+          applyCachedSnapshot(serverCandidate, 'server');
+        }
+        if (!browserSyncStarted.current) {
+          browserSyncStarted.current = true;
+          syncTimetable({ term_code: selected || undefined, include_next: true, force: false }).catch(() => {});
+        }
+      } catch (_error) {
+        // Browser snapshot remains usable when the server cache is unavailable.
+      }
+    };
+    hydrate();
+    const unsubscribe = subscribeBrowserTimetableCache(resourceIdentity, () => {
+      readBrowserTimetableCache(resourceIdentity).then(next => {
+        if (!active) return;
+        browserCacheRef.current = next;
+        const selected = requestedTerm || next.current || termCodeRef.current;
+        const candidate = next.personal?.find(item => item.term_code === selected);
+        if (candidate && timetableSnapshotIsNewer(candidate, personalPayloadRef.current)) {
+          applyCachedSnapshot(candidate, 'browser');
+        }
+      }).catch(() => {});
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [applyCachedSnapshot, embedded, offlineMode, requestedTerm, resourceIdentity]);
+
+  useEffect(() => {
+    if (!resourceIdentity || offlineMode) return undefined;
+    let active = true;
+    const onCacheEvent = event => {
+      const detail = event.detail || {};
+      if (!active || !['timetable-index', 'personal-timetable'].includes(detail.resource)) return;
+      getTimetableBootstrap().then(bootstrap => {
+        if (!active) return;
+        const selected = requestedTerm || bootstrap.current || termCode;
+        const candidate = bootstrap.personal?.find(item => item.term_code === selected);
+        if (candidate && timetableSnapshotIsNewer(candidate, personalPayloadRef.current)) {
+          applyCachedSnapshot(candidate, 'server');
+        }
+      }).catch(() => {});
+    };
+    window.addEventListener('neu-cache-event', onCacheEvent);
+    return () => {
+      active = false;
+      window.removeEventListener('neu-cache-event', onCacheEvent);
+    };
+  }, [applyCachedSnapshot, offlineMode, requestedTerm, resourceIdentity]);
+
   const applyUpdatedPersonalPayload = useCallback((payload) => {
     const viewState = timetableViewState.current;
     const nextCampus = (payload.campuses || []).some(item => item.code === viewState.campusCode)
@@ -1286,18 +1437,10 @@ function TimetablePage({
         if (timetableViewState.current.termCode !== requestedTerm) return;
         const nextRevision = payload.cache?.revision || '';
         if (nextRevision && baselineRevision && nextRevision !== baselineRevision) {
-          if (document.visibilityState !== 'visible') {
-            applyUpdatedPersonalPayload(payload);
-            return;
-          }
-          personalUpdateModal.current?.destroy?.();
-          personalUpdateModal.current = Modal.confirm({
-            title: '课表已有更新',
-            content: '后台检测到当前学期课表发生变化，是否更新当前页面？',
-            okText: '更新课表',
-            cancelText: '稍后',
-            onOk: () => applyUpdatedPersonalPayload(payload),
-          });
+          // Apply server-confirmed changes in place. Keep term/campus/week and
+          // scroll state; only the official base schedule is replaced.
+          applyUpdatedPersonalPayload(payload);
+          setCacheTier('server');
           return;
         }
         if (payload.is_fresh === false) {
@@ -1768,6 +1911,33 @@ function TimetablePage({
     weekNumber,
   ]);
 
+  useEffect(() => {
+    if (
+      !resourceIdentity
+      || offlineMode
+      || mode !== 'personal'
+      || !personalPayload?.term_code
+      || ![currentTermCode, nextTermCode].includes(personalPayload.term_code)
+    ) return undefined;
+    let cancelled = false;
+    const persist = async () => {
+      const previous = await readBrowserTimetableCache(resourceIdentity);
+      if (cancelled) return;
+      const personal = [
+        ...(previous.personal || []).filter(item => item.term_code !== personalPayload.term_code),
+        personalPayload,
+      ];
+      await writeBrowserTimetableCache(resourceIdentity, {
+        terms: terms.length ? terms : previous.terms,
+        current: currentTermCode || previous.current,
+        personal,
+        viewState: { termCode, campusCode, weekNumber, viewMode },
+      });
+    };
+    persist().catch(() => {});
+    return () => { cancelled = true; };
+  }, [campusCode, currentTermCode, mode, nextTermCode, offlineMode, personalPayload, resourceIdentity, termCode, terms, viewMode, weekNumber]);
+
   const resetRemoteState = () => {
     contextGeneration.current += 1;
     scheduleGeneration.current += 1;
@@ -2220,6 +2390,11 @@ function TimetablePage({
         placeholder="选择周次"
       /></label>}
       <Space className="timetable-control-actions">
+        {mode === 'personal' && schedule && (
+          <Tag color={cacheTier === 'browser' ? 'gold' : cacheTier === 'server' ? 'blue' : 'green'}>
+            {cacheTier === 'browser' ? '本机快照，正在核验' : cacheTier === 'server' ? '服务器缓存' : '已同步'}
+          </Tag>
+        )}
         {mode === 'personal' && !embedded && <label className="timetable-default-open-toggle"><Switch size="small" checked={defaultTimetableOnOpen} onChange={toggleDefaultTimetable} /> <span>打开时默认课表</span></label>}
         {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
           ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
@@ -2267,6 +2442,11 @@ function TimetablePage({
               </Tooltip>
             </div>
             <div className={`timetable-mobile-actions${mode !== 'personal' ? ' has-conflict-action' : ''}`}>
+              {mode === 'personal' && schedule && (
+                <Tag color={cacheTier === 'browser' ? 'gold' : cacheTier === 'server' ? 'blue' : 'green'}>
+                  {cacheTier === 'browser' ? '本机快照，正在核验' : cacheTier === 'server' ? '服务器缓存' : '已同步'}
+                </Tag>
+              )}
               {mode === 'personal' && !embedded && <label className="timetable-default-open-toggle"><Switch size="small" checked={defaultTimetableOnOpen} onChange={toggleDefaultTimetable} /> <span>打开时默认课表</span></label>}
               {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
                 ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
