@@ -385,7 +385,7 @@ const MainLayout = ({
           if (!isMobile) setCollapsed(true);
         }}
       >
-        <Header className={`main-header ${location.pathname === '/academic-report' ? 'has-center-slot' : ''}`}>
+        <Header className={`main-header ${location.pathname === '/academic-report' || location.pathname.startsWith('/timetable') ? 'has-center-slot' : ''}`}>
           <div className="header-leading">
             {isMobile ? navigationToggle : (
               <Tooltip title={collapsed ? '展开导航' : '收起导航'}>

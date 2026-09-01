@@ -18,6 +18,7 @@ import {
 const ResourceContext = createContext(null);
 const JOB_POLL_MS = 900;
 const EVENT_POLL_MS = 15000;
+const EVENT_IDLE_POLL_MS = 30000;
 const TERMINAL_JOB_STATES = new Set(['completed', 'failed', 'cancelled']);
 const ACTIVE_SYNC_STATES = new Set(['starting', 'queued', 'running']);
 const IDENTITY_RETRY_ERRORS = new Set(['identity_changed']);
@@ -100,7 +101,7 @@ export const ResourceProvider = ({
     eventCursorRef.current = '';
     refreshPromisesRef.current.clear();
     setStates({});
-  }, [identity, offlineMode]);
+  }, [identity, offlineMode, recoveryMode]);
 
   const mergeState = useCallback((resource, patch) => {
     setStates(previous => ({
@@ -288,12 +289,23 @@ export const ResourceProvider = ({
   useEffect(() => {
     if (offlineMode || !identity) return undefined;
     let active = true;
+    let timer = null;
+    let inFlight = false;
+
+    const schedule = delay => {
+      window.clearTimeout(timer);
+      if (active) timer = window.setTimeout(checkEvents, delay);
+    };
 
     const checkEvents = async () => {
+      if (!active || inFlight) return;
+      inFlight = true;
+      let receivedEvents = false;
       try {
         const response = await getCacheEvents(eventCursorRef.current);
         if (!active) return;
         const events = normalizeEventList(response);
+        receivedEvents = events.length > 0;
         const nextCursor = response?.cursor || response?.next_cursor;
         if (nextCursor !== undefined && nextCursor !== null) {
           eventCursorRef.current = String(nextCursor);
@@ -311,14 +323,16 @@ export const ResourceProvider = ({
           .map(resource => load(resource, { quiet: true })));
       } catch (error) {
         // Event polling is advisory. Cached views must remain usable.
+      } finally {
+        inFlight = false;
+        schedule(receivedEvents ? EVENT_POLL_MS : EVENT_IDLE_POLL_MS);
       }
     };
 
-    const timer = setInterval(checkEvents, EVENT_POLL_MS);
     checkEvents();
     return () => {
       active = false;
-      clearInterval(timer);
+      window.clearTimeout(timer);
     };
   }, [identity, load, offlineMode]);
 

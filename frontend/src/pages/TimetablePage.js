@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Alert,
   Button,
@@ -380,6 +381,17 @@ export const selectDefaultWeek = (weeks = [], { currentTerm = true, now = new Da
       return leftDistance - rightDistance;
     });
   return dated[0]?.item.number || weeks[0].number;
+};
+
+export const automaticTimetableNotice = ({
+  hasCurrentCourses = false,
+  nextTermHasCourses = false,
+  nextTermLoadFailed = false,
+} = {}) => {
+  if (hasCurrentCourses) return '';
+  if (nextTermHasCourses) return '当前学期处于无课周，已自动显示下一学期已发布的课表';
+  if (nextTermLoadFailed) return '下一学期课表暂无法核验，已显示本学期完整课表';
+  return '当前处于无课周，已自动显示本学期完整课表';
 };
 
 export const immediateNextTerm = (terms = [], currentCode = '') => {
@@ -919,6 +931,78 @@ export const isCourseHappeningNow = (
   return current >= start && current <= end;
 };
 
+const normalizedCourseTeachers = course => uniqueTexts([
+  ...(Array.isArray(course?.teachers) ? course.teachers : []),
+  course?.teacher,
+]);
+
+export const courseTeacherText = course => normalizedCourseTeachers(course).join('、');
+
+/**
+ * Derive the compact mobile summary from the account's complete timetable.
+ * This deliberately uses today's weekday/current teaching week rather than the
+ * currently selected day, so it remains useful while browsing another day.
+ */
+export const mobileCourseSummary = (
+  courses = [],
+  { now = new Date(), currentTerm = false, currentWeekNumber = null } = {},
+) => {
+  if (!currentTerm || !currentWeekNumber) return { kind: 'none', label: '无课', courses: [] };
+  const today = todayWeekday(now);
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const timedToday = (courses || [])
+    .filter(course => (
+      Number(course?.weekday) === today
+      && !course?.recurrence_unknown
+      && Array.isArray(course?.weeks)
+      && course.weeks.includes(currentWeekNumber)
+      && timeToMinutes(course?.start_time) != null
+      && timeToMinutes(course?.end_time) != null
+    ))
+    .sort((left, right) => (
+      timeToMinutes(left.start_time) - timeToMinutes(right.start_time)
+      || timeToMinutes(left.end_time) - timeToMinutes(right.end_time)
+      || String(left.course_name || '').localeCompare(String(right.course_name || ''))
+    ));
+  const active = timedToday.filter(course => (
+    currentMinutes >= timeToMinutes(course.start_time)
+    && currentMinutes < timeToMinutes(course.end_time)
+  ));
+  if (active.length) {
+    return {
+      kind: 'current',
+      label: '当前',
+      course: active[0],
+      courses: active,
+      count: active.length,
+    };
+  }
+  const upcoming = timedToday.find(course => timeToMinutes(course.start_time) > currentMinutes);
+  if (upcoming) {
+    return {
+      kind: 'next',
+      label: '下节',
+      course: upcoming,
+      courses: [upcoming],
+      startTime: upcoming.start_time,
+    };
+  }
+  return { kind: 'none', label: '无课', courses: [] };
+};
+
+export const timetableCacheIndicator = ({ payload, source = '', failed = false } = {}) => {
+  if (failed || payload?.cache?.last_error_kind) {
+    return { state: 'error', label: '课表核验失败，点击重试' };
+  }
+  if (source === 'browser' || payload?.cache?.is_browser) {
+    return { state: 'local', label: '当前显示本机课表快照，正在核验' };
+  }
+  if (payload?.is_fresh === true || payload?.cache?.is_stale === false) {
+    return { state: 'fresh', label: '课表已核验为最新数据' };
+  }
+  return { state: 'server', label: '当前显示服务器缓存，正在核验' };
+};
+
 export const shouldHighlightToday = ({
   termCode,
   currentTermCode,
@@ -1010,6 +1094,37 @@ export const timetableSnapshotIsNewer = (candidate, current) => {
   if (candidateSaved !== currentSaved) return candidateSaved > currentSaved;
   return Boolean(candidate.cache?.revision && candidate.cache.revision !== current.cache?.revision);
 };
+
+const timetableContentValue = value => {
+  if (Array.isArray(value)) {
+    return value
+      .map(timetableContentValue)
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  }
+  if (!value || typeof value !== 'object') return value;
+  return Object.keys(value)
+    .filter(key => !['cache', 'is_fresh', 'last_update', 'source', 'fetched_at'].includes(key))
+    .sort()
+    .reduce((result, key) => {
+      result[key] = timetableContentValue(value[key]);
+      return result;
+    }, {});
+};
+
+export const timetableContentSignature = payload => JSON.stringify(timetableContentValue({
+  term_code: payload?.term_code || '',
+  current_term: payload?.current_term || '',
+  campuses: payload?.campuses || [],
+  weeks: payload?.weeks || [],
+  sections_by_campus: payload?.sections_by_campus || {},
+  courses: payload?.courses || [],
+  unscheduled: payload?.unscheduled || [],
+  practices: payload?.practices || [],
+}));
+
+export const timetableContentChanged = (candidate, current) => Boolean(
+  candidate && current && timetableContentSignature(candidate) !== timetableContentSignature(current),
+);
 
 const targetDescription = target => Object.entries(target?.details || {})
   .map(([key, value]) => `${DETAIL_LABELS[key] || key}：${value}`)
@@ -1154,6 +1269,7 @@ function TimetablePage({
     : new URLSearchParams(window.location.search).get('term') || '');
   const restored = restorePersonalTimetableMemory(timetableMemory.data, requestedTerm);
   const [mode, setMode] = useState('personal');
+  const [headerPortalTarget, setHeaderPortalTarget] = useState(null);
   const [terms, setTerms] = useState(() => restored?.terms || []);
   const [currentTermCode, setCurrentTermCode] = useState(() => restored?.currentTermCode || '');
   const [termCode, setTermCode] = useState(() => restored?.termCode || (embedded ? preferredTermCode : ''));
@@ -1184,13 +1300,19 @@ function TimetablePage({
   const [schedule, setSchedule] = useState(() => restored?.schedule || null);
   const [loading, setLoading] = useState(() => !restored?.schedule);
   const [cacheTier, setCacheTier] = useState(restored?.personalPayload ? 'memory' : 'remote');
+  const [cacheStatusPayload, setCacheStatusPayload] = useState(restored?.personalPayload || null);
+  const [cacheSyncFailed, setCacheSyncFailed] = useState(Boolean(
+    restored?.personalPayload?.cache?.last_error_kind,
+  ));
   const browserHydrationGeneration = useRef(0);
   const browserCacheRef = useRef({ terms: [], current: '', personal: [] });
   const currentTermCodeRef = useRef(currentTermCode);
+  const termsRef = useRef(terms);
   const viewModeRef = useRef(viewMode);
   const personalPayloadRef = useRef(personalPayload);
   const termCodeRef = useRef(termCode);
   currentTermCodeRef.current = currentTermCode;
+  termsRef.current = terms;
   viewModeRef.current = viewMode;
   personalPayloadRef.current = personalPayload;
   termCodeRef.current = termCode;
@@ -1204,6 +1326,8 @@ function TimetablePage({
   const [mobileDay, setMobileDay] = useState(todayWeekday());
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [filterDraft, setFilterDraft] = useState({ termCode: '', campusCode: '', viewMode: 'week' });
+  const [mobileFocusPadding, setMobileFocusPadding] = useState(0);
+  const [mobileStableMinHeight, setMobileStableMinHeight] = useState(0);
   const [contextRetry, setContextRetry] = useState(0);
   const nextTermCode = useMemo(
     () => immediateNextTerm(terms, currentTermCode),
@@ -1234,9 +1358,18 @@ function TimetablePage({
   const targetFilterTimer = useRef(null);
   const targetFilterOptionsLoadedFor = useRef('');
   const personalRefreshTimer = useRef(null);
+  const personalFetchKeyRef = useRef('');
+  const personalFetchPromiseRef = useRef(null);
   const personalUpdateModal = useRef(null);
+  const pendingPersonalPayloadRef = useRef(null);
+  const pendingPersonalSignatureRef = useRef('');
   const timetableViewState = useRef({ termCode: '', campusCode: '', weekNumber: null });
   const mobileDayTerm = useRef('');
+  const mobileWeekFocusRef = useRef(null);
+  const mobileDayFocusRef = useRef(null);
+  const mobileFocusKeyRef = useRef('');
+  const mobileFocusPendingRef = useRef('');
+  const mobileDayScrollGeneration = useRef(0);
   const targetSelectRef = useRef(null);
   const targetSearchState = useRef({ keyword: '', page: 0, total: 0, loading: false, requestKey: '' });
   const modeSessions = useRef(createModeSessions());
@@ -1251,6 +1384,10 @@ function TimetablePage({
       day: Number.isInteger(day) && day >= 1 && day <= 7 ? day : null,
     };
   })());
+
+  useEffect(() => {
+    setHeaderPortalTarget(document.getElementById('workspace-header-center'));
+  }, []);
 
   const loadTerms = useCallback(() => {
     if (recoveryMode) return Promise.resolve();
@@ -1327,11 +1464,71 @@ function TimetablePage({
       }
       : payload;
     setCacheTier(source);
+    setCacheStatusPayload(payload);
+    setCacheSyncFailed(Boolean(payload?.cache?.last_error_kind));
     setPersonalContext(decorated, firstCampus, nextWeek);
     setSchedule(personalScheduleView(decorated, firstCampus, viewModeRef.current, nextWeek));
     setLoading(false);
     return true;
   }, [setPersonalContext]);
+
+  const applyPersonalPayloadForView = useCallback((payload) => {
+    const viewState = timetableViewState.current;
+    const nextCampus = (payload.campuses || []).some(item => item.code === viewState.campusCode)
+      ? viewState.campusCode
+      : payload.campuses?.[0]?.code || '';
+    const nextWeek = (payload.weeks || []).some(item => item.number === viewState.weekNumber)
+      ? viewState.weekNumber
+      : selectDefaultWeek(payload.weeks || [], {
+        currentTerm: payload.term_code === currentTermCodeRef.current,
+      });
+    setPersonalContext(payload, nextCampus, nextWeek);
+  }, [setPersonalContext]);
+
+  const offerPersonalPayloadUpdate = useCallback((payload, source = 'server') => {
+    if (!payload?.term_code) return false;
+    const current = personalPayloadRef.current;
+    if (!current) {
+      applyCachedSnapshot(payload, source);
+      return true;
+    }
+    if (!timetableSnapshotIsNewer(payload, current)) return false;
+    const signature = timetableContentSignature(payload);
+    if (signature === timetableContentSignature(current)) {
+      setCacheTier(source);
+      setCacheStatusPayload(payload);
+      setCacheSyncFailed(Boolean(payload?.cache?.last_error_kind));
+      return false;
+    }
+    if (pendingPersonalSignatureRef.current === signature || personalUpdateModal.current) return true;
+
+    pendingPersonalPayloadRef.current = payload;
+    pendingPersonalSignatureRef.current = signature;
+    personalUpdateModal.current = Modal.confirm({
+      title: '课表有更新',
+      content: '后台读取到新的课表数据，当前显示内容有所变化。是否更新当前课表？',
+      okText: '更新课表',
+      cancelText: '保持当前',
+      onOk: () => {
+        const next = pendingPersonalPayloadRef.current;
+        if (next) {
+          applyPersonalPayloadForView(next);
+          setCacheTier(source);
+          setCacheStatusPayload(next);
+          setCacheSyncFailed(Boolean(next?.cache?.last_error_kind));
+        }
+        pendingPersonalPayloadRef.current = null;
+        pendingPersonalSignatureRef.current = '';
+        personalUpdateModal.current = null;
+      },
+      onCancel: () => {
+        pendingPersonalPayloadRef.current = null;
+        pendingPersonalSignatureRef.current = '';
+        personalUpdateModal.current = null;
+      },
+    });
+    return true;
+  }, [applyCachedSnapshot, applyPersonalPayloadForView]);
 
   useEffect(() => {
     if (!resourceIdentity || offlineMode) {
@@ -1378,14 +1575,22 @@ function TimetablePage({
           || bootstrap.personal?.[0];
         const currentDisplayed = personalPayloadRef.current || candidate;
         if (serverCandidate && timetableSnapshotIsNewer(serverCandidate, currentDisplayed)) {
-          applyCachedSnapshot(serverCandidate, 'server');
+          offerPersonalPayloadUpdate(serverCandidate, 'server');
         }
         if (!browserSyncStarted.current) {
           browserSyncStarted.current = true;
-          syncTimetable({ term_code: selected || undefined, include_next: true, force: false }).catch(() => {});
+          syncTimetable({ term_code: selected || undefined, include_next: true, force: false })
+            .then(result => {
+              const failed = (result?.jobs || []).some(job => (
+                ['failed', 'cancelled', 'throttled'].includes(job.status)
+              ));
+              if (failed) setCacheSyncFailed(true);
+            })
+            .catch(() => setCacheSyncFailed(true));
         }
       } catch (_error) {
         // Browser snapshot remains usable when the server cache is unavailable.
+        setCacheSyncFailed(true);
       }
     };
     hydrate();
@@ -1396,7 +1601,7 @@ function TimetablePage({
         const selected = requestedTerm || next.current || termCodeRef.current;
         const candidate = next.personal?.find(item => item.term_code === selected);
         if (candidate && timetableSnapshotIsNewer(candidate, personalPayloadRef.current)) {
-          applyCachedSnapshot(candidate, 'browser');
+          offerPersonalPayloadUpdate(candidate, 'browser');
         }
       }).catch(() => {});
     });
@@ -1404,7 +1609,7 @@ function TimetablePage({
       active = false;
       unsubscribe();
     };
-  }, [applyCachedSnapshot, embedded, offlineMode, recoveryMode, requestedTerm, resourceIdentity]);
+  }, [applyCachedSnapshot, embedded, offerPersonalPayloadUpdate, offlineMode, recoveryMode, requestedTerm, resourceIdentity]);
 
   useEffect(() => {
     if (!resourceIdentity || offlineMode || recoveryMode) return undefined;
@@ -1417,7 +1622,7 @@ function TimetablePage({
         const selected = requestedTerm || bootstrap.current || termCode;
         const candidate = bootstrap.personal?.find(item => item.term_code === selected);
         if (candidate && timetableSnapshotIsNewer(candidate, personalPayloadRef.current)) {
-          applyCachedSnapshot(candidate, 'server');
+          offerPersonalPayloadUpdate(candidate, 'server');
         }
       }).catch(() => {});
     };
@@ -1426,18 +1631,9 @@ function TimetablePage({
       active = false;
       window.removeEventListener('neu-cache-event', onCacheEvent);
     };
-  }, [applyCachedSnapshot, offlineMode, recoveryMode, requestedTerm, resourceIdentity]);
+  }, [offerPersonalPayloadUpdate, offlineMode, recoveryMode, requestedTerm, resourceIdentity]);
 
-  const applyUpdatedPersonalPayload = useCallback((payload) => {
-    const viewState = timetableViewState.current;
-    const nextCampus = (payload.campuses || []).some(item => item.code === viewState.campusCode)
-      ? viewState.campusCode
-      : payload.campuses?.[0]?.code || '';
-    const nextWeek = (payload.weeks || []).some(item => item.number === viewState.weekNumber)
-      ? viewState.weekNumber
-      : selectDefaultWeek(payload.weeks || [], { currentTerm: payload.term_code === currentTermCode });
-    setPersonalContext(payload, nextCampus, nextWeek);
-  }, [setPersonalContext]);
+  const applyUpdatedPersonalPayload = applyPersonalPayloadForView;
 
   const watchPersonalRefresh = useCallback((requestedTerm, baselineRevision, attempt = 0) => {
     if (!requestedTerm || attempt >= 8) return;
@@ -1446,12 +1642,12 @@ function TimetablePage({
       try {
         const payload = await getPersonalTimetable(requestedTerm, false);
         if (timetableViewState.current.termCode !== requestedTerm) return;
+        setCacheSyncFailed(Boolean(payload?.cache?.last_error_kind));
         const nextRevision = payload.cache?.revision || '';
         if (nextRevision && baselineRevision && nextRevision !== baselineRevision) {
-          // Apply server-confirmed changes in place. Keep term/campus/week and
-          // scroll state; only the official base schedule is replaced.
-          applyUpdatedPersonalPayload(payload);
-          setCacheTier('server');
+          // Keep the displayed snapshot stable until the user confirms the
+          // content change. Metadata/revision updates alone never replace it.
+          offerPersonalPayloadUpdate(payload, 'server');
           return;
         }
         if (payload.is_fresh === false) {
@@ -1459,23 +1655,43 @@ function TimetablePage({
         }
       } catch (_error) {
         // 后台刷新失败不覆盖已显示的可用缓存，也不打断当前页面。
+        setCacheSyncFailed(true);
       }
     }, 1400);
-  }, [applyUpdatedPersonalPayload]);
+  }, [offerPersonalPayloadUpdate]);
 
   useEffect(() => () => {
     window.clearTimeout(personalRefreshTimer.current);
     personalUpdateModal.current?.destroy?.();
+    personalUpdateModal.current = null;
+    pendingPersonalPayloadRef.current = null;
+    pendingPersonalSignatureRef.current = '';
   }, []);
 
   const loadPersonalTimetable = useCallback(async (requestedTerm, { refresh = false, autoDetect = false } = {}) => {
     if (!requestedTerm) return;
+    const fetchKey = `${requestedTerm}:${refresh ? 'force' : 'cache'}`;
+    let fetchPromise = personalFetchPromiseRef.current;
+    if (!fetchPromise || personalFetchKeyRef.current !== fetchKey) {
+      fetchPromise = getPersonalTimetable(requestedTerm, refresh);
+      personalFetchKeyRef.current = fetchKey;
+      personalFetchPromiseRef.current = fetchPromise;
+      fetchPromise.finally(() => {
+        if (personalFetchPromiseRef.current === fetchPromise) {
+          personalFetchPromiseRef.current = null;
+          personalFetchKeyRef.current = '';
+        }
+      });
+    }
     const generation = ++personalGeneration.current;
     setLoading(true);
     setError(null);
     try {
-      const payload = await getPersonalTimetable(requestedTerm, refresh);
+      const payload = await fetchPromise;
       if (generation !== personalGeneration.current) return;
+      setCacheTier(payload?.source === 'browser' ? 'browser' : 'server');
+      setCacheStatusPayload(payload);
+      setCacheSyncFailed(Boolean(payload?.cache?.last_error_kind));
       const firstCampus = payload.campuses?.[0]?.code || '';
       const linkedWeek = requestedTerm === deepLink.current.term
         && (payload.weeks || []).some(item => item.number === deepLink.current.week)
@@ -1490,7 +1706,7 @@ function TimetablePage({
         const currentCourses = personalScheduleView(payload, firstCampus, 'week', defaultWeek).courses
           .filter(course => !course.recurrence_unknown && course.weeks?.includes(defaultWeek));
         if (!currentCourses.length) {
-          const nextTermCode = immediateNextTerm(terms, requestedTerm);
+          const nextTermCode = immediateNextTerm(termsRef.current, requestedTerm);
           if (nextTermCode) {
             try {
               const nextPayload = await getPersonalTimetable(nextTermCode, false);
@@ -1499,7 +1715,7 @@ function TimetablePage({
                 const nextCampus = nextPayload.campuses?.[0]?.code || '';
                 const nextWeek = selectDefaultWeek(nextPayload.weeks || [], { currentTerm: false });
                 setViewMode('term');
-                setAutoNotice('当前学期处于无课周，已自动显示下一学期已发布的课表');
+                setAutoNotice(automaticTimetableNotice({ nextTermHasCourses: true }));
                 setTermCode(nextTermCode);
                 setPersonalContext(nextPayload, nextCampus, nextWeek);
                 setLoading(false);
@@ -1507,14 +1723,17 @@ function TimetablePage({
               }
             } catch (_nextTermError) {
               if (generation !== personalGeneration.current) return;
-              setAutoNotice('下一学期课表暂无法核验，已显示本学期完整课表');
+              setAutoNotice(automaticTimetableNotice({ nextTermLoadFailed: true }));
             }
           }
           setViewMode('term');
-          setAutoNotice(previous => previous || '当前处于无课周，已自动显示本学期完整课表');
+          setAutoNotice(previous => previous || automaticTimetableNotice());
         } else {
           setViewMode('week');
-          setAutoNotice('已自动定位到当前教学周');
+          // Locating the current teaching week is the normal initial state;
+          // only exceptional fallbacks (such as switching to another term)
+          // should be surfaced as a notice.
+          setAutoNotice(automaticTimetableNotice({ hasCurrentCourses: true }));
         }
       }
 
@@ -1525,11 +1744,12 @@ function TimetablePage({
       if (!firstCampus) setError({ stage: 'personal', message: '该学期没有可查询的开课校区' });
     } catch (requestError) {
       if (generation !== personalGeneration.current) return;
+      setCacheSyncFailed(true);
       setError({ stage: 'personal', message: requestErrorText(requestError, '无法读取我的课表，请稍后重试') });
     } finally {
       if (generation === personalGeneration.current) setLoading(false);
     }
-  }, [currentTermCode, setPersonalContext, terms, watchPersonalRefresh]);
+  }, [currentTermCode, setPersonalContext, watchPersonalRefresh]);
 
   useEffect(() => {
     if (!usesPersonalTimetableEndpoint || recoveryMode) return;
@@ -1998,6 +2218,7 @@ function TimetablePage({
     setTargetFilterOptionsLoading(false);
     setTargetFilterOptionsError('');
     targetSearchState.current = { ...saved.search, loading: false };
+    setMobileFocusPadding(0);
     resetRemoteState();
   };
 
@@ -2020,6 +2241,7 @@ function TimetablePage({
     setTermCode(nextTermCode);
     autoDefaultResolved.current = true;
     setAutoNotice('');
+    setMobileFocusPadding(0);
     setTarget(null);
     setTargetOptions([]);
     setTargetFilterDraft(targetFilters);
@@ -2198,16 +2420,53 @@ function TimetablePage({
     setSchedule(null);
     setDetailCourse(null);
     setError(null);
+    setMobileFocusPadding(0);
     setViewMode(nextViewMode);
   };
 
   const switchWeek = nextWeek => {
     if (!nextWeek || nextWeek === weekNumber) return;
     scheduleGeneration.current += 1;
-    setSchedule(null);
+    // Keep the previous timetable mounted while the new week is loading.
+    // Clearing it first collapses the page and makes the browser reset the
+    // user's vertical position; only the timetable data should change.
     setDetailCourse(null);
     setError(null);
     setWeekNumber(nextWeek);
+  };
+
+  const handleMobileDayChange = nextDay => {
+    if (nextDay === mobileDay) return;
+    const generation = ++mobileDayScrollGeneration.current;
+    const previousTop = typeof window !== 'undefined' ? window.scrollY : 0;
+    if (!isMobile || embedded || mode !== 'personal' || previousTop <= 0 || typeof window === 'undefined') {
+      setMobileDay(nextDay);
+      return;
+    }
+    // Switching to a day with fewer courses can shorten the document before
+    // the next frame.  Browsers then clamp scrollTop to the new (smaller)
+    // maximum, which looks like the page jumped back to the header. Reserve
+    // only the missing amount of vertical space before changing the day so
+    // the user's viewport remains stable.
+    const page = document.querySelector('.timetable-page:not(.is-embedded)');
+    if (page) {
+      const currentHeight = page.getBoundingClientRect().height;
+      setMobileStableMinHeight(previous => Math.max(previous, currentHeight));
+      page.style.minHeight = `${Math.max(currentHeight, mobileStableMinHeight)}px`;
+    }
+    setMobileDay(nextDay);
+    const scheduleFrame = window.requestAnimationFrame || (callback => window.setTimeout(callback, 0));
+    scheduleFrame(() => {
+      scheduleFrame(() => {
+        if (generation !== mobileDayScrollGeneration.current) return;
+        const nextDocumentHeight = Math.max(
+          document.documentElement?.scrollHeight || 0,
+          document.body?.scrollHeight || 0,
+        );
+        const maxTop = Math.max(0, nextDocumentHeight - window.innerHeight);
+        window.scrollTo({ top: Math.min(previousTop, maxTop), behavior: 'auto' });
+      });
+    });
   };
 
   const retryError = () => {
@@ -2266,6 +2525,17 @@ function TimetablePage({
     });
     return result;
   }, [overlayCourses, preferredTermCode, schedule, termCode, viewMode, weekNumber]);
+  const mobileSummaryCourses = useMemo(() => {
+    if (mode !== 'personal' || !personalPayload) return [];
+    const visibleOverlayCourses = termCode === preferredTermCode ? (overlayCourses || []) : [];
+    const campusCourses = (personalPayload.courses || []).filter(course => (
+      courseMatchesCampus(course, campusCode, personalPayload.campuses || [])
+    ));
+    return mergeScheduleWithSelectionOverlays(
+      campusCourses,
+      visibleOverlayCourses,
+    );
+  }, [campusCode, mode, overlayCourses, personalPayload, preferredTermCode, termCode]);
   const conflictCourseScheduleMap = useMemo(() => buildConflictCourseScheduleMap([
     ...(personalPayload?.courses || schedule?.courses || []),
     ...(overlayCourses || []),
@@ -2287,6 +2557,21 @@ function TimetablePage({
   const selectedTerm = terms.find(item => item.code === termCode);
   const selectedCampus = context?.campuses?.find(item => item.code === campusCode);
   const selectedWeek = context?.weeks?.find(item => item.number === weekNumber);
+  const cacheIndicator = timetableCacheIndicator({
+    payload: cacheStatusPayload,
+    source: cacheTier,
+    failed: cacheSyncFailed,
+  });
+  const refreshButtonClass = mode === 'personal'
+    ? `timetable-refresh-button is-cache-${cacheIndicator.state}`
+    : 'timetable-refresh-button';
+  const refreshTooltip = mode === 'personal'
+    ? `${cacheIndicator.label}${schedule?.last_update
+      ? ` · 最后保存：${new Date(schedule.last_update).toLocaleString('zh-CN', { hour12: false })}`
+      : ''}`
+    : (schedule?.last_update
+      ? `最后保存: ${new Date(schedule.last_update).toLocaleString('zh-CN', { hour12: false })}`
+      : '点击刷新课表');
   const effectiveCurrentWeekNumber = termCode === currentTermCode
     ? selectDefaultWeek(context?.weeks || [], { currentTerm: true })
     : null;
@@ -2302,6 +2587,96 @@ function TimetablePage({
     const linkedDay = termCode === deepLink.current.term ? deepLink.current.day : null;
     setMobileDay(linkedDay || (isShowingCurrentWeek ? todayWeekday() : preferredMobileDay(coursesByDay)));
   }, [coursesByDay, isShowingCurrentWeek, schedule, termCode, viewMode]);
+
+  useLayoutEffect(() => {
+    if (
+      !isMobile
+      // The selection/archive pages embed a compact timetable.  Their parent
+      // page owns the scroll position, so the personal timetable's initial
+      // focus must never move that page.
+      || embedded
+      || mode !== 'personal'
+      || !schedule
+      || !termCode
+      || mobileFocusKeyRef.current
+      || mobileFocusPendingRef.current
+      || deepLink.current.term
+      || deepLink.current.week
+      || deepLink.current.day
+    ) return undefined;
+    // The entry point for both timetable views is the weekday selector. The
+    // week rail remains available above it, but should not be the initial
+    // vertical focus target in week mode.
+    const anchor = mobileDayFocusRef.current;
+    if (!anchor) return undefined;
+    let cancelled = false;
+    let firstFrame = 0;
+    let secondFrame = 0;
+    const focusKey = `${termCode}:${viewMode}:initial`;
+    // Mark the focus as pending, but only claim it after the scroll succeeds.
+    // Browser/IndexedDB hydration can replace the schedule while the layout
+    // is being committed; an interrupted attempt must remain retryable.
+    mobileFocusPendingRef.current = focusKey;
+    const header = document.querySelector('.main-header');
+    const headerHeight = header?.getBoundingClientRect?.().height || 0;
+    const topOffset = headerHeight + 8;
+    const targetTop = Math.max(0, window.scrollY + anchor.getBoundingClientRect().top - topOffset);
+    const page = anchor.closest?.('.timetable-page') || document.querySelector('.timetable-page');
+    const pageRect = page?.getBoundingClientRect?.();
+    const currentPagePadding = page
+      ? Number.parseFloat(window.getComputedStyle(page).paddingBottom || '0') || 0
+      : 0;
+    // The outer workspace has a viewport-sized min-height. Padding computed
+    // from document.scrollHeight can disappear into that unused space and
+    // leave the page completely unscrollable. Base the reserve on the
+    // timetable's own bottom edge instead.
+    const pageBottomWithoutFocusPadding = pageRect
+      ? window.scrollY + pageRect.bottom - currentPagePadding
+      : document.documentElement.scrollHeight;
+    const requiredPadding = Math.max(
+      0,
+      targetTop + window.innerHeight + 12 - pageBottomWithoutFocusPadding,
+    );
+    if (requiredPadding > 0) {
+      // Apply the temporary space before the first paint so short timetables
+      // can still place the selector at the top without a visible jump.
+      if (page) page.style.paddingBottom = `${requiredPadding}px`;
+      setMobileFocusPadding(requiredPadding);
+    }
+    // Let the browser choose the real scrolling ancestor.  On mobile Safari
+    // and some embedded Android WebViews the viewport scroller is not exposed
+    // consistently through window.scrollY, while scrollIntoView still targets
+    // it correctly. scroll-margin keeps the selector below the sticky header.
+    anchor.style.scrollMarginTop = `${topOffset}px`;
+    const alignSelector = () => {
+      if (cancelled || !anchor.isConnected) return;
+      if (typeof anchor.scrollIntoView === 'function') {
+        anchor.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'auto' });
+      } else {
+        const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+        window.scrollTo({ top: Math.min(targetTop, maxScroll), behavior: 'auto' });
+      }
+    };
+    // Align synchronously before the first paint, then verify across two
+    // animation frames. Browser scroll restoration and IndexedDB hydration can
+    // otherwise overwrite the first scroll after this layout effect returns.
+    alignSelector();
+    firstFrame = window.requestAnimationFrame(() => {
+      alignSelector();
+      secondFrame = window.requestAnimationFrame(() => {
+        if (cancelled) return;
+        alignSelector();
+        mobileFocusKeyRef.current = focusKey;
+        if (mobileFocusPendingRef.current === focusKey) mobileFocusPendingRef.current = '';
+      });
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+      if (mobileFocusPendingRef.current === focusKey) mobileFocusPendingRef.current = '';
+    };
+  }, [embedded, isMobile, mode, schedule, termCode, viewMode]);
   const targetPlaceholder = mode === 'class'
     ? '搜索班级代码或名称'
     : mode === 'teacher'
@@ -2405,11 +2780,6 @@ function TimetablePage({
         placeholder="选择周次"
       /></label>}
       <Space className="timetable-control-actions">
-        {mode === 'personal' && schedule && (
-          <Tag color={cacheTier === 'browser' ? 'gold' : cacheTier === 'server' ? 'blue' : 'green'}>
-            {cacheTier === 'browser' ? '本机快照，正在核验' : cacheTier === 'server' ? '服务器缓存' : '已同步'}
-          </Tag>
-        )}
         {mode === 'personal' && !embedded && <label className="timetable-default-open-toggle"><Switch size="small" checked={defaultTimetableOnOpen} onChange={toggleDefaultTimetable} /> <span>打开时默认课表</span></label>}
         {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
           ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
@@ -2421,10 +2791,8 @@ function TimetablePage({
             disabled={!schedule?.courses?.length}
           >冲突检测</Button>
         </Tooltip>}
-        <Tooltip title={schedule?.last_update
-          ? `最后保存: ${new Date(schedule.last_update).toLocaleString('zh-CN', { hour12: false })}`
-          : '点击刷新课表'}>
-          <Button icon={<ReloadOutlined />} onClick={loadSchedule} disabled={!context || !campusCode} loading={loading}>刷新</Button>
+        <Tooltip title={refreshTooltip}>
+          <Button className={refreshButtonClass} icon={<ReloadOutlined />} onClick={loadSchedule} disabled={!context || !campusCode} loading={loading}>刷新</Button>
         </Tooltip>
       </Space>
     </div>
@@ -2435,7 +2803,26 @@ function TimetablePage({
   const hasOtherCourses = Boolean(schedule?.unscheduled?.length || schedule?.practices?.length);
 
   return (
-    <div className={`timetable-page${embedded ? ' is-embedded' : ''}${presentation === 'selection' ? ' is-selection-presentation' : ''}`}>
+    <div
+      className={`timetable-page${embedded ? ' is-embedded' : ''}${presentation === 'selection' ? ' is-selection-presentation' : ''}`}
+      style={(mobileFocusPadding || mobileStableMinHeight) ? {
+        ...(mobileFocusPadding ? { paddingBottom: `${mobileFocusPadding}px` } : {}),
+        ...(mobileStableMinHeight ? { minHeight: `${mobileStableMinHeight}px` } : {}),
+      } : undefined}
+    >
+      {headerPortalTarget && isMobile && mode === 'personal' && !embedded && presentation === 'default' && createPortal(
+        <MobileTimetableSummary
+          summary={mobileCourseSummary(mobileSummaryCourses, {
+            currentTerm: termCode === currentTermCode,
+            currentWeekNumber: effectiveCurrentWeekNumber,
+          })}
+          defaultTimetableOnOpen={defaultTimetableOnOpen}
+          onToggleDefault={toggleDefaultTimetable}
+          viewMode={viewMode}
+          onViewModeChange={switchViewMode}
+        />,
+        headerPortalTarget,
+      )}
       {recoveryNotice && (
         <Alert
           type="warning"
@@ -2460,20 +2847,12 @@ function TimetablePage({
                   {selectedCampus?.name ? ` · ${selectedCampus.name}` : ''}
                 </span>
               </button>
-              <Tooltip title={schedule?.last_update
-                ? `最后保存: ${new Date(schedule.last_update).toLocaleString('zh-CN', { hour12: false })}`
-                : '点击刷新课表'}>
-                <Button aria-label="刷新课表" icon={<ReloadOutlined />} onClick={loadSchedule} disabled={!context || !campusCode} loading={loading}>刷新</Button>
+              <Tooltip title={refreshTooltip}>
+                <Button className={refreshButtonClass} aria-label="刷新课表" icon={<ReloadOutlined />} onClick={loadSchedule} disabled={!context || !campusCode} loading={loading}>刷新</Button>
               </Tooltip>
             </div>
-            <div className={`timetable-mobile-actions${mode !== 'personal' ? ' has-conflict-action' : ''}`}>
-              {mode === 'personal' && schedule && (
-                <Tag color={cacheTier === 'browser' ? 'gold' : cacheTier === 'server' ? 'blue' : 'green'}>
-                  {cacheTier === 'browser' ? '本机快照，正在核验' : cacheTier === 'server' ? '服务器缓存' : '已同步'}
-                </Tag>
-              )}
-              {mode === 'personal' && !embedded && <label className="timetable-default-open-toggle"><Switch size="small" checked={defaultTimetableOnOpen} onChange={toggleDefaultTimetable} /> <span>打开时默认课表</span></label>}
-              {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
+            {mode !== 'personal' && <div className="timetable-mobile-actions has-conflict-action">
+              <Tooltip title={conflictDetectionEnabled
                 ? (conflictDetectionError || '关闭与“我的课表”的冲突标记')
                 : '检测与“我的课表”的时间冲突'}>
                 <Button
@@ -2483,13 +2862,8 @@ function TimetablePage({
                   loading={conflictDetectionLoading}
                   disabled={!schedule?.courses?.length}
                 >冲突检测</Button>
-              </Tooltip>}
-              <Button
-                className="timetable-mobile-view-switch"
-                aria-label="切换周课表或学期课表"
-                onClick={() => switchViewMode(viewMode === 'term' ? 'week' : 'term')}
-              >{viewMode === 'term' ? '学期课表' : '每周课表'}</Button>
-            </div>
+              </Tooltip>
+            </div>}
           </div>
           {viewMode === 'week' && context?.weeks?.length > 0 && (
             <MobileWeekTimeline
@@ -2497,6 +2871,7 @@ function TimetablePage({
               selectedWeek={weekNumber}
               currentWeek={termCode === currentTermCode ? effectiveCurrentWeekNumber : null}
               onChange={switchWeek}
+              anchorRef={mobileWeekFocusRef}
             />
           )}
         </>
@@ -2558,11 +2933,12 @@ function TimetablePage({
                   viewMode={viewMode}
                   currentTerm={termCode === currentTermCode}
                   currentWeekNumber={effectiveCurrentWeekNumber}
-                  onDayChange={setMobileDay}
+                  onDayChange={handleMobileDayChange}
                   onCourseClick={setDetailCourse}
                   personalConflictMap={effectiveConflictMap}
                   presentation={presentation}
                   onSlotSelect={onSlotSelect}
+                  dayAnchorRef={mobileDayFocusRef}
                 />
               </div>
               <div className={isMobile ? 'timetable-screen-desktop-hidden' : ''}>
@@ -3089,7 +3465,67 @@ function DesktopTimetable({
   );
 }
 
-function MobileWeekTimeline({ weeks, selectedWeek, currentWeek, onChange }) {
+function MobileTimetableSummary({
+  summary,
+  defaultTimetableOnOpen,
+  onToggleDefault,
+  viewMode,
+  onViewModeChange,
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const summaryName = summary?.course?.course_name || summary?.label || '无课';
+  const countSuffix = summary?.kind === 'current' && summary.count > 1
+    ? ` 等 ${summary.count} 门`
+    : '';
+  return (
+    <section className={`timetable-mobile-summary${expanded ? ' expanded' : ''}`} aria-label="今日课情与课表设置">
+      <button
+        type="button"
+        className="timetable-mobile-summary-trigger"
+        aria-expanded={expanded}
+        aria-controls="timetable-mobile-summary-controls"
+        onClick={() => setExpanded(value => !value)}
+      >
+        {summary?.kind !== 'none' && <span className={`timetable-mobile-summary-status is-${summary?.kind}`}>
+          {summary?.kind === 'current' ? '当前' : '下节'}
+        </span>}
+        <strong className="timetable-mobile-summary-name" title={summaryName}>
+          {summary?.kind === 'none' ? summaryName : `${summaryName}${countSuffix}`}
+        </strong>
+        {summary?.startTime && <small>{summary.startTime}</small>}
+        <span className={`timetable-mobile-summary-chevron${expanded ? ' is-expanded' : ''}`} aria-hidden="true" />
+      </button>
+      {expanded && (
+        <div id="timetable-mobile-summary-controls" className="timetable-mobile-summary-controls">
+          <label className="timetable-mobile-summary-default">
+            <Switch size="small" checked={defaultTimetableOnOpen} onChange={onToggleDefault} />
+            <span>打开时默认课表</span>
+          </label>
+          <div className="timetable-mobile-summary-view">
+            <span>显示范围</span>
+            <Segmented
+              block
+              value={viewMode}
+              onChange={onViewModeChange}
+              options={[{ label: '周课表', value: 'week' }, { label: '学期课表', value: 'term' }]}
+            />
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export const mobileWeekRailScrollLeft = (rail, active) => {
+  if (!rail || !active) return 0;
+  const maxScroll = Math.max(0, rail.scrollWidth - rail.clientWidth);
+  return Math.min(
+    maxScroll,
+    Math.max(0, active.offsetLeft - (rail.clientWidth - active.offsetWidth) / 2),
+  );
+};
+
+function MobileWeekTimeline({ weeks, selectedWeek, currentWeek, onChange, anchorRef }) {
   const railRef = useRef(null);
   const settleTimer = useRef(null);
   const programmaticScroll = useRef(false);
@@ -3098,7 +3534,16 @@ function MobileWeekTimeline({ weeks, selectedWeek, currentWeek, onChange }) {
     const active = railRef.current?.querySelector(`[data-week="${selectedWeek}"]`);
     if (!active) return undefined;
     programmaticScroll.current = true;
-    active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    const rail = railRef.current;
+    const left = mobileWeekRailScrollLeft(rail, active);
+    // scrollIntoView() can also move the document vertically when the user
+    // changes weeks from a course card farther down the page. Keep this
+    // adjustment strictly inside the horizontal week rail.
+    if (typeof rail?.scrollTo === 'function') {
+      rail.scrollTo({ left, behavior: 'smooth' });
+    } else if (rail) {
+      rail.scrollLeft = left;
+    }
     const timer = window.setTimeout(() => { programmaticScroll.current = false; }, 420);
     return () => window.clearTimeout(timer);
   }, [selectedWeek]);
@@ -3122,7 +3567,10 @@ function MobileWeekTimeline({ weeks, selectedWeek, currentWeek, onChange }) {
   return (
     <div
       className="timetable-week-timeline"
-      ref={railRef}
+      ref={node => {
+        railRef.current = node;
+        if (anchorRef) anchorRef.current = node;
+      }}
       role="listbox"
       aria-label="左右滑动选择教学周"
       onScroll={() => {
@@ -3161,6 +3609,7 @@ export function MobileTimetable({
   personalConflictMap,
   presentation = 'default',
   onSlotSelect,
+  dayAnchorRef,
 }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -3174,6 +3623,7 @@ export function MobileTimetable({
     : Array.from({ length: 12 }, (_, index) => index + 1);
   const renderCourseCard = (course, index) => {
     const content = courseCardContent(course);
+    const teacherText = courseTeacherText(course);
     const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber });
     const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
     return (
@@ -3199,6 +3649,9 @@ export function MobileTimetable({
         <strong className="mobile-course-title">{content.name}</strong>
         {!compact && viewMode === 'term' && <span className="mobile-course-weeks">{formatWeekNumbers(course.weeks) || '周次待确认'}</span>}
         {!compact && <span className="mobile-course-location"><EnvironmentOutlined /> {content.location}</span>}
+        {!compact && teacherText && (
+          <span className="mobile-course-teacher">{teacherText}</span>
+        )}
         {!compact && content.type && <span className="mobile-course-type">{content.type}</span>}
         {compact && course.layer && <span className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'pending' ? '已投权待结果' : course.layer === 'selected' ? '已选' : '待选方案'}</span>}
       </Card>
@@ -3206,15 +3659,17 @@ export function MobileTimetable({
   };
   return (
     <section className={`timetable-mobile${compact ? ' is-selection-compact' : ''}`} aria-label="手机课表">
-      <Segmented
-        block
-        value={selectedDay}
-        onChange={onDayChange}
-        options={TIMETABLE_DAY_ORDER.map(day => ({
-          label: <span className="timetable-day-option"><span>周{SHORT_WEEKDAY_NAMES[day - 1]}</span><small>{coursesByDay[day].length || ''}</small></span>,
-          value: day,
-        }))}
-      />
+      <div className="timetable-mobile-day-selector" ref={dayAnchorRef}>
+        <Segmented
+          block
+          value={selectedDay}
+          onChange={onDayChange}
+          options={TIMETABLE_DAY_ORDER.map(day => ({
+            label: <span className="timetable-day-option"><span>周{SHORT_WEEKDAY_NAMES[day - 1]}</span><small>{coursesByDay[day].length || ''}</small></span>,
+            value: day,
+          }))}
+        />
+      </div>
       <div className="timetable-mobile-list">
         {compact ? sectionNumbers.flatMap(section => {
           const startingCourses = courses.filter(course => Number(course.start_section) === section);

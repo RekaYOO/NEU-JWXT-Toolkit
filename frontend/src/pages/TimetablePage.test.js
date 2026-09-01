@@ -29,10 +29,14 @@ import {
   personalScheduleView,
   preferredMobileDay,
   isCourseHappeningNow,
+  mobileCourseSummary,
+  timetableCacheIndicator,
+  courseTeacherText,
   shouldHighlightToday,
   selectDefaultTerm,
   selectEffectiveCurrentTerm,
   selectDefaultWeek,
+  automaticTimetableNotice,
   shouldLoadMoreTargets,
   capacityRangeInvalid,
   conflictCandidateFromCourse,
@@ -43,10 +47,13 @@ import {
   requestErrorText,
   restorePersonalTimetableMemory,
   timetableSnapshotIsNewer,
+  timetableContentSignature,
+  timetableContentChanged,
   usableTargetFilterDefinitions,
   TIMETABLE_DAY_ORDER,
   TIMETABLE_MODES,
   MobileTimetable,
+  mobileWeekRailScrollLeft,
 } from './TimetablePage';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -65,12 +72,48 @@ jest.mock('../services/api', () => ({
 
 
 describe('TimetablePage helpers', () => {
+  test('centers the selected week inside the horizontal rail without document scrolling', () => {
+    const rail = { scrollWidth: 900, clientWidth: 300 };
+    const active = { offsetLeft: 420, offsetWidth: 90 };
+    expect(mobileWeekRailScrollLeft(rail, active)).toBe(315);
+    expect(mobileWeekRailScrollLeft({ ...rail, scrollWidth: 320 }, active)).toBe(20);
+  });
+
   test('accepts a newer server snapshot but never rolls back to an older one', () => {
     const current = { cache: { revision: 'a', last_checked_at: '2026-09-01T10:00:00Z', saved_at: '2026-09-01T09:59:00Z' } };
     const newer = { cache: { revision: 'b', last_checked_at: '2026-09-01T10:01:00Z', saved_at: '2026-09-01T10:00:00Z' } };
     const older = { cache: { revision: 'c', last_checked_at: '2026-09-01T09:58:00Z', saved_at: '2026-09-01T09:57:00Z' } };
     expect(timetableSnapshotIsNewer(newer, current)).toBe(true);
     expect(timetableSnapshotIsNewer(older, current)).toBe(false);
+  });
+
+  test('compares timetable content separately from cache metadata', () => {
+    const current = {
+      term_code: '2026-2027-1',
+      courses: [{ course_name: '课程A', weekday: 1, start_section: 1 }],
+      cache: { revision: 'a', last_checked_at: '2026-09-01T10:00:00Z' },
+    };
+    const metadataOnly = {
+      ...current,
+      cache: { revision: 'b', last_checked_at: '2026-09-01T10:01:00Z' },
+    };
+    const changed = {
+      ...metadataOnly,
+      courses: [{ course_name: '课程B', weekday: 1, start_section: 1 }],
+    };
+    expect(timetableContentSignature(metadataOnly)).toBe(timetableContentSignature(current));
+    expect(timetableContentChanged(metadataOnly, current)).toBe(false);
+    expect(timetableContentChanged(changed, current)).toBe(true);
+  });
+
+  test('maps timetable cache state to the refresh button indicator', () => {
+    expect(timetableCacheIndicator({ source: 'browser' }).state).toBe('local');
+    expect(timetableCacheIndicator({ source: 'server', payload: { is_fresh: false } }).state).toBe('server');
+    expect(timetableCacheIndicator({ source: 'server', payload: { is_fresh: true } }).state).toBe('fresh');
+    expect(timetableCacheIndicator({
+      source: 'server',
+      payload: { cache: { last_error_kind: 'remote_error' } },
+    }).state).toBe('error');
   });
 
   test('conflict details fall back from an empty weeks array to known baseline weeks', () => {
@@ -120,6 +163,41 @@ describe('TimetablePage helpers', () => {
         />);
       });
       expect(container.querySelector('.timetable-mobile')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
+  test('renders a teacher row for ordinary mobile course cards', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<MobileTimetable
+          coursesByDay={Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [
+            day,
+            day === 1 ? [{
+              id: 'teacher-course', course_name: '示例课程', teachers: ['教师甲'],
+              weekday: 1, weeks: [3], start_section: 1, end_section: 2,
+              start_time: '08:00', end_time: '09:40', location: '教学楼101',
+            }] : [],
+          ]))}
+          sections={[]}
+          selectedDay={1}
+          viewMode="week"
+          currentTerm
+          currentWeekNumber={3}
+          onDayChange={() => {}}
+          onCourseClick={() => {}}
+          personalConflictMap={{}}
+        />);
+      });
+      expect(container.querySelector('.mobile-course-teacher').textContent).toBe('教师甲');
     } finally {
       await act(async () => root.unmount());
       container.remove();
@@ -509,6 +587,13 @@ describe('TimetablePage helpers', () => {
     expect(selectDefaultTerm(terms, '', now)).toBe('2025-2026-2');
   });
 
+  test('only reports exceptional automatic timetable fallbacks', () => {
+    expect(automaticTimetableNotice({ hasCurrentCourses: true })).toBe('');
+    expect(automaticTimetableNotice({ nextTermHasCourses: true })).toContain('下一学期');
+    expect(automaticTimetableNotice({ nextTermLoadFailed: true })).toContain('暂无法核验');
+    expect(automaticTimetableNotice()).toContain('无课周');
+  });
+
   test('filters a cached personal timetable locally by week and campus', () => {
     const payload = {
       term_code: '2026-2027-1',
@@ -547,6 +632,49 @@ describe('TimetablePage helpers', () => {
     expect(isCourseHappeningNow(course, { now, currentTerm: true, currentWeekNumber: 2 })).toBe(false);
     expect(isCourseHappeningNow(course, { now, currentTerm: false, currentWeekNumber: 3 })).toBe(false);
     expect(isCourseHappeningNow({ ...course, end_time: '10:00' }, { now, currentTerm: true, currentWeekNumber: 3 })).toBe(false);
+  });
+
+  test('derives the mobile today summary from the current teaching week', () => {
+    const courses = [
+      {
+        course_name: '下午课程', weekday: 1, weeks: [3], start_time: '16:30', end_time: '18:00',
+      },
+      {
+        course_name: '当前课程', weekday: 1, weeks: [3], start_time: '10:00', end_time: '11:30',
+      },
+      {
+        course_name: '未知周次', weekday: 1, weeks: [], start_time: '09:00', end_time: '10:00',
+      },
+    ];
+    const now = new Date('2026-08-17T10:30:00');
+    expect(mobileCourseSummary(courses, {
+      now, currentTerm: true, currentWeekNumber: 3,
+    })).toEqual(expect.objectContaining({
+      kind: 'current',
+      label: '当前',
+      course: expect.objectContaining({ course_name: '当前课程' }),
+    }));
+    expect(mobileCourseSummary(courses, {
+      now: new Date('2026-08-17T12:00:00'), currentTerm: true, currentWeekNumber: 3,
+    })).toEqual(expect.objectContaining({
+      kind: 'next',
+      label: '下节',
+      startTime: '16:30',
+      course: expect.objectContaining({ course_name: '下午课程' }),
+    }));
+    expect(mobileCourseSummary(courses, {
+      now: new Date('2026-08-17T19:00:00'), currentTerm: true, currentWeekNumber: 3,
+    })).toEqual(expect.objectContaining({ kind: 'none', label: '无课' }));
+  });
+
+  test('keeps simultaneous current courses countable and normalizes teacher names', () => {
+    const now = new Date('2026-08-17T10:30:00');
+    const summary = mobileCourseSummary([
+      { course_name: '甲课', weekday: 1, weeks: [3], start_time: '10:00', end_time: '11:30' },
+      { course_name: '乙课', weekday: 1, weeks: [3], start_time: '10:00', end_time: '11:30' },
+    ], { now, currentTerm: true, currentWeekNumber: 3 });
+    expect(summary.count).toBe(2);
+    expect(courseTeacherText({ teachers: ['教师甲', '教师甲'], teacher: '教师乙' })).toBe('教师甲、教师乙');
   });
 
   test('shows today only for the current term current week or current-term overview', () => {

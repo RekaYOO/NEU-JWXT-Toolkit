@@ -1065,6 +1065,31 @@
   font-size: 14px;
 }
 
+.timetable-refresh-button {
+  transition: border-color 160ms ease, color 160ms ease, background-color 160ms ease;
+}
+
+.timetable-refresh-button.is-cache-local {
+  border-color: #eab308;
+}
+
+.timetable-refresh-button.is-cache-server {
+  border-color: #3b82f6;
+}
+
+.timetable-refresh-button.is-cache-fresh {
+  border-color: #22c55e;
+}
+
+.timetable-refresh-button.is-cache-error {
+  border-color: #ef4444;
+}
+
+.timetable-refresh-button.is-cache-local:not(:disabled) { color: #a16207; }
+.timetable-refresh-button.is-cache-server:not(:disabled) { color: #2563eb; }
+.timetable-refresh-button.is-cache-fresh:not(:disabled) { color: #15803d; }
+.timetable-refresh-button.is-cache-error:not(:disabled) { color: #dc2626; }
+
 @media (max-width: 1199px) {
   .timetable-controls,
   .timetable-controls:has(.timetable-target-field) {
@@ -1118,6 +1143,134 @@
 
   .timetable-target-select {
     margin-bottom: 0;
+  }
+
+  .timetable-mobile-summary {
+    position: relative;
+    width: max-content;
+    max-width: 100%;
+    margin-bottom: 0;
+    overflow: visible;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .timetable-mobile-summary-trigger {
+    width: max-content;
+    max-width: 100%;
+    height: 38px;
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    color: var(--color-muted);
+    background: var(--color-surface-muted);
+    border: 1px solid var(--color-line-soft);
+    border-radius: var(--radius-md);
+    font: inherit;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
+  }
+
+  .timetable-mobile-summary-trigger:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: -2px;
+  }
+
+  .timetable-mobile-summary-status {
+    color: var(--color-brand-strong);
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .timetable-mobile-summary-status.is-next { color: var(--color-warning); }
+  .timetable-mobile-summary-status.is-none { color: var(--color-muted); }
+
+  .timetable-mobile-summary-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: min(34vw, 170px);
+    color: var(--color-ink);
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .timetable-mobile-summary-trigger small {
+    color: var(--color-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .timetable-mobile-summary-chevron {
+    width: 8px;
+    height: 8px;
+    justify-self: end;
+    border-right: 2px solid var(--color-muted);
+    border-bottom: 2px solid var(--color-muted);
+    transform: rotate(45deg) translateY(-2px);
+    transition: transform .16s ease;
+  }
+
+  .timetable-mobile-summary-chevron.is-expanded {
+    transform: rotate(225deg) translate(-1px, -1px);
+  }
+
+  .timetable-mobile-summary-controls {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    z-index: 30;
+    width: 600px;
+    max-width: 90vw;
+    transform: translateX(-50%);
+    padding: 16px;
+    background: #ffffff;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+  }
+
+  .timetable-mobile-summary.expanded .timetable-mobile-summary-trigger {
+    color: var(--color-brand);
+    background: #eff6ff;
+    border-color: #bfdbfe;
+  }
+
+  .timetable-mobile-summary.expanded .timetable-mobile-summary-controls {
+    display: grid;
+  }
+
+  .timetable-mobile-summary-controls {
+    gap: var(--space-3);
+  }
+
+  .timetable-mobile-summary-default,
+  .timetable-mobile-summary-view {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 40px;
+    color: var(--color-ink);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .timetable-mobile-summary-view .ant-segmented {
+    width: min(190px, 58%);
+  }
+
+  .timetable-mobile-day-selector {
+    scroll-margin-top: 8px;
   }
 
   .timetable-target-search-row {
@@ -1408,7 +1561,7 @@
   .mobile-course-time {
     display: flex;
     grid-column: 2;
-    grid-row: 1 / span 3;
+    grid-row: 1 / -1;
     flex-direction: column;
     align-items: flex-end;
     color: var(--color-brand-strong);
@@ -1424,6 +1577,7 @@
   .mobile-course-title,
   .mobile-course-weeks,
   .mobile-course-location,
+  .mobile-course-teacher,
   .mobile-course-type {
     min-width: 0;
     grid-column: 1;
@@ -1440,6 +1594,17 @@
   .mobile-course-location {
     color: #475569;
     font-size: 13px;
+  }
+
+  .mobile-course-teacher {
+    display: -webkit-box;
+    overflow: hidden;
+    color: #475569;
+    font-size: 12px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   .mobile-course-weeks {

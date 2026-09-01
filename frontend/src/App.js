@@ -310,23 +310,54 @@ function App() {
   useEffect(() => {
     if (offlineMode) return undefined;
     let stopped = false;
+    let timer = null;
+    let inFlight = false;
+    const IDLE_POLL_MS = 30000;
+    const PENDING_POLL_MS = 2500;
+
+    const schedule = delay => {
+      window.clearTimeout(timer);
+      if (!stopped) timer = window.setTimeout(poll, delay);
+    };
+
     const poll = async () => {
+      if (stopped || inFlight) return;
       if (
         window.location.pathname === '/login'
         || window.location.pathname.startsWith('/course-selection')
-      ) return;
+      ) {
+        schedule(IDLE_POLL_MS);
+        return;
+      }
+      inFlight = true;
+      let challengeRequired = false;
       try {
         const challenge = await getPendingAuthChallenge();
-        if (stopped || !challenge?.required) return;
-        setPendingAuthFlow(previous => ({ ...previous, ...challenge }));
-        setPendingCaptchaCode(previous => previous || challenge.ocr_candidate || '');
+        if (stopped) return;
+        challengeRequired = Boolean(challenge?.required);
+        if (challengeRequired) {
+          setPendingAuthFlow(previous => ({ ...previous, ...challenge }));
+          setPendingCaptchaCode(previous => previous || challenge.ocr_candidate || '');
+        }
       } catch (_error) {
         // A pending challenge is advisory; the current page remains usable.
+      } finally {
+        inFlight = false;
+        schedule(challengeRequired ? PENDING_POLL_MS : IDLE_POLL_MS);
       }
     };
+
+    const wake = () => {
+      window.clearTimeout(timer);
+      poll();
+    };
     poll();
-    const timer = window.setInterval(poll, 2500);
-    return () => { stopped = true; window.clearInterval(timer); };
+    window.addEventListener('neu-auth-required', wake);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      window.removeEventListener('neu-auth-required', wake);
+    };
   }, [offlineMode]);
 
   const refreshPendingCaptcha = async () => {
@@ -478,7 +509,6 @@ function App() {
   return (
     <ConfigProvider theme={appTheme} locale={zhCN}>
       <ResourceProvider
-        key={`${isLoggedIn ? String(userInfo || 'authenticated') : (showTimetableRecovery ? timetableRecoveryIdentity : 'anonymous')}:${offlineMode ? 'offline' : 'online'}:${showTimetableRecovery ? 'recovery' : 'normal'}`}
         identity={isLoggedIn ? String(userInfo || 'authenticated') : (showTimetableRecovery ? timetableRecoveryIdentity : '')}
         offlineMode={offlineMode}
         recoveryMode={showTimetableRecovery}
