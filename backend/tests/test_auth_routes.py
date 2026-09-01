@@ -209,6 +209,25 @@ class AuthRouteTests(unittest.TestCase):
         security_log.assert_called_once()
         self.assertEqual(security_log.call_args.args[:2], ("webvpn_password_login", "pending"))
 
+    def test_pending_auth_endpoint_exposes_only_safe_challenge_fields(self):
+        client = SimpleNamespace(
+            _webvpn_sms_flow={
+                "id": "flow-1",
+                "source": "password",
+                "captcha_image": "abc",
+                "ocr_candidate": "1234",
+                "expires_at": 4102444800,
+            }
+        )
+        with patch.object(auth, "peek_auth_client", return_value=client), patch.object(
+            auth, "peek_pending_auth_client", return_value=None
+        ):
+            response = auth.get_pending_auth_challenge()
+        self.assertTrue(response["required"])
+        self.assertEqual(response["flow_id"], "flow-1")
+        self.assertIn("captcha_image", response)
+        self.assertNotIn("password", response)
+
     def test_logout_uses_current_client_without_name_error(self):
         client = Mock()
         client.session = Mock()

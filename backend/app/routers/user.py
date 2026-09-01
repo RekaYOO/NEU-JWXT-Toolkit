@@ -72,7 +72,14 @@ def get_user_avatar_cache(
     try:
         entry, stale = read_cache(auth.username, "avatar")
         if entry is None:
-            raise HTTPException(status_code=404, detail="头像缓存不存在")
+            # Cache-only reads are part of the local-first bootstrap path. A
+            # missing optional avatar is not an application error and must not
+            # produce a noisy 404 in the browser console; the frontend uses
+            # this empty response to start the background refresh flow.
+            return Response(
+                status_code=204,
+                headers={"X-Cache-Miss": "true"},
+            )
         data = avatar_bytes(entry.payload)
         return Response(
             content=data,

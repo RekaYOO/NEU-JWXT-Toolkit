@@ -22,7 +22,7 @@ import uuid
 from http.cookies import SimpleCookie
 from functools import wraps
 from typing import Optional, Callable, Dict, Any
-from urllib.parse import urlencode, urljoin, urlparse, parse_qs
+from urllib.parse import urlencode, urljoin, urlparse, parse_qs, urlsplit, urlunsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -37,6 +37,21 @@ logger = logging.getLogger(__name__)
 
 CAS_BASE_URL = "https://pass.neu.edu.cn/tpass"
 CAS_LOGIN_URL = f"{CAS_BASE_URL}/login"
+
+# WebVPN's injected browser code adds these routing queries to relative
+# requests made by the proxied CAS page.  Without them the gateway may treat
+# the request as belonging to the WebVPN origin instead of pass.neu.edu.cn.
+_WEBVPN_CAS_HOST = "pass.neu.edu.cn"
+_WEBVPN_CAS_PROTOCOL = "https"
+_WEBVPN_IMAGE_QUERY = "vpn-1"
+
+
+def _prepend_query(url: str, query: str) -> str:
+    """Prepend a gateway query while preserving the URL's own query/hash."""
+    parsed = urlsplit(url)
+    existing = parsed.query
+    merged = query if not existing else f"{query}&{existing}"
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, merged, parsed.fragment))
 
 # Extra campus services deliberately use an explicit allow-list.  Callers may
 # choose a service and a relative path, but can never turn the shared, logged-in
@@ -692,6 +707,15 @@ class NEUAuthClient:
             "set_cookies": self._safe_set_cookie_names(completion),
         }
         logger.info("WebVPN QR callback diagnostics: %s", flow["completion"])
+        challenge = self._extract_second_auth_form(completion.text, completion.url)
+        if challenge:
+            self._webvpn_qr_flow = None
+            result = self._create_webvpn_second_auth_flow(
+                challenge,
+                source="qr",
+                remember=False,
+            )
+            return result
         self._sync_cas_cookie_to_webvpn(flow)
 
         # WebVPN may leave the browser on its proxied CAS page even after it
@@ -728,6 +752,98 @@ class NEUAuthClient:
         )
         return (match.group(1), match.group(2)) if match else None
 
+    @staticmethod
+    def _extract_second_auth_form(html: str, page_url: str) -> Optional[Dict[str, Any]]:
+        """Extract the current WebVPN device second-auth form.
+
+        The page currently uses ``second_auth_form`` rather than the older
+        JavaScript ``phone(...)`` challenge.  Keep all values in memory only;
+        callers must never persist the returned form data.
+        """
+        soup = BeautifulSoup(html, "lxml")
+        form = soup.select_one("form#second_auth_form, form[name='second_auth_form']")
+        if form is None:
+            return None
+        hidden = {}
+        for field in form.select("input[name]"):
+            name = field.get("name")
+            if name:
+                hidden[name] = field.get("value", "")
+        image = form.select_one("img[src]")
+        image_src = image.get("src", "") if image else ""
+        if not image_src:
+            image_src = "code"
+        action = urljoin(page_url, form.get("action") or page_url)
+        return {
+            "form_action": action,
+            "page_url": page_url,
+            "hidden_fields": hidden,
+            "captcha_url": urljoin(page_url, image_src),
+        }
+
+    def _fetch_webvpn_captcha(self, flow: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch and locally recognize one CAPTCHA image for a pending flow."""
+        captcha_url = flow["captcha_url"]
+        # The official page's img URL is relative (``code?random``). The
+        # WebVPN injected image URL parser prepends ``vpn-1`` so the gateway
+        # routes it to the proxied CAS host. Reproduce that browser behavior
+        # for backend requests instead of relying on a bare path.
+        if flow.get("network_mode") == "webvpn":
+            parsed = urlsplit(captcha_url)
+            if not re.search(r"(?:^|[?&])vpn-\d+(?:&|$)", parsed.query):
+                captcha_url = _prepend_query(captcha_url, _WEBVPN_IMAGE_QUERY)
+        response = self._session.get(
+            captcha_url,
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+            headers={"Referer": flow["page_url"], "Cache-Control": "no-cache"},
+        )
+        response.raise_for_status()
+        from backend.core.auth.captcha import recognize_numeric_captcha
+
+        ocr = recognize_numeric_captcha(response.content)
+        flow["captcha_image"] = base64.b64encode(response.content).decode("ascii")
+        # A refreshed image invalidates the previously confirmed value. The
+        # browser may prefill a new candidate, but SMS sending must explicitly
+        # receive a fresh user-confirmed code.
+        flow["captcha_code"] = ""
+        flow["ocr_candidate"] = ocr.get("value", "")
+        flow["ocr_confidence"] = ocr.get("confidence", 0.0)
+        flow["captcha_fetched_at"] = time.time()
+        return {
+            "captcha_image": f"data:image/png;base64,{flow['captcha_image']}",
+            "ocr_candidate": ocr.get("value", ""),
+            "ocr_confidence": ocr.get("confidence", 0.0),
+            "ocr_reason": ocr.get("reason", "unknown"),
+        }
+
+    def _create_webvpn_second_auth_flow(
+        self,
+        challenge: Dict[str, Any],
+        *,
+        source: str,
+        remember: bool = False,
+    ) -> Dict[str, Any]:
+        flow = {
+            "id": str(uuid.uuid4()),
+            "source": source,
+            "network_mode": "webvpn",
+            "form_action": challenge["form_action"],
+            "page_url": challenge["page_url"],
+            "hidden_fields": dict(challenge.get("hidden_fields") or {}),
+            "captcha_url": challenge["captcha_url"],
+            "expires_at": time.time() + 180,
+            "remember": bool(remember),
+        }
+        self._webvpn_sms_flow = flow
+        result = self._fetch_webvpn_captcha(flow)
+        return {
+            "status": "sms_required",
+            "flow_id": flow["id"],
+            "expires_in": 180,
+            **result,
+        }
+
     def _get_webvpn_sms_flow(self, flow_id: str) -> Dict[str, Any]:
         flow = self._webvpn_sms_flow
         if not flow or flow["id"] != flow_id:
@@ -762,25 +878,19 @@ class NEUAuthClient:
             response = self._submit_login_form(hidden, key_b64, post_url, form_data)
             response.raise_for_status()
 
-            challenge = self._extract_phone_challenge(response.text)
+            challenge = self._extract_second_auth_form(response.text, response.url)
             logger.info(
-                "WebVPN password submit: status=%s final=%s sms_challenge=%s",
+                "WebVPN password submit: status=%s final=%s second_auth=%s",
                 response.status_code,
                 self._safe_url_metadata(response.url),
                 bool(challenge),
             )
             if challenge:
-                murmur, details = challenge
-                self._webvpn_sms_flow = {
-                    "id": str(uuid.uuid4()),
-                    "device_url": urljoin(response.url, "device"),
-                    "murmur": murmur,
-                    "details": details,
-                    "post_url": post_url,
-                    "form_data": form_data,
-                    "expires_at": time.time() + 180,
-                }
-                return {"status": "sms_required", "flow_id": self._webvpn_sms_flow["id"], "expires_in": 180}
+                return self._create_webvpn_second_auth_flow(
+                    challenge,
+                    source="password",
+                    remember=False,
+                )
 
             if self._is_webvpn_login_url(response.url):
                 error = self._extract_error_message(response.text)
@@ -821,78 +931,120 @@ class NEUAuthClient:
                 self._session.cookies.clear()
         return page, False
 
-    def send_webvpn_sms_code(self, flow_id: str) -> Dict[str, Any]:
-        """Ask the official proxied CAS endpoint to send the SMS code."""
+    def refresh_webvpn_captcha(self, flow_id: str) -> Dict[str, Any]:
         flow = self._get_webvpn_sms_flow(flow_id)
+        return {"status": "captcha_refreshed", **self._fetch_webvpn_captcha(flow)}
+
+    def send_webvpn_sms_code(self, flow_id: str, captcha_code: str) -> Dict[str, Any]:
+        """Ask the official second-auth endpoint to send the SMS code."""
+        flow = self._get_webvpn_sms_flow(flow_id)
+        captcha_code = str(captcha_code or "").strip()
+        if not captcha_code or len(captcha_code) > 16:
+            raise WebVPNLoginError("请输入图形验证码")
+        flow["captcha_code"] = captcha_code
         try:
+            endpoint = urljoin(flow["page_url"], "secondAuthCode")
+            # The official WebVPN AJAX URL parser uses this exact marker for
+            # HTTPS requests to pass.neu.edu.cn. It is required by the gateway
+            # even though the browser-visible path is already proxied.
+            if flow.get("network_mode") == "webvpn":
+                parsed = urlsplit(endpoint)
+                if not re.search(r"(?:^|[?&])vpn-12-o[12]-", parsed.query):
+                    endpoint = _prepend_query(
+                        endpoint,
+                        f"vpn-12-o2-{_WEBVPN_CAS_HOST}",
+                    )
             response = self._session.post(
-                flow["device_url"], data={"m": "2"}, timeout=self.timeout,
-                verify=self.verify_ssl, headers={"X-Requested-With": "XMLHttpRequest"},
+                endpoint,
+                data={"code": captcha_code, "method": "mobile"},
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+                headers={
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "Referer": flow["page_url"],
+                },
             )
             response.raise_for_status()
-            result = response.json()
-        except (requests.RequestException, ValueError) as error:
+            try:
+                result = response.json()
+            except ValueError:
+                result = {"message": response.text[:200]}
+        except requests.RequestException as error:
             raise WebVPNLoginError(
                 f"发送短信验证码失败（{type(error).__name__}）"
             ) from error
 
-        info = result.get("info")
+        info = result.get("info") or result.get("code") or result.get("status")
+        message = str(result.get("message") or result.get("msg") or "")
         logger.info(
-            "WebVPN SMS send response: status=%s info=%s keys=%s",
+            "WebVPN SMS send response: status=%s result=%s keys=%s",
             response.status_code,
             info,
             sorted(result.keys()),
         )
-        if info == "send":
+        if info in {"send", "success", "ok", 0, "0"} or result.get("success") is True:
             return {"status": "sent"}
-        if info == "max":
+        if info == "max" or "频繁" in message:
             raise WebVPNLoginError("发送过于频繁，请稍后再试")
         if info == "unknow":
             raise WebVPNLoginError("统一认证未绑定手机号码，无法进行短信验证")
-        raise WebVPNLoginError("短信验证码发送失败")
+        if str(info).lower() in {"codeerr", "captcha_error", "captcha_invalid"} or any(
+            marker in message for marker in ("图形验证码", "验证码错误", "校验码")
+        ):
+            refreshed = self.refresh_webvpn_captcha(flow_id)
+            return {"status": "captcha_invalid", "message": message or "图形验证码不正确，请重试", **refreshed}
+        raise WebVPNLoginError(message or "短信验证码发送失败")
 
     def verify_webvpn_sms_code(self, flow_id: str, code: str, trust_device: bool = False) -> Dict[str, Any]:
-        """Verify a code with device m=3, then submit the pending CAS form."""
+        """Submit the official second-auth form and verify the new session."""
         flow = self._get_webvpn_sms_flow(flow_id)
+        if not str(code or "").strip():
+            raise WebVPNLoginError("请输入短信验证码")
         try:
+            data = dict(flow.get("hidden_fields") or {})
+            data.update({
+                "imgCode": flow.get("captcha_code", ""),
+                "scendAuthCode": str(code or "").strip(),
+                "method": data.get("method") or "mobile",
+                "_eventId": data.get("_eventId") or "submit",
+            })
             response = self._session.post(
-                flow["device_url"],
-                data={
-                    "d": flow["murmur"], "i": flow["details"], "m": "3",
-                    "u": self.username, "c": code, "s": "1" if trust_device else "0",
-                },
+                flow["form_action"],
+                data=data,
                 timeout=self.timeout,
                 verify=self.verify_ssl,
-                headers={"X-Requested-With": "XMLHttpRequest"},
+                headers={"Referer": flow["page_url"]},
             )
             response.raise_for_status()
-            info = response.json().get("info")
-        except (requests.RequestException, ValueError) as error:
+        except requests.RequestException as error:
             raise WebVPNLoginError(
                 f"验证短信验证码失败（{type(error).__name__}）"
             ) from error
 
-        verification_result = info if info in {"ok", "most", "codeErr", "timeout"} else "other"
-        logger.info(
-            "WebVPN SMS verify response: status=%s result=%s",
-            response.status_code,
-            verification_result,
-        )
-        if info == "codeErr":
-            raise WebVPNLoginError("验证码有误")
-        if info == "timeout":
-            raise WebVPNLoginError("验证码已超时，请重新开始登录")
-        if info not in {"ok", "most"}:
-            raise WebVPNLoginError("短信验证码验证失败")
+        try:
+            response_json = response.json()
+        except (ValueError, AttributeError):
+            response_json = {}
+        response_code = str(
+            response_json.get("code") or response_json.get("info") or response_json.get("status") or ""
+        ).lower() if isinstance(response_json, dict) else ""
+        if response_code in {"codeerr", "captcha_error", "captcha_invalid"}:
+            refreshed = self.refresh_webvpn_captcha(flow_id)
+            return {
+                "status": "captcha_invalid",
+                "message": str(response_json.get("message") or response_json.get("msg") or "图形验证码不正确，请重试"),
+                **refreshed,
+            }
+        if self._is_webvpn_login_url(response.url) or self._extract_second_auth_form(response.text, response.url):
+            error = self._extract_error_message(response.text)
+            if "验证码" in error:
+                refreshed = self.refresh_webvpn_captcha(flow_id)
+                return {"status": "captcha_invalid", **refreshed, "message": error}
+            raise WebVPNLoginError(error or "短信验证码验证失败")
 
         try:
-            completion = self._submit_login_form({}, _RSA_PUBLIC_KEY_B64, flow["post_url"], flow["form_data"])
-            completion.raise_for_status()
-            logger.info(
-                "WebVPN SMS completion submit: status=%s final=%s",
-                completion.status_code,
-                self._safe_url_metadata(completion.url),
-            )
             self._sync_cas_cookie_to_webvpn({})
             if not self._webvpn_health_check():
                 raise WebVPNLoginError("短信验证完成，但未能建立教务系统会话")
@@ -901,8 +1053,7 @@ class NEUAuthClient:
 
         self._logged_in = True
         self._save_cookies()
-        message = "设备数量已达上限，系统已解除最早的授信设备并完成登录" if info == "most" else "登录成功"
-        return {"status": "authenticated", "username": self.username or None, "message": message}
+        return {"status": "authenticated", "username": self.username or None, "message": "登录成功"}
 
     def cancel_webvpn_sms_login(self, flow_id: Optional[str] = None) -> None:
         if self._webvpn_sms_flow and (flow_id is None or self._webvpn_sms_flow["id"] == flow_id):
@@ -1028,11 +1179,10 @@ class NEUAuthClient:
                 self._logged_in = True
                 return True
 
-            # 短信验证属于交互式认证，静默恢复不能擅自发送短信或保留一个
-            # 前端并不知道的流程。交给登录页重新发起完整认证。
+            # 短信验证属于交互式认证，静默恢复不能擅自发送短信；保留
+            # challenge 供前台弹窗接管，避免后台反复重试制造请求风暴。
             if result.get("status") == "sms_required":
-                logger.info("WebVPN 静默恢复需要短信验证，转交登录页处理")
-                self._webvpn_sms_flow = None
+                logger.info("WebVPN 静默恢复需要短信验证，等待前台确认")
             self._logged_in = False
             return False
 
@@ -1561,8 +1711,8 @@ class NEUAuthClient:
                     established = try_establish()
                 elif webvpn_result.get("status") == "sms_required":
                     # Captcha/SMS protection is intentionally not completed in
-                    # the background.  The page will offer the visible QR flow.
-                    self._webvpn_sms_flow = None
+                    # the background; keep the flow for the visible modal.
+                    logger.info("WebVPN service recovery requires foreground CAPTCHA/SMS")
 
             primary_recovered = False
             if not cross_route_webvpn:
@@ -1614,9 +1764,8 @@ class NEUAuthClient:
                             request_path=token_probe_path,
                         ))
                 elif webvpn_result.get("status") == "sms_required":
-                    # Silent background recovery must not leave an interactive
-                    # SMS flow that no visible login page owns.
-                    self._webvpn_sms_flow = None
+                    # Leave the challenge for the foreground authentication modal.
+                    logger.info("WebVPN service recovery requires foreground CAPTCHA/SMS")
             if not established:
                 if not identity_recovered:
                     raise NEULoginError("统一认证会话已过期")

@@ -80,6 +80,20 @@ def build_command(target_name: str, work_dir: Path) -> list[str]:
             "backend/core/course_selection/THIRD_PARTY_NOTICE.md"
         ),
         "--include-package=uvicorn",
+        (
+            f"--include-data-files={PROJECT_ROOT / 'backend' / 'core' / 'auth' / 'models' / 'common_old.onnx'}="
+            "backend/core/auth/models/common_old.onnx"
+        ),
+        "--include-module=onnxruntime",
+        "--include-package=onnxruntime.capi",
+        "--include-package-data=onnxruntime",
+        "--nofollow-import-to=onnxruntime.backend",
+        "--nofollow-import-to=onnxruntime.datasets",
+        "--nofollow-import-to=onnxruntime.quantization",
+        "--nofollow-import-to=onnxruntime.tools",
+        "--nofollow-import-to=onnxruntime.transformers",
+        "--nofollow-import-to=onnxruntime.training",
+        "--nofollow-import-to=cv2",
         "--include-package-data=certifi",
         "--nofollow-import-to=pytest",
         "--nofollow-import-to=_pytest",
@@ -118,6 +132,9 @@ def build(target_name: str) -> Path:
         )
     if target_name == "desktop" and not WINDOWS_ICON.is_file():
         raise FileNotFoundError(f"Windows application icon is missing: {WINDOWS_ICON}")
+    model_path = PROJECT_ROOT / "backend" / "core" / "auth" / "models" / "common_old.onnx"
+    if not model_path.is_file() or model_path.stat().st_size < 1024:
+        raise FileNotFoundError(f"Bundled WebVPN CAPTCHA model is missing: {model_path}")
     build_parent = PROJECT_ROOT / "build" / "nuitka"
     work_dir = build_parent / target_name
     final_parent = PROJECT_ROOT / "dist"

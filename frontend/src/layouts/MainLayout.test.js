@@ -3,11 +3,17 @@ import { createRoot } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 import MainLayout from './MainLayout';
-import { shutdownRuntime } from '../services/api';
+import {
+  shutdownRuntime,
+  getUserAvatarCache,
+  getCacheRefreshJob,
+  requestCacheRefresh,
+} from '../services/api';
 
 jest.mock('../services/api', () => ({
   getUserAvatar: jest.fn().mockResolvedValue(null),
   getUserAvatarCache: jest.fn().mockResolvedValue(null),
+  getCacheRefreshJob: jest.fn(),
   requestCacheRefresh: jest.fn().mockResolvedValue({}),
   logout: jest.fn().mockResolvedValue({ success: true }),
   shutdownRuntime: jest.fn().mockResolvedValue({ success: true }),
@@ -64,6 +70,11 @@ describe('MainLayout desktop lifecycle controls', () => {
   beforeEach(() => {
     shutdownRuntime.mockReset();
     shutdownRuntime.mockResolvedValue({ success: true });
+    getUserAvatarCache.mockReset();
+    getUserAvatarCache.mockResolvedValue(null);
+    requestCacheRefresh.mockReset();
+    requestCacheRefresh.mockResolvedValue({});
+    getCacheRefreshJob.mockReset();
     window.matchMedia = jest.fn().mockImplementation((query) => ({
       matches: true,
       media: query,
@@ -98,6 +109,24 @@ describe('MainLayout desktop lifecycle controls', () => {
     await click(confirm);
     expect(shutdownRuntime).toHaveBeenCalledTimes(1);
     expect(page.container.textContent).toContain('本地服务已退出');
+    await page.unmount();
+  });
+
+  test('treats a missing server avatar as a cache miss and refreshes in background', async () => {
+    requestCacheRefresh.mockResolvedValueOnce({ status: 'started', job_id: 'avatar-job' });
+    getCacheRefreshJob.mockResolvedValue({ status: 'completed' });
+    getUserAvatarCache
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+
+    const page = await renderLayout('development');
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 850));
+    });
+
+    expect(requestCacheRefresh).toHaveBeenCalledWith('avatar', { reason: 'page_swr' });
+    expect(getCacheRefreshJob).toHaveBeenCalledWith('avatar-job', { skipAuthRedirect: true });
+    expect(getUserAvatarCache).toHaveBeenCalledTimes(2);
     await page.unmount();
   });
 });

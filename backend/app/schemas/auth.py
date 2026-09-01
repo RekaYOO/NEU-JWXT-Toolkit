@@ -37,6 +37,10 @@ class WebVPNSMSCodeRequest(BaseModel):
     flow_id: str
 
 
+class WebVPNSMSSendRequest(WebVPNSMSCodeRequest):
+    captcha_code: str
+
+
 class WebVPNSMSVerifyRequest(WebVPNSMSCodeRequest):
     code: str
     trust_device: bool = False

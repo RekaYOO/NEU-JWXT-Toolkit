@@ -10,6 +10,7 @@ FastAPI 后端服务入口
 
 import os
 import sys
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from backend.app.dependencies import (
 from backend.app.routers import auth, cache, logs, system_settings, scores, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking, festival_activities, course_selection, timetable, scheduling, course_outline, academic_documents
 from backend.core.runtime import get_runtime_config, resource_path
 from backend.core.runtime.access import AccessGatewayMiddleware
+from backend.core.auth.captcha import warmup_captcha_ocr
 
 runtime_config = get_runtime_config()
 application_services = get_application_services()
@@ -40,6 +42,9 @@ application_services = get_application_services()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     application_services.start()
+    # Load the bundled OCR model in the background so the first WebVPN
+    # challenge does not pay cold-start latency, without delaying API startup.
+    threading.Thread(target=warmup_captcha_ocr, name="captcha-ocr-warmup", daemon=True).start()
     try:
         yield
     finally:

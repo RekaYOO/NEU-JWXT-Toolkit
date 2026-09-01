@@ -9,8 +9,10 @@ import {
   getJwxkAutomationSettings, updateJwxkAutomationSettings,
   syncJwxkAutomationTaskTimes,
   startWebVPNQRLogin, getWebVPNQRStatus, cancelWebVPNQRLogin,
+  refreshWebVPNCaptcha, sendWebVPNSMSCode, verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
 } from '../services/api';
 import { changedOfficialBatchTimes, courseCampusLabels, selectionParticipantCount } from '../utils/jwxkSchedule';
+import WebVPNAuthModal from '../components/WebVPNAuthModal';
 import './CourseSelectionPage.css';
 
 const { Paragraph, Text, Title } = Typography;
@@ -38,6 +40,12 @@ const CourseSelectionPage = () => {
   const [webvpnQrFlow, setWebvpnQrFlow] = useState(null);
   const [webvpnQrLoading, setWebvpnQrLoading] = useState(false);
   const [webvpnQrMessage, setWebvpnQrMessage] = useState('');
+  const [webvpnSmsFlow, setWebvpnSmsFlow] = useState(null);
+  const [webvpnCaptchaCode, setWebvpnCaptchaCode] = useState('');
+  const [webvpnSmsCode, setWebvpnSmsCode] = useState('');
+  const [webvpnSmsLoading, setWebvpnSmsLoading] = useState(false);
+  const [webvpnCaptchaLoading, setWebvpnCaptchaLoading] = useState(false);
+  const [webvpnSmsSent, setWebvpnSmsSent] = useState(false);
 
   const promptTaskTimeSync = changes => Modal.confirm({
     title: '官方选课轮次时间已变更',
@@ -111,6 +119,13 @@ const CourseSelectionPage = () => {
           setWebvpnLoginOpen(false);
           message.success('WebVPN 登录成功，正在重新读取选课轮次');
           await load();
+        } else if (result.success && result.status === 'sms_required') {
+          setWebvpnQrFlow(null);
+          setWebvpnLoginOpen(false);
+          setWebvpnSmsFlow(result);
+          setWebvpnCaptchaCode(result.ocr_candidate || '');
+          setWebvpnSmsCode('');
+          setWebvpnSmsSent(false);
         } else if (result.status === 'expired' || result.status === 'missing') {
           setWebvpnQrFlow(null);
           setWebvpnQrMessage('二维码已失效，请重新获取。');
@@ -148,6 +163,69 @@ const CourseSelectionPage = () => {
     setWebvpnLoginOpen(false);
     setWebvpnQrMessage('');
     if (flowId) await cancelWebVPNQRLogin(flowId).catch(() => {});
+  };
+
+  const refreshWebvpnCaptcha = async () => {
+    if (!webvpnSmsFlow) return;
+    setWebvpnCaptchaLoading(true);
+    try {
+      const result = await refreshWebVPNCaptcha(webvpnSmsFlow.flow_id);
+      if (!result.success) throw new Error(result.message || '刷新图形验证码失败');
+      setWebvpnSmsFlow(prev => ({ ...prev, ...result }));
+      setWebvpnCaptchaCode(result.ocr_candidate || '');
+      setWebvpnSmsSent(false);
+    } catch (error) { message.error(error.message || '刷新图形验证码失败'); }
+    finally { setWebvpnCaptchaLoading(false); }
+  };
+
+  const sendWebvpnSms = async () => {
+    if (!webvpnSmsFlow || !webvpnCaptchaCode.trim()) {
+      message.warning('请先核对并填写图形验证码');
+      return;
+    }
+    setWebvpnSmsLoading(true);
+    try {
+      const result = await sendWebVPNSMSCode(webvpnSmsFlow.flow_id, webvpnCaptchaCode.trim());
+      if (!result.success && result.captcha_invalid) {
+        setWebvpnSmsFlow(prev => ({ ...prev, ...result }));
+        setWebvpnCaptchaCode(result.ocr_candidate || '');
+        setWebvpnSmsSent(false);
+        message.warning(result.message || '图形验证码不正确，请核对新图片');
+      } else if (!result.success) throw new Error(result.message || '短信验证码发送失败');
+      else { setWebvpnSmsSent(true); message.success('验证码已发送'); }
+    } catch (error) { message.error(error.message || '短信验证码发送失败'); }
+    finally { setWebvpnSmsLoading(false); }
+  };
+
+  const verifyWebvpnSms = async () => {
+    if (!webvpnSmsFlow || !webvpnSmsCode.trim()) {
+      message.warning('请输入短信验证码');
+      return;
+    }
+    setWebvpnSmsLoading(true);
+    try {
+      const result = await verifyWebVPNSMSCode(webvpnSmsFlow.flow_id, webvpnSmsCode.trim());
+      if (!result.success && result.status === 'captcha_invalid') {
+        setWebvpnSmsFlow(prev => ({ ...prev, ...result }));
+        setWebvpnCaptchaCode(result.ocr_candidate || '');
+        setWebvpnSmsSent(false);
+        message.warning(result.message || '图形验证码不正确，请核对新图片');
+        return;
+      }
+      if (!result.success) throw new Error(result.message || '短信验证失败');
+      setWebvpnSmsFlow(null);
+      setWebvpnSmsCode('');
+      message.success('WebVPN 登录成功，正在重新读取选课轮次');
+      await load();
+    } catch (error) { message.error(error.message || '短信验证失败'); }
+    finally { setWebvpnSmsLoading(false); }
+  };
+
+  const cancelWebvpnSms = async () => {
+    if (webvpnSmsFlow) await cancelWebVPNSMSLogin(webvpnSmsFlow.flow_id).catch(() => {});
+    setWebvpnSmsFlow(null);
+    setWebvpnCaptchaCode('');
+    setWebvpnSmsCode('');
   };
 
   const groups = useMemo(() => {
@@ -282,6 +360,20 @@ const CourseSelectionPage = () => {
           )}
         </div>
       </Modal>
+      <WebVPNAuthModal
+        flow={webvpnSmsFlow}
+        captchaCode={webvpnCaptchaCode}
+        setCaptchaCode={setWebvpnCaptchaCode}
+        smsCode={webvpnSmsCode}
+        setSmsCode={setWebvpnSmsCode}
+        loading={webvpnSmsLoading}
+        captchaLoading={webvpnCaptchaLoading}
+        smsSent={webvpnSmsSent}
+        onRefreshCaptcha={refreshWebvpnCaptcha}
+        onSendSMS={sendWebvpnSms}
+        onVerify={verifyWebvpnSms}
+        onCancel={cancelWebvpnSms}
+      />
       {[['active', '正在进行'], ['not_started', '即将开始'], ['ended', '已结束'], ['unknown', '状态待确认']].map(([key, title]) => groups[key]?.length > 0 && (
         <section className="course-selection-section" key={key}>
           <div className="course-selection-section__title"><div><Title level={4}>{title}</Title><Text type="secondary">{groups[key].length} 个轮次</Text></div></div>

@@ -9,7 +9,14 @@ import {
   MenuOutlined,
   PoweroffOutlined,
 } from '@ant-design/icons';
-import { logout, getUserAvatar, getUserAvatarCache, requestCacheRefresh, shutdownRuntime } from '../services/api';
+import {
+  logout,
+  getUserAvatar,
+  getUserAvatarCache,
+  getCacheRefreshJob,
+  requestCacheRefresh,
+  shutdownRuntime,
+} from '../services/api';
 import {
   readBrowserAvatarCache,
   subscribeBrowserAvatarCache,
@@ -54,22 +61,66 @@ const MainLayout = ({
         return URL.createObjectURL(blob);
       });
     };
+    const reloadAfterRefresh = async refresh => {
+      const jobId = refresh?.job_id || refresh?.id;
+      if (refresh?.status === 'fresh') return getUserAvatarCache();
+      if (!jobId || !['started', 'running'].includes(String(refresh?.status || ''))) {
+        return null;
+      }
+      // Cache jobs are normally short.  Polling here makes the avatar path
+      // self-contained instead of relying solely on the 15s global event
+      // poller, while remaining entirely in the background.
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 750));
+        if (!active || generation !== avatarGeneration.current) return null;
+        let job;
+        try {
+          job = await getCacheRefreshJob(jobId, { skipAuthRedirect: true });
+        } catch (_error) {
+          return null;
+        }
+        if (job?.status === 'completed') return getUserAvatarCache();
+        if (['failed', 'cancelled'].includes(String(job?.status || ''))) return null;
+      }
+      return null;
+    };
     const loadAvatar = async () => {
+      const identity = String(userInfo || '');
       try {
-        const identity = String(userInfo || '');
         const browser = await readBrowserAvatarCache(identity);
         if (active && generation === avatarGeneration.current && browser?.blob) show(browser.blob);
-        const cached = await getUserAvatarCache();
-        if (!active || generation !== avatarGeneration.current) return;
-        if (cached?.blob) {
-          show(cached.blob);
-          await writeBrowserAvatarCache(identity, cached);
-        }
-        if (cached?.stale || !cached?.blob) {
-          requestCacheRefresh('avatar', { reason: 'page_swr' }).catch(() => {});
-        }
       } catch (_error) {
-        // 浏览器/服务器头像均不可用时保持默认头像，不阻塞页面。
+        // IndexedDB is optional; continue to the server cache.
+      }
+
+      let cached = null;
+      try {
+        cached = await getUserAvatarCache();
+      } catch (_error) {
+        // A server/cache/auth failure must not remove an already displayed
+        // browser snapshot or prevent the page from rendering.
+      }
+      if (!active || generation !== avatarGeneration.current) return;
+      if (cached?.blob) {
+        show(cached.blob);
+        await writeBrowserAvatarCache(identity, cached);
+      }
+
+      if (cached?.stale || !cached?.blob) {
+        try {
+          const refresh = await requestCacheRefresh('avatar', { reason: 'page_swr' });
+          const refreshed = await reloadAfterRefresh(refresh);
+          if (
+            active
+            && generation === avatarGeneration.current
+            && refreshed?.blob
+          ) {
+            show(refreshed.blob);
+            await writeBrowserAvatarCache(identity, refreshed);
+          }
+        } catch (_error) {
+          // SWR failures are non-fatal; retain the browser/server snapshot.
+        }
       }
     };
     if (userInfo && !offlineMode) loadAvatar();

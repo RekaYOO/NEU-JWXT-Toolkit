@@ -12,42 +12,71 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         response = Mock()
         response.url = url
         response.text = text
+        response.content = text.encode("utf-8")
+        response.headers = {"Content-Type": "application/json" if json_data is not None else "text/html"}
         response.raise_for_status.return_value = None
         response.json.return_value = json_data or {}
         return response
 
-    def test_sms_flow_uses_official_device_requests_then_resubmits_form(self):
+    def test_sms_flow_uses_official_second_auth_requests_then_resubmits_form(self):
         login_url = "https://webvpn.neu.edu.cn/https/token/tpass/login?service=test"
         login_page = self._response(
             login_url,
             '<form id="loginForm" action=""><input type="hidden" name="lt" value="ticket"></form>',
         )
-        sms_page = self._response(login_url, "<script>phone('murmur', 'details')</script>")
+        sms_page = self._response(
+            login_url,
+            """
+            <form id="second_auth_form" action="/tpass/secondAuth">
+              <input name="RelayState" value="relay">
+              <input name="execution" value="exec">
+              <input name="_eventId" value="submit">
+              <input name="method" value="mobile">
+              <input name="imgCode" value="">
+              <img src="code?x=1">
+            </form>
+            """,
+        )
+        captcha = self._response("https://webvpn.neu.edu.cn/https/token/tpass/code?x=1", "captcha")
         sms_sent = self._response(login_url, json_data={"info": "send"})
-        sms_verified = self._response(login_url, json_data={"info": "ok"})
         completed = self._response("https://webvpn.neu.edu.cn/login")
 
         client = NEUAuthClient("20250001", "secret", network_mode="webvpn")
         client._session = Mock()
-        client.session.get.return_value = login_page
-        client.session.post.side_effect = [sms_page, sms_sent, sms_verified, completed]
+        client.session.get.side_effect = [login_page, captcha]
+        client.session.post.side_effect = [sms_page, sms_sent, completed]
 
         with (
             patch.object(client, "_webvpn_health_check", return_value=True),
             patch.object(client, "_sync_cas_cookie_to_webvpn"),
+            patch(
+                "backend.core.auth.captcha.recognize_numeric_captcha",
+                return_value={"ok": True, "value": "1234", "confidence": 0.94, "reason": "recognized"},
+            ),
         ):
             started = client.start_webvpn_password_login()
             self.assertEqual(started["status"], "sms_required")
-            self.assertEqual(client.send_webvpn_sms_code(started["flow_id"])["status"], "sent")
+            self.assertEqual(started["ocr_candidate"], "1234")
+            self.assertEqual(client.send_webvpn_sms_code(started["flow_id"], "1234")["status"], "sent")
             completed_result = client.verify_webvpn_sms_code(started["flow_id"], "123456")
 
         self.assertEqual(completed_result["status"], "authenticated")
         post_calls = client.session.post.call_args_list
-        self.assertEqual(post_calls[1].kwargs["data"], {"m": "2"})
-        self.assertEqual(post_calls[2].kwargs["data"]["m"], "3")
-        self.assertEqual(post_calls[2].kwargs["data"]["d"], "murmur")
-        self.assertEqual(post_calls[2].kwargs["data"]["i"], "details")
-        self.assertEqual(post_calls[3].kwargs["data"]["un"], "20250001")
+        self.assertEqual(
+            post_calls[1].args[0],
+            "https://webvpn.neu.edu.cn/https/token/tpass/secondAuthCode?vpn-12-o2-pass.neu.edu.cn",
+        )
+        self.assertEqual(post_calls[1].kwargs["data"], {"code": "1234", "method": "mobile"})
+        self.assertEqual(post_calls[2].kwargs["data"]["imgCode"], "1234")
+        self.assertEqual(post_calls[2].kwargs["data"]["scendAuthCode"], "123456")
+        self.assertEqual(post_calls[2].kwargs["data"]["method"], "mobile")
+        self.assertEqual(post_calls[2].kwargs["data"]["RelayState"], "relay")
+        self.assertEqual(post_calls[2].kwargs["data"]["execution"], "exec")
+        self.assertEqual(post_calls[2].kwargs["data"]["_eventId"], "submit")
+        self.assertEqual(
+            client.session.get.call_args_list[1].args[0],
+            "https://webvpn.neu.edu.cn/https/token/tpass/code?vpn-1&x=1",
+        )
 
     def test_explicit_login_can_skip_stale_persisted_cookies(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -123,7 +152,7 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         password_login.assert_called_once_with()
         self.assertTrue(client.is_logged_in)
 
-    def test_silent_webvpn_reauthentication_never_leaves_an_sms_flow(self):
+    def test_silent_webvpn_reauthentication_preserves_foreground_sms_flow(self):
         client = NEUAuthClient("20250001", "secret", network_mode="webvpn")
 
         def require_sms():
@@ -144,7 +173,7 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         ):
             self.assertFalse(client.ensure_login())
 
-        self.assertIsNone(client._webvpn_sms_flow)
+        self.assertEqual(client._webvpn_sms_flow["id"], "silent-flow")
         self.assertFalse(client.is_logged_in)
 
 

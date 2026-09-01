@@ -22,3 +22,18 @@ def test_avatar_cache_route_never_submits_a_refresh(monkeypatch):
     assert response.headers["x-avatar-token"] == "avatar-token"
     assert response.headers["x-cache-stale"] == "false"
     assert calls == [("student", "avatar")]
+
+
+def test_avatar_cache_route_returns_empty_response_on_cache_miss(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        user_router,
+        "read_cache",
+        lambda account, resource: (calls.append((account, resource)) or (None, True)),
+    )
+
+    response = user_router.get_user_avatar_cache(SimpleNamespace(username="student"))
+
+    assert response.status_code == 204
+    assert response.headers["x-cache-miss"] == "true"
+    assert calls == [("student", "avatar")]

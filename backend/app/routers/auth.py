@@ -1,4 +1,5 @@
 from typing import Optional
+import time
 from fastapi import APIRouter, HTTPException, Query
 
 from backend.app.dependencies import (
@@ -10,7 +11,7 @@ from backend.app.dependencies import (
 )
 from backend.app.schemas import (
     LoginRequest, LoginResponse, WebVPNQRStartRequest, WebVPNQRStatusRequest,
-    WebVPNPasswordStartRequest, WebVPNSMSCodeRequest, WebVPNSMSVerifyRequest,
+    WebVPNPasswordStartRequest, WebVPNSMSCodeRequest, WebVPNSMSSendRequest, WebVPNSMSVerifyRequest,
 )
 from backend.core.auth import NEUAuthClient
 from backend.core.auth.client import (
@@ -20,6 +21,15 @@ from backend.core.auth.client import (
 from backend.core.log import log_application_error, log_security_event
 
 router = APIRouter()
+
+
+def _webvpn_sms_client(flow_id: str):
+    """Find a password or QR candidate client that owns this SMS flow."""
+    for candidate in (peek_pending_auth_client(), peek_auth_client()):
+        if candidate and getattr(candidate, "_webvpn_sms_flow", None):
+            if candidate._webvpn_sms_flow.get("id") == flow_id:
+                return candidate
+    return None
 
 
 @router.get("/api/status")
@@ -64,6 +74,30 @@ def get_status():
         "current_user": client.username if client else None,
         "network_mode": client.active_mode if client else "direct",
     }
+
+
+@router.get("/api/auth/pending")
+def get_pending_auth_challenge():
+    """Return a foreground-safe snapshot of an in-memory CAPTCHA challenge."""
+    for client in (peek_pending_auth_client(), peek_auth_client()):
+        flow = getattr(client, "_webvpn_sms_flow", None) if client else None
+        if not flow:
+            continue
+        if time.time() >= float(flow.get("expires_at", 0)):
+            return {"required": False}
+        return {
+            "required": True,
+            "flow_id": flow.get("id"),
+            "source": flow.get("source", "password"),
+            "captcha_image": (
+                f"data:image/png;base64,{flow['captcha_image']}"
+                if flow.get("captcha_image") else None
+            ),
+            "ocr_candidate": flow.get("ocr_candidate", ""),
+            "ocr_confidence": flow.get("ocr_confidence", 0.0),
+            "expires_at": flow.get("expires_at"),
+        }
+    return {"required": False}
 
 
 @router.post("/api/login", response_model=LoginResponse)
@@ -404,8 +438,8 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
 
 
 @router.post("/api/webvpn/sms/send")
-def send_webvpn_sms_code(request: WebVPNSMSCodeRequest):
-    client = peek_auth_client()
+def send_webvpn_sms_code(request: WebVPNSMSSendRequest):
+    client = _webvpn_sms_client(request.flow_id)
     if client is None:
         log_security_event(
             "webvpn_sms_send",
@@ -416,7 +450,10 @@ def send_webvpn_sms_code(request: WebVPNSMSCodeRequest):
         return {"success": False, "message": "短信验证流程不存在，请重新登录"}
     try:
         with remote_session_guard():
-            result = client.send_webvpn_sms_code(request.flow_id)
+            result = client.send_webvpn_sms_code(request.flow_id, request.captcha_code)
+        if result.get("status") == "captcha_invalid":
+            log_security_event("webvpn_sms_send", "failure", reason="captcha_invalid", auth_method="sms")
+            return {"success": False, "captcha_invalid": True, **result}
         log_security_event("webvpn_sms_send", "success", auth_method="sms")
         return {"success": True, **result}
     except WebVPNLoginError as error:
@@ -440,9 +477,25 @@ def send_webvpn_sms_code(request: WebVPNSMSCodeRequest):
         return {"success": False, "message": f"发送短信验证码失败（错误编号：{error_id}）"}
 
 
+@router.post("/api/webvpn/sms/captcha/refresh")
+def refresh_webvpn_captcha(request: WebVPNSMSCodeRequest):
+    client = _webvpn_sms_client(request.flow_id)
+    if client is None:
+        return {"success": False, "message": "短信验证流程不存在，请重新登录"}
+    try:
+        with remote_session_guard():
+            result = client.refresh_webvpn_captcha(request.flow_id)
+        return {"success": True, **result}
+    except WebVPNLoginError as error:
+        return {"success": False, "message": str(error)}
+    except Exception as error:
+        error_id = log_application_error("auth.webvpn_captcha_refresh", error, 500)
+        return {"success": False, "message": f"刷新图形验证码失败（错误编号：{error_id}）"}
+
+
 @router.post("/api/webvpn/sms/verify")
 def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
-    client = peek_auth_client()
+    client = _webvpn_sms_client(request.flow_id)
     if client is None:
         log_security_event(
             "webvpn_sms_verify",
@@ -454,7 +507,7 @@ def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
     try:
         remember = bool((client._webvpn_sms_flow or {}).get("remember"))
         with remote_session_guard():
-            if peek_auth_client() is not client:
+            if client is not peek_auth_client() and client is not peek_pending_auth_client():
                 log_security_event(
                     "webvpn_sms_verify",
                     "failure",
@@ -463,7 +516,14 @@ def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
                 )
                 return {"success": False, "message": "短信验证流程不存在，请重新登录"}
             result = client.verify_webvpn_sms_code(request.flow_id, request.code, request.trust_device)
-            _save_webvpn_password_login(client, remember)
+            if result.get("status") == "authenticated":
+                _save_webvpn_password_login(client, remember)
+                if peek_pending_auth_client() is client:
+                    clear_pending_auth_client(client)
+                    set_auth_client(client, force_epoch=True)
+                    schedule_login_bootstrap(client)
+        if result.get("status") != "authenticated":
+            return {"success": False, **result}
         log_security_event(
             "webvpn_sms_verify",
             "success",
@@ -499,11 +559,13 @@ def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
 
 @router.post("/api/webvpn/sms/cancel")
 def cancel_webvpn_sms_login(request: WebVPNSMSCodeRequest):
-    client = peek_auth_client()
+    client = _webvpn_sms_client(request.flow_id)
     try:
         if client:
             with remote_session_guard():
                 client.cancel_webvpn_sms_login(request.flow_id)
+                if peek_pending_auth_client() is client:
+                    clear_pending_auth_client(client)
         log_security_event("webvpn_sms_verify", "success", auth_method="sms_cancel")
     except Exception as error:
         error_id = log_application_error("auth.webvpn_sms_cancel", error, 500)

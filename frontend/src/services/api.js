@@ -175,6 +175,11 @@ export const checkStatus = async () => {
   return response.data;
 };
 
+export const getPendingAuthChallenge = async () => {
+  const response = await api.get('/api/auth/pending', { skipAuthRedirect: true });
+  return response.data;
+};
+
 // 登录
 export const login = async (username, password, remember = false, networkMode = 'direct') => {
   const response = await api.post('/api/login', {
@@ -206,8 +211,13 @@ export const startWebVPNPasswordLogin = async (username, password, remember = fa
   return response.data;
 };
 
-export const sendWebVPNSMSCode = async (flowId) => {
-  const response = await api.post('/api/webvpn/sms/send', { flow_id: flowId });
+export const refreshWebVPNCaptcha = async (flowId) => {
+  const response = await api.post('/api/webvpn/sms/captcha/refresh', { flow_id: flowId });
+  return response.data;
+};
+
+export const sendWebVPNSMSCode = async (flowId, captchaCode) => {
+  const response = await api.post('/api/webvpn/sms/send', { flow_id: flowId, captcha_code: captchaCode });
   return response.data;
 };
 
@@ -888,10 +898,23 @@ export const getTimetableTerms = async () => {
 
 /** Read the server avatar cache only; never waits for an official refresh. */
 export const getUserAvatarCache = async () => {
-  const response = await api.get('/api/user/avatar/cache', {
-    responseType: 'blob',
-    skipAuthRedirect: true,
-  });
+  let response;
+  try {
+    response = await api.get('/api/user/avatar/cache', {
+      responseType: 'blob',
+      skipAuthRedirect: true,
+    });
+  } catch (error) {
+    // A cache-only endpoint legitimately returns 404 before the first
+    // successful avatar sync.  Treat that as a cache miss so local-first
+    // callers can continue with their background refresh path.  Other
+    // failures (network/auth/server errors) must remain observable.
+    if (error?.response?.status === 404) return null;
+    throw error;
+  }
+  if (response.status === 204 || response.headers?.['x-cache-miss'] === 'true') {
+    return null;
+  }
   const header = name => response.headers?.[name] || response.headers?.[name.toLowerCase()] || '';
   return {
     blob: response.data,

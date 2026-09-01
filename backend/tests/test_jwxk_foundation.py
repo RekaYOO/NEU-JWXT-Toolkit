@@ -780,7 +780,7 @@ def test_direct_primary_webvpn_verification_falls_back_to_visible_login(monkeypa
     assert attempts == [True]
     assert client.active_mode == "direct"
     assert client.is_logged_in is True
-    assert client._webvpn_sms_flow is None
+    assert client._webvpn_sms_flow["id"] == "hidden-flow"
 
 
 def test_jwxk_webvpn_reads_token_from_gateway_virtual_cookie_store(monkeypatch):

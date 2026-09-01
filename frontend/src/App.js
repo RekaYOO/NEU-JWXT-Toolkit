@@ -24,7 +24,11 @@ import CourseSelectionPage from './pages/CourseSelectionPage';
 import CourseSelectionWorkspacePage from './pages/CourseSelectionWorkspacePage';
 import CourseSelectionArchivePage from './pages/CourseSelectionArchivePage';
 import SystemSettingsPage from './pages/SystemSettingsPage';
-import { checkStatus, getAccessStatus, getHealth, getOfflineStatus } from './services/api';
+import {
+  checkStatus, getAccessStatus, getHealth, getOfflineStatus,
+  getPendingAuthChallenge, refreshWebVPNCaptcha, sendWebVPNSMSCode,
+  verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
+} from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
 import { isExportToolAvailable } from './export/exportTools';
 import {
@@ -39,6 +43,7 @@ import {
 import { browserTimetableRecoveryIdentity } from './resources/BrowserTimetableStore';
 import './App.css';
 import { loadSetting } from './utils/settings';
+import WebVPNAuthModal from './components/WebVPNAuthModal';
 
 const { Content } = Layout;
 dayjs.locale('zh-cn');
@@ -138,6 +143,12 @@ function App() {
   );
   const authRecoveryPromptRef = useRef(false);
   const authRecoveryModalRef = useRef(null);
+  const [pendingAuthFlow, setPendingAuthFlow] = useState(null);
+  const [pendingCaptchaCode, setPendingCaptchaCode] = useState('');
+  const [pendingSmsCode, setPendingSmsCode] = useState('');
+  const [pendingSmsLoading, setPendingSmsLoading] = useState(false);
+  const [pendingCaptchaLoading, setPendingCaptchaLoading] = useState(false);
+  const [pendingSmsSent, setPendingSmsSent] = useState(false);
 
   const loadApplicationState = async () => {
     const [access, health] = await Promise.all([getAccessStatus(), getHealth()]);
@@ -296,6 +307,93 @@ function App() {
     };
   }, [offlineMode]);
 
+  useEffect(() => {
+    if (offlineMode) return undefined;
+    let stopped = false;
+    const poll = async () => {
+      if (
+        window.location.pathname === '/login'
+        || window.location.pathname.startsWith('/course-selection')
+      ) return;
+      try {
+        const challenge = await getPendingAuthChallenge();
+        if (stopped || !challenge?.required) return;
+        setPendingAuthFlow(previous => ({ ...previous, ...challenge }));
+        setPendingCaptchaCode(previous => previous || challenge.ocr_candidate || '');
+      } catch (_error) {
+        // A pending challenge is advisory; the current page remains usable.
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, 2500);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [offlineMode]);
+
+  const refreshPendingCaptcha = async () => {
+    if (!pendingAuthFlow) return;
+    setPendingCaptchaLoading(true);
+    try {
+      const result = await refreshWebVPNCaptcha(pendingAuthFlow.flow_id);
+      if (!result.success) throw new Error(result.message || '刷新图形验证码失败');
+      setPendingAuthFlow(previous => ({ ...previous, ...result }));
+      setPendingCaptchaCode(result.ocr_candidate || '');
+      setPendingSmsSent(false);
+    } catch (error) { message.error(error.message || '刷新图形验证码失败'); }
+    finally { setPendingCaptchaLoading(false); }
+  };
+
+  const sendPendingSms = async () => {
+    if (!pendingAuthFlow || !pendingCaptchaCode.trim()) {
+      message.warning('请先核对并填写图形验证码');
+      return;
+    }
+    setPendingSmsLoading(true);
+    try {
+      const result = await sendWebVPNSMSCode(pendingAuthFlow.flow_id, pendingCaptchaCode.trim());
+      if (!result.success && result.captcha_invalid) {
+        setPendingAuthFlow(previous => ({ ...previous, ...result }));
+        setPendingCaptchaCode(result.ocr_candidate || '');
+        setPendingSmsSent(false);
+        message.warning(result.message || '图形验证码不正确，请核对新图片');
+      } else if (!result.success) throw new Error(result.message || '短信验证码发送失败');
+      else { setPendingSmsSent(true); message.success('验证码已发送'); }
+    } catch (error) { message.error(error.message || '短信验证码发送失败'); }
+    finally { setPendingSmsLoading(false); }
+  };
+
+  const verifyPendingSms = async () => {
+    if (!pendingAuthFlow || !pendingSmsCode.trim()) {
+      message.warning('请输入短信验证码');
+      return;
+    }
+    setPendingSmsLoading(true);
+    try {
+      const result = await verifyWebVPNSMSCode(pendingAuthFlow.flow_id, pendingSmsCode.trim());
+      if (!result.success && result.status === 'captcha_invalid') {
+        setPendingAuthFlow(previous => ({ ...previous, ...result }));
+        setPendingCaptchaCode(result.ocr_candidate || '');
+        setPendingSmsSent(false);
+        message.warning(result.message || '图形验证码不正确，请核对新图片');
+        return;
+      }
+      if (!result.success) throw new Error(result.message || '短信验证失败');
+      setPendingAuthFlow(null);
+      setPendingCaptchaCode('');
+      setPendingSmsCode('');
+      setPendingSmsSent(false);
+      handleLoginSuccess(result.username || userInfo || '已登录');
+    } catch (error) { message.error(error.message || '短信验证失败'); }
+    finally { setPendingSmsLoading(false); }
+  };
+
+  const cancelPendingSms = async () => {
+    if (pendingAuthFlow) await cancelWebVPNSMSLogin(pendingAuthFlow.flow_id).catch(() => {});
+    setPendingAuthFlow(null);
+    setPendingCaptchaCode('');
+    setPendingSmsCode('');
+    setPendingSmsSent(false);
+  };
+
   const handleLoginSuccess = (username) => {
     clearManualLogout();
     sessionStorage.removeItem(OFFLINE_SESSION_KEY);
@@ -388,7 +486,7 @@ function App() {
         <Router>
           <Layout className="app-layout">
             <Content className="app-content">
-              <Routes>
+      <Routes>
             <Route 
               path="/login" 
               element={
@@ -470,7 +568,21 @@ function App() {
                   : <Navigate to="/export" />}
               />
             </Route>
-              </Routes>
+      </Routes>
+      <WebVPNAuthModal
+        flow={pendingAuthFlow}
+        captchaCode={pendingCaptchaCode}
+        setCaptchaCode={setPendingCaptchaCode}
+        smsCode={pendingSmsCode}
+        setSmsCode={setPendingSmsCode}
+        loading={pendingSmsLoading}
+        captchaLoading={pendingCaptchaLoading}
+        smsSent={pendingSmsSent}
+        onRefreshCaptcha={refreshPendingCaptcha}
+        onSendSMS={sendPendingSms}
+        onVerify={verifyPendingSms}
+        onCancel={cancelPendingSms}
+      />
             </Content>
           </Layout>
         </Router>

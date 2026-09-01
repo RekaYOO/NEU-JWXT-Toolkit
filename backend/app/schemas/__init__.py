@@ -5,7 +5,7 @@ Pydantic 模型定义
 
 from .auth import (
     LoginRequest, LoginResponse, WebVPNQRStartRequest, WebVPNQRStatusRequest,
-    WebVPNPasswordStartRequest, WebVPNSMSCodeRequest, WebVPNSMSVerifyRequest,
+    WebVPNPasswordStartRequest, WebVPNSMSCodeRequest, WebVPNSMSSendRequest, WebVPNSMSVerifyRequest,
 )
 from .scores import (
     ColumnConfig,

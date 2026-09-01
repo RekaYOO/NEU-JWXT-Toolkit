@@ -1,16 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { Form, Input, Button, Checkbox, message, Spin, Radio, QRCode, Alert, Modal } from 'antd';
+import { Form, Input, Button, Checkbox, message, Spin, Radio, QRCode, Alert } from 'antd';
 import {
-  UserOutlined, LockOutlined, QrcodeOutlined, SafetyCertificateOutlined,
+  UserOutlined, LockOutlined, QrcodeOutlined,
   ArrowLeftOutlined, DatabaseOutlined
 } from '@ant-design/icons';
 import {
   login, checkStatus, startWebVPNQRLogin, getWebVPNQRStatus, cancelWebVPNQRLogin,
-  startWebVPNPasswordLogin, sendWebVPNSMSCode, verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
+  startWebVPNPasswordLogin, refreshWebVPNCaptcha, sendWebVPNSMSCode, verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
   getOfflineStatus,
 } from '../services/api';
 import './LoginPage.css';
 import { isManualLogoutActive } from '../utils/authSessionPolicy';
+import WebVPNAuthModal from '../components/WebVPNAuthModal';
 
 const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   const [loading, setLoading] = useState(false);
@@ -21,6 +22,8 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   const [qrMessage, setQrMessage] = useState('');
   const [qrSize, setQrSize] = useState(196);
   const [smsFlow, setSmsFlow] = useState(null);
+  const [captchaCode, setCaptchaCode] = useState('');
+  const [captchaLoading, setCaptchaLoading] = useState(false);
   const [smsCode, setSmsCode] = useState('');
   const [smsLoading, setSmsLoading] = useState(false);
   const [smsSent, setSmsSent] = useState(false);
@@ -81,6 +84,15 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
         if (result.status === 'authenticated') {
           setQrFlow(null);
           onLoginSuccess(result.username || form.getFieldValue('username') || '已登录');
+        } else if (result.status === 'sms_required') {
+          // QR login and password login share the official second-auth form.
+          // Keep the candidate Session alive and hand the same flow to the
+          // shared CAPTCHA/SMS modal instead of treating it as a QR failure.
+          setQrFlow(null);
+          setSmsFlow(result);
+          setCaptchaCode(result.ocr_candidate || '');
+          setSmsCode('');
+          setSmsSent(false);
         } else if (result.status === 'expired') {
           setQrMessage('二维码已过期，请重新获取');
           setQrFlow(null);
@@ -142,6 +154,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
         message.error(result.message || 'WebVPN 登录失败');
       } else if (result.status === 'sms_required') {
         setSmsFlow(result);
+        setCaptchaCode(result.ocr_candidate || '');
         setSmsCode('');
         setSmsSent(false);
       } else if (result.status === 'authenticated') {
@@ -156,11 +169,19 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   };
 
   const sendSMSCode = async () => {
-    if (!smsFlow) return;
+    if (!smsFlow || !captchaCode.trim()) {
+      message.warning('请先核对并填写图形验证码');
+      return;
+    }
     setSmsLoading(true);
     try {
-      const result = await sendWebVPNSMSCode(smsFlow.flow_id);
-      if (!result.success) {
+      const result = await sendWebVPNSMSCode(smsFlow.flow_id, captchaCode.trim());
+      if (!result.success && result.captcha_invalid) {
+        setSmsFlow(prev => ({ ...prev, ...result }));
+        setCaptchaCode(result.ocr_candidate || '');
+        setSmsSent(false);
+        message.warning(result.message || '图形验证码不正确，请核对新图片');
+      } else if (!result.success) {
         message.error(result.message || '短信验证码发送失败');
       } else {
         setSmsSent(true);
@@ -170,6 +191,22 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       message.error('短信验证码发送失败');
     } finally {
       setSmsLoading(false);
+    }
+  };
+
+  const refreshCaptcha = async () => {
+    if (!smsFlow) return;
+    setCaptchaLoading(true);
+    try {
+      const result = await refreshWebVPNCaptcha(smsFlow.flow_id);
+      if (!result.success) throw new Error(result.message || '刷新图形验证码失败');
+      setSmsFlow(prev => ({ ...prev, ...result }));
+      setCaptchaCode(result.ocr_candidate || '');
+      setSmsSent(false);
+    } catch (error) {
+      message.error(error.message || '刷新图形验证码失败');
+    } finally {
+      setCaptchaLoading(false);
     }
   };
 
@@ -199,6 +236,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       await cancelWebVPNSMSLogin(smsFlow.flow_id).catch(() => {});
     }
     setSmsFlow(null);
+    setCaptchaCode('');
     setSmsCode('');
   };
 
@@ -412,35 +450,20 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
           )}
         </section>
       </main>
-      <Modal
-        rootClassName="login-sms-modal"
-        open={Boolean(smsFlow)}
-        title="短信二次认证"
-        okText="验证并登录"
-        cancelText="取消"
-        confirmLoading={smsLoading}
-        onOk={verifySMSCode}
+      <WebVPNAuthModal
+        flow={smsFlow}
+        captchaCode={captchaCode}
+        setCaptchaCode={setCaptchaCode}
+        smsCode={smsCode}
+        setSmsCode={setSmsCode}
+        loading={smsLoading}
+        captchaLoading={captchaLoading}
+        smsSent={smsSent}
+        onRefreshCaptcha={refreshCaptcha}
+        onSendSMS={sendSMSCode}
+        onVerify={verifySMSCode}
         onCancel={cancelSMSLogin}
-        destroyOnHidden
-      >
-        <div className="sms-auth-content">
-          <SafetyCertificateOutlined className="sms-auth-icon" />
-          <p>账号密码已验证，请完成统一认证短信校验。</p>
-          <Input
-            value={smsCode}
-            onChange={(event) => setSmsCode(event.target.value)}
-            placeholder="请输入短信验证码"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            maxLength={8}
-            onPressEnter={verifySMSCode}
-          />
-          <Button type="link" loading={smsLoading} onClick={sendSMSCode}>
-            {smsSent ? '重新发送验证码' : '发送验证码'}
-          </Button>
-          <p className="sms-auth-note">短信接收不便时，建议使用微信扫码快速登录。</p>
-        </div>
-      </Modal>
+      />
     </div>
   );
 };
