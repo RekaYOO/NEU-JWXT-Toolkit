@@ -3465,7 +3465,7 @@ function DesktopTimetable({
   );
 }
 
-function MobileTimetableSummary({
+export function MobileTimetableSummary({
   summary,
   defaultTimetableOnOpen,
   onToggleDefault,
@@ -3474,6 +3474,22 @@ function MobileTimetableSummary({
 }) {
   const [expanded, setExpanded] = useState(false);
   const summaryName = summary?.course?.course_name || summary?.label || '无课';
+  const summaryCourse = summary?.course || null;
+  const summaryCourseContent = summaryCourse ? courseCardContent(summaryCourse) : null;
+  const summaryTeacher = summaryCourse ? courseTeacherText(summaryCourse) : '';
+  const summarySection = summaryCourse?.start_section
+    ? `第${summaryCourse.start_section}${
+      summaryCourse.end_section && summaryCourse.end_section !== summaryCourse.start_section
+        ? `–${summaryCourse.end_section}`
+        : ''
+    }节`
+    : '';
+  const summaryTime = uniqueTexts([
+    summaryCourse?.start_time
+      ? `${summaryCourse.start_time}${summaryCourse.end_time ? `–${summaryCourse.end_time}` : ''}`
+      : '',
+    summarySection,
+  ]).join(' · ');
   const countSuffix = summary?.kind === 'current' && summary.count > 1
     ? ` 等 ${summary.count} 门`
     : '';
@@ -3497,9 +3513,16 @@ function MobileTimetableSummary({
       </button>
       {expanded && (
         <div id="timetable-mobile-summary-controls" className="timetable-mobile-summary-controls">
+          {summaryCourse && (
+            <div className="timetable-mobile-summary-course" aria-label={`${summaryName}课程信息`}>
+              {summaryTime && <span><small>时间</small><b>{summaryTime}</b></span>}
+              <span><small>地点</small><b>{summaryCourseContent.location}</b></span>
+              {summaryTeacher && <span><small>教师</small><b>{summaryTeacher}</b></span>}
+            </div>
+          )}
           <label className="timetable-mobile-summary-default">
-            <Switch size="small" checked={defaultTimetableOnOpen} onChange={onToggleDefault} />
             <span>打开时默认课表</span>
+            <Switch size="small" checked={defaultTimetableOnOpen} onChange={onToggleDefault} />
           </label>
           <div className="timetable-mobile-summary-view">
             <span>显示范围</span>

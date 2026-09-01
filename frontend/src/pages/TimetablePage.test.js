@@ -53,6 +53,7 @@ import {
   TIMETABLE_DAY_ORDER,
   TIMETABLE_MODES,
   MobileTimetable,
+  MobileTimetableSummary,
   mobileWeekRailScrollLeft,
 } from './TimetablePage';
 import React, { act } from 'react';
@@ -198,6 +199,50 @@ describe('TimetablePage helpers', () => {
         />);
       });
       expect(container.querySelector('.mobile-course-teacher').textContent).toBe('教师甲');
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
+  test('shows current course details above timetable settings when the summary expands', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<MobileTimetableSummary
+          summary={{
+            kind: 'next',
+            course: {
+              course_name: '示例课程',
+              start_section: 3,
+              end_section: 4,
+              start_time: '10:30',
+              end_time: '12:10',
+              campus: '浑南校区',
+              location: '信息楼A112',
+              teachers: ['教师甲', '教师乙'],
+            },
+            startTime: '10:30',
+          }}
+          defaultTimetableOnOpen={false}
+          onToggleDefault={() => {}}
+          viewMode="week"
+          onViewModeChange={() => {}}
+        />);
+      });
+      await act(async () => container.querySelector('.timetable-mobile-summary-trigger').click());
+      const detail = container.querySelector('.timetable-mobile-summary-course');
+      expect(detail.textContent).toContain('10:30–12:10 · 第3–4节');
+      expect(detail.textContent).toContain('浑南校区 · 信息楼A112');
+      expect(detail.textContent).toContain('教师甲、教师乙');
+      expect(detail.compareDocumentPosition(
+        container.querySelector('.timetable-mobile-summary-default'),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     } finally {
       await act(async () => root.unmount());
       container.remove();
