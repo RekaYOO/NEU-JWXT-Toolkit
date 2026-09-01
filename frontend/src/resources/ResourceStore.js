@@ -73,14 +73,14 @@ const normalizeEventList = (response) => (
 const wait = (milliseconds) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 export const ResourceProvider = ({
-  children, offlineMode = false, identity = '',
+  children, offlineMode = false, identity = '', recoveryMode = false,
 }) => {
   const [states, setStates] = useState({});
   const statesRef = useRef(states);
   const generationRef = useRef(0);
   const eventCursorRef = useRef('');
   const refreshPromisesRef = useRef(new Map());
-  const identityRef = useRef({ identity, offlineMode });
+  const identityRef = useRef({ identity, offlineMode, recoveryMode });
 
   useEffect(() => {
     statesRef.current = states;
@@ -88,10 +88,14 @@ export const ResourceProvider = ({
 
   useEffect(() => {
     const previous = identityRef.current;
-    if (previous.identity === identity && previous.offlineMode === offlineMode) {
+    if (
+      previous.identity === identity
+      && previous.offlineMode === offlineMode
+      && previous.recoveryMode === recoveryMode
+    ) {
       return;
     }
-    identityRef.current = { identity, offlineMode };
+    identityRef.current = { identity, offlineMode, recoveryMode };
     generationRef.current += 1;
     eventCursorRef.current = '';
     refreshPromisesRef.current.clear();
@@ -319,8 +323,8 @@ export const ResourceProvider = ({
   }, [identity, load, offlineMode]);
 
   const value = useMemo(() => ({
-    states, load, publish, refresh, clear, offlineMode, identity,
-  }), [states, load, publish, refresh, clear, offlineMode, identity]);
+    states, load, publish, refresh, clear, offlineMode, identity, recoveryMode,
+  }), [states, load, publish, refresh, clear, offlineMode, identity, recoveryMode]);
 
   return (
     <ResourceContext.Provider value={value}>
@@ -497,4 +501,10 @@ export const useResourceOfflineMode = () => {
   const store = useContext(ResourceContext);
   if (!store) throw new Error('useResourceOfflineMode 必须在 ResourceProvider 内使用');
   return Boolean(store.offlineMode);
+};
+
+export const useResourceRecoveryMode = () => {
+  const store = useContext(ResourceContext);
+  if (!store) throw new Error('useResourceRecoveryMode 必须在 ResourceProvider 内使用');
+  return Boolean(store.recoveryMode);
 };

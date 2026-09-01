@@ -36,6 +36,7 @@ import {
   isManualLogoutActive,
   markManualLogout,
 } from './utils/authSessionPolicy';
+import { browserTimetableRecoveryIdentity } from './resources/BrowserTimetableStore';
 import './App.css';
 import { loadSetting } from './utils/settings';
 
@@ -104,6 +105,15 @@ const appTheme = {
 };
 
 function App() {
+  const timetableEntryPath = window.location.pathname === '/timetable'
+    || (window.location.pathname === '/' && loadSetting('defaultTimetableOnOpen', false));
+  const [timetableRecoveryIdentity] = useState(() => browserTimetableRecoveryIdentity());
+  const [timetableRecoveryActive, setTimetableRecoveryActive] = useState(
+    () => timetableEntryPath
+      && !isManualLogoutActive()
+      && Boolean(browserTimetableRecoveryIdentity()),
+  );
+  const [timetableRecoveryNotice, setTimetableRecoveryNotice] = useState('');
   const recoveryMatch = window.location.pathname.match(
     /^\/grade-tracking\/recovery\/([^/]+)\/?$/
   );
@@ -154,6 +164,7 @@ function App() {
           setOfflineCapabilities(offline);
           setIsLoggedIn(true);
           setUserInfo(offline.username || '离线用户');
+          setTimetableRecoveryActive(false);
           return access;
         }
         sessionStorage.removeItem(OFFLINE_SESSION_KEY);
@@ -162,10 +173,18 @@ function App() {
         const status = await checkStatus();
         setIsLoggedIn(status.is_logged_in);
         setUserInfo(status.current_user);
+        if (status.is_logged_in) setTimetableRecoveryActive(false);
+        else if (timetableRecoveryActive && timetableEntryPath) {
+          setTimetableRecoveryNotice('当前教务会话未确认，正在保留本机课表并继续后台恢复登录');
+        }
       } else {
         const status = await checkStatus();
         setIsLoggedIn(status.is_logged_in);
         setUserInfo(status.current_user);
+        if (status.is_logged_in) setTimetableRecoveryActive(false);
+        else if (timetableRecoveryActive && timetableEntryPath) {
+          setTimetableRecoveryNotice('当前教务会话未确认，正在保留本机课表并继续后台恢复登录');
+        }
       }
     }
     return access;
@@ -183,6 +202,9 @@ function App() {
       } catch (error) {
         // 静默处理，不弹窗打扰用户，只在控制台记录
         console.log('后端服务未就绪，以未登录状态启动');
+        if (timetableRecoveryActive && timetableEntryPath) {
+          setTimetableRecoveryNotice('教务服务暂时无法连接，正在保留本机课表并继续后台恢复登录');
+        }
       } finally {
         setIsLoading(false);
         setInitialAuthSlow(false);
@@ -198,7 +220,7 @@ function App() {
     init();
     
     return () => clearTimeout(timer);
-  }, [recoveryToken]);
+  }, [recoveryToken, timetableEntryPath]);
 
   useEffect(() => {
     const requireAccess = () => {
@@ -281,6 +303,8 @@ function App() {
     setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
     setIsLoggedIn(true);
     setUserInfo(username);
+    setTimetableRecoveryActive(false);
+    setTimetableRecoveryNotice('');
     message.success('登录成功');
   };
 
@@ -292,6 +316,8 @@ function App() {
     setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
     setIsLoggedIn(false);
     setUserInfo(null);
+    setTimetableRecoveryActive(false);
+    setTimetableRecoveryNotice('');
     message.success(wasOffline ? '已退出离线模式' : '已登出');
   };
 
@@ -301,12 +327,22 @@ function App() {
     setOfflineCapabilities(status);
     setIsLoggedIn(true);
     setUserInfo(status.username || '离线用户');
+    setTimetableRecoveryActive(false);
+    setTimetableRecoveryNotice('');
     message.success('已进入只读离线模式');
   };
 
   const offlineDefaultPath = resolveOfflineDefaultPath(offlineCapabilities);
 
-  if (isLoading) {
+  const showTimetableRecovery = Boolean(
+    timetableRecoveryIdentity
+    && timetableRecoveryActive
+    && timetableEntryPath
+    && !isManualLogoutActive()
+    && !recoveryToken,
+  );
+
+  if (isLoading && !showTimetableRecovery) {
     return (
       <div className="loading" role="status" aria-live="polite">
         <Spin size="large" />
@@ -344,9 +380,10 @@ function App() {
   return (
     <ConfigProvider theme={appTheme} locale={zhCN}>
       <ResourceProvider
-        key={`${isLoggedIn ? String(userInfo || 'authenticated') : 'anonymous'}:${offlineMode ? 'offline' : 'online'}`}
-        identity={isLoggedIn ? String(userInfo || 'authenticated') : ''}
+        key={`${isLoggedIn ? String(userInfo || 'authenticated') : (showTimetableRecovery ? timetableRecoveryIdentity : 'anonymous')}:${offlineMode ? 'offline' : 'online'}:${showTimetableRecovery ? 'recovery' : 'normal'}`}
+        identity={isLoggedIn ? String(userInfo || 'authenticated') : (showTimetableRecovery ? timetableRecoveryIdentity : '')}
         offlineMode={offlineMode}
+        recoveryMode={showTimetableRecovery}
       >
         <Router>
           <Layout className="app-layout">
@@ -366,18 +403,19 @@ function App() {
             <Route 
               path="/" 
               element={
-                isLoggedIn ? 
+                (isLoggedIn || showTimetableRecovery) ?
                   <MainLayout
                     userInfo={userInfo}
                     onLogout={handleLogout}
                     runtimeProfile={runtimeProfile}
                     offlineMode={offlineMode}
                     offlineCapabilities={offlineCapabilities}
+                    recoveryMode={showTimetableRecovery}
                   /> :
                   <Navigate to="/login" />
               }
             >
-              <Route index element={<Navigate to={offlineMode ? offlineDefaultPath : (loadSetting('defaultTimetableOnOpen', false) ? '/timetable' : '/scores')} />} />
+              <Route index element={<Navigate to={showTimetableRecovery ? '/timetable' : (offlineMode ? offlineDefaultPath : (loadSetting('defaultTimetableOnOpen', false) ? '/timetable' : '/scores'))} />} />
               <Route
                 path="scores"
                 element={featureAvailable('scores', { offlineMode, offlineCapabilities })
@@ -400,7 +438,7 @@ function App() {
               />
               <Route path="evaluation" element={featureAvailable('evaluation', { offlineMode, offlineCapabilities }) ? <EvaluationPage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="exams" element={featureAvailable('exams', { offlineMode, offlineCapabilities }) ? <ExamPage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="timetable" element={featureAvailable('timetable', { offlineMode, offlineCapabilities }) ? <TimetablePage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="timetable" element={featureAvailable('timetable', { offlineMode, offlineCapabilities }) ? <TimetablePage recoveryNotice={showTimetableRecovery ? timetableRecoveryNotice : ''} /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="course-selection" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionPage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="course-selection/archive/:archiveId" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionArchivePage /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="course-selection/:batchCode/*" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionWorkspacePage /> : <Navigate to={offlineDefaultPath} />} />

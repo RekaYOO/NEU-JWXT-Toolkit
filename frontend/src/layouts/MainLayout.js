@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Layout, Menu, Button, Avatar, Drawer, Dropdown, Grid, Tooltip, message, Modal } from 'antd';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Outlet, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import {
   UserOutlined,
   LogoutOutlined,
@@ -29,6 +29,7 @@ const MainLayout = ({
   runtimeProfile = 'development',
   offlineMode = false,
   offlineCapabilities = {},
+  recoveryMode = false,
 }) => {
   const [collapsed, setCollapsed] = useState(true);
   const [avatarUrl, setAvatarUrl] = useState(null);
@@ -207,6 +208,16 @@ const MainLayout = ({
       onClick: confirmShutdown,
     }] : []),
   ];
+
+  // 课表恢复态只允许查看本机快照。认证完成前即使用户手动输入其他
+  // 路径，也不能借此打开任何需要在线身份的页面。
+  if (
+    recoveryMode
+    && location.pathname !== '/'
+    && !location.pathname.startsWith('/timetable')
+  ) {
+    return <Navigate to="/login" replace />;
+  }
 
   if (serviceStopped) {
     return (

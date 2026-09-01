@@ -24,6 +24,7 @@ import {
   FilterOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 
 import {
   MobileDetailDrawer,
@@ -40,7 +41,12 @@ import {
   syncTimetable,
   searchTimetableTargets,
 } from '../services/api';
-import { useResourceMemory, useResourceIdentity, useResourceOfflineMode } from '../resources/ResourceStore';
+import {
+  useResourceMemory,
+  useResourceIdentity,
+  useResourceOfflineMode,
+  useResourceRecoveryMode,
+} from '../resources/ResourceStore';
 import {
   readBrowserTimetableCache,
   writeBrowserTimetableCache,
@@ -1134,12 +1140,15 @@ function TimetablePage({
   refreshSignal = 0,
   onSlotSelect,
   onPersonalCoursesChange,
+  recoveryNotice = '',
 } = {}) {
   const screens = useBreakpoint();
   const isMobile = !screens.lg;
+  const navigate = useNavigate();
   const timetableMemory = useResourceMemory('timetable-current-personal');
   const resourceIdentity = useResourceIdentity();
   const offlineMode = useResourceOfflineMode();
+  const recoveryMode = useResourceRecoveryMode();
   const requestedTerm = preferredTermCode || (typeof window === 'undefined'
     ? ''
     : new URLSearchParams(window.location.search).get('term') || '');
@@ -1244,6 +1253,7 @@ function TimetablePage({
   })());
 
   const loadTerms = useCallback(() => {
+    if (recoveryMode) return Promise.resolve();
     if (termsRequestRef.current) return termsRequestRef.current;
     const generation = ++termsGeneration.current;
     if (!(embedded && preferredTermCode)) setLoading(true);
@@ -1286,7 +1296,7 @@ function TimetablePage({
     })();
     termsRequestRef.current = request;
     return request;
-  }, [embedded, preferredTermCode]);
+  }, [embedded, preferredTermCode, recoveryMode]);
 
   useEffect(() => { loadTerms(); }, [loadTerms]);
 
@@ -1355,6 +1365,7 @@ function TimetablePage({
         }
       }
 
+      if (recoveryMode) return;
       try {
         const bootstrap = await getTimetableBootstrap();
         if (!active || generation !== browserHydrationGeneration.current) return;
@@ -1393,10 +1404,10 @@ function TimetablePage({
       active = false;
       unsubscribe();
     };
-  }, [applyCachedSnapshot, embedded, offlineMode, requestedTerm, resourceIdentity]);
+  }, [applyCachedSnapshot, embedded, offlineMode, recoveryMode, requestedTerm, resourceIdentity]);
 
   useEffect(() => {
-    if (!resourceIdentity || offlineMode) return undefined;
+    if (!resourceIdentity || offlineMode || recoveryMode) return undefined;
     let active = true;
     const onCacheEvent = event => {
       const detail = event.detail || {};
@@ -1415,7 +1426,7 @@ function TimetablePage({
       active = false;
       window.removeEventListener('neu-cache-event', onCacheEvent);
     };
-  }, [applyCachedSnapshot, offlineMode, requestedTerm, resourceIdentity]);
+  }, [applyCachedSnapshot, offlineMode, recoveryMode, requestedTerm, resourceIdentity]);
 
   const applyUpdatedPersonalPayload = useCallback((payload) => {
     const viewState = timetableViewState.current;
@@ -1521,9 +1532,9 @@ function TimetablePage({
   }, [currentTermCode, setPersonalContext, terms, watchPersonalRefresh]);
 
   useEffect(() => {
-    if (!usesPersonalTimetableEndpoint) return;
+    if (!usesPersonalTimetableEndpoint || recoveryMode) return;
     loadPersonalTimetable(termCode, { autoDetect: !autoDefaultResolved.current });
-  }, [loadPersonalTimetable, termCode, usesPersonalTimetableEndpoint]);
+  }, [loadPersonalTimetable, recoveryMode, termCode, usesPersonalTimetableEndpoint]);
 
   const appliedRefreshSignal = useRef(refreshSignal);
   useEffect(() => {
@@ -1802,6 +1813,10 @@ function TimetablePage({
   }, [contextRetry, currentTermCode, mode, target, termCode, usesPersonalTimetableEndpoint]);
 
   const loadSchedule = useCallback(async () => {
+    if (recoveryMode) {
+      setError({ stage: 'recovery', message: '当前显示的是本机课表快照，完成登录后才能刷新官方课表' });
+      return;
+    }
     if (usesPersonalTimetableEndpoint) {
       await loadPersonalTimetable(termCode, { refresh: true });
       return;
@@ -1827,12 +1842,12 @@ function TimetablePage({
     } finally {
       if (generation === scheduleGeneration.current) setLoading(false);
     }
-  }, [campusCode, context, loadPersonalTimetable, mode, target, termCode, usesPersonalTimetableEndpoint, viewMode, weekNumber]);
+  }, [campusCode, context, loadPersonalTimetable, mode, recoveryMode, target, termCode, usesPersonalTimetableEndpoint, viewMode, weekNumber]);
 
   useEffect(() => {
-    if (usesPersonalTimetableEndpoint) return;
+    if (usesPersonalTimetableEndpoint || recoveryMode) return;
     if (context && campusCode && (viewMode === 'term' || weekNumber)) loadSchedule();
-  }, [campusCode, context, loadSchedule, usesPersonalTimetableEndpoint, viewMode, weekNumber]);
+  }, [campusCode, context, loadSchedule, recoveryMode, usesPersonalTimetableEndpoint, viewMode, weekNumber]);
 
   useEffect(() => {
     conflictGeneration.current += 1;
@@ -2421,6 +2436,16 @@ function TimetablePage({
 
   return (
     <div className={`timetable-page${embedded ? ' is-embedded' : ''}${presentation === 'selection' ? ' is-selection-presentation' : ''}`}>
+      {recoveryNotice && (
+        <Alert
+          type="warning"
+          showIcon
+          message={recoveryNotice}
+          description="当前仅可查看本机快照；登录恢复后会自动核验并更新课表，其他教务操作暂不可用。"
+          action={<Button size="small" onClick={() => navigate('/login')}>重新登录</Button>}
+          className="timetable-recovery-notice"
+        />
+      )}
       <Tabs activeKey={mode} onChange={switchMode} items={TIMETABLE_MODES} className="timetable-mode-tabs" />
 
       {isMobile ? (

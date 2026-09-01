@@ -12,6 +12,8 @@ const DB_VERSION = 1;
 const STORE_NAME = 'timetable';
 const CHANNEL_NAME = 'neu-toolbox-timetable-cache';
 const ENVELOPE_VERSION = 1;
+const RECOVERY_NAMESPACE_KEY = 'neu-toolbox-timetable-recovery-namespace';
+const RECOVERY_NAMESPACE_PREFIX = '__browser_namespace__:';
 
 const termOrder = code => {
   const match = String(code || '').match(/(20\d{2})[^0-9]+(20\d{2})[^0-9]+([12])/);
@@ -35,6 +37,11 @@ const hasIndexedDB = () => (
 );
 
 const namespaceFor = (identity) => {
+  const value = String(identity || '');
+  if (value.startsWith(RECOVERY_NAMESPACE_PREFIX)) {
+    const namespace = value.slice(RECOVERY_NAMESPACE_PREFIX.length);
+    if (/^account:[a-f0-9]+$/i.test(namespace)) return namespace;
+  }
   // The namespace must not contain the raw account name. This is an identifier
   // partition, not encryption; the browser origin/profile remains the security
   // boundary and the UI never reads it before online identity confirmation.
@@ -44,6 +51,27 @@ const namespaceFor = (identity) => {
     hash = Math.imul(hash, 16777619);
   }
   return `account:${(hash >>> 0).toString(16)}`;
+};
+
+export const browserTimetableRecoveryIdentity = () => {
+  if (typeof window === 'undefined') return '';
+  try {
+    const namespace = window.localStorage.getItem(RECOVERY_NAMESPACE_KEY) || '';
+    return /^account:[a-f0-9]+$/i.test(namespace)
+      ? `${RECOVERY_NAMESPACE_PREFIX}${namespace}`
+      : '';
+  } catch (_error) {
+    return '';
+  }
+};
+
+const rememberRecoveryNamespace = namespace => {
+  if (typeof window === 'undefined' || !/^account:[a-f0-9]+$/i.test(namespace || '')) return;
+  try {
+    window.localStorage.setItem(RECOVERY_NAMESPACE_KEY, namespace);
+  } catch (_error) {
+    // Browser storage is optional; the server cache remains authoritative.
+  }
 };
 
 const openDatabase = () => new Promise((resolve, reject) => {
@@ -148,6 +176,7 @@ export const writeBrowserTimetableCache = async (identity, {
   terms = [], current = '', personal = [], viewState = null,
 } = {}) => {
   const namespace = namespaceFor(identity);
+  rememberRecoveryNamespace(namespace);
   const database = await openDatabase();
   if (!database) return false;
   const allowedTerms = allowedPersonalTerms(terms, current);
@@ -203,6 +232,11 @@ export const clearBrowserTimetableCache = async identity => {
     return request;
   });
   close(database);
+  try {
+    window.localStorage.removeItem(RECOVERY_NAMESPACE_KEY);
+  } catch (_error) {
+    // Browser storage is optional.
+  }
   postUpdate(namespace);
   return true;
 };
