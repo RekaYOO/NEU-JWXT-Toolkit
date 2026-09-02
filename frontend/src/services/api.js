@@ -13,6 +13,27 @@ const api = axios.create({
 });
 
 const authRecoveryPromises = new Map();
+const singleFlightRequests = new Map();
+const cacheJobWatchers = new Map();
+let clientBootstrapSnapshot = null;
+
+const singleFlight = (key, factory) => {
+  if (!singleFlightRequests.has(key)) {
+    singleFlightRequests.set(
+      key,
+      Promise.resolve().then(factory).finally(() => singleFlightRequests.delete(key)),
+    );
+  }
+  return singleFlightRequests.get(key);
+};
+
+const takeBootstrapResource = (key) => {
+  const value = clientBootstrapSnapshot?.[key] || null;
+  if (clientBootstrapSnapshot && value !== null) {
+    clientBootstrapSnapshot = { ...clientBootstrapSnapshot, [key]: null };
+  }
+  return value;
+};
 
 const trySilentAuthRecovery = async (scope = 'primary') => {
   if (!authRecoveryPromises.has(scope)) {
@@ -105,6 +126,32 @@ export const shutdownRuntime = async () => {
     headers: { 'X-NEU-Shutdown-Token': health.shutdown_token },
   });
   return response.data;
+};
+
+export const getClientBootstrap = async () => singleFlight('client-bootstrap', async () => {
+  const response = await api.get('/api/client/bootstrap', { skipAuthRedirect: true });
+  clientBootstrapSnapshot = response.data || null;
+  return response.data;
+});
+
+export const getClientUpdates = async (cursor = '', channels = 'cache,auth') => {
+  try {
+    const response = await api.get('/api/client/updates', {
+      params: {
+        ...(cursor !== '' && cursor !== null && cursor !== undefined ? { cursor } : {}),
+        channels,
+      },
+      skipAuthRedirect: true,
+    });
+    return response.data;
+  } catch (error) {
+    if (error?.response?.status !== 404) throw error;
+    const [cache, pendingAuth] = await Promise.all([
+      getCacheEvents(cursor),
+      getPendingAuthChallenge(),
+    ]);
+    return { schema_version: 0, cache, pending_auth: pendingAuth };
+  }
 };
 
 // 存储正在进行的请求控制器，用于取消请求
@@ -673,6 +720,39 @@ export const getCacheRefreshJob = async (jobId, options = {}) => {
   return response.data;
 };
 
+export const waitForCacheRefreshJob = (
+  jobId,
+  { intervalMs = 900, timeoutMs = 60000, onUpdate = null } = {},
+) => {
+  const key = String(jobId || '');
+  if (!key) return Promise.resolve(null);
+  let watcher = cacheJobWatchers.get(key);
+  if (!watcher) {
+    const listeners = new Set();
+    const promise = (async () => {
+      const deadline = Date.now() + timeoutMs;
+      let job = null;
+      while (Date.now() < deadline) {
+        await new Promise(resolve => window.setTimeout(resolve, intervalMs));
+        job = await getCacheRefreshJob(key, { skipAuthRedirect: true });
+        listeners.forEach(listener => {
+          try { listener(job); } catch (_error) { /* isolate observers */ }
+        });
+        if (['completed', 'failed', 'cancelled'].includes(String(job?.status || ''))) {
+          return job;
+        }
+      }
+      return job;
+    })().finally(() => cacheJobWatchers.delete(key));
+    watcher = { listeners, promise };
+    cacheJobWatchers.set(key, watcher);
+  }
+  if (typeof onUpdate === 'function') watcher.listeners.add(onUpdate);
+  return watcher.promise.finally(() => {
+    if (typeof onUpdate === 'function') watcher.listeners.delete(onUpdate);
+  });
+};
+
 export const getCacheEvents = async (after = '', options = {}) => {
   const response = await api.get('/api/cache/events', {
     ...options,
@@ -898,6 +978,20 @@ export const getTimetableTerms = async () => {
 
 /** Read the server avatar cache only; never waits for an official refresh. */
 export const getUserAvatarCache = async () => {
+  const bootstrap = takeBootstrapResource('avatar');
+  if (bootstrap?.image_base64) {
+    const binary = window.atob(bootstrap.image_base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return {
+      blob: new Blob([bytes], { type: bootstrap.media_type || 'image/png' }),
+      token: bootstrap.token || '',
+      revision: bootstrap.revision || '',
+      stale: Boolean(bootstrap.stale),
+      saved_at: bootstrap.saved_at || '',
+      last_checked_at: bootstrap.last_checked_at || '',
+    };
+  }
   let response;
   try {
     response = await api.get('/api/user/avatar/cache', {
@@ -956,6 +1050,8 @@ export const getPersonalTimetable = async (termCode, refresh = false) => {
 export const getTimetableBootstrap = async () => {
   // Bootstrap is deliberately cache-only.  A stale session must not trigger
   // a full-page auth redirect while a usable local snapshot is already shown.
+  const bootstrap = takeBootstrapResource('timetable');
+  if (bootstrap) return bootstrap;
   const response = await api.get('/api/timetable/bootstrap', { skipAuthRedirect: true });
   return response.data;
 };
@@ -1131,10 +1227,13 @@ export const applyJwxkWeights = async (payload) => {
 };
 
 export const listJwxkAutomationTasks = async (batchCode = '') => {
-  const response = await api.get('/api/course-selection/jwxk/automation/tasks', {
-    params: batchCode ? { batch_code: batchCode } : undefined,
+  const key = `jwxk-automation-tasks:${batchCode || 'all'}`;
+  return singleFlight(key, async () => {
+    const response = await api.get('/api/course-selection/jwxk/automation/tasks', {
+      params: batchCode ? { batch_code: batchCode } : undefined,
+    });
+    return response.data;
   });
-  return response.data;
 };
 
 export const createJwxkAutomationTask = async (payload) => {

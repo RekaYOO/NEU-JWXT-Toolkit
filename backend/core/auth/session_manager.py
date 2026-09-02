@@ -8,13 +8,17 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
+from backend.core.runtime.performance import observe_performance
+
 
 logger = logging.getLogger(__name__)
 
 _REMOTE_PRIORITIES = {
     "mutation": 0,
-    "foreground": 1,
-    "background": 2,
+    "foreground_auth": 1,
+    "foreground": 2,
+    "background": 3,
+    "tracking": 4,
 }
 
 
@@ -33,6 +37,7 @@ class AuthSessionManager:
             priority: [] for priority in _REMOTE_PRIORITIES
         }
         self._remote_foreground_streak = 0
+        self._remote_background_streak = 0
 
     @contextmanager
     def remote_guard(
@@ -59,19 +64,29 @@ class AuthSessionManager:
                 self._remote_condition.wait()
             self._remote_waiting[priority].pop(0)
             self._remote_active = True
-            if priority == "foreground":
+            if priority in {"foreground_auth", "foreground"}:
                 self._remote_foreground_streak += 1
-            elif priority == "background":
+            else:
                 self._remote_foreground_streak = 0
+            if priority == "background":
+                self._remote_background_streak += 1
+            elif priority == "tracking":
+                self._remote_background_streak = 0
         wait_ms = round((time.monotonic() - started) * 1000, 1)
+        observe_performance(f"remote-queue:{priority}", wait_ms)
         if wait_ms >= 250:
             logger.info(
                 "remote session acquired priority=%s label=%s queue_wait_ms=%.1f",
                 priority, label, wait_ms,
             )
+        acquired_at = time.monotonic()
         try:
             yield {"priority": priority, "label": label, "queue_wait_ms": wait_ms}
         finally:
+            observe_performance(
+                f"remote-hold:{priority}",
+                (time.monotonic() - acquired_at) * 1000,
+            )
             with self._remote_condition:
                 self._remote_active = False
                 self._remote_condition.notify_all()
@@ -83,13 +98,27 @@ class AuthSessionManager:
         if self._remote_waiting["mutation"]:
             return priority == "mutation"
         if (
-            self._remote_waiting["background"]
+            (self._remote_waiting["background"] or self._remote_waiting["tracking"])
             and self._remote_foreground_streak >= 8
         ):
-            return priority == "background"
+            selected = min(
+                (
+                    candidate
+                    for candidate in ("background", "tracking")
+                    if self._remote_waiting[candidate]
+                ),
+                key=lambda candidate: self._remote_waiting[candidate][0],
+            )
+            return priority == selected
+        if self._remote_waiting["foreground_auth"]:
+            return priority == "foreground_auth"
         if self._remote_waiting["foreground"]:
             return priority == "foreground"
-        return priority == "background"
+        if self._remote_waiting["tracking"] and self._remote_background_streak >= 8:
+            return priority == "tracking"
+        if self._remote_waiting["background"]:
+            return priority == "background"
+        return priority == "tracking"
 
     @contextmanager
     def identity_commit_guard(self) -> Iterator[None]:

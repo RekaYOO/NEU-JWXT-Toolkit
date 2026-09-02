@@ -35,9 +35,15 @@ Windows 多尺寸 ICO 位于 `packaging/windows/app.ico`。Nuitka 将同一 ICO 
 cd frontend
 npm ci
 npm run build
+npm run test:performance
 cd ..
 python -m pip install -r requirements-build.lock
 ```
+
+React 继续构建为一个主包。`npm run build` 随后运行 `tools/prepare_frontend_assets.mjs`，为 JS、
+CSS、HTML、JSON、SVG 等文本资源生成确定性的 gzip/Brotli 变体，并删除生产目录中的 source
+map。FastAPI 内置内容协商和缓存头，因此本地单端口、Windows、Linux、1Panel 均无需额外配置
+Nginx/Caddy 才能获得压缩传输。带哈希资源使用一年 immutable 缓存；HTML 和根级资源重新验证。
 
 Windows：
 
@@ -79,6 +85,7 @@ Defender 安全智能下，官方 1.4.5 启动器未检出，而官方 1.4.6 启
 - 后端测试；
 - 前端交互与业务规则测试；
 - React 生产构建；
+- 单主包、gzip/Brotli 体积预算和运行目录无 source map 检查；
 - Python 编译检查；
 - 静态首页挂载测试。
 
@@ -89,8 +96,9 @@ SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Acti
 `.github/workflows/release.yml` 在推送 `v*` 标签时：
 
 1. 校验 `VERSION` 格式以及标签与版本的一致性；
-2. 构建一次 Release 专用 React 静态资源并作为同一 workflow 的 `web-build` 传给两个
-   平台任务；Release 不重复执行普通 CI 已覆盖的后端测试、前端测试和源码编译检查；
+2. 构建一次 Release 专用 React 静态资源；source map 只上传为保留 30 天的私有 Actions
+   artifact，随后从运行目录删除，再将同一个 `web-build` 传给两个平台任务；Release 不重复
+   执行普通 CI 已覆盖的后端测试、前端测试和源码编译检查；
 3. 分别构建 Windows x64 与 Linux amd64 standalone 程序；
 4. 对两条最终产物路径分别验收：
    - 便携 ZIP 解压到新临时目录后，检查目录结构和敏感数据，再验证健康检查、首页、
@@ -168,6 +176,7 @@ GitHub Actions 构建身份的关联，不审计源码逻辑、不提供 Authent
 
 - Git 标签版本必须与 `VERSION` 完全一致。
 - 发行包不得包含仓库 `data/`、`.env`、日志、真实凭据、会话或开发依赖。
+- 发行包不得包含 `frontend/build` 下的 `.map`；静态 JS/CSS 必须带预压缩变体并通过体积预算。
 - Windows 自动化必须验收解压后的便携包、PE 版本资源和真实启动链；正式发布仍应在
   未安装 Python/Node.js 的干净 Windows 10/11 环境，从浏览器下载后抽查保留、解压和启动。
 - Linux 应验证安装、重启、升级成功、健康检查失败回滚和两种反向代理。

@@ -11,6 +11,8 @@ FastAPI 后端服务入口
 import os
 import sys
 import threading
+import time
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -21,7 +23,6 @@ if _PROJECT_ROOT not in sys.path:
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
 from backend.core.log.access_logger import FastAPILogMiddleware
@@ -30,24 +31,41 @@ from backend.app.dependencies import (
     get_log_config,
     peek_auth_client,
 )
-from backend.app.routers import auth, cache, logs, system_settings, scores, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking, festival_activities, course_selection, timetable, scheduling, course_outline, academic_documents
+from backend.app.routers import auth, cache, client, logs, system_settings, scores, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking, festival_activities, course_selection, timetable, scheduling, course_outline, academic_documents
 from backend.core.runtime import get_runtime_config, resource_path
 from backend.core.runtime.access import AccessGatewayMiddleware
+from backend.core.runtime.static import PrecompressedStaticFiles, REVALIDATE_CACHE_CONTROL
 from backend.core.auth.captcha import warmup_captcha_ocr
+from backend.core.runtime.performance import observe_performance
 
 runtime_config = get_runtime_config()
 application_services = get_application_services()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    startup_started = time.monotonic()
     application_services.start()
+    startup_ms = (time.monotonic() - startup_started) * 1000
+    observe_performance("startup:application-services", startup_ms)
+    logger.info("application services started duration_ms=%.1f", startup_ms)
     # Load the bundled OCR model in the background so the first WebVPN
     # challenge does not pay cold-start latency, without delaying API startup.
-    threading.Thread(target=warmup_captcha_ocr, name="captcha-ocr-warmup", daemon=True).start()
+    warmup_cancelled = threading.Event()
+
+    def delayed_ocr_warmup() -> None:
+        if warmup_cancelled.wait(1):
+            return
+        started = time.monotonic()
+        warmup_captcha_ocr()
+        observe_performance("startup:captcha-ocr-warmup", (time.monotonic() - started) * 1000)
+
+    threading.Thread(target=delayed_ocr_warmup, name="captcha-ocr-warmup", daemon=True).start()
     try:
         yield
     finally:
+        warmup_cancelled.set()
         application_services.shutdown(timeout=8)
 
 
@@ -94,6 +112,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(cache.router, prefix="/api")
+app.include_router(client.router, prefix="/api")
 app.include_router(scores.router, prefix="/api")
 app.include_router(logs.router, prefix="/api")
 app.include_router(system_settings.router, prefix="/api")
@@ -163,7 +182,11 @@ def _has_unsafe_spa_path(full_path: str) -> bool:
 if _FRONTEND_STATIC.is_dir():
     # 挂载静态资源目录；构建产物不完整时仍允许 API 启动，SPA 请求会
     # 返回明确的 503，而不是在 FileResponse 内部抛出 RuntimeError。
-    app.mount("/static", StaticFiles(directory=_FRONTEND_STATIC), name="static")
+    app.mount(
+        "/static",
+        PrecompressedStaticFiles(directory=_FRONTEND_STATIC),
+        name="static",
+    )
 
 
 @app.get("/{full_path:path}")
@@ -181,8 +204,14 @@ async def serve_spa(full_path: str):
     # 只允许根级单文件；嵌套静态资源由上方 StaticFiles 安全处理。
     target = _frontend_root_file(full_path)
     if target is not None:
-        return FileResponse(target)
-    return FileResponse(_FRONTEND_INDEX)
+        return FileResponse(
+            target,
+            headers={"Cache-Control": REVALIDATE_CACHE_CONTROL},
+        )
+    return FileResponse(
+        _FRONTEND_INDEX,
+        headers={"Cache-Control": REVALIDATE_CACHE_CONTROL},
+    )
 
 # ── 启动 ──────────────────────────────────────────────────────────────────────
 

@@ -2,8 +2,6 @@ import React, {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
 } from 'react';
 import {
-  getCacheEvents,
-  getCacheRefreshJob,
   getCachedAcademicReport,
   getCachedScores,
   getOfflineAcademicReport,
@@ -13,13 +11,11 @@ import {
   getResearchTrainingCache,
   getFestivalActivitiesCache,
   requestCacheRefresh,
+  waitForCacheRefreshJob,
 } from '../services/api';
+import { subscribeClientUpdates } from '../services/ClientUpdateScheduler';
 
 const ResourceContext = createContext(null);
-const JOB_POLL_MS = 900;
-const EVENT_POLL_MS = 15000;
-const EVENT_IDLE_POLL_MS = 30000;
-const TERMINAL_JOB_STATES = new Set(['completed', 'failed', 'cancelled']);
 const ACTIVE_SYNC_STATES = new Set(['starting', 'queued', 'running']);
 const IDENTITY_RETRY_ERRORS = new Set(['identity_changed']);
 const IDENTITY_RETRY_DELAY_MS = 250;
@@ -79,7 +75,6 @@ export const ResourceProvider = ({
   const [states, setStates] = useState({});
   const statesRef = useRef(states);
   const generationRef = useRef(0);
-  const eventCursorRef = useRef('');
   const refreshPromisesRef = useRef(new Map());
   const identityRef = useRef({ identity, offlineMode, recoveryMode });
 
@@ -98,7 +93,6 @@ export const ResourceProvider = ({
     }
     identityRef.current = { identity, offlineMode, recoveryMode };
     generationRef.current += 1;
-    eventCursorRef.current = '';
     refreshPromisesRef.current.clear();
     setStates({});
   }, [identity, offlineMode, recoveryMode]);
@@ -178,13 +172,14 @@ export const ResourceProvider = ({
   }, [mergeState, offlineMode]);
 
   const pollJob = useCallback(async (resource, jobId, generation) => {
-    let job;
-    do {
-      await wait(JOB_POLL_MS);
-      if (generation !== generationRef.current) return null;
-      job = await getCacheRefreshJob(jobId);
-      mergeState(resource, { syncState: job.status, job });
-    } while (!TERMINAL_JOB_STATES.has(job.status));
+    const job = await waitForCacheRefreshJob(jobId, {
+      onUpdate: update => {
+        if (generation === generationRef.current) {
+          mergeState(resource, { syncState: update.status, job: update });
+        }
+      },
+    });
+    if (generation !== generationRef.current || !job) return null;
 
     if (job.status === 'completed') {
       await load(resource, { quiet: true });
@@ -289,50 +284,28 @@ export const ResourceProvider = ({
   useEffect(() => {
     if (offlineMode || !identity) return undefined;
     let active = true;
-    let timer = null;
-    let inFlight = false;
-
-    const schedule = delay => {
-      window.clearTimeout(timer);
-      if (active) timer = window.setTimeout(checkEvents, delay);
-    };
-
-    const checkEvents = async () => {
-      if (!active || inFlight) return;
-      inFlight = true;
-      let receivedEvents = false;
-      try {
-        const response = await getCacheEvents(eventCursorRef.current);
-        if (!active) return;
-        const events = normalizeEventList(response);
-        receivedEvents = events.length > 0;
-        const nextCursor = response?.cursor || response?.next_cursor;
-        if (nextCursor !== undefined && nextCursor !== null) {
-          eventCursorRef.current = String(nextCursor);
-        }
-        const resources = new Set(events
-          .map(event => event.resource || event.key?.resource)
-          .filter(Boolean));
-        events.forEach(event => {
-          window.dispatchEvent(new CustomEvent('neu-cache-event', {
-            detail: event,
-          }));
-        });
-        await Promise.all([...resources]
-          .filter(resource => definitions[resource])
-          .map(resource => load(resource, { quiet: true })));
-      } catch (error) {
-        // Event polling is advisory. Cached views must remain usable.
-      } finally {
-        inFlight = false;
-        schedule(receivedEvents ? EVENT_POLL_MS : EVENT_IDLE_POLL_MS);
+    const unsubscribe = subscribeClientUpdates(identity, response => {
+      if (!active) return;
+      const challenge = response?.pending_auth;
+      if (challenge) {
+        window.dispatchEvent(new CustomEvent('neu-auth-pending', { detail: challenge }));
       }
-    };
-
-    checkEvents();
+      const cache = response?.cache || {};
+      const events = normalizeEventList(cache);
+      const resources = new Set(events
+        .map(event => event.resource || event.key?.resource)
+        .filter(Boolean));
+      events.forEach(event => {
+        window.dispatchEvent(new CustomEvent('neu-cache-event', { detail: event }));
+      });
+      Promise.all([...resources]
+        .filter(resource => definitions[resource])
+        .map(resource => load(resource, { quiet: true })))
+        .catch(() => {});
+    });
     return () => {
       active = false;
-      window.clearTimeout(timer);
+      if (typeof unsubscribe === 'function') unsubscribe();
     };
   }, [identity, load, offlineMode]);
 

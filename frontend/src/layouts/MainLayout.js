@@ -13,9 +13,9 @@ import {
   logout,
   getUserAvatar,
   getUserAvatarCache,
-  getCacheRefreshJob,
   requestCacheRefresh,
   shutdownRuntime,
+  waitForCacheRefreshJob,
 } from '../services/api';
 import {
   readBrowserAvatarCache,
@@ -67,22 +67,16 @@ const MainLayout = ({
       if (!jobId || !['started', 'running'].includes(String(refresh?.status || ''))) {
         return null;
       }
-      // Cache jobs are normally short.  Polling here makes the avatar path
-      // self-contained instead of relying solely on the 15s global event
-      // poller, while remaining entirely in the background.
-      for (let attempt = 0; attempt < 40; attempt += 1) {
-        await new Promise(resolve => setTimeout(resolve, 750));
+      try {
+        const job = await waitForCacheRefreshJob(jobId, {
+          intervalMs: 750,
+          timeoutMs: 30000,
+        });
         if (!active || generation !== avatarGeneration.current) return null;
-        let job;
-        try {
-          job = await getCacheRefreshJob(jobId, { skipAuthRedirect: true });
-        } catch (_error) {
-          return null;
-        }
-        if (job?.status === 'completed') return getUserAvatarCache();
-        if (['failed', 'cancelled'].includes(String(job?.status || ''))) return null;
+        return job?.status === 'completed' ? getUserAvatarCache() : null;
+      } catch (_error) {
+        return null;
       }
-      return null;
     };
     const loadAvatar = async () => {
       const identity = String(userInfo || '');

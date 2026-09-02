@@ -127,6 +127,31 @@ def test_store_lists_account_variants_without_cross_account_rows(tmp_path):
     assert {row.key.variant for row in rows} == {"term:2026-2027-1", "term:2026-2027-2"}
 
 
+def test_store_reads_exact_keys_in_one_batch_without_cross_account_rows(tmp_path):
+    store = CacheStore(tmp_path / "cache.db")
+    for account, resource, value in (("a", "scores", 1), ("a", "avatar", 2), ("b", "scores", 3)):
+        store.commit_success(
+            key=CacheKey(account, resource),
+            schema_version=1,
+            revision_algorithm_version=1,
+            payload_type=PayloadType.JSON,
+            payload={"value": value},
+            revision=f"v{value}",
+            dependency_revisions={},
+            changes={},
+            reason="test",
+        )
+
+    rows = store.get_many((
+        CacheKey("a", "scores"),
+        CacheKey("a", "avatar"),
+        CacheKey("a", "missing"),
+    ))
+
+    assert {key.resource for key in rows} == {"scores", "avatar"}
+    assert all(key.account_id == "a" for key in rows)
+
+
 def test_store_blob_delete_and_account_isolation(tmp_path):
     store = CacheStore(tmp_path / "cache.db")
     for account in ("a", "b"):

@@ -56,6 +56,11 @@ jwxt.example.com {
 
 反代必须使用 HTTPS。服务只信任配置中的本机代理地址；收到可信代理的 HTTPS 信息后，访问会话 Cookie 会自动带上 `Secure`。
 
+应用自身已经为前端静态资源提供 gzip/Brotli 协商和缓存头，1Panel、Caddy、Nginx 不需要增加
+压缩或静态缓存配置。反向代理已经启用压缩时可以覆盖内置策略，但应保留
+`Vary: Accept-Encoding`；带内容哈希的 JS/CSS 可长期缓存，`index.html` 应保持重新验证。升级仍只需按
+下述安装脚本替换程序，不新增端口、服务或数据目录。
+
 ## 两层登录
 
 首次访问先显示网站访问密码页，验证后才会出现原有 NEU 登录页。访问会话 Cookie 为 HMAC 签名、`HttpOnly`、`SameSite=Lax`，有效期 7 天；连续输错 5 次后，同一来源会暂停尝试 5 分钟。

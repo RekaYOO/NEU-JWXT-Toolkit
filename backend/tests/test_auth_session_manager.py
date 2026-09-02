@@ -109,3 +109,79 @@ def test_remote_guard_places_foreground_between_mutation_and_background():
         assert not thread.is_alive()
 
     assert order == ["blocker", "mutation", "foreground", "background"]
+
+
+def test_remote_guard_places_foreground_auth_ahead_of_foreground_reads():
+    manager = AuthSessionManager()
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+    order: list[str] = []
+
+    def run(name: str, priority: str, started=None, release=None):
+        with manager.remote_guard(priority=priority, label=name):
+            order.append(name)
+            if started:
+                started.set()
+            if release:
+                assert release.wait(timeout=2)
+
+    blocker = threading.Thread(
+        target=run,
+        args=("blocker", "background", blocker_started, release_blocker),
+    )
+    foreground = threading.Thread(target=run, args=("foreground", "foreground"))
+    authentication = threading.Thread(
+        target=run,
+        args=("foreground-auth", "foreground_auth"),
+    )
+    blocker.start()
+    assert blocker_started.wait(timeout=2)
+    foreground.start()
+    authentication.start()
+    time.sleep(0.03)
+    release_blocker.set()
+
+    for thread in (blocker, foreground, authentication):
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+    assert order == ["blocker", "foreground-auth", "foreground"]
+
+
+def test_remote_guard_eventually_runs_tracking_during_background_pressure():
+    manager = AuthSessionManager()
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+    order: list[str] = []
+
+    def run(name: str, priority: str, started=None, release=None):
+        with manager.remote_guard(priority=priority, label=name):
+            order.append(name)
+            if started:
+                started.set()
+            if release:
+                assert release.wait(timeout=2)
+
+    blocker = threading.Thread(
+        target=run,
+        args=("blocker", "background", blocker_started, release_blocker),
+    )
+    backgrounds = [
+        threading.Thread(target=run, args=(f"background-{index}", "background"))
+        for index in range(12)
+    ]
+    tracking = threading.Thread(target=run, args=("tracking", "tracking"))
+    blocker.start()
+    assert blocker_started.wait(timeout=2)
+    tracking.start()
+    for thread in backgrounds:
+        thread.start()
+    time.sleep(0.03)
+    release_blocker.set()
+
+    for thread in (blocker, tracking, *backgrounds):
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+
+    assert order.index("tracking") <= 9
+    assert order[-1] != "tracking"

@@ -56,6 +56,38 @@ describe('JWXK automation settings API', () => {
   });
 });
 
+describe('client bootstrap and request coalescing', () => {
+  test('reuses timetable data already returned by the aggregate bootstrap', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.get.mockResolvedValue({
+      data: {
+        auth: { is_logged_in: true },
+        timetable: { current: '2026-2027-1', terms: [], personal: [] },
+      },
+    });
+
+    await apiModule.getClientBootstrap();
+    const timetable = await apiModule.getTimetableBootstrap();
+
+    expect(timetable.current).toBe('2026-2027-1');
+    expect(client.get).toHaveBeenCalledTimes(1);
+  });
+
+  test('coalesces simultaneous automation status polls for the same batch', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    let resolve;
+    client.get.mockReturnValue(new Promise(done => { resolve = done; }));
+
+    const first = apiModule.listJwxkAutomationTasks('batch-1');
+    const second = apiModule.listJwxkAutomationTasks('batch-1');
+    resolve({ data: { tasks: [] } });
+
+    await expect(first).resolves.toEqual({ tasks: [] });
+    await expect(second).resolves.toEqual({ tasks: [] });
+    expect(client.get).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Evaluation API term discovery', () => {
   test('omits xnxq so the backend can discover the current evaluation cycle', async () => {
     const { client, apiModule } = loadApiWithAxios();

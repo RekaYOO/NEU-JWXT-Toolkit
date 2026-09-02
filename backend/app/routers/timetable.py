@@ -34,6 +34,7 @@ from backend.core.log import log_application_error
 from backend.core.cache.resources import personal_timetable_variant
 from backend.core.scheduling import meeting_extension, normalize_meeting
 from backend.core.timetable import TimetableError
+from backend.app.client_snapshot import timetable_bootstrap_snapshot
 
 
 router = APIRouter(prefix="/timetable", tags=["timetable"])
@@ -60,53 +61,12 @@ def get_timetable_bootstrap(
     auth: NEUAuthClient = Depends(require_cached_auth_identity),
 ):
     """Return only server-side timetable snapshots; never waits for NEU."""
-    coordinator = get_cache_coordinator()
-    account = str(auth.username)
-    index_entry, index_stale = coordinator.read(
-        account_id=account, resource="timetable-index", variant="default",
-    )
-    index_spec = coordinator.registry.get("timetable-index")
-    terms: list[dict] = []
-    current = None
-    if _cache_entry_is_compatible(index_entry, index_spec) and isinstance(index_entry.payload, dict):
-        terms = list(index_entry.payload.get("terms") or [])
-        current = index_entry.payload.get("current") or None
-    ordered_terms = sorted(
-        {str(item.get("code") or "") for item in terms if item.get("code")},
-        key=_term_order_key,
-    )
-    next_term = ""
-    if current in ordered_terms:
-        index = ordered_terms.index(current)
-        if index + 1 < len(ordered_terms):
-            next_term = ordered_terms[index + 1]
-    allowed = {value for value in (current, next_term) if value}
-    personal_spec = coordinator.registry.get("personal-timetable")
-    entries = coordinator.store.list_entries(account_id=account, resource="personal-timetable")
-    snapshots: list[PersonalTimetableResponse] = []
-    for entry_index, entry in enumerate(entries):
-        term_code = str(entry.key.variant).removeprefix("term:")
-        if allowed and term_code not in allowed:
-            continue
-        if not allowed and entry_index >= 2:
-            # Without a cached term index, expose only the two newest variants
-            # as a conservative fallback; never turn bootstrap into history.
-            break
-        if not _cache_entry_is_compatible(entry, personal_spec):
-            continue
-        _, stale = coordinator.read(
-            account_id=account, resource="personal-timetable", variant=entry.key.variant,
-        )
-        response = _personal_cache_response(entry, stale)
-        if response is not None:
-            snapshots.append(response)
-    snapshots.sort(key=lambda item: (item.term_code != current, _term_order_key(item.term_code)), reverse=False)
-    return TimetableBootstrapResponse(
-        terms=terms,
-        current=current,
-        index_cache=(index_entry.metadata(is_stale=index_stale) if index_entry is not None else {}),
-        personal=snapshots,
-    )
+    return build_timetable_bootstrap(auth)
+
+
+def build_timetable_bootstrap(auth: NEUAuthClient) -> TimetableBootstrapResponse:
+    """Build the local timetable snapshot for typed and aggregate endpoints."""
+    return timetable_bootstrap_snapshot(str(auth.username))
 
 
 @router.post("/sync", response_model=TimetableSyncResponse)

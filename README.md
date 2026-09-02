@@ -133,10 +133,7 @@ npm run build
 
 ## 许可与免责声明
 
-本项目采用 [MIT License](LICENSE)。策略投权模块包含经修改的 MIT 上游实现，其固定提交、
-修改范围和上游许可证保存在
-[`backend/core/course_selection/THIRD_PARTY_NOTICE.md`](backend/core/course_selection/THIRD_PARTY_NOTICE.md)。
-
+本项目采用 [MIT License](LICENSE)。
 本项目仅供学习和个人教务辅助使用，与东北大学及其教务系统开发、运营单位无隶属或授权
 关系。使用者应遵守学校规定并自行承担操作结果；课程容量、资格、成绩、考试安排和选课结果
 均以官方系统为准。

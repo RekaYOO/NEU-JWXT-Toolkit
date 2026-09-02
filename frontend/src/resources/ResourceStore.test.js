@@ -1,6 +1,4 @@
 jest.mock('../services/api', () => ({
-  getCacheEvents: jest.fn(),
-  getCacheRefreshJob: jest.fn(),
   getCachedAcademicReport: jest.fn(),
   getCachedScores: jest.fn(),
   getFestivalActivitiesCache: jest.fn(),
@@ -10,6 +8,11 @@ jest.mock('../services/api', () => ({
   getOfflineScores: jest.fn(),
   getResearchTrainingCache: jest.fn(),
   requestCacheRefresh: jest.fn(),
+  waitForCacheRefreshJob: jest.fn(),
+}));
+
+jest.mock('../services/ClientUpdateScheduler', () => ({
+  subscribeClientUpdates: jest.fn(() => () => {}),
 }));
 
 import React, { act } from 'react';
@@ -20,6 +23,7 @@ import {
 import {
   getFestivalActivitiesCache, requestCacheRefresh,
 } from '../services/api';
+import { subscribeClientUpdates } from '../services/ClientUpdateScheduler';
 
 const FestivalResourceProbe = () => {
   const resource = useCachedResource('festival-activities');
@@ -37,6 +41,7 @@ describe('cached resource loading state', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    subscribeClientUpdates.mockReturnValue(() => {});
   });
 
   test('keeps a cache miss loading while its automatic refresh is active', () => {

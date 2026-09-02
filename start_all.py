@@ -192,6 +192,12 @@ def needs_build():
     if pkg_mtime > info.get("pkg_mtime", 0):
         return True
 
+    asset_preparer_mtime = _get_file_mtime(
+        os.path.join("tools", "prepare_frontend_assets.mjs")
+    )
+    if asset_preparer_mtime > info.get("asset_preparer_mtime", 0):
+        return True
+
     # 2. 有 git 时：检查 src/ 指纹（tree-hash 或 tree-hash+diff-hash）
     if os.path.exists(".git"):
         current_fp = _get_git_src_fingerprint()
@@ -269,6 +275,9 @@ def build_frontend():
             "pkg_mtime": max(
                 _get_file_mtime(os.path.join(frontend_dir, "package.json")),
                 _get_file_mtime(os.path.join(frontend_dir, "package-lock.json")),
+            ),
+            "asset_preparer_mtime": _get_file_mtime(
+                PROJECT_ROOT / "tools" / "prepare_frontend_assets.mjs"
             ),
             "build_time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "build_time_epoch": time.time(),

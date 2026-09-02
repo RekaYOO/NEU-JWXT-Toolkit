@@ -91,6 +91,8 @@ class CourseSelectionAutomationService:
         self._thread: threading.Thread | None = None
         self._catalog_thread: threading.Thread | None = None
         self._tasks = [task for task in self._read() if task.get("status") != "cancelled"]
+        self._last_tasks_serialized = ""
+        self._task_fingerprints: dict[str, str] = {}
         self._settings = self._read_json_map(self.settings_path)
         self._notification_state = self._read_json_map(self.notification_state_path)
         self._archives = self._read_archives()
@@ -443,11 +445,25 @@ class CourseSelectionAutomationService:
         return plain, html_body
 
     def _write(self) -> None:
+        serialized = json.dumps(self._tasks, ensure_ascii=False, indent=2)
+        if serialized == self._last_tasks_serialized:
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(self._tasks, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.write_text(serialized, encoding="utf-8")
         temporary.replace(self.path)
         secure_file(self.path)
+        self._last_tasks_serialized = serialized
+        self._task_fingerprints = {
+            str(item.get("task_id") or ""): self._task_fingerprint(item)
+            for item in self._tasks
+            if item.get("task_id")
+        }
+
+    @staticmethod
+    def _task_fingerprint(task: dict[str, Any]) -> str:
+        stable = {key: value for key, value in task.items() if key != "updated_at"}
+        return json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
     def _read_archives(self) -> list[dict[str, Any]]:
         try:
@@ -3618,6 +3634,10 @@ class CourseSelectionAutomationService:
 
     def _persist_task(self, task: dict[str, Any]) -> None:
         with self._lock:
+            task_id = str(task.get("task_id") or "")
+            fingerprint = self._task_fingerprint(task)
+            if task_id and self._task_fingerprints.get(task_id) == fingerprint:
+                return
             task["updated_at"] = datetime.now().astimezone().isoformat()
             existing = next((item for item in self._tasks if item.get("task_id") == task.get("task_id")), None)
             if existing is not task and existing is not None:

@@ -15,6 +15,7 @@ from backend.app.dependencies import (
 )
 from backend.core.auth import NEUAuthClient
 from backend.core.cache.models import RefreshStatus, utc_now
+from backend.app.client_snapshot import cache_events_snapshot
 
 
 router = APIRouter()
@@ -117,37 +118,4 @@ def get_cache_events(
     auth: NEUAuthClient = Depends(require_cached_auth_identity),
 ):
     account = _account(auth)
-    if after is None:
-        return {
-            "events": [],
-            "cursor": _cache_store.latest_event_cursor(account),
-        }
-    events = _cache_store.events_after(account, after, limit=limit)
-    items = [
-        {
-            "cursor": event.cursor,
-            "resource": event.key.resource,
-            "variant": event.key.variant,
-            "previous_revision": event.previous_revision,
-            "revision": event.revision,
-            "changed": event.changed,
-            # Browser polling receives only version-level summaries. Full course
-            # or profile payload remains available solely through typed APIs.
-            "changes": (
-                {"counts": dict(event.changes.get("counts") or {})}
-                if event.key.resource == "scores"
-                else {
-                    key: value
-                    for key, value in event.changes.items()
-                    if key.endswith("_changed") or key == "initial"
-                }
-            ),
-            "reason": event.reason,
-            "created_at": event.created_at.isoformat(),
-        }
-        for event in events
-    ]
-    return {
-        "events": items,
-        "cursor": items[-1]["cursor"] if items else after,
-    }
+    return cache_events_snapshot(account, after, limit=limit)

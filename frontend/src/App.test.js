@@ -2,11 +2,12 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import App from './App';
-import { checkStatus, getAccessStatus, getHealth } from './services/api';
+import { checkStatus, getAccessStatus, getClientBootstrap, getHealth } from './services/api';
 
 jest.mock('./services/api', () => ({
   checkStatus: jest.fn(),
   getAccessStatus: jest.fn(),
+  getClientBootstrap: jest.fn(),
   getHealth: jest.fn(),
   getOfflineStatus: jest.fn(),
 }));
@@ -17,6 +18,7 @@ test('keeps a deep link behind the auth loading gate while status recovery is pe
   window.history.replaceState({}, '', '/course-selection/BATCH-1/catalog');
   getAccessStatus.mockResolvedValue({ required: false, configured: true, authenticated: true });
   getHealth.mockResolvedValue({ profile: 'development' });
+  getClientBootstrap.mockRejectedValue(new Error('old backend'));
   checkStatus.mockReturnValue(new Promise(() => {}));
 
   const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;

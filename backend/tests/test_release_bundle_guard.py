@@ -68,6 +68,15 @@ def test_release_bundle_guard_rejects_new_private_artifact_types(tmp_path):
     }
 
 
+def test_release_bundle_guard_rejects_runtime_source_maps(tmp_path):
+    root = tmp_path / "bundle"
+    source_map = root / "frontend" / "build" / "static" / "js" / "main.js.map"
+    source_map.parent.mkdir(parents=True)
+    source_map.write_text("{}", encoding="utf-8")
+
+    assert source_map.relative_to(root) in find_forbidden(root)
+
+
 def test_release_bundle_guard_allows_internal_relative_symlink(tmp_path):
     root = tmp_path / "bundle"
     root.mkdir(parents=True)

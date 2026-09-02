@@ -287,6 +287,40 @@ class CacheCoordinator:
             scoped_account, resource, variant
         ))
 
+    def read_many(
+        self,
+        *,
+        account_id: str,
+        resources: tuple[tuple[str, str], ...],
+    ) -> dict[tuple[str, str], tuple[Any | None, bool]]:
+        """Return a consistent local snapshot for several resource variants.
+
+        The method deliberately performs no refresh submission and never
+        acquires the remote Session guard.  It is intended for cache-only
+        bootstrap endpoints and preserves the same freshness calculation as
+        :meth:`read`.
+        """
+        now = utc_now()
+        requested: list[tuple[str, str, Any, CacheKey]] = []
+        for resource, variant in dict.fromkeys(resources):
+            spec = self.registry.get(resource)
+            scoped_account = (
+                account_id
+                if spec.account_scope == AccountScope.ACCOUNT
+                else "__global__"
+            )
+            requested.append(
+                (resource, variant, spec, CacheKey(scoped_account, resource, variant))
+            )
+        entries = self.store.get_many(item[3] for item in requested)
+        return {
+            (resource, variant): (
+                entries.get(key),
+                self._is_stale(entries.get(key), spec, now, key),
+            )
+            for resource, variant, spec, key in requested
+        }
+
     def add_event_listener(self, listener: EventListener) -> Callable[[], None]:
         """Subscribe to committed cache events.
 

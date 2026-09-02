@@ -70,6 +70,11 @@ def find_forbidden(root: Path) -> list[Path]:
             (parts_lower and parts_lower[0] in FORBIDDEN_TOP_LEVEL_DIRECTORIES)
             or any(part in FORBIDDEN_ANYWHERE_DIRECTORIES for part in parts_lower[:-1])
             or any(pattern.fullmatch(path.name) for pattern in FORBIDDEN_FILE_PATTERNS)
+            or (
+                path.suffix.lower() == ".map"
+                and "frontend" in parts_lower
+                and "build" in parts_lower
+            )
         ):
             found.append(relative)
     return sorted(set(found), key=lambda item: str(item).lower())

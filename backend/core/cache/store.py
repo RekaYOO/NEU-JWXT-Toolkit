@@ -6,12 +6,14 @@ import json
 import os
 import sqlite3
 import stat
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from .models import CacheEntry, CacheEvent, CacheKey, PayloadType, utc_now
+from backend.core.runtime.performance import observe_performance
 
 
 UTC = timezone.utc
@@ -163,6 +165,39 @@ class CacheStore:
             return self._row_to_entry(row) if row else None
         finally:
             connection.close()
+
+    def get_many(self, keys: Iterable[CacheKey]) -> dict[CacheKey, CacheEntry]:
+        """Read several exact cache keys with one SQLite connection.
+
+        Bootstrap callers frequently need a small, known set of resources.
+        Opening one connection per key adds measurable latency on Windows and
+        creates avoidable WAL bookkeeping.  This remains a read-only snapshot;
+        no transaction spans remote work and missing keys are simply omitted.
+        """
+        unique = tuple(dict.fromkeys(keys))
+        if not unique:
+            return {}
+        started = time.monotonic()
+        connection = self._connect()
+        try:
+            result: dict[CacheKey, CacheEntry] = {}
+            for key in unique:
+                row = connection.execute(
+                    """
+                    SELECT * FROM cache_entries
+                    WHERE account_id = ? AND resource = ? AND variant = ?
+                    """,
+                    (key.account_id, key.resource, key.variant),
+                ).fetchone()
+                if row is not None:
+                    result[key] = self._row_to_entry(row)
+            return result
+        finally:
+            connection.close()
+            observe_performance(
+                "sqlite:cache-get-many",
+                (time.monotonic() - started) * 1000,
+            )
 
     def list_entries(self, *, account_id: str, resource: str) -> list[CacheEntry]:
         """Return all variants for one account/resource without remote access."""

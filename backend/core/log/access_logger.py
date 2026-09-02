@@ -19,6 +19,7 @@ from backend.core.runtime.access import (
     request_uses_https,
 )
 from backend.core.runtime.config import RuntimeConfig
+from backend.core.runtime.performance import observe_performance
 
 from .logger import LogCategory, LogConfig, get_logger
 from .context import (
@@ -210,6 +211,12 @@ class FastAPILogMiddleware:
             raise
         finally:
             elapsed = (time.monotonic() - started_at) * 1000
+            route = scope.get("route")
+            metric_path = str(getattr(route, "path", "") or path)
+            observe_performance(
+                f"http:{method}:{metric_path}:{status_code // 100}xx",
+                elapsed,
+            )
             self.access_logger.log_request(
                 method=method,
                 path=path,

@@ -70,6 +70,9 @@ const { Paragraph, Text, Title } = Typography;
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 const CATALOG_CAPACITY_REFRESH_MS = 30_000;
 const TASK_STATUS_REFRESH_MS = 1_000;
+const preserveEqualSnapshot = (previous, next) => (
+  JSON.stringify(previous) === JSON.stringify(next) ? previous : next
+);
 const formatTaskTimestamp = value => value
   ? new Date(value).toLocaleString('zh-CN', { hour12: false })
   : '尚未执行';
@@ -711,7 +714,10 @@ const CourseSelectionWorkspacePage = () => {
     }
     try {
       const result = await listJwxkAutomationTasks(batchCode);
-      if (generation === workspaceGeneration.current) setTasks(result.tasks || []);
+      if (generation === workspaceGeneration.current) {
+        const nextTasks = result.tasks || [];
+        setTasks(previous => preserveEqualSnapshot(previous, nextTasks));
+      }
     }
     catch (error) {
       if (!silent) message.error(error.message || '读取自动任务失败');

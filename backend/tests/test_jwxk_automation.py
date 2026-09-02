@@ -44,6 +44,19 @@ def test_automation_tasks_are_filtered_by_batch(tmp_path):
     assert len(service.list("student")) == 2
 
 
+def test_identical_task_persistence_does_not_rewrite_json(tmp_path):
+    service = _service(tmp_path)
+    service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "稳定任务", "items": [], "poll_seconds": 15,
+    })
+    before = service.path.stat().st_mtime_ns
+
+    service._persist_task(service._tasks[0])
+
+    assert service.path.stat().st_mtime_ns == before
+
+
 def test_weight_task_immediate_check_is_queued_and_uses_longer_schedule(tmp_path):
     service = _service(tmp_path)
     task = service.create("student", {

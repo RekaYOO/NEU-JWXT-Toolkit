@@ -6,17 +6,17 @@ import MainLayout from './MainLayout';
 import {
   shutdownRuntime,
   getUserAvatarCache,
-  getCacheRefreshJob,
   requestCacheRefresh,
+  waitForCacheRefreshJob,
 } from '../services/api';
 
 jest.mock('../services/api', () => ({
   getUserAvatar: jest.fn().mockResolvedValue(null),
   getUserAvatarCache: jest.fn().mockResolvedValue(null),
-  getCacheRefreshJob: jest.fn(),
   requestCacheRefresh: jest.fn().mockResolvedValue({}),
   logout: jest.fn().mockResolvedValue({ success: true }),
   shutdownRuntime: jest.fn().mockResolvedValue({ success: true }),
+  waitForCacheRefreshJob: jest.fn(),
 }));
 
 const renderLayout = async (runtimeProfile) => {
@@ -74,7 +74,7 @@ describe('MainLayout desktop lifecycle controls', () => {
     getUserAvatarCache.mockResolvedValue(null);
     requestCacheRefresh.mockReset();
     requestCacheRefresh.mockResolvedValue({});
-    getCacheRefreshJob.mockReset();
+    waitForCacheRefreshJob.mockReset();
     window.matchMedia = jest.fn().mockImplementation((query) => ({
       matches: true,
       media: query,
@@ -114,7 +114,7 @@ describe('MainLayout desktop lifecycle controls', () => {
 
   test('treats a missing server avatar as a cache miss and refreshes in background', async () => {
     requestCacheRefresh.mockResolvedValueOnce({ status: 'started', job_id: 'avatar-job' });
-    getCacheRefreshJob.mockResolvedValue({ status: 'completed' });
+    waitForCacheRefreshJob.mockResolvedValue({ status: 'completed' });
     getUserAvatarCache
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null);
@@ -125,7 +125,10 @@ describe('MainLayout desktop lifecycle controls', () => {
     });
 
     expect(requestCacheRefresh).toHaveBeenCalledWith('avatar', { reason: 'page_swr' });
-    expect(getCacheRefreshJob).toHaveBeenCalledWith('avatar-job', { skipAuthRedirect: true });
+    expect(waitForCacheRefreshJob).toHaveBeenCalledWith('avatar-job', {
+      intervalMs: 750,
+      timeoutMs: 30000,
+    });
     expect(getUserAvatarCache).toHaveBeenCalledTimes(2);
     await page.unmount();
   });

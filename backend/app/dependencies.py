@@ -89,6 +89,20 @@ def background_remote_session_guard():
         yield timing
 
 
+@contextmanager
+def tracking_remote_session_guard():
+    """Run scheduled tracking/prewarm work behind visible page refreshes."""
+    with remote_session_guard(priority="tracking", label="tracking-service") as timing:
+        yield timing
+
+
+@contextmanager
+def foreground_auth_session_guard():
+    """Prioritize foreground authentication recovery ahead of queued reads."""
+    with remote_session_guard(priority="foreground_auth", label="auth-recovery") as timing:
+        yield timing
+
+
 _storage = Storage()
 
 # Cookie 持久化文件路径
@@ -765,7 +779,13 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
 
 def get_auth_client() -> Optional[NEUAuthClient]:
     """Resolve the current client while holding the shared session boundary."""
-    with remote_session_guard():
+    with foreground_auth_session_guard():
+        return _get_auth_client_unlocked()
+
+
+def _get_tracking_auth_client() -> Optional[NEUAuthClient]:
+    """Resolve scheduled tracking identity at the lowest remote priority."""
+    with tracking_remote_session_guard():
         return _get_auth_client_unlocked()
 
 
@@ -866,7 +886,7 @@ def _tracking_score_detail_lookup(account: str, score: dict) -> dict:
 
 _grade_tracker = GradeTrackingService(
     data_dir=_storage.config.data_dir,
-    auth_provider=get_auth_client,
+    auth_provider=_get_tracking_auth_client,
     score_storage=_storage,
     report_storage=_report_storage,
     logger=_api_logger,
@@ -875,7 +895,7 @@ _grade_tracker = GradeTrackingService(
     login_flow_pending=_interactive_login_pending,
     score_refresher=_tracking_score_refresh,
     score_detail_lookup=_tracking_score_detail_lookup,
-    remote_guard=remote_session_guard,
+    remote_guard=tracking_remote_session_guard,
 )
 
 

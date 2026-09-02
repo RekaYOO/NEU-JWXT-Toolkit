@@ -19,6 +19,7 @@ from backend.core.auth.client import (
     WebVPNLoginError, WebVPNRequiredError,
 )
 from backend.core.log import log_application_error, log_security_event
+from backend.app.client_snapshot import pending_auth_challenge_snapshot
 
 router = APIRouter()
 
@@ -79,25 +80,9 @@ def get_status():
 @router.get("/api/auth/pending")
 def get_pending_auth_challenge():
     """Return a foreground-safe snapshot of an in-memory CAPTCHA challenge."""
-    for client in (peek_pending_auth_client(), peek_auth_client()):
-        flow = getattr(client, "_webvpn_sms_flow", None) if client else None
-        if not flow:
-            continue
-        if time.time() >= float(flow.get("expires_at", 0)):
-            return {"required": False}
-        return {
-            "required": True,
-            "flow_id": flow.get("id"),
-            "source": flow.get("source", "password"),
-            "captcha_image": (
-                f"data:image/png;base64,{flow['captcha_image']}"
-                if flow.get("captcha_image") else None
-            ),
-            "ocr_candidate": flow.get("ocr_candidate", ""),
-            "ocr_confidence": flow.get("ocr_confidence", 0.0),
-            "expires_at": flow.get("expires_at"),
-        }
-    return {"required": False}
+    return pending_auth_challenge_snapshot(
+        (peek_pending_auth_client(), peek_auth_client())
+    )
 
 
 @router.post("/api/login", response_model=LoginResponse)

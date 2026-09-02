@@ -25,8 +25,8 @@ import CourseSelectionWorkspacePage from './pages/CourseSelectionWorkspacePage';
 import CourseSelectionArchivePage from './pages/CourseSelectionArchivePage';
 import SystemSettingsPage from './pages/SystemSettingsPage';
 import {
-  checkStatus, getAccessStatus, getHealth, getOfflineStatus,
-  getPendingAuthChallenge, refreshWebVPNCaptcha, sendWebVPNSMSCode,
+  checkStatus, getAccessStatus, getClientBootstrap, getHealth, getOfflineStatus,
+  refreshWebVPNCaptcha, sendWebVPNSMSCode,
   verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
 } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
@@ -151,9 +151,21 @@ function App() {
   const [pendingSmsSent, setPendingSmsSent] = useState(false);
 
   const loadApplicationState = async () => {
-    const [access, health] = await Promise.all([getAccessStatus(), getHealth()]);
+    const access = await getAccessStatus();
     setAccessState(access);
-    setRuntimeProfile(health.profile || 'development');
+    let bootstrap = null;
+    let health = null;
+    if (!access.required || access.authenticated) {
+      try {
+        bootstrap = await getClientBootstrap();
+      } catch (_error) {
+        // Rolling upgrades and old backends keep using the established APIs.
+      }
+    }
+    if (!bootstrap?.runtime) {
+      health = await getHealth();
+    }
+    setRuntimeProfile(bootstrap?.runtime?.profile || health?.profile || 'development');
     if (!access.required || access.authenticated) {
       if (isManualLogoutActive()) {
         sessionStorage.removeItem(OFFLINE_SESSION_KEY);
@@ -181,7 +193,9 @@ function App() {
         sessionStorage.removeItem(OFFLINE_SESSION_KEY);
         setOfflineMode(false);
         setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
-        const status = await checkStatus();
+        const status = bootstrap?.auth?.is_logged_in
+          ? bootstrap.auth
+          : await checkStatus();
         setIsLoggedIn(status.is_logged_in);
         setUserInfo(status.current_user);
         if (status.is_logged_in) setTimetableRecoveryActive(false);
@@ -189,7 +203,9 @@ function App() {
           setTimetableRecoveryNotice('当前教务会话未确认，正在保留本机课表并继续后台恢复登录');
         }
       } else {
-        const status = await checkStatus();
+        const status = bootstrap?.auth?.is_logged_in
+          ? bootstrap.auth
+          : await checkStatus();
         setIsLoggedIn(status.is_logged_in);
         setUserInfo(status.current_user);
         if (status.is_logged_in) setTimetableRecoveryActive(false);
@@ -309,53 +325,17 @@ function App() {
 
   useEffect(() => {
     if (offlineMode) return undefined;
-    let stopped = false;
-    let timer = null;
-    let inFlight = false;
-    const IDLE_POLL_MS = 30000;
-    const PENDING_POLL_MS = 2500;
-
-    const schedule = delay => {
-      window.clearTimeout(timer);
-      if (!stopped) timer = window.setTimeout(poll, delay);
+    const onPending = event => {
+      const challenge = event.detail || {};
+      if (!challenge.required) return;
+      setPendingAuthFlow(previous => ({ ...previous, ...challenge }));
+      setPendingCaptchaCode(previous => previous || challenge.ocr_candidate || '');
     };
-
-    const poll = async () => {
-      if (stopped || inFlight) return;
-      if (
-        window.location.pathname === '/login'
-        || window.location.pathname.startsWith('/course-selection')
-      ) {
-        schedule(IDLE_POLL_MS);
-        return;
-      }
-      inFlight = true;
-      let challengeRequired = false;
-      try {
-        const challenge = await getPendingAuthChallenge();
-        if (stopped) return;
-        challengeRequired = Boolean(challenge?.required);
-        if (challengeRequired) {
-          setPendingAuthFlow(previous => ({ ...previous, ...challenge }));
-          setPendingCaptchaCode(previous => previous || challenge.ocr_candidate || '');
-        }
-      } catch (_error) {
-        // A pending challenge is advisory; the current page remains usable.
-      } finally {
-        inFlight = false;
-        schedule(challengeRequired ? PENDING_POLL_MS : IDLE_POLL_MS);
-      }
-    };
-
-    const wake = () => {
-      window.clearTimeout(timer);
-      poll();
-    };
-    poll();
+    const wake = () => window.dispatchEvent(new CustomEvent('neu-client-updates-wake'));
+    window.addEventListener('neu-auth-pending', onPending);
     window.addEventListener('neu-auth-required', wake);
     return () => {
-      stopped = true;
-      window.clearTimeout(timer);
+      window.removeEventListener('neu-auth-pending', onPending);
       window.removeEventListener('neu-auth-required', wake);
     };
   }, [offlineMode]);

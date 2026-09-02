@@ -52,6 +52,9 @@ jobs:
         env:
           REACT_APP_API_URL: ""
         run: npm run build
+      - name: Verify frontend performance budget
+        working-directory: frontend
+        run: npm run test:performance
       - name: Verify production API is same-origin
         shell: bash
         run: |

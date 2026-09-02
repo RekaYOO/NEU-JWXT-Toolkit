@@ -74,7 +74,20 @@ jobs:
       - working-directory: frontend
         env:
           REACT_APP_API_URL: ""
+          NEU_KEEP_SOURCE_MAPS: "1"
         run: npm run build
+      - name: Preserve private source maps and strip runtime copies
+        run: |
+          mkdir -p frontend/source-maps
+          find frontend/build -type f -name '*.map' -exec cp --parents '{}' frontend/source-maps/ \;
+          node tools/prepare_frontend_assets.mjs frontend/build --strip-source-maps
+      # actions/upload-artifact v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: web-source-maps-${{ needs.validate.outputs.version }}
+          path: frontend/source-maps
+          if-no-files-found: error
+          retention-days: 30
       # actions/upload-artifact v4.6.2
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
