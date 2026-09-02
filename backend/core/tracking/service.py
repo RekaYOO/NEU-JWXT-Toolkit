@@ -71,6 +71,7 @@ class GradeTrackingService:
         qr_login_starter: Callable[[], tuple[Any, dict[str, Any]]] | None = None,
         auth_setter: Callable[[Any], None] | None = None,
         login_flow_pending: Callable[[], bool] | None = None,
+        pending_sms_provider: Callable[[], tuple[Any, dict[str, Any]] | None] | None = None,
         score_refresher: Callable[[str, bool], dict[str, Any]] | None = None,
         score_detail_lookup: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
         remote_guard: Callable[[], Any] | None = None,
@@ -88,6 +89,7 @@ class GradeTrackingService:
         self.qr_login_starter = qr_login_starter
         self.auth_setter = auth_setter
         self.login_flow_pending = login_flow_pending
+        self.pending_sms_provider = pending_sms_provider
         self.score_refresher = score_refresher
         self.score_detail_lookup = score_detail_lookup
         self.remote_guard = remote_guard or nullcontext
@@ -186,11 +188,7 @@ class GradeTrackingService:
         self._stop.set()
         self._wake.set()
         with self._recovery_lock:
-            if self._recovery_client and self._recovery_flow:
-                with self.remote_guard():
-                    self._recovery_client.cancel_webvpn_qr_login(
-                        self._recovery_flow.get("flow_id")
-                    )
+            self._cancel_recovery_flow_locked()
             self._recovery_client = None
             self._recovery_flow = None
         thread = self._thread
@@ -401,6 +399,16 @@ class GradeTrackingService:
                 }
             else:
                 self._state["account_id"] = str(account_id)
+            self._state.pop("manual_login_notice_sent", None)
+            self._state.pop("manual_login_notice_at", None)
+            self._outbox = [
+                item
+                for item in self._outbox
+                if not str(item.get("dedupe_key") or "").startswith(
+                    "login-required:"
+                )
+            ]
+            self._save_outbox()
             if not self._config.get("enabled"):
                 self._save_state()
                 return
@@ -506,13 +514,12 @@ class GradeTrackingService:
                     with self._lock:
                         self._state.update(
                             stage="waiting_login",
-                            message="正在等待当前二维码或短信认证完成",
+                            message="WebVPN 需要交互式验证，正在通知用户恢复登录",
                             next_check_at=(
                                 _now() + timedelta(minutes=int(config["interval_minutes"]))
                             ).isoformat(),
                         )
                         self._save_state()
-                    return self.get_status()
                 auth = self._handle_login_required(config)
                 if auth is None:
                     return self.get_status()
@@ -583,7 +590,8 @@ class GradeTrackingService:
         if link:
             self._issue_recovery_link(link)
             return None
-        return self._email_qr_login(config)
+        self._email_manual_login_notice(config)
+        return None
 
     @staticmethod
     def _token_hash(token: str) -> str:
@@ -598,6 +606,7 @@ class GradeTrackingService:
         )
 
     def _issue_recovery_link(self, site_url: str) -> None:
+        existing_token = False
         with self._lock:
             if self._state.get("recovery_token_hash"):
                 self._state.update(
@@ -605,29 +614,141 @@ class GradeTrackingService:
                     message="等待用户打开邮件中的一次性登录链接",
                 )
                 self._save_state()
-                return
-            token = secrets.token_urlsafe(32)
-            self._state.update(
-                recovery_token_hash=self._token_hash(token),
-                recovery_token_issued_at=_iso(),
-                stage="waiting_login",
-                message="等待用户打开邮件中的一次性登录链接",
-                last_login_notice_at=time.time(),
-            )
-            self._save_state()
+                existing_token = True
+            else:
+                token = secrets.token_urlsafe(32)
+                self._state.update(
+                    recovery_token_hash=self._token_hash(token),
+                    recovery_token_issued_at=_iso(),
+                    stage="waiting_login",
+                    message="等待用户打开邮件中的一次性登录链接",
+                    last_login_notice_at=time.time(),
+                )
+                self._save_state()
+        continued_sms = self._adopt_pending_sms_recovery()
+        if existing_token:
+            return
         recovery_url = (
             f"{site_url.rstrip('/')}/grade-tracking/recovery/{token}"
+        )
+        recovery_intro = (
+            "后台已使用保存的账号信息完成第一步登录，请打开下面的一次性页面，"
+            "直接填写图形验证码并获取短信验证码：\n"
+            if continued_sms
+            else "请打开下面的一次性登录页面重新登录；页面会先提供微信扫码，"
+            "如果学校要求二次认证，会继续显示图形验证码、短信发送按钮和短信验证码输入框：\n"
         )
         self._queue_email(
             "[NEU 成绩追踪] 请打开一次性链接恢复登录",
             "成绩追踪无法访问教务系统。\n\n"
-            "请打开下面的一次性登录页面；访问页面后才会生成微信扫码二维码并开始五分钟轮询：\n"
-            f"{recovery_url}\n\n"
-            "网页链接会在成功建立教务会话后失效。单次二维码五分钟后失效，"
-            "届时可在同一网页链接中重新生成。请勿转发此链接。",
+            + recovery_intro
+            + f"{recovery_url}\n\n"
+            "网页链接会在成功建立教务会话后失效。二维码或短信流程过期后，"
+            "可在同一网页链接中重新开始登录。验证码不会由后台自动填写或发送。"
+            "请勿转发此链接。",
             f"recovery-link:{self._token_hash(token)}",
         )
         self._flush_outbox()
+
+    def _adopt_pending_sms_recovery(self) -> bool:
+        """Continue a saved-credential SMS challenge without forcing another QR."""
+        if not self.pending_sms_provider:
+            return False
+        with self._recovery_lock:
+            if self._recovery_client and self._recovery_flow:
+                return self._recovery_flow.get("kind") == "sms"
+            candidate = self.pending_sms_provider()
+            if not candidate:
+                return False
+            client, flow = candidate
+            if not client or not flow or flow.get("status") != "sms_required":
+                return False
+            self._recovery_client = client
+            self._recovery_flow = self._recovery_flow_payload("sms", flow)
+            with self._lock:
+                self._state.update(
+                    stage="waiting_sms",
+                    message="已续接后台登录，等待图形验证码和短信验证",
+                )
+                self._save_state()
+            return True
+
+    def _email_manual_login_notice(self, config: dict[str, Any]) -> None:
+        """Notify once when interactive recovery cannot be exposed safely."""
+        with self._lock:
+            if self._state.get("manual_login_notice_sent"):
+                self._state.update(
+                    stage="waiting_login",
+                    message="登录已失效，请重新进入系统完成登录",
+                )
+                self._save_state()
+                return
+            notice_id = secrets.token_hex(12)
+            self._state.update(
+                manual_login_notice_sent=notice_id,
+                manual_login_notice_at=_iso(),
+                stage="waiting_login",
+                message="登录失效通知已发送，请重新进入系统完成登录",
+            )
+            self._save_state()
+        self._queue_email(
+            "[NEU 成绩追踪] 登录已失效",
+            "成绩追踪无法访问教务系统。\n\n"
+            "当前 WebVPN 重新登录可能需要图形验证码和短信验证，邮件本身无法安全完成此步骤。"
+            "请重新进入 NEU 教务工具箱并手动登录；登录成功后，成绩追踪会自动恢复。\n\n"
+            "若希望以后直接从邮件完成恢复，请在成绩追踪设置中配置可访问的“重新登录地址”。",
+            f"login-required:{notice_id}",
+        )
+        self._wake.set()
+
+    def _cancel_recovery_flow_locked(self) -> None:
+        if not self._recovery_client or not self._recovery_flow:
+            return
+        flow_id = self._recovery_flow.get("flow_id")
+        kind = self._recovery_flow.get("kind", "qr")
+        try:
+            with self.remote_guard():
+                if kind == "sms":
+                    self._recovery_client.cancel_webvpn_sms_login(flow_id)
+                else:
+                    self._recovery_client.cancel_webvpn_qr_login(flow_id)
+        except Exception:
+            self.logger.debug(
+                "[成绩追踪] 取消旧恢复会话失败",
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _recovery_flow_payload(kind: str, flow: dict[str, Any]) -> dict[str, Any]:
+        payload = {"kind": kind, **flow}
+        try:
+            expires_in = max(1, int(payload.get("expires_in", 300)))
+        except (TypeError, ValueError):
+            expires_in = 300
+        payload["expires_in"] = expires_in
+        payload["expires_at"] = time.time() + expires_in
+        return payload
+
+    def _complete_recovery_locked(self) -> dict[str, Any]:
+        client = self._recovery_client
+        if client is None:
+            raise ValueError("登录恢复流程不存在，请重新开始")
+        if self.auth_setter:
+            self.auth_setter(client)
+        username = client.username or None
+        self._recovery_client = None
+        self._recovery_flow = None
+        self._invalidate_recovery_link(cancel_flow=False)
+        with self._lock:
+            self._state.update(
+                stage="scheduled",
+                message="登录已恢复，准备检查最新成绩",
+                next_check_at=_iso(),
+                last_error=None,
+            )
+            self._save_state()
+        self._wake.set()
+        return {"status": "authenticated", "username": username}
 
     def start_recovery_login(self, token: str) -> dict[str, Any]:
         with self._recovery_lock:
@@ -635,16 +756,7 @@ class GradeTrackingService:
                 if not self._recovery_token_is_valid(token):
                     raise ValueError("一次性登录链接不存在或已失效")
             if self._recovery_client and self._recovery_flow:
-                try:
-                    with self.remote_guard():
-                        self._recovery_client.cancel_webvpn_qr_login(
-                            self._recovery_flow.get("flow_id")
-                        )
-                except Exception:
-                    self.logger.debug(
-                        "[成绩追踪] 重新生成二维码时取消旧会话失败",
-                        exc_info=True,
-                    )
+                self._cancel_recovery_flow_locked()
                 self._recovery_client = None
                 self._recovery_flow = None
             if not self.qr_login_starter:
@@ -652,7 +764,7 @@ class GradeTrackingService:
             with self.remote_guard():
                 client, flow = self.qr_login_starter()
             self._recovery_client = client
-            self._recovery_flow = flow
+            self._recovery_flow = self._recovery_flow_payload("qr", flow)
             with self._lock:
                 self._state.update(
                     stage="waiting_qr",
@@ -668,13 +780,20 @@ class GradeTrackingService:
                     raise ValueError("一次性登录链接不存在或已失效")
             if not self._recovery_client or not self._recovery_flow:
                 return {"status": "not_started"}
+            if self._recovery_flow.get("kind") != "qr":
+                return {
+                    "status": "sms_required",
+                    **{
+                        key: value
+                        for key, value in self._recovery_flow.items()
+                        if key in {"flow_id", "captcha_image", "expires_in"}
+                    },
+                }
             try:
                 with self.remote_guard():
                     result = self._recovery_client.poll_webvpn_qr_login(
                         self._recovery_flow["flow_id"]
                     )
-                    if result.get("status") == "authenticated" and self.auth_setter:
-                        self.auth_setter(self._recovery_client)
             except Exception as error:
                 self.logger.warning(
                     "[成绩追踪] 网页恢复二维码轮询失败：%s",
@@ -683,24 +802,102 @@ class GradeTrackingService:
                 return {"status": "pending", "message": "状态查询暂时失败，正在重试"}
             status = result.get("status")
             if status == "authenticated":
-                client = self._recovery_client
-                self._recovery_client = None
-                self._recovery_flow = None
-                self._invalidate_recovery_link(cancel_flow=False)
+                return self._complete_recovery_locked()
+            if status == "sms_required":
+                self._recovery_flow = self._recovery_flow_payload("sms", result)
                 with self._lock:
                     self._state.update(
-                        stage="scheduled",
-                        message="登录已恢复，准备检查最新成绩",
-                        next_check_at=_iso(),
-                        last_error=None,
+                        stage="waiting_sms",
+                        message="扫码已确认，等待图形验证码和短信验证",
                     )
                     self._save_state()
-                self._wake.set()
-                return {"status": "authenticated", "username": client.username or None}
+                return result
             if status in {"expired", "error"}:
                 self._recovery_client = None
                 self._recovery_flow = None
             return result
+
+    def _require_sms_recovery_locked(self, token: str) -> tuple[Any, dict[str, Any]]:
+        with self._lock:
+            if not self._recovery_token_is_valid(token):
+                raise ValueError("一次性登录链接不存在或已失效")
+        if (
+            not self._recovery_client
+            or not self._recovery_flow
+            or self._recovery_flow.get("kind") != "sms"
+        ):
+            raise ValueError("短信验证流程不存在，请重新开始登录")
+        return self._recovery_client, self._recovery_flow
+
+    def refresh_recovery_captcha(self, token: str) -> dict[str, Any]:
+        with self._recovery_lock:
+            client, flow = self._require_sms_recovery_locked(token)
+            with self.remote_guard():
+                result = client.refresh_webvpn_captcha(flow["flow_id"])
+            flow.update(result)
+            return {"success": True, **result}
+
+    def send_recovery_sms(self, token: str, captcha_code: str) -> dict[str, Any]:
+        with self._recovery_lock:
+            client, flow = self._require_sms_recovery_locked(token)
+            with self.remote_guard():
+                result = client.send_webvpn_sms_code(
+                    flow["flow_id"], captcha_code
+                )
+            flow.update(
+                {
+                    key: value
+                    for key, value in result.items()
+                    if key in {"captcha_image", "expires_in"}
+                }
+            )
+            if result.get("status") == "sent":
+                with self._lock:
+                    self._state.update(
+                        stage="waiting_sms",
+                        message="短信验证码已发送，等待用户提交",
+                    )
+                    self._save_state()
+            return {"success": result.get("status") == "sent", **result}
+
+    def verify_recovery_sms(
+        self,
+        token: str,
+        code: str,
+        trust_device: bool = False,
+    ) -> dict[str, Any]:
+        with self._recovery_lock:
+            client, flow = self._require_sms_recovery_locked(token)
+            with self.remote_guard():
+                result = client.verify_webvpn_sms_code(
+                    flow["flow_id"], code, trust_device
+                )
+            if result.get("status") == "authenticated":
+                return self._complete_recovery_locked()
+            flow.update(
+                {
+                    key: value
+                    for key, value in result.items()
+                    if key in {"captcha_image", "expires_in"}
+                }
+            )
+            return {"success": False, **result}
+
+    def cancel_recovery_login(self, token: str) -> dict[str, Any]:
+        with self._recovery_lock:
+            with self._lock:
+                if not self._recovery_token_is_valid(token):
+                    raise ValueError("一次性登录链接不存在或已失效")
+            self._cancel_recovery_flow_locked()
+            self._recovery_client = None
+            self._recovery_flow = None
+            with self._lock:
+                self._state.update(
+                    stage="waiting_login",
+                    message="登录恢复已取消，可在一次性页面重新开始",
+                )
+                self._save_state()
+            return {"success": True, "status": "ready"}
 
     def get_recovery_status(self, token: str) -> dict[str, Any]:
         with self._lock:
@@ -709,9 +906,23 @@ class GradeTrackingService:
         with self._recovery_lock:
             if not self._recovery_flow:
                 return {"status": "ready"}
+            kind = self._recovery_flow.get("kind", "qr")
+            status = "sms_required" if kind == "sms" else "qr_pending"
+            try:
+                expires_in = max(
+                    0,
+                    int(float(self._recovery_flow.get("expires_at", 0)) - time.time()),
+                )
+            except (TypeError, ValueError):
+                expires_in = int(self._recovery_flow.get("expires_in", 300))
             return {
-                "status": "pending",
-                "expires_in": int(self._recovery_flow.get("expires_in", 300)),
+                "status": status,
+                "expires_in": expires_in,
+                **{
+                    key: value
+                    for key, value in self._recovery_flow.items()
+                    if key in {"flow_id", "qr_content", "poll_interval", "captcha_image"}
+                },
             }
 
     def invalidate_recovery_link(self) -> None:
@@ -719,11 +930,8 @@ class GradeTrackingService:
 
     def _invalidate_recovery_link(self, cancel_flow: bool = True) -> None:
         with self._recovery_lock:
-            if cancel_flow and self._recovery_client and self._recovery_flow:
-                with self.remote_guard():
-                    self._recovery_client.cancel_webvpn_qr_login(
-                        self._recovery_flow.get("flow_id")
-                    )
+            if cancel_flow:
+                self._cancel_recovery_flow_locked()
             self._recovery_client = None
             self._recovery_flow = None
             with self._lock:
@@ -732,73 +940,6 @@ class GradeTrackingService:
                 changed = bool(token_hash or issued_at)
                 if changed:
                     self._save_state()
-
-    def _email_qr_login(self, config: dict[str, Any]) -> Any | None:
-        if not self.qr_login_starter:
-            return None
-        try:
-            self._validate_config(config, require_complete=True)
-            with self.remote_guard():
-                client, flow = self.qr_login_starter()
-            qr_link = str(flow["qr_content"])
-            expires_in = min(int(flow.get("expires_in", 300)), 300)
-            self._send_email(
-                config,
-                "[NEU 成绩追踪] 请在五分钟内确认登录",
-                "成绩追踪无法访问教务系统。\n\n"
-                "请在五分钟内使用微信扫码并确认登录：\n"
-                f"{qr_link}\n\n"
-                "该链接对应本次一次性二维码，五分钟后自动失效。"
-                "如果未能及时完成，请等待下一个成绩检查间隔，届时会收到新的登录邮件。",
-            )
-            with self._lock:
-                self._state.update(
-                    stage="waiting_qr",
-                    message="登录邮件已发送，五分钟内等待微信扫码确认",
-                    last_notification_at=_iso(),
-                )
-                self._save_state()
-        except Exception as error:
-            self.logger.exception("[成绩追踪] 登录二维码邮件发送失败")
-            self._record_error(f"{type(error).__name__}: {error}")
-            return None
-
-        deadline = time.time() + expires_in
-        while time.time() < deadline and not self._stop.is_set():
-            try:
-                with self.remote_guard():
-                    result = client.poll_webvpn_qr_login(flow["flow_id"])
-                    if result.get("status") == "authenticated" and self.auth_setter:
-                        self.auth_setter(client)
-            except Exception as error:
-                self.logger.warning("[成绩追踪] 二维码状态轮询失败：%s", type(error).__name__)
-                if self._stop.wait(3):
-                    break
-                continue
-            status = result.get("status")
-            if status == "authenticated":
-                with self._lock:
-                    self._state.update(
-                        stage="checking",
-                        message="微信扫码登录已确认，继续本轮成绩检查",
-                        last_error=None,
-                    )
-                    self._save_state()
-                return client
-            if status in {"expired", "error"}:
-                break
-            if self._stop.wait(3):
-                break
-
-        with self.remote_guard():
-            client.cancel_webvpn_qr_login(flow.get("flow_id"))
-        with self._lock:
-            self._state.update(
-                stage="waiting_login",
-                message="本次登录二维码已失效，将在下一个检查间隔重新发送",
-            )
-            self._save_state()
-        return None
 
     @staticmethod
     def _course_key(item: dict[str, Any]) -> str:

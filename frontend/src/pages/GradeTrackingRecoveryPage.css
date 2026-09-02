@@ -7,7 +7,7 @@
 }
 
 .tracking-recovery-card {
-  width: min(440px, 100%);
+  width: min(540px, 100%);
   border-color: #dbe3ec;
   box-shadow: 0 18px 45px rgba(30, 41, 59, 0.1);
 }
@@ -60,6 +60,23 @@
   font-variant-numeric: tabular-nums;
 }
 
+.tracking-recovery-countdown.is-sms {
+  margin: -4px 0 12px;
+}
+
+.tracking-recovery-sms-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.tracking-recovery-sms-actions .ant-btn {
+  min-height: 42px;
+  border-radius: 10px;
+  font-weight: 650;
+}
+
 .tracking-recovery-result.is-success > .anticon {
   color: #16a34a;
   font-size: 48px;
@@ -97,5 +114,15 @@
 
   .tracking-recovery-card .ant-card-body {
     padding: 24px 20px;
+  }
+
+  .tracking-recovery-sms-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .tracking-recovery-sms-actions .ant-btn {
+    width: 100%;
+    padding-inline: 10px;
   }
 }

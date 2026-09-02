@@ -68,8 +68,9 @@ URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控�
 `network_mode` 只接受 `direct` 或 `webvpn`。登录页在 WebVPN 模式下使用下述专用接口，而不是 `/api/login`。
 
 `GET /api/auth/pending` 只读取当前进程内是否存在等待前台处理的图形验证码挑战，不触发远端请求，
-响应不包含密码、Cookie 或验证码原文；成绩追踪、课表和选课后台任务遇到此状态会暂停静默恢复，
-等待用户在当前页面完成认证。
+响应不包含密码、Cookie 或验证码原文；课表和选课后台任务遇到此状态会暂停静默恢复，等待用户在
+当前页面完成认证。成绩追踪还会发送一次登录恢复通知：未配置重新登录地址时提示进入工具箱手动登录；
+配置地址且保存账密已进入短信挑战时，一次性页面直接续接该 Session，否则先提供二维码重新登录。
 
 `/api/login` 的错误字段含义：
 
@@ -121,6 +122,13 @@ WebVPN 专用接口在保留 `message` 和 `status` 的同时返回稳定的 `er
 | `POST /api/webvpn/sms/send` | `flow_id`、`captcha_code` | `status: "sent"`；只在用户明确点击后发送 |
 | `POST /api/webvpn/sms/verify` | `flow_id`、`code`、`trust_device=false` | `status: "authenticated"`、`username`、`message` |
 | `POST /api/webvpn/sms/cancel` | `flow_id` | `success` |
+
+成绩追踪的一次性恢复页通过
+`/api/grade-tracking/recovery/{token}/captcha/refresh`、`sms/send`、`sms/verify` 和 `cancel`
+复用同一组官方验证码与短信操作，但授权边界是邮件中的高强度一次性 token。它只能操作该 token
+绑定的候选 Session，不能访问未绑定的其他登录流程；成功后 token 立即失效。若保存账密的后台
+恢复已经进入短信页，该候选 Session 会被明确绑定到恢复 token，链接不再要求重复扫码；没有可续接
+挑战时才从二维码重新登录开始。
 
 验证码响应中的关键字段：
 

@@ -30,3 +30,16 @@ class GradeTrackingEnabledUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
+
+
+class GradeTrackingRecoveryCaptchaRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    captcha_code: str = Field(min_length=1, max_length=16)
+
+
+class GradeTrackingRecoverySMSRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=8)
+    trust_device: bool = False

@@ -152,6 +152,22 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         client.session.post.return_value = response
         self.assertEqual(client.send_webvpn_sms_code("flow", "1234")["status"], "sent")
 
+    def test_sms_challenge_safe_view_reuses_current_captcha(self):
+        client = NEUAuthClient("20250001", "secret", network_mode="webvpn")
+        client._webvpn_sms_flow = {
+            "id": "flow",
+            "expires_at": 4102444800,
+            "captcha_image": "YWJj",
+            "captcha_media_type": "image/jpeg",
+        }
+
+        challenge = client.get_webvpn_sms_challenge()
+
+        self.assertEqual(challenge["status"], "sms_required")
+        self.assertEqual(challenge["flow_id"], "flow")
+        self.assertEqual(challenge["captcha_image"], "data:image/jpeg;base64,YWJj")
+        self.assertNotIn("hidden_fields", challenge)
+
     def test_sms_send_non_json_response_has_stable_error_code(self):
         client = NEUAuthClient("20250001", "secret", network_mode="webvpn")
         client._webvpn_sms_flow = {"id": "flow", "page_url": "https://webvpn.neu.edu.cn/https/token/tpass/login", "expires_at": 4102444800}

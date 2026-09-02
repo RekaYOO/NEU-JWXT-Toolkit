@@ -591,6 +591,40 @@ export const pollGradeTrackingRecovery = async (token) => {
   return response.data;
 };
 
+export const refreshGradeTrackingRecoveryCaptcha = async (token) => {
+  const response = await api.post(
+    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/captcha/refresh`
+  );
+  return response.data;
+};
+
+export const sendGradeTrackingRecoverySMS = async (token, captchaCode) => {
+  const response = await api.post(
+    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/sms/send`,
+    { captcha_code: captchaCode }
+  );
+  return response.data;
+};
+
+export const verifyGradeTrackingRecoverySMS = async (
+  token,
+  code,
+  trustDevice = false
+) => {
+  const response = await api.post(
+    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/sms/verify`,
+    { code, trust_device: trustDevice }
+  );
+  return response.data;
+};
+
+export const cancelGradeTrackingRecovery = async (token) => {
+  const response = await api.post(
+    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/cancel`
+  );
+  return response.data;
+};
+
 // 获取默认列配置
 export const getDefaultColumns = async () => {
   const response = await api.get('/api/columns/default');

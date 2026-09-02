@@ -636,39 +636,55 @@ def test_login_required_does_not_fetch_scores(tmp_path, monkeypatch):
     assert storage.saved == []
 
 
-def test_missing_site_url_sends_five_minute_qr_and_resumes_check(tmp_path, monkeypatch):
-    academic = FakeAcademic()
-    authenticated = SimpleNamespace(username="20250001", academic=academic)
+def test_missing_site_url_sends_manual_login_notice_once(tmp_path, monkeypatch):
     storage = FakeStorage()
-    accepted = []
     sent = []
-
-    class FakeQRClient:
-        username = authenticated.username
-        academic = authenticated.academic
-
-        def poll_webvpn_qr_login(self, flow_id):
-            assert flow_id == "flow-1"
-            return {"status": "authenticated"}
-
-        def cancel_webvpn_qr_login(self, flow_id):
-            raise AssertionError("authenticated flow must not be cancelled")
+    started = []
 
     service = GradeTrackingService(
         data_dir=tmp_path,
         auth_provider=lambda: None,
         score_storage=storage,
-        logger=logging.getLogger("grade-tracking-email-qr-test"),
-        qr_login_starter=lambda: (
-            FakeQRClient(),
-            {
-                "flow_id": "flow-1",
-                "qr_content": "https://pass.neu.edu.cn/tpass/qyQrLogin?uuid=test",
-                "expires_in": 300,
-            },
-        ),
-        auth_setter=accepted.append,
-        score_refresher=score_refresher_for(academic),
+        logger=logging.getLogger("grade-tracking-manual-login-notice-test"),
+        qr_login_starter=lambda: started.append(True),
+    )
+    service.update_config(mail_config(site_url=""))
+    monkeypatch.setattr(
+        service,
+        "_send_email",
+        lambda config, subject, body: sent.append((subject, body)),
+    )
+
+    first = service.check_now()
+    service._flush_outbox()
+    second = service.check_now()
+    service._flush_outbox()
+
+    assert first["stage"] == second["stage"] == "waiting_login"
+    assert storage.saved == []
+    assert started == []
+    assert len(sent) == 1
+    assert sent[0][0] == "[NEU 成绩追踪] 登录已失效"
+    assert "重新进入 NEU 教务工具箱" in sent[0][1]
+    assert "短信验证" in sent[0][1]
+    assert "二维码" not in sent[0][1]
+
+    service.resume_after_login("20250001")
+    service.check_now()
+    service._flush_outbox()
+    assert len(sent) == 2
+
+
+def test_interactive_login_flow_is_not_replaced_and_user_is_notified(tmp_path, monkeypatch):
+    started = []
+    sent = []
+    service = GradeTrackingService(
+        data_dir=tmp_path,
+        auth_provider=lambda: None,
+        score_storage=FakeStorage(),
+        logger=logging.getLogger("grade-tracking-pending-login-test"),
+        qr_login_starter=lambda: started.append(True),
+        login_flow_pending=lambda: True,
     )
     service.update_config(mail_config(site_url=""))
     monkeypatch.setattr(
@@ -680,33 +696,10 @@ def test_missing_site_url_sends_five_minute_qr_and_resumes_check(tmp_path, monke
     result = service.check_now()
     service._flush_outbox()
 
-    assert len(accepted) == 1
-    assert len(storage.saved) == 0
-    assert result["stage"] == "monitoring"
-    assert "五分钟" in sent[0][0]
-    assert "微信扫码" in sent[0][1]
-    assert "NEU Pass" not in sent[0][1]
-    assert "qyQrLogin?uuid=test" in sent[0][1]
-    assert "等待下一个成绩检查间隔" in sent[0][1]
-
-
-def test_interactive_login_flow_is_not_replaced_by_email_qr(tmp_path):
-    started = []
-    service = GradeTrackingService(
-        data_dir=tmp_path,
-        auth_provider=lambda: None,
-        score_storage=FakeStorage(),
-        logger=logging.getLogger("grade-tracking-pending-login-test"),
-        qr_login_starter=lambda: started.append(True),
-        login_flow_pending=lambda: True,
-    )
-    service.update_config(mail_config(site_url=""))
-
-    result = service.check_now()
-
     assert result["stage"] == "waiting_login"
-    assert "二维码或短信认证" in result["message"]
+    assert "登录失效通知" in result["message"]
     assert started == []
+    assert len(sent) == 1
 
 
 def test_tracking_interval_cannot_be_shorter_than_five_minutes(tmp_path):
@@ -805,7 +798,9 @@ def test_configured_site_uses_one_time_page_before_starting_qr(tmp_path, monkeyp
     )
     assert match
     token = match.group(1)
-    assert "微信扫码二维码" in sent[0][1]
+    assert "微信扫码" in sent[0][1]
+    assert "图形验证码" in sent[0][1]
+    assert "短信验证码" in sent[0][1]
     assert "NEU Pass" not in sent[0][1]
 
     flow = service.start_recovery_login(token)
@@ -827,6 +822,202 @@ def test_configured_site_uses_one_time_page_before_starting_qr(tmp_path, monkeyp
         raise AssertionError("recovery token must be invalid after authentication")
 
 
+def test_recovery_qr_can_continue_through_sms_challenge(tmp_path, monkeypatch):
+    accepted = []
+    sent = []
+
+    class FakeSMSClient:
+        username = "20250001"
+
+        def __init__(self):
+            self.cancelled = []
+            self.poll_count = 0
+
+        @property
+        def is_logged_in(self):
+            return True
+
+        def poll_webvpn_qr_login(self, flow_id):
+            assert flow_id == "qr-flow"
+            self.poll_count += 1
+            return {
+                "status": "sms_required",
+                "flow_id": "sms-flow",
+                "captcha_image": "data:image/jpeg;base64,abc",
+                "expires_in": 180,
+            }
+
+        def refresh_webvpn_captcha(self, flow_id):
+            assert flow_id == "sms-flow"
+            return {
+                "status": "captcha_refreshed",
+                "captcha_image": "data:image/jpeg;base64,new",
+            }
+
+        def send_webvpn_sms_code(self, flow_id, captcha_code):
+            assert (flow_id, captcha_code) == ("sms-flow", "1234")
+            return {"status": "sent"}
+
+        def verify_webvpn_sms_code(self, flow_id, code, trust_device=False):
+            assert (flow_id, code, trust_device) == ("sms-flow", "879766", False)
+            return {"status": "authenticated", "username": self.username}
+
+        def cancel_webvpn_qr_login(self, flow_id):
+            self.cancelled.append(("qr", flow_id))
+
+        def cancel_webvpn_sms_login(self, flow_id):
+            self.cancelled.append(("sms", flow_id))
+
+    client = FakeSMSClient()
+    service = GradeTrackingService(
+        data_dir=tmp_path,
+        auth_provider=lambda: None,
+        score_storage=FakeStorage(),
+        logger=logging.getLogger("grade-tracking-sms-recovery-test"),
+        qr_login_starter=lambda: (
+            client,
+            {
+                "flow_id": "qr-flow",
+                "qr_content": "https://pass.neu.edu.cn/qr",
+                "expires_in": 300,
+                "poll_interval": 3,
+            },
+        ),
+        auth_setter=accepted.append,
+    )
+    service.update_config(mail_config(site_url="https://grades.example.com"))
+    monkeypatch.setattr(
+        service,
+        "_send_email",
+        lambda config, subject, body: sent.append((subject, body)),
+    )
+    service.check_now()
+    token = re.search(
+        r"/grade-tracking/recovery/([A-Za-z0-9_-]+)", sent[0][1]
+    ).group(1)
+
+    service.start_recovery_login(token)
+    challenge = service.poll_recovery_login(token)
+    assert challenge["status"] == "sms_required"
+    assert service.get_recovery_status(token)["captcha_image"].endswith("abc")
+
+    refreshed = service.refresh_recovery_captcha(token)
+    assert refreshed["captcha_image"].endswith("new")
+    assert service.send_recovery_sms(token, "1234")["status"] == "sent"
+    completed = service.verify_recovery_sms(token, "879766")
+
+    assert completed["status"] == "authenticated"
+    assert accepted == [client]
+    assert service.get_status()["stage"] == "scheduled"
+    with pytest.raises(ValueError):
+        service.get_recovery_status(token)
+
+
+def test_saved_credentials_sms_challenge_is_reused_without_new_qr(tmp_path, monkeypatch):
+    sent = []
+    starts = []
+
+    class PendingSMSClient:
+        username = "20250001"
+
+        def cancel_webvpn_sms_login(self, _flow_id):
+            return None
+
+    client = PendingSMSClient()
+    challenge = {
+        "status": "sms_required",
+        "flow_id": "saved-password-sms",
+        "captcha_image": "data:image/jpeg;base64,pending",
+        "expires_in": 180,
+    }
+    service = GradeTrackingService(
+        data_dir=tmp_path,
+        auth_provider=lambda: None,
+        score_storage=FakeStorage(),
+        logger=logging.getLogger("grade-tracking-adopt-sms-test"),
+        qr_login_starter=lambda: starts.append(True),
+        login_flow_pending=lambda: True,
+        pending_sms_provider=lambda: (client, challenge),
+    )
+    service.update_config(mail_config(site_url="https://grades.example.com"))
+    monkeypatch.setattr(
+        service,
+        "_send_email",
+        lambda config, subject, body: sent.append((subject, body)),
+    )
+
+    result = service.check_now()
+    token = re.search(
+        r"/grade-tracking/recovery/([A-Za-z0-9_-]+)", sent[0][1]
+    ).group(1)
+    status = service.get_recovery_status(token)
+
+    assert result["stage"] == "waiting_sms"
+    assert status["status"] == "sms_required"
+    assert status["flow_id"] == "saved-password-sms"
+    assert starts == []
+    assert "已使用保存的账号信息" in sent[0][1]
+    assert "直接填写图形验证码" in sent[0][1]
+
+
+def test_recovery_sms_captcha_error_keeps_flow_for_retry(tmp_path, monkeypatch):
+    sent = []
+
+    class FakeSMSClient:
+        username = "20250001"
+
+        def poll_webvpn_qr_login(self, _flow_id):
+            return {
+                "status": "sms_required",
+                "flow_id": "sms-flow",
+                "captcha_image": "data:image/jpeg;base64,first",
+                "expires_in": 180,
+            }
+
+        def send_webvpn_sms_code(self, _flow_id, _captcha_code):
+            return {
+                "status": "captcha_invalid",
+                "message": "图形验证码不正确",
+                "captcha_image": "data:image/jpeg;base64,second",
+            }
+
+        def cancel_webvpn_qr_login(self, _flow_id):
+            return None
+
+        def cancel_webvpn_sms_login(self, _flow_id):
+            return None
+
+    service = GradeTrackingService(
+        data_dir=tmp_path,
+        auth_provider=lambda: None,
+        score_storage=FakeStorage(),
+        logger=logging.getLogger("grade-tracking-sms-retry-test"),
+        qr_login_starter=lambda: (
+            FakeSMSClient(),
+            {"flow_id": "qr-flow", "qr_content": "qr", "expires_in": 300},
+        ),
+    )
+    service.update_config(mail_config(site_url="https://grades.example.com"))
+    monkeypatch.setattr(
+        service,
+        "_send_email",
+        lambda config, subject, body: sent.append((subject, body)),
+    )
+    service.check_now()
+    token = re.search(
+        r"/grade-tracking/recovery/([A-Za-z0-9_-]+)", sent[0][1]
+    ).group(1)
+    service.start_recovery_login(token)
+    service.poll_recovery_login(token)
+
+    result = service.send_recovery_sms(token, "bad")
+
+    assert result["status"] == "captcha_invalid"
+    status = service.get_recovery_status(token)
+    assert status["status"] == "sms_required"
+    assert status["captcha_image"].endswith("second")
+
+
 def test_recovery_api_bypasses_server_password_only_with_token_path():
     assert is_public_api_path(
         "/api/grade-tracking/recovery/token-value/start"
@@ -835,6 +1026,9 @@ def test_recovery_api_bypasses_server_password_only_with_token_path():
     assert redact_sensitive_path(
         "/api/grade-tracking/recovery/secret-token/poll"
     ) == "/api/grade-tracking/recovery/<redacted>/poll"
+    assert redact_sensitive_path(
+        "/api/grade-tracking/recovery/secret-token/sms/verify"
+    ) == "/api/grade-tracking/recovery/<redacted>/sms/verify"
 
 
 def build_detail_tracking_service(tmp_path, lookup):

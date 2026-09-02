@@ -852,6 +852,23 @@ def _interactive_login_pending() -> bool:
     )
 
 
+def _pending_tracking_sms_login():
+    """Expose only a live SMS challenge for the token-scoped recovery page."""
+    client = peek_pending_auth_client() or peek_auth_client()
+    if client is None:
+        return None
+    try:
+        challenge = client.get_webvpn_sms_challenge()
+    except Exception:
+        return None
+    return (client, challenge) if challenge else None
+
+
+def _set_tracking_recovery_auth(client: NEUAuthClient) -> None:
+    clear_pending_auth_client(client)
+    set_auth_client(client)
+
+
 def _tracking_score_refresh(account: str, manual: bool) -> dict:
     submission = _cache_coordinator.submit(
         account_id=account,
@@ -937,8 +954,9 @@ _grade_tracker = GradeTrackingService(
     report_storage=_report_storage,
     logger=_api_logger,
     qr_login_starter=_start_tracking_qr_login,
-    auth_setter=set_auth_client,
+    auth_setter=_set_tracking_recovery_auth,
     login_flow_pending=_interactive_login_pending,
+    pending_sms_provider=_pending_tracking_sms_login,
     score_refresher=_tracking_score_refresh,
     score_detail_lookup=_tracking_score_detail_lookup,
     remote_guard=tracking_remote_session_guard,

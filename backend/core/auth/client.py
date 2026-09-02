@@ -1037,6 +1037,21 @@ class NEUAuthClient:
         flow = self._get_webvpn_sms_flow(flow_id)
         return {"status": "captcha_refreshed", **self._fetch_webvpn_captcha(flow)}
 
+    def get_webvpn_sms_challenge(self) -> Optional[Dict[str, Any]]:
+        """Return the safe, user-facing view of the current SMS challenge."""
+        flow = self._webvpn_sms_flow
+        if not flow:
+            return None
+        flow = self._get_webvpn_sms_flow(str(flow.get("id") or ""))
+        image = str(flow.get("captcha_image") or "")
+        media_type = str(flow.get("captcha_media_type") or "image/jpeg")
+        return {
+            "status": "sms_required",
+            "flow_id": flow["id"],
+            "captcha_image": f"data:{media_type};base64,{image}" if image else "",
+            "expires_in": max(0, int(float(flow["expires_at"]) - time.time())),
+        }
+
     def send_webvpn_sms_code(self, flow_id: str, captcha_code: str) -> Dict[str, Any]:
         """Ask the official second-auth endpoint to send the SMS code."""
         flow = self._get_webvpn_sms_flow(flow_id)

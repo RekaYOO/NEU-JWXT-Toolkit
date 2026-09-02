@@ -1,0 +1,216 @@
+.login-sms-modal .ant-modal {
+  width: min(540px, calc(100vw - 32px)) !important;
+}
+
+.login-sms-modal .ant-modal-content {
+  overflow: hidden;
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  border-radius: 18px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+}
+
+.login-sms-modal .ant-modal-header {
+  margin-bottom: 18px;
+}
+
+.login-sms-modal .ant-modal-title {
+  color: #17233c;
+  font-size: 22px;
+  font-weight: 750;
+}
+
+.login-sms-modal .ant-modal-footer {
+  margin-top: 20px;
+}
+
+.login-sms-modal .ant-modal-footer .ant-btn {
+  min-width: 104px;
+  min-height: 42px;
+  border-radius: 10px;
+  font-weight: 650;
+}
+
+.sms-auth-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sms-auth-intro {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 14px 16px;
+  border: 1px solid #dbe7fb;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f6f9ff 0%, #eef5ff 100%);
+}
+
+.sms-auth-icon-shell {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: #2563eb;
+  background: #ffffff;
+  box-shadow: 0 5px 16px rgba(37, 99, 235, 0.13);
+}
+
+.sms-auth-icon {
+  font-size: 24px;
+}
+
+.sms-auth-intro strong {
+  display: block;
+  color: #1e293b;
+  font-size: 15px;
+}
+
+.sms-auth-intro p {
+  margin: 3px 0 0;
+  color: #60748a;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.sms-auth-section {
+  padding: 14px;
+  border: 1px solid #e1e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.sms-auth-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: #26364d;
+  font-size: 14px;
+}
+
+.sms-auth-section-heading > span {
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #ffffff;
+  background: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.captcha-auth-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.captcha-auth-image-shell {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 82px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid #d7e0ea;
+  border-radius: 10px;
+  color: #8a98a8;
+  background: #f8fafc;
+  font-size: 12px;
+}
+
+.captcha-auth-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #ffffff;
+}
+
+.captcha-auth-row .ant-btn {
+  flex: 0 0 auto;
+  min-height: 42px;
+  border-radius: 9px;
+}
+
+.sms-auth-code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.sms-auth-code-row .ant-btn {
+  min-width: 132px;
+  border-radius: 9px;
+}
+
+.sms-auth-section .ant-input {
+  border-radius: 9px;
+}
+
+.sms-auth-note {
+  margin: -2px 2px 0;
+  color: #718096;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sms-auth-content.is-embedded .sms-auth-intro {
+  margin-top: 2px;
+}
+
+@media (max-width: 560px) {
+  .login-sms-modal .ant-modal {
+    width: calc(100vw - 24px) !important;
+    margin: 12px auto;
+    padding-bottom: 0;
+  }
+
+  .login-sms-modal .ant-modal-content {
+    max-height: calc(100dvh - 24px);
+    display: flex;
+    flex-direction: column;
+    border-radius: 14px;
+  }
+
+  .login-sms-modal .ant-modal-body {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .login-sms-modal .ant-modal-footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .login-sms-modal .ant-modal-footer button {
+    width: 100%;
+    margin-inline-start: 0;
+  }
+
+  .sms-auth-intro {
+    padding: 12px;
+  }
+
+  .captcha-auth-row {
+    align-items: stretch;
+  }
+
+  .captcha-auth-image-shell {
+    height: 76px;
+  }
+
+  .sms-auth-code-row {
+    grid-template-columns: 1fr;
+  }
+
+  .sms-auth-code-row .ant-btn {
+    width: 100%;
+  }
+}
