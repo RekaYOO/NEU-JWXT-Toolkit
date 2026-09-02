@@ -23,6 +23,7 @@ from backend.core.auth.client import (
     WEBVPN_ERR_SMS_RATE_LIMITED, WEBVPN_ERR_SMS_UNBOUND,
     WEBVPN_ERR_UPSTREAM_TIMEOUT, WEBVPN_ERR_UPSTREAM_NON_JSON,
     WEBVPN_ERR_UPSTREAM_REDIRECT, WEBVPN_ERR_SESSION_ESTABLISH,
+    WEBVPN_ERR_CAMPUS_NETWORK,
     WEBVPN_ERR_UNKNOWN,
 )
 from backend.core.log import log_application_error, log_security_event
@@ -44,6 +45,12 @@ def _webvpn_failure(message: str, *, error_code: str, status: str = "error", **e
 
 def _error_code(error: Exception, fallback: str = WEBVPN_ERR_UNKNOWN) -> str:
     return str(getattr(error, "error_code", None) or fallback)
+
+
+def _webvpn_suggestion(error_code: str) -> str:
+    if error_code == WEBVPN_ERR_CAMPUS_NETWORK:
+        return "请切换登录页的“校内直连”；校园网无法使用 WebVPN。"
+    return "请检查网络；响应较慢时建议优先使用微信扫码快速登录。"
 
 
 def _webvpn_sms_client(flow_id: str):
@@ -88,14 +95,19 @@ def get_status():
         else legacy_last_update
     )
 
+    status_client = client or peek_auth_client()
+    auth_error_code = str(getattr(status_client, "_last_webvpn_error_code", "") or "")
+    auth_error_message = str(getattr(status_client, "_last_webvpn_error_message", "") or "")
     return {
         "is_logged_in": client is not None and client.is_logged_in,
         "has_credentials": has_credentials,
         "has_local_data": bool(cache_entries) or storage_info["csv_count"] > 0,
         "last_update": last_update.isoformat() if last_update else None,
         "storage": storage_info,
-        "current_user": client.username if client else None,
-        "network_mode": client.active_mode if client else "direct",
+        "current_user": status_client.username if status_client else None,
+        "network_mode": status_client.active_mode if status_client else "direct",
+        "auth_error_code": auth_error_code or None,
+        "auth_error_message": auth_error_message or None,
     }
 
 
@@ -444,6 +456,11 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
                 )
         return {"success": True, **result}
     except NEULoginError as error:
+        error_code = (
+            "WRONG_PASSWORD"
+            if error.error_type == LOGIN_ERR_WRONG_PWD
+            else (getattr(error, "error_code", None) or WEBVPN_ERR_UNKNOWN)
+        )
         log_security_event(
             "webvpn_password_login",
             "failure",
@@ -455,12 +472,8 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
         )
         return {
             "success": False, "message": str(error),
-            "error_code": (
-                "WRONG_PASSWORD"
-                if error.error_type == LOGIN_ERR_WRONG_PWD
-                else (getattr(error, "error_code", None) or WEBVPN_ERR_UNKNOWN)
-            ),
-            "suggestion": "请检查网络；响应较慢时建议优先使用微信扫码快速登录。",
+            "error_code": error_code,
+            "suggestion": _webvpn_suggestion(error_code),
         }
     except Exception as error:
         error_id = log_application_error("auth.webvpn_password_login", error, 500)

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from backend.core.auth import AuthSessionManager, NEUAuthClient
+from backend.core.auth.client import WEBVPN_ERR_CAMPUS_NETWORK
 from backend.core.storage import (
     AcademicReportStorage,
     AutoLoginManager,
@@ -74,6 +75,7 @@ from backend.core.course_selection import (
 # ── 全局状态 ──────────────────────────────────────────────────────────────────
 
 _auth_sessions = AuthSessionManager()
+_last_auth_recovery_error_code = ""
 
 
 @contextmanager
@@ -703,6 +705,8 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
     2. 尝试用保存的 Cookie 恢复（免密）
     3. 尝试用保存的密码重新登录
     """
+    global _last_auth_recovery_error_code
+    _last_auth_recovery_error_code = ""
     # An interactive candidate owns its requests.Session until it succeeds,
     # expires or is cancelled.  Do not create another password-login client
     # behind it: doing so replaces the CAPTCHA every few seconds and makes the
@@ -726,6 +730,7 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
         # 尝试确保登录（内部会优先用 Cookie 刷新）
         try:
             if active_client.ensure_login():
+                _last_auth_recovery_error_code = ""
                 return active_client
         except Exception as error:
             _api_logger.warning(
@@ -740,6 +745,12 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
                 auth_method="session_cookie",
                 error_type=type(error).__name__,
             )
+            if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
+                # The gateway explicitly rejects campus-network clients.  Do
+                # not create more cookie/password clients in this same status
+                # check and repeat a request that cannot succeed.
+                _last_auth_recovery_error_code = WEBVPN_ERR_CAMPUS_NETWORK
+                return None
         # Do not clear the process-wide identity yet.  A transient probe or a
         # polluted requests.Session can still be repaired by a clean client
         # below.  Clearing here used to advance the identity epoch before the
@@ -751,6 +762,7 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
     session_client = NEUAuthClient(cookie_file=COOKIE_FILE)
     try:
         if session_client.ensure_login():
+            _last_auth_recovery_error_code = ""
             attach_saved_auth_credentials(session_client)
             set_auth_client(session_client)
             schedule_login_bootstrap(session_client)
@@ -774,6 +786,9 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
             auth_method="session_cookie",
             error_type=type(error).__name__,
         )
+        if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
+            _last_auth_recovery_error_code = WEBVPN_ERR_CAMPUS_NETWORK
+            return None
 
     # 3. 尝试加载保存的凭证并创建客户端
     creds = _storage.load_credentials()
@@ -788,6 +803,7 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
         # 尝试登录（内部会优先用 Cookie 刷新票据）
         try:
             if client.ensure_login():
+                _last_auth_recovery_error_code = ""
                 set_auth_client(client)
                 schedule_login_bootstrap(client)
                 log_security_event(
@@ -817,6 +833,9 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
                 auth_method="stored_credentials",
                 error_type=type(error).__name__,
             )
+            if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
+                _last_auth_recovery_error_code = WEBVPN_ERR_CAMPUS_NETWORK
+                return None
 
     if active_client is not None:
         set_auth_client(None)
@@ -960,6 +979,7 @@ _grade_tracker = GradeTrackingService(
     score_refresher=_tracking_score_refresh,
     score_detail_lookup=_tracking_score_detail_lookup,
     remote_guard=tracking_remote_session_guard,
+    auth_error_code_provider=lambda: _last_auth_recovery_error_code,
 )
 
 

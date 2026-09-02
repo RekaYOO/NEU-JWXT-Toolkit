@@ -97,6 +97,10 @@
   margin-bottom: 22px;
 }
 
+.login-network-notice {
+  margin: -6px 0 16px;
+}
+
 .login-panel-header h2 {
   margin: 8px 0 8px;
   color: #1c2b36;

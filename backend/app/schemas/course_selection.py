@@ -174,6 +174,7 @@ class JwxkStatusResponse(StrictModel):
     current_campus_name: str = ""
     batches: list[JwxkBatchModel]
     message: str = ""
+    error_code: str | None = None
 
 
 class JwxkBatchRequest(StrictModel):

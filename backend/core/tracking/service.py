@@ -75,6 +75,7 @@ class GradeTrackingService:
         score_refresher: Callable[[str, bool], dict[str, Any]] | None = None,
         score_detail_lookup: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
         remote_guard: Callable[[], Any] | None = None,
+        auth_error_code_provider: Callable[[], str] | None = None,
     ) -> None:
         root = Path(data_dir)
         root.mkdir(parents=True, exist_ok=True)
@@ -93,6 +94,7 @@ class GradeTrackingService:
         self.score_refresher = score_refresher
         self.score_detail_lookup = score_detail_lookup
         self.remote_guard = remote_guard or nullcontext
+        self.auth_error_code_provider = auth_error_code_provider
         self._lock = threading.RLock()
         self._check_lock = threading.Lock()
         self._revision_lock = threading.RLock()
@@ -587,6 +589,19 @@ class GradeTrackingService:
             )
             self._save_state()
         link = str(config.get("site_url", "")).strip()
+        # A campus-network WebVPN rejection is a routing problem, not a
+        # CAPTCHA challenge.  Do not issue a QR/SMS recovery link that cannot
+        # work on the current network; the next email tells the user to switch
+        # the application back to direct campus access.
+        auth_error_code = ""
+        if self.auth_error_code_provider is not None:
+            try:
+                auth_error_code = str(self.auth_error_code_provider() or "")
+            except Exception:
+                auth_error_code = ""
+        if auth_error_code == "WEBVPN_CAMPUS_NETWORK_BLOCKED":
+            self._email_manual_login_notice(config, campus_network=True)
+            return None
         if link:
             self._issue_recovery_link(link)
             return None
@@ -673,7 +688,7 @@ class GradeTrackingService:
                 self._save_state()
             return True
 
-    def _email_manual_login_notice(self, config: dict[str, Any]) -> None:
+    def _email_manual_login_notice(self, config: dict[str, Any], campus_network: bool = False) -> None:
         """Notify once when interactive recovery cannot be exposed safely."""
         with self._lock:
             if self._state.get("manual_login_notice_sent"):
@@ -691,12 +706,19 @@ class GradeTrackingService:
                 message="登录失效通知已发送，请重新进入系统完成登录",
             )
             self._save_state()
-        self._queue_email(
-            "[NEU 成绩追踪] 登录已失效",
+        body = (
+            "成绩追踪当前使用 WebVPN，但学校网关检测到校园网环境并拒绝了 WebVPN 请求。"
+            "请重新进入 NEU 教务工具箱，将访问方式切换为“校内直连”后完成登录；登录成功后，"
+            "成绩追踪会自动恢复。"
+            if campus_network else
             "成绩追踪无法访问教务系统。\n\n"
             "当前 WebVPN 重新登录可能需要图形验证码和短信验证，邮件本身无法安全完成此步骤。"
             "请重新进入 NEU 教务工具箱并手动登录；登录成功后，成绩追踪会自动恢复。\n\n"
-            "若希望以后直接从邮件完成恢复，请在成绩追踪设置中配置可访问的“重新登录地址”。",
+            "若希望以后直接从邮件完成恢复，请在成绩追踪设置中配置可访问的“重新登录地址”。"
+        )
+        self._queue_email(
+            "[NEU 成绩追踪] 登录已失效",
+            body,
             f"login-required:{notice_id}",
         )
         self._wake.set()

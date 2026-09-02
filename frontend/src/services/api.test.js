@@ -69,6 +69,12 @@ describe('WebVPN error compatibility helpers', () => {
     expect(apiModule.getWebVPNErrorMessage({
       response: { data: { message: '服务端提示' } },
     })).toBe('服务端提示');
+    expect(apiModule.isWebVPNCampusNetworkBlocked({
+      error_code: 'WEBVPN_CAMPUS_NETWORK_BLOCKED',
+    })).toBe(true);
+    expect(apiModule.isWebVPNCampusNetworkBlocked({
+      error_code: 'WEBVPN_UNKNOWN_ERROR',
+    })).toBe(false);
   });
 });
 

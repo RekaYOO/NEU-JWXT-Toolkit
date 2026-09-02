@@ -18,6 +18,9 @@ jest.mock('../services/api', () => ({
   verifyWebVPNSMSCode: jest.fn(),
   cancelWebVPNSMSLogin: jest.fn().mockResolvedValue({ success: true }),
   getOfflineStatus: jest.fn(),
+  isWebVPNCampusNetworkBlocked: jest.fn(value => value?.error_code === 'WEBVPN_CAMPUS_NETWORK_BLOCKED'),
+  getWebVPNErrorMessage: jest.fn((value, fallback = 'WebVPN 操作失败') => value?.message || fallback),
+  isWebVPNFlowInvalid: jest.fn(() => false),
 }));
 
 describe('LoginPage session recovery boundary', () => {
@@ -93,4 +96,5 @@ describe('LoginPage session recovery boundary', () => {
     await act(async () => root.unmount());
     container.remove();
   });
+
 });

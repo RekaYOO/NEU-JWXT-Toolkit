@@ -42,12 +42,15 @@ const trySilentAuthRecovery = async (scope = 'primary') => {
       : '/api/status';
     const recovery = api.get(statusUrl, {
       skipAuthRedirect: true,
-    }).then(response => Boolean(
-      scope === 'jwxk'
-        ? response.data?.service_authenticated
-        : response.data?.is_logged_in
-    ))
-      .catch(() => false)
+    }).then(response => ({
+      recovered: Boolean(
+        scope === 'jwxk'
+          ? response.data?.service_authenticated
+          : response.data?.is_logged_in
+      ),
+      status: response.data || {},
+    }))
+      .catch(() => ({ recovered: false, status: {} }))
       .finally(() => {
         authRecoveryPromises.delete(scope);
       });
@@ -72,12 +75,18 @@ api.interceptors.response.use(
       ) {
         if (!error.config?._silentAuthRecoveryRetried) {
           const recoveryScope = error.config?.authRecoveryScope || 'primary';
-          const recovered = await trySilentAuthRecovery(recoveryScope);
-          if (recovered && !isManualLogoutActive()) {
+          const recovery = await trySilentAuthRecovery(recoveryScope);
+          if (recovery.recovered && !isManualLogoutActive()) {
             return api.request({
               ...error.config,
               _silentAuthRecoveryRetried: true,
             });
+          }
+          if (isWebVPNCampusNetworkBlocked(recovery.status)) {
+            window.dispatchEvent(new CustomEvent('neu-webvpn-campus-blocked', {
+              detail: recovery.status,
+            }));
+            return Promise.reject(error);
           }
         }
         if (isManualLogoutActive()) {
@@ -288,13 +297,17 @@ export const cancelWebVPNSMSLogin = async (flowId) => {
 // poll running.
 export const getWebVPNErrorCode = (value) => (
   value?.error_code
+  || value?.auth_error_code
   || value?.response?.data?.error_code
+  || value?.response?.data?.auth_error_code
   || ''
 );
 
 export const getWebVPNErrorMessage = (value, fallback = 'WebVPN 操作失败') => {
   const candidate = value?.message
+    || value?.auth_error_message
     || value?.response?.data?.message
+    || value?.response?.data?.auth_error_message
     || value?.response?.data?.detail;
   return typeof candidate === 'string' && candidate.trim() ? candidate : fallback;
 };
@@ -304,6 +317,10 @@ export const isWebVPNFlowInvalid = (value) => (
     getWebVPNErrorCode(value),
   )
   || ['missing', 'expired'].includes(String(value?.status || '').toLowerCase())
+);
+
+export const isWebVPNCampusNetworkBlocked = (value) => (
+  getWebVPNErrorCode(value) === 'WEBVPN_CAMPUS_NETWORK_BLOCKED'
 );
 
 // 登出

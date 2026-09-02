@@ -156,7 +156,17 @@ WEBVPN_ERR_UPSTREAM_TIMEOUT = "WEBVPN_UPSTREAM_TIMEOUT"
 WEBVPN_ERR_UPSTREAM_NON_JSON = "WEBVPN_UPSTREAM_NON_JSON"
 WEBVPN_ERR_UPSTREAM_REDIRECT = "WEBVPN_UPSTREAM_REDIRECT"
 WEBVPN_ERR_SESSION_ESTABLISH = "WEBVPN_SESSION_ESTABLISH_FAILED"
+WEBVPN_ERR_CAMPUS_NETWORK = "WEBVPN_CAMPUS_NETWORK_BLOCKED"
 WEBVPN_ERR_UNKNOWN = "WEBVPN_UNKNOWN_ERROR"
+
+_WEBVPN_CAMPUS_BLOCK_MARKERS = (
+    "WebVPN仅用于我校师生在校外登录",
+    "校园网用户无需使用WebVPN",
+)
+_WEBVPN_CAMPUS_BLOCK_MESSAGE = (
+    "检测到当前处于校园网环境，学校 WebVPN 拒绝校园网访问。"
+    "请切换为“校内直连”后登录。"
+)
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -392,6 +402,9 @@ class NEUAuthClient:
         self._timetable = None        # 课表查询 API
         self._webvpn_qr_flow: Optional[Dict[str, Any]] = None
         self._webvpn_sms_flow: Optional[Dict[str, Any]] = None
+        self._last_webvpn_error_code = ""
+        self._last_webvpn_error_message = ""
+        self._last_webvpn_error_at = 0.0
         self._service_token_cache: Dict[tuple[str, str], str] = {}
         
         # 自动恢复入口可以读取历史会话；用户主动登录必须从干净会话开始，
@@ -601,6 +614,49 @@ class NEUAuthClient:
         )
 
     @staticmethod
+    def _is_webvpn_campus_block_response(response: requests.Response) -> bool:
+        """Recognize the gateway's campus-network rejection page."""
+        try:
+            status_code = int(getattr(response, "status_code", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        if status_code != 403:
+            return False
+        hostname = (
+            urlparse(str(getattr(response, "url", "") or "")).hostname or ""
+        ).lower()
+        if hostname != "webvpn.neu.edu.cn":
+            return False
+        try:
+            body = str(response.text or "")[:8192]
+        except (AttributeError, TypeError, ValueError):
+            return False
+        return any(marker in body for marker in _WEBVPN_CAMPUS_BLOCK_MARKERS)
+
+    def _raise_for_webvpn_response(self, response: requests.Response) -> None:
+        """Raise stable WebVPN errors without exposing upstream HTML."""
+        self._raise_if_webvpn_campus_block(response)
+        response.raise_for_status()
+
+    def _raise_if_webvpn_campus_block(self, response: requests.Response) -> None:
+        """Classify only the special campus block; preserve other statuses."""
+        if self._is_webvpn_campus_block_response(response):
+            self._last_webvpn_error_code = WEBVPN_ERR_CAMPUS_NETWORK
+            self._last_webvpn_error_message = _WEBVPN_CAMPUS_BLOCK_MESSAGE
+            self._last_webvpn_error_at = time.time()
+            raise WebVPNLoginError(
+                _WEBVPN_CAMPUS_BLOCK_MESSAGE,
+                error_code=WEBVPN_ERR_CAMPUS_NETWORK,
+            )
+        hostname = (
+            urlparse(str(getattr(response, "url", "") or "")).hostname or ""
+        ).lower()
+        if hostname == "webvpn.neu.edu.cn":
+            self._last_webvpn_error_code = ""
+            self._last_webvpn_error_message = ""
+            self._last_webvpn_error_at = 0.0
+
+    @staticmethod
     def _safe_url_metadata(url: str) -> Dict[str, Any]:
         """Return redirect diagnostics without retaining tickets or query data."""
         parsed = urlparse(url)
@@ -638,7 +694,7 @@ class NEUAuthClient:
                 verify=self.verify_ssl,
                 allow_redirects=True,
             )
-            response.raise_for_status()
+            self._raise_for_webvpn_response(response)
         except requests.Timeout as error:
             raise WebVPNLoginError(
                 "获取 WebVPN 二维码超时，请稍后重试",
@@ -696,7 +752,7 @@ class NEUAuthClient:
                     "Referer": flow["login_page_url"],
                 },
             )
-            response.raise_for_status()
+            self._raise_for_webvpn_response(response)
         except requests.Timeout as error:
             raise WebVPNLoginError(
                 "二维码状态检查超时，请稍后重试",
@@ -743,7 +799,7 @@ class NEUAuthClient:
                 verify=self.verify_ssl,
                 allow_redirects=True,
             )
-            completion.raise_for_status()
+            self._raise_for_webvpn_response(completion)
         except requests.Timeout as error:
             raise WebVPNLoginError(
                 "二维码回调超时，请稍后重试",
@@ -892,7 +948,7 @@ class NEUAuthClient:
                     "Cache-Control": "no-cache",
                 },
             )
-            response.raise_for_status()
+            self._raise_for_webvpn_response(response)
         except requests.RequestException as error:
             code = WEBVPN_ERR_UPSTREAM_TIMEOUT if isinstance(error, requests.Timeout) else WEBVPN_ERR_CAPTCHA_FETCH
             raise WebVPNLoginError(
@@ -977,7 +1033,7 @@ class NEUAuthClient:
             post_url = self._extract_login_form_action(page.text, page.url)
             form_data = self._build_login_form(hidden, key_b64)
             response = self._submit_login_form(hidden, key_b64, post_url, form_data)
-            response.raise_for_status()
+            self._raise_for_webvpn_response(response)
 
             challenge = self._extract_second_auth_form(response.text, response.url)
             logger.info(
@@ -1020,7 +1076,7 @@ class NEUAuthClient:
                 verify=self.verify_ssl,
                 allow_redirects=True,
             )
-            page.raise_for_status()
+            self._raise_for_webvpn_response(page)
             if self._is_webvpn_login_url(page.url):
                 return page, False
             if self._webvpn_health_check():
@@ -1083,7 +1139,7 @@ class NEUAuthClient:
                     "Referer": flow["page_url"],
                 },
             )
-            response.raise_for_status()
+            self._raise_for_webvpn_response(response)
             try:
                 result = response.json()
                 non_json = False
@@ -1159,7 +1215,7 @@ class NEUAuthClient:
                 verify=self.verify_ssl,
                 headers={"Referer": flow["page_url"]},
             )
-            response.raise_for_status()
+            self._raise_for_webvpn_response(response)
         except requests.RequestException as error:
             code = WEBVPN_ERR_UPSTREAM_TIMEOUT if isinstance(error, requests.Timeout) else WEBVPN_ERR_UNKNOWN
             raise WebVPNLoginError(
@@ -1253,7 +1309,10 @@ class NEUAuthClient:
             verify=self.verify_ssl,
             headers={"X-Requested-With": "XMLHttpRequest"},
         )
-        response.raise_for_status()
+        # The gateway can reject even the cookie-bridge request when the
+        # client is on the campus network. Keep the same stable routing
+        # error as the login/page requests instead of leaking a generic 403.
+        self._raise_for_webvpn_response(response)
         diagnostics["cookie_bridge"] = {
             "attempted": True,
             "status_code": response.status_code,
@@ -1332,6 +1391,8 @@ class NEUAuthClient:
             try:
                 result = self.start_webvpn_password_login()
             except NEULoginError as error:
+                if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
+                    raise
                 logger.warning(
                     "WebVPN 账号密码静默恢复失败，错误类型: %s",
                     getattr(error, "error_type", LOGIN_ERR_UNKNOWN),
@@ -1669,7 +1730,7 @@ class NEUAuthClient:
             verify=self.verify_ssl,
             headers={"X-Requested-With": "XMLHttpRequest"},
         )
-        response.raise_for_status()
+        self._raise_for_webvpn_response(response)
         cookies = SimpleCookie()
         try:
             cookies.load(str(response.text or ""))
@@ -1716,7 +1777,7 @@ class NEUAuthClient:
                 pass
         if network_mode == "webvpn":
             try:
-                self._session.post(
+                response = self._session.post(
                     f"{WEBVPN_ORIGIN}/wengine-vpn/cookie",
                     params={
                         "method": "set",
@@ -1730,7 +1791,8 @@ class NEUAuthClient:
                     timeout=self.timeout,
                     verify=self.verify_ssl,
                     headers={"X-Requested-With": "XMLHttpRequest"},
-                ).raise_for_status()
+                )
+                self._raise_for_webvpn_response(response)
             except requests.RequestException as error:
                 logger.warning(
                     "failed to clear WebVPN virtual service token service=%s error=%s",
@@ -1822,6 +1884,8 @@ class NEUAuthClient:
             except NEULoginError as error:
                 if network_mode != "webvpn":
                     raise
+                if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
+                    raise
                 # A direct primary identity commonly reaches a WebVPN login or
                 # verification trampoline that is not a valid JWXK callback.
                 # Treat that as a missing gateway identity so the saved-password
@@ -1862,6 +1926,8 @@ class NEUAuthClient:
                 try:
                     webvpn_result = self._login_webvpn_service_identity()
                 except NEULoginError as error:
+                    if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
+                        raise
                     logger.info(
                         "WebVPN silent password login unavailable service=%s error=%s",
                         service,
@@ -1915,7 +1981,9 @@ class NEUAuthClient:
             ):
                 try:
                     webvpn_result = self._login_webvpn_service_identity()
-                except NEULoginError:
+                except NEULoginError as error:
+                    if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
+                        raise
                     webvpn_result = {}
                 if webvpn_result.get("status") == "authenticated":
                     identity_recovered = True
@@ -2070,6 +2138,7 @@ class NEUAuthClient:
             response = self._session.request(
                 current_method, current_url, allow_redirects=False, **options
             )
+            self._raise_if_webvpn_campus_block(response)
             if response.status_code not in (301, 302, 303, 307, 308):
                 return response
             location = response.headers.get("Location", "")
@@ -2535,7 +2604,9 @@ class NEUAuthClient:
                 url = self._protocol_override + url[len(current_scheme):]
         
         try:
-            return self._session.request(method, url, **kwargs)
+            response = self._session.request(method, url, **kwargs)
+            self._raise_if_webvpn_campus_block(response)
+            return response
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError,
                 requests.exceptions.Timeout, requests.exceptions.TooManyRedirects) as e:
             # 仅对 jwxt.neu.edu.cn 进行协议回退
@@ -2551,6 +2622,7 @@ class NEUAuthClient:
                 urlparse(alt_url).scheme,
             )
             resp = self._session.request(method, alt_url, **kwargs)
+            self._raise_if_webvpn_campus_block(resp)
             # 记住可用协议，后续请求直接使用
             self._protocol_override = "https://" if alt_url.startswith("https://") else "http://"
             logger.info(f"协议回退成功，后续请求将使用 {self._protocol_override}")

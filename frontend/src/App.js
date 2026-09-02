@@ -28,7 +28,7 @@ import {
   checkStatus, getAccessStatus, getClientBootstrap, getHealth, getOfflineStatus,
   refreshWebVPNCaptcha, sendWebVPNSMSCode,
   verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
-  getWebVPNErrorMessage, isWebVPNFlowInvalid,
+  getWebVPNErrorMessage, isWebVPNFlowInvalid, isWebVPNCampusNetworkBlocked,
 } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
 import { isExportToolAvailable } from './export/exportTools';
@@ -167,6 +167,11 @@ function App() {
       health = await getHealth();
     }
     setRuntimeProfile(bootstrap?.runtime?.profile || health?.profile || 'development');
+    if (isWebVPNCampusNetworkBlocked(bootstrap?.auth)) {
+      window.dispatchEvent(new CustomEvent('neu-webvpn-campus-blocked', {
+        detail: bootstrap.auth,
+      }));
+    }
     if (!access.required || access.authenticated) {
       if (isManualLogoutActive()) {
         sessionStorage.removeItem(OFFLINE_SESSION_KEY);
@@ -325,6 +330,22 @@ function App() {
   }, [offlineMode]);
 
   useEffect(() => {
+    const handleCampusBlock = event => {
+      const detail = event.detail || {};
+      message.warning({
+        key: 'webvpn-campus-network-blocked',
+        duration: 8,
+        content: getWebVPNErrorMessage(
+          detail,
+          '检测到校园网环境，学校 WebVPN 不可用。当前页面与缓存已保留；请在登录页选择“校内直连”。',
+        ),
+      });
+    };
+    window.addEventListener('neu-webvpn-campus-blocked', handleCampusBlock);
+    return () => window.removeEventListener('neu-webvpn-campus-blocked', handleCampusBlock);
+  }, []);
+
+  useEffect(() => {
     if (offlineMode) return undefined;
     const onPending = event => {
       const challenge = event.detail || {};
@@ -345,11 +366,27 @@ function App() {
     setPendingCaptchaLoading(true);
     try {
       const result = await refreshWebVPNCaptcha(pendingAuthFlow.flow_id);
+      if (isWebVPNCampusNetworkBlocked(result)) {
+        setPendingAuthFlow(null);
+        message.warning({
+          duration: 8,
+          content: '检测到校园网环境，学校 WebVPN 不可用。当前页面会保留；需要重新认证时请在登录页选择“校内直连”。',
+        });
+        return;
+      }
       if (!result.success) throw Object.assign(new Error(getWebVPNErrorMessage(result, '刷新图形验证码失败')), { response: { data: result } });
       setPendingAuthFlow(previous => ({ ...previous, ...result }));
       setPendingCaptchaCode('');
       setPendingSmsSent(false);
     } catch (error) {
+      if (isWebVPNCampusNetworkBlocked(error)) {
+        setPendingAuthFlow(null);
+        message.warning({
+          duration: 8,
+          content: '检测到校园网环境，学校 WebVPN 不可用。当前页面会保留；需要重新认证时请在登录页选择“校内直连”。',
+        });
+        return;
+      }
       message.error(getWebVPNErrorMessage(error, '刷新图形验证码失败'));
       if (isWebVPNFlowInvalid(error)) setPendingAuthFlow(null);
     }
@@ -364,6 +401,14 @@ function App() {
     setPendingSmsLoading(true);
     try {
       const result = await sendWebVPNSMSCode(pendingAuthFlow.flow_id, pendingCaptchaCode.trim());
+      if (isWebVPNCampusNetworkBlocked(result)) {
+        setPendingAuthFlow(null);
+        message.warning({
+          duration: 8,
+          content: '检测到校园网环境，学校 WebVPN 不可用。当前页面会保留；需要重新认证时请在登录页选择“校内直连”。',
+        });
+        return;
+      }
       if (!result.success && result.captcha_invalid) {
         setPendingAuthFlow(previous => ({ ...previous, ...result }));
         setPendingCaptchaCode('');
@@ -374,7 +419,14 @@ function App() {
         throw Object.assign(new Error(getWebVPNErrorMessage(result, '短信验证码发送失败')), { response: { data: result } });
       }
       else { setPendingSmsSent(true); message.success('验证码已发送'); }
-    } catch (error) { message.error(getWebVPNErrorMessage(error, '短信验证码发送失败')); }
+    } catch (error) {
+      if (isWebVPNCampusNetworkBlocked(error)) {
+        setPendingAuthFlow(null);
+        message.warning({ duration: 8, content: '校园网无法使用 WebVPN。当前页面会保留，请改用校内直连重新认证。' });
+      } else {
+        message.error(getWebVPNErrorMessage(error, '短信验证码发送失败'));
+      }
+    }
     finally { setPendingSmsLoading(false); }
   };
 
@@ -386,6 +438,14 @@ function App() {
     setPendingSmsLoading(true);
     try {
       const result = await verifyWebVPNSMSCode(pendingAuthFlow.flow_id, pendingSmsCode.trim());
+      if (isWebVPNCampusNetworkBlocked(result)) {
+        setPendingAuthFlow(null);
+        message.warning({
+          duration: 8,
+          content: '检测到校园网环境，学校 WebVPN 不可用。当前页面会保留；需要重新认证时请在登录页选择“校内直连”。',
+        });
+        return;
+      }
       if (!result.success && result.status === 'captcha_invalid') {
         setPendingAuthFlow(previous => ({ ...previous, ...result }));
         setPendingCaptchaCode('');
@@ -402,7 +462,14 @@ function App() {
       setPendingSmsCode('');
       setPendingSmsSent(false);
       handleLoginSuccess(result.username || userInfo || '已登录');
-    } catch (error) { message.error(getWebVPNErrorMessage(error, '短信验证失败')); }
+    } catch (error) {
+      if (isWebVPNCampusNetworkBlocked(error)) {
+        setPendingAuthFlow(null);
+        message.warning({ duration: 8, content: '校园网无法使用 WebVPN。当前页面会保留，请改用校内直连重新认证。' });
+      } else {
+        message.error(getWebVPNErrorMessage(error, '短信验证失败'));
+      }
+    }
     finally { setPendingSmsLoading(false); }
   };
 

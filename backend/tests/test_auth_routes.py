@@ -9,7 +9,11 @@ from backend.app.schemas.auth import (
     WebVPNPasswordStartRequest,
     WebVPNQRStartRequest,
 )
-from backend.core.auth.client import WebVPNRequiredError, WebVPNLoginError
+from backend.core.auth.client import (
+    WEBVPN_ERR_CAMPUS_NETWORK,
+    WebVPNRequiredError,
+    WebVPNLoginError,
+)
 from backend.core.auth.session_manager import AuthSessionManager
 
 
@@ -135,6 +139,25 @@ class AuthRouteTests(unittest.TestCase):
         )
         security_log.assert_called_once()
         self.assertEqual(security_log.call_args.args[:2], ("webvpn_password_login", "success"))
+
+    def test_webvpn_password_campus_block_recommends_direct_route(self):
+        client = Mock()
+        client.start_webvpn_password_login.side_effect = WebVPNLoginError(
+            "检测到校园网环境，请切换为校内直连",
+            error_code=WEBVPN_ERR_CAMPUS_NETWORK,
+        )
+        with patch.object(auth, "NEUAuthClient", return_value=client):
+            response = auth.start_webvpn_password_login(
+                WebVPNPasswordStartRequest(
+                    username="20250001",
+                    password="not-used",
+                    remember=False,
+                )
+            )
+
+        self.assertFalse(response["success"])
+        self.assertEqual(response["error_code"], WEBVPN_ERR_CAMPUS_NETWORK)
+        self.assertIn("校内直连", response["suggestion"])
 
     def test_in_page_webvpn_qr_login_preserves_active_session_until_success(self):
         active_client = Mock()

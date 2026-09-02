@@ -52,7 +52,11 @@ from backend.app.dependencies import (
     get_course_selection_automation_service,
     get_grade_tracker,
 )
-from backend.core.auth.client import NEUAuthClient, NEULoginError
+from backend.core.auth.client import (
+    NEUAuthClient,
+    NEULoginError,
+    WEBVPN_ERR_CAMPUS_NETWORK,
+)
 from backend.core.cache import mutation_policy
 from backend.core.course_selection import (
     CourseMarket,
@@ -180,6 +184,7 @@ def get_jwxk_status(
     service_auth_state = "login_required" if effective == "webvpn" else "unavailable"
     authenticated_batches = None
     account_context = {}
+    service_error_code = ""
     if primary_authenticated:
         credentials_attached = attach_saved_auth_credentials(primary)
         if credentials_attached:
@@ -200,10 +205,11 @@ def get_jwxk_status(
             # distinction is still useful to the UI: a WebVPN service session
             # normally needs an interactive WebVPN login, while a direct
             # session failure can be retried without changing the route.
+            service_error_code = str(getattr(error, "error_code", None) or "")
             service_auth_state = (
-                "login_required"
-                if effective == "webvpn"
-                else "unavailable"
+                "unavailable"
+                if service_error_code == WEBVPN_ERR_CAMPUS_NETWORK
+                else ("login_required" if effective == "webvpn" else "unavailable")
             )
             logger.info(
                 "jwxk service session unavailable mode=%s primary_authenticated=%s error=%s",
@@ -234,11 +240,16 @@ def get_jwxk_status(
                 "已按账号资格和官方时间读取全部轮次。"
                 if service_authenticated
                 else (
-                    "当前已选择 WebVPN，但尚未完成 WebVPN 登录；请先完成 WebVPN 认证。"
-                    if service_auth_state == "login_required"
-                    else "当前仅展示公开批次；登录后可读取账号轮次和课程。"
+                    "当前处于校园网环境，学校 WebVPN 不可用；请将选课线路切换为“直连”或“跟随教务”。"
+                    if service_error_code == WEBVPN_ERR_CAMPUS_NETWORK
+                    else (
+                        "当前已选择 WebVPN，但尚未完成 WebVPN 登录；请先完成 WebVPN 认证。"
+                        if service_auth_state == "login_required"
+                        else "当前仅展示公开批次；登录后可读取账号轮次和课程。"
+                    )
                 )
             ),
+            error_code=service_error_code or None,
         )
     except (JwxkError, requests.RequestException) as error:
         logger.warning("jwxk public status unavailable error=%s", type(error).__name__)
@@ -257,6 +268,7 @@ def get_jwxk_status(
             current_campus_name=str(account_context.get("current_campus_name") or ""),
             batches=[],
             message="暂时无法读取选课系统批次，请稍后重试。",
+            error_code=service_error_code or None,
         )
 
 

@@ -40,11 +40,14 @@ def _active_identity():
 
 
 def _auth_snapshot(client, account: str) -> dict:
+    source = client or peek_auth_client()
     return {
         "is_logged_in": bool(client and account),
         "current_user": account or None,
         "network_mode": getattr(client, "active_mode", "direct") if client else "direct",
         "identity_epoch": get_auth_generation(),
+        "error_code": getattr(source, "_last_webvpn_error_code", None) or None,
+        "error_message": getattr(source, "_last_webvpn_error_message", None) or None,
     }
 
 

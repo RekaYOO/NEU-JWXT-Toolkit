@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Form, Input, Button, Checkbox, message, Spin, Radio, QRCode, Alert } from 'antd';
 import {
   UserOutlined, LockOutlined, QrcodeOutlined,
@@ -7,7 +7,7 @@ import {
 import {
   login, checkStatus, startWebVPNQRLogin, getWebVPNQRStatus, cancelWebVPNQRLogin,
   startWebVPNPasswordLogin, refreshWebVPNCaptcha, sendWebVPNSMSCode, verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
-  getOfflineStatus, getWebVPNErrorMessage, isWebVPNFlowInvalid,
+  getOfflineStatus, getWebVPNErrorMessage, isWebVPNFlowInvalid, isWebVPNCampusNetworkBlocked,
 } from '../services/api';
 import './LoginPage.css';
 import { isManualLogoutActive } from '../utils/authSessionPolicy';
@@ -29,7 +29,26 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   const [smsSent, setSmsSent] = useState(false);
   const [offlineStatus, setOfflineStatus] = useState(null);
   const [offlineLoading, setOfflineLoading] = useState(false);
+  const [networkNotice, setNetworkNotice] = useState('');
   const [form] = Form.useForm();
+
+  const handleCampusNetworkBlock = useCallback((value) => {
+    const blocked = typeof isWebVPNCampusNetworkBlocked === 'function'
+      && isWebVPNCampusNetworkBlocked(value);
+    if (!blocked) return false;
+    setQrFlow(null);
+    setSmsFlow(null);
+    setCaptchaCode('');
+    setSmsCode('');
+    setSmsSent(false);
+    setLoginView('password');
+    setNetworkMode('direct');
+    setNetworkNotice(getWebVPNErrorMessage(
+      value,
+      '检测到校园网环境，学校 WebVPN 在校园网内不可用。已切换到校内直连，请确认后登录。',
+    ));
+    return true;
+  }, []);
 
   // 自然会话失效时允许再次静默恢复；用户明确退出后则只读取离线能力，
   // 避免 Cookie 或已保存凭据把用户立即带回主界面。
@@ -53,6 +72,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       if (isManualLogoutActive()) return;
       try {
         const status = await checkStatus();
+        handleCampusNetworkBlock(status);
         if (status.is_logged_in) {
           onLoginSuccess(status.current_user);
         }
@@ -61,7 +81,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       }
     };
     loadLoginState();
-  }, []);
+  }, [handleCampusNetworkBlock, onLoginSuccess]);
 
   useEffect(() => {
     const updateQRSize = () => setQrSize(Math.max(144, Math.min(196, window.innerWidth - 96)));
@@ -76,6 +96,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     const poll = async () => {
       try {
         const result = await getWebVPNQRStatus(qrFlow.flow_id);
+        if (handleCampusNetworkBlock(result)) return;
         if (!result.success) {
           setQrMessage(getWebVPNErrorMessage(result, '二维码登录失败'));
           setQrFlow(null);
@@ -98,6 +119,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
           setQrFlow(null);
         }
       } catch (error) {
+        if (handleCampusNetworkBlock(error)) return;
         setQrMessage(getWebVPNErrorMessage(error, '二维码状态检查失败，请重新获取'));
         setQrFlow(null);
       }
@@ -105,7 +127,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
 
     const timer = setInterval(poll, qrFlow.poll_interval * 1000);
     return () => clearInterval(timer);
-  }, [form, onLoginSuccess, qrFlow]);
+  }, [form, handleCampusNetworkBlock, onLoginSuccess, qrFlow]);
 
   const beginWebVPNQRLogin = async () => {
     setLoginView('qr');
@@ -113,6 +135,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     setQrMessage('');
     try {
       const result = await startWebVPNQRLogin(form.getFieldValue('username') || '');
+      if (handleCampusNetworkBlock(result)) return;
       if (!result.success) {
         setQrMessage(result.message || '无法启动二维码登录');
         return;
@@ -120,6 +143,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       setNetworkMode('webvpn');
       setQrFlow(result);
     } catch (error) {
+      if (handleCampusNetworkBlock(error)) return;
       setQrMessage('无法连接后端服务');
     } finally {
       setLoading(false);
@@ -150,6 +174,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     }, 5000);
     try {
       const result = await startWebVPNPasswordLogin(values.username, values.password, values.remember);
+      if (handleCampusNetworkBlock(result)) return;
       if (!result.success) {
         message.error(getWebVPNErrorMessage(result, 'WebVPN 登录失败'));
       } else if (result.status === 'sms_required') {
@@ -161,6 +186,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
         onLoginSuccess(result.username || values.username);
       }
     } catch (error) {
+      if (handleCampusNetworkBlock(error)) return;
       message.error(getWebVPNErrorMessage(error, 'WebVPN 登录请求失败，请检查网络或使用微信扫码快速登录'));
     } finally {
       clearTimeout(slowTimer);
@@ -176,6 +202,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     setSmsLoading(true);
     try {
       const result = await sendWebVPNSMSCode(smsFlow.flow_id, captchaCode.trim());
+      if (handleCampusNetworkBlock(result)) return;
       if (!result.success && result.captcha_invalid) {
         setSmsFlow(prev => ({ ...prev, ...result }));
         setCaptchaCode('');
@@ -193,6 +220,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
         message.success('验证码已发送');
       }
     } catch (error) {
+      if (handleCampusNetworkBlock(error)) return;
       message.error(getWebVPNErrorMessage(error, '短信验证码发送失败'));
     } finally {
       setSmsLoading(false);
@@ -204,11 +232,13 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     setCaptchaLoading(true);
     try {
       const result = await refreshWebVPNCaptcha(smsFlow.flow_id);
+      if (handleCampusNetworkBlock(result)) return;
       if (!result.success) throw Object.assign(new Error(getWebVPNErrorMessage(result, '刷新图形验证码失败')), { response: { data: result } });
       setSmsFlow(prev => ({ ...prev, ...result }));
       setCaptchaCode('');
       setSmsSent(false);
     } catch (error) {
+      if (handleCampusNetworkBlock(error)) return;
       message.error(getWebVPNErrorMessage(error, '刷新图形验证码失败'));
       if (isWebVPNFlowInvalid(error)) setSmsFlow(null);
     } finally {
@@ -224,6 +254,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     setSmsLoading(true);
     try {
       const result = await verifyWebVPNSMSCode(smsFlow.flow_id, smsCode.trim());
+      if (handleCampusNetworkBlock(result)) return;
       if (!result.success && result.status === 'captcha_invalid') {
         setSmsFlow(prev => ({ ...prev, ...result }));
         setCaptchaCode('');
@@ -243,6 +274,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       setSmsFlow(null);
       onLoginSuccess(result.username || form.getFieldValue('username'));
     } catch (error) {
+      if (handleCampusNetworkBlock(error)) return;
       message.error(getWebVPNErrorMessage(error, '验证码验证请求失败'));
       if (isWebVPNFlowInvalid(error)) setSmsFlow(null);
     } finally {
@@ -356,6 +388,18 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
             </p>
           </header>
 
+          {networkNotice && (
+            <Alert
+              className="login-network-notice"
+              type="warning"
+              showIcon
+              closable
+              message="WebVPN 当前不可用"
+              description={networkNotice}
+              onClose={() => setNetworkNotice('')}
+            />
+          )}
+
         <div className="login-credentials-wrap" aria-hidden={loginView === 'qr'}>
           <Form
             form={form}
@@ -368,7 +412,10 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
             <Radio.Group
               className="access-mode-group"
               value={networkMode}
-              onChange={(event) => setNetworkMode(event.target.value)}
+              onChange={(event) => {
+                setNetworkMode(event.target.value);
+                setNetworkNotice('');
+              }}
               optionType="button"
               buttonStyle="solid"
               size="small"
