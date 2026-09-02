@@ -668,6 +668,7 @@ def test_jwxk_webvpn_cas_callback_also_targets_webvpn(monkeypatch):
     client = NEUAuthClient(network_mode="direct", restore_session=False)
     client._logged_in = True
     calls = []
+    tokens = iter((None, "opaque"))
     expected_callback = WebVPNUrlCodec.convert_url(
         "https://jwxk.neu.edu.cn/xsxk/auth/cas"
     )
@@ -684,6 +685,11 @@ def test_jwxk_webvpn_cas_callback_also_targets_webvpn(monkeypatch):
         return item
 
     monkeypatch.setattr(client, "_request_service_redirects", fake_redirects)
+    monkeypatch.setattr(
+        client,
+        "get_service_token",
+        lambda *_args, **_kwargs: next(tokens),
+    )
     assert client.ensure_service_session("jwxk", network_mode_override="webvpn") is True
     assert len(calls) == 1
     assert "webvpn.neu.edu.cn" in calls[0]

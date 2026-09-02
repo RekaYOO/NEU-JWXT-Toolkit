@@ -53,7 +53,9 @@ class WebVPNCaptchaTests(unittest.TestCase):
 
         from PIL import Image, ImageDraw, ImageFont
 
-        font = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 28)
+        # Use Pillow's bundled font so this release guard exercises the same
+        # OCR path on Windows and Linux runners without relying on OS fonts.
+        font = ImageFont.load_default(size=28)
         expected = "6726"
         image = Image.new("RGB", (110, 44), "white")
         ImageDraw.Draw(image).text((8, 3), expected, font=font, fill="black")
