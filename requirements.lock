@@ -10,7 +10,7 @@ beautifulsoup4==4.15.0
 lxml==6.1.1
 pycryptodome==3.23.0
 flatbuffers==25.12.19
-numpy==2.5.2
+numpy==2.4.2
 onnxruntime==1.29.0
 packaging==26.2
 pillow==12.3.0
