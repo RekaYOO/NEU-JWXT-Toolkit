@@ -9,7 +9,7 @@ from backend.app.schemas.auth import (
     WebVPNPasswordStartRequest,
     WebVPNQRStartRequest,
 )
-from backend.core.auth.client import WebVPNRequiredError
+from backend.core.auth.client import WebVPNRequiredError, WebVPNLoginError
 from backend.core.auth.session_manager import AuthSessionManager
 
 
@@ -183,6 +183,38 @@ class AuthRouteTests(unittest.TestCase):
         set_client.assert_called_once_with(candidate, force_epoch=True)
         bootstrap.assert_called_once_with(candidate)
 
+    def test_webvpn_qr_expiry_has_stable_flow_error_code(self):
+        candidate = Mock(username="20250001")
+        candidate.poll_webvpn_qr_login.return_value = {"status": "expired"}
+        with (
+            patch.object(auth, "peek_pending_auth_client", return_value=candidate),
+            patch.object(auth, "clear_pending_auth_client"),
+        ):
+            response = auth.get_webvpn_qr_status(
+                auth.WebVPNQRStatusRequest(flow_id="qr-flow")
+            )
+        self.assertTrue(response["success"])
+        self.assertEqual(response["status"], "expired")
+        self.assertEqual(response["error_code"], "WEBVPN_FLOW_EXPIRED")
+
+    def test_stale_qr_poll_does_not_clear_newer_sms_flow(self):
+        candidate = Mock(username="20250001")
+        candidate._webvpn_sms_flow = {"id": "sms-flow"}
+        candidate.poll_webvpn_qr_login.side_effect = WebVPNLoginError(
+            "二维码登录流程不存在或已被替换",
+            error_code="WEBVPN_FLOW_REPLACED",
+        )
+        with (
+            patch.object(auth, "peek_pending_auth_client", return_value=candidate),
+            patch.object(auth, "clear_pending_auth_client") as clear_pending,
+        ):
+            response = auth.get_webvpn_qr_status(
+                auth.WebVPNQRStatusRequest(flow_id="old-qr")
+            )
+        self.assertFalse(response["success"])
+        self.assertEqual(response["error_code"], "WEBVPN_FLOW_REPLACED")
+        clear_pending.assert_not_called()
+
     def test_webvpn_password_sms_challenge_is_logged_as_pending(self):
         client = Mock()
         client._webvpn_sms_flow = {}
@@ -193,7 +225,9 @@ class AuthRouteTests(unittest.TestCase):
 
         with (
             patch.object(auth, "NEUAuthClient", return_value=client),
-            patch.object(auth, "set_auth_client"),
+            patch.object(auth, "set_auth_client") as set_active,
+            patch.object(auth, "clear_pending_auth_client", return_value=None),
+            patch.object(auth, "set_pending_auth_client") as set_pending,
             patch.object(auth, "log_security_event") as security_log,
         ):
             response = auth.start_webvpn_password_login(
@@ -206,8 +240,142 @@ class AuthRouteTests(unittest.TestCase):
 
         self.assertTrue(response["success"])
         self.assertEqual(client._webvpn_sms_flow["remember"], True)
+        set_pending.assert_called_once_with(client)
+        set_active.assert_not_called()
         security_log.assert_called_once()
         self.assertEqual(security_log.call_args.args[:2], ("webvpn_password_login", "pending"))
+
+    def test_pending_password_challenge_does_not_replace_active_identity(self):
+        active = Mock(is_logged_in=True)
+        candidate = Mock()
+        candidate._webvpn_sms_flow = {}
+        candidate.start_webvpn_password_login.return_value = {
+            "status": "sms_required",
+            "flow_id": "sms-flow",
+        }
+
+        with (
+            patch.object(auth, "NEUAuthClient", return_value=candidate),
+            patch.object(auth, "peek_auth_client", return_value=active),
+            patch.object(auth, "clear_pending_auth_client", return_value=None),
+            patch.object(auth, "set_pending_auth_client") as set_pending,
+            patch.object(auth, "set_auth_client") as set_active,
+            patch.object(auth, "log_security_event"),
+        ):
+            response = auth.start_webvpn_password_login(
+                WebVPNPasswordStartRequest(
+                    username="20250001",
+                    password="not-used",
+                    remember=False,
+                )
+            )
+
+        self.assertTrue(response["success"])
+        set_pending.assert_called_once_with(candidate)
+        set_active.assert_not_called()
+
+    def test_saved_credentials_sms_challenge_is_reused_until_expiry(self):
+        manager = AuthSessionManager()
+        candidate = SimpleNamespace(
+            username="20250001",
+            password="saved-password",
+            is_logged_in=False,
+            active_mode="webvpn",
+            _webvpn_qr_flow=None,
+            _webvpn_sms_flow={
+                "id": "sms-flow",
+                "expires_at": 4102444800,
+            },
+            ensure_login=Mock(return_value=False),
+        )
+        cookie_candidate = SimpleNamespace(
+            username="",
+            password="",
+            is_logged_in=False,
+            active_mode="webvpn",
+            _webvpn_qr_flow=None,
+            _webvpn_sms_flow=None,
+            ensure_login=Mock(return_value=False),
+        )
+        storage = Mock()
+        storage.load_credentials.return_value = ("20250001", "saved-password")
+
+        with (
+            patch.object(dependencies, "_auth_sessions", manager),
+            patch.object(dependencies, "_storage", storage),
+            patch.object(
+                dependencies,
+                "NEUAuthClient",
+                side_effect=[cookie_candidate, candidate],
+            ) as client_class,
+            patch.object(dependencies, "log_security_event"),
+        ):
+            self.assertIsNone(dependencies._get_auth_client_unlocked())
+            self.assertIs(manager.peek_pending_client(), candidate)
+            initial_client_count = client_class.call_count
+            self.assertIsNone(dependencies._get_auth_client_unlocked())
+
+        self.assertEqual(client_class.call_count, initial_client_count)
+        candidate.ensure_login.assert_called_once_with()
+
+    def test_expired_pending_challenge_allows_saved_session_recovery(self):
+        manager = AuthSessionManager()
+        expired = SimpleNamespace(
+            is_logged_in=False,
+            _webvpn_qr_flow=None,
+            _webvpn_sms_flow={"id": "old", "expires_at": 1},
+        )
+        recovered = SimpleNamespace(
+            username="20250001",
+            password="",
+            is_logged_in=True,
+            active_mode="webvpn",
+            _webvpn_qr_flow=None,
+            _webvpn_sms_flow=None,
+            ensure_login=Mock(return_value=True),
+        )
+        manager.set_pending_client(expired)
+        storage = Mock()
+        storage.load_credentials.return_value = None
+
+        with (
+            patch.object(dependencies, "_auth_sessions", manager),
+            patch.object(dependencies, "_storage", storage),
+            patch.object(dependencies, "NEUAuthClient", return_value=recovered),
+            patch.object(dependencies, "schedule_login_bootstrap"),
+            patch.object(dependencies, "log_security_event"),
+        ):
+            resolved = dependencies._get_auth_client_unlocked()
+
+        self.assertIs(resolved, recovered)
+        self.assertIsNone(manager.peek_pending_client())
+
+    def test_sms_success_promotes_pending_candidate_once(self):
+        candidate = Mock(username="20250001")
+        candidate._webvpn_sms_flow = {"remember": False}
+        candidate.verify_webvpn_sms_code.return_value = {
+            "status": "authenticated",
+            "username": "20250001",
+        }
+        with (
+            patch.object(auth, "_webvpn_sms_client", return_value=candidate),
+            patch.object(auth, "peek_auth_client", return_value=None),
+            patch.object(auth, "peek_pending_auth_client", return_value=candidate),
+            patch.object(auth, "clear_pending_auth_client") as clear_pending,
+            patch.object(auth, "_save_webvpn_password_login") as save_login,
+            patch.object(auth, "log_security_event"),
+        ):
+            response = auth.verify_webvpn_sms_code(
+                auth.WebVPNSMSVerifyRequest(
+                    flow_id="sms-flow",
+                    code="123456",
+                    trust_device=False,
+                )
+            )
+
+        self.assertTrue(response["success"])
+        clear_pending.assert_called_once_with(candidate)
+        save_login.assert_called_once_with(candidate, False)
 
     def test_pending_auth_endpoint_exposes_only_safe_challenge_fields(self):
         client = SimpleNamespace(
@@ -215,7 +383,7 @@ class AuthRouteTests(unittest.TestCase):
                 "id": "flow-1",
                 "source": "password",
                 "captcha_image": "abc",
-                "ocr_candidate": "1234",
+                "captcha_media_type": "image/jpeg",
                 "expires_at": 4102444800,
             }
         )
@@ -225,8 +393,31 @@ class AuthRouteTests(unittest.TestCase):
             response = auth.get_pending_auth_challenge()
         self.assertTrue(response["required"])
         self.assertEqual(response["flow_id"], "flow-1")
-        self.assertIn("captcha_image", response)
+        self.assertEqual(response["captcha_image"], "data:image/jpeg;base64,abc")
+        self.assertNotIn("ocr_candidate", response)
         self.assertNotIn("password", response)
+
+    def test_sms_flow_errors_include_stable_error_code_and_legacy_message(self):
+        with patch.object(auth, "_webvpn_sms_client", return_value=None):
+            response = auth.send_webvpn_sms_code(
+                auth.WebVPNSMSSendRequest(flow_id="missing", captcha_code="1234")
+            )
+        self.assertFalse(response["success"])
+        self.assertEqual(response["status"], "missing")
+        self.assertEqual(response["error_code"], "WEBVPN_FLOW_MISSING")
+        self.assertIn("短信验证流程不存在", response["message"])
+
+    def test_sms_upstream_error_preserves_specific_code(self):
+        client = Mock()
+        client.send_webvpn_sms_code.side_effect = WebVPNLoginError(
+            "发送过于频繁，请稍后再试", error_code="WEBVPN_SMS_RATE_LIMITED"
+        )
+        with patch.object(auth, "_webvpn_sms_client", return_value=client):
+            response = auth.send_webvpn_sms_code(
+                auth.WebVPNSMSSendRequest(flow_id="flow", captcha_code="1234")
+            )
+        self.assertFalse(response["success"])
+        self.assertEqual(response["error_code"], "WEBVPN_SMS_RATE_LIMITED")
 
     def test_logout_uses_current_client_without_name_error(self):
         client = Mock()

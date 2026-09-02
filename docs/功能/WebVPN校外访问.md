@@ -42,17 +42,14 @@ URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控�
 
 1. 前端调用 `POST /api/webvpn/password/start`。
 2. 后端打开 WebVPN 代理的 CAS 登录页，提取隐藏字段和 RSA 公钥，按官网表单格式提交账号密码。
-3. 若统一认证页面返回 `form#second_auth_form`，后端提取图形验证码地址和隐藏字段，返回 `status: "sms_required"`、短时有效的 `flow_id` 和验证码图片。
-4. 后端使用内置 CPU 数字 OCR 生成可编辑预填值；前端必须由用户核对或修改后，调用 `POST /api/webvpn/sms/send`。
-5. WebVPN 网关要求相对资源带路由查询：图形验证码使用 `?vpn-1&<随机数>`，短信接口使用
+3. 若统一认证页面返回 `form#second_auth_form`，后端提取页面地址和隐藏字段，返回 `status: "sms_required"`、短时有效的 `flow_id` 和验证码图片。
+4. 二次认证页面中的图片元素可能是预览图，不能作为验证码端点。后端固定从该页面所在目录请求
+   `code?vpn-1&<随机数>`，沿用当前 WebVPN Session 并带页面 Referer；后端会校验响应内容，优先按图片
+   magic bytes 修正学校偶尔出现的 `Content-Type: image/jpeg` 但实际为 GIF 的情况，再生成可显示的 data URL。
+5. 用户手动填写图形验证码后，明确点击按钮调用 `POST /api/webvpn/sms/send`。WebVPN 网关要求短信接口使用
    `?vpn-12-o2-pass.neu.edu.cn`。`secondAuthCode` 请求体只接收
    `code=<图形验证码>&method=mobile`。短信发送失败或图形验证码错误时会刷新图片并保留当前 Flow。
 6. 用户输入短信验证码后调用 `POST /api/webvpn/sms/verify`，后端提交二次认证表单并校验教务系统会话。
-
-OCR 运行时只依赖 Pillow、NumPy 和 ONNX Runtime；模型文件
-`backend/core/auth/models/common_old.onnx` 随源码/发行包离线提供，不会在首次启动时联网下载。
-它是从 ddddocr 1.6.1（MIT）中裁剪保留的数字 OCR 模型，程序没有引入完整 ddddocr、检测模型
-或滑块模型。OCR 仅作为可编辑预填，模型缺失、加载失败或超时时仍可手动填写验证码。
 
 短信分支由统一认证服务决定；某些账户、设备授信状态或保护期不会触发该分支。未触发并不代表项目跳过了短信流程。待提交表单只存在于内存中、有效 180 秒，且绝不会写入 `session.json`、日志或接口响应。
 
@@ -84,6 +81,27 @@ OCR 运行时只依赖 Pillow、NumPy 和 ONNX Runtime；模型文件
 
 `suggestion` 是面向界面的简短处理建议；客户端不应依赖完整的中文 `message` 判断业务状态。
 
+WebVPN 专用接口在保留 `message` 和 `status` 的同时返回稳定的 `error_code`。前端应优先按代码分支，
+中文消息只用于展示：
+
+| `error_code` | 含义 | 前端处理 |
+| --- | --- | --- |
+| `WEBVPN_FLOW_MISSING` | 服务端没有对应的内存流程 | 关闭当前弹窗/二维码，提示重新开始登录 |
+| `WEBVPN_FLOW_REPLACED` | 流程已被另一轮登录替换 | 丢弃旧表单状态，提示重新开始 |
+| `WEBVPN_FLOW_EXPIRED` | 图形验证码/短信流程超过 180 秒 | 关闭旧流程，要求重新输入账号密码 |
+| `WEBVPN_CAPTCHA_FETCH_FAILED` | 图形验证码缺失、空响应或无法识别为图片 | 保留页面，允许刷新或重新开始 |
+| `WEBVPN_CAPTCHA_INVALID` | 图形验证码为空或官方校验失败 | 保留弹窗，使用返回的新图片重新填写 |
+| `WEBVPN_SMS_RATE_LIMITED` | 官方短信发送限流 | 不刷新登录流程，等待官方冷却 |
+| `WEBVPN_SMS_PHONE_UNBOUND` | 统一认证未绑定可用手机号 | 停止短信流程，改用扫码或联系学校 |
+| `WEBVPN_SMS_INVALID` | 短信验证码错误或过期 | 保留当前流程，允许重新输入 |
+| `WEBVPN_UPSTREAM_TIMEOUT` | 学校接口超时 | 不重放写请求，稍后重试 |
+| `WEBVPN_UPSTREAM_NON_JSON` | 官方状态接口返回非 JSON | 结束当前轮询/保留表单，提示重新开始 |
+| `WEBVPN_UPSTREAM_REDIRECT` | 跳转不在受控官方路径 | 停止流程并要求重新登录 |
+| `WEBVPN_SESSION_ESTABLISH_FAILED` | 认证完成但教务会话未建立 | 不标记成功，提示重新认证 |
+| `WEBVPN_UNKNOWN_ERROR` | 未分类的上游或本地异常 | 保留错误编号，查看脱敏日志 |
+
+错误响应仍使用 HTTP 200 以兼容既有前端；`success=false`、`status` 和 `error_code` 才是机器可读结果。
+
 ### 二维码接口
 
 | 方法和路径 | 请求字段 | 成功响应/状态 |
@@ -99,7 +117,7 @@ OCR 运行时只依赖 Pillow、NumPy 和 ONNX Runtime；模型文件
 | 方法和路径 | 请求字段 | 成功响应/状态 |
 | --- | --- | --- |
 | `POST /api/webvpn/password/start` | `username`、`password`、`remember=false` | `status: "authenticated"` 或 `status: "sms_required"`；后者附带 `flow_id`、`expires_in` |
-| `POST /api/webvpn/sms/captcha/refresh` | `flow_id` | 新验证码图片、OCR 预填值和置信度 |
+| `POST /api/webvpn/sms/captcha/refresh` | `flow_id` | 学校实时返回的新验证码图片 |
 | `POST /api/webvpn/sms/send` | `flow_id`、`captcha_code` | `status: "sent"`；只在用户明确点击后发送 |
 | `POST /api/webvpn/sms/verify` | `flow_id`、`code`、`trust_device=false` | `status: "authenticated"`、`username`、`message` |
 | `POST /api/webvpn/sms/cancel` | `flow_id` | `success` |
@@ -109,8 +127,6 @@ OCR 运行时只依赖 Pillow、NumPy 和 ONNX Runtime；模型文件
 | 字段 | 含义 |
 | --- | --- |
 | `captcha_image` | 当前图形验证码的 data URL，仅用于当前弹窗显示 |
-| `ocr_candidate` | 内置 OCR 的可编辑预填结果，不代表已验证 |
-| `ocr_confidence` | 本地识别置信度；低置信度时应人工修改 |
 
 短信接口的典型 `message`：
 
@@ -120,7 +136,7 @@ OCR 运行时只依赖 Pillow、NumPy 和 ONNX Runtime；模型文件
 | `统一认证未绑定手机号码` | 官方接口返回 `unknow`。 |
 | `验证码有误` | 官方接口返回 `codeErr`。 |
 | `验证码已超时` | 官方接口返回 `timeout`。 |
-| 设备数量已达上限… | 官方接口返回 `most`，系统已按官方逻辑解除最早的授信设备。 |
+| 其他未分类官方状态（例如 `most`） | 当前不猜测其业务含义，返回 `WEBVPN_UNKNOWN_ERROR` 并保留脱敏错误信息；不会自动解除设备或重放短信请求。 |
 
 ## 会话恢复与登出
 
@@ -134,7 +150,7 @@ OCR 运行时只依赖 Pillow、NumPy 和 ONNX Runtime；模型文件
 | `cookies` | Cookie 名称、域、路径、过期时间和敏感 Cookie 值。 |
 | `saved_at` | 保存时间戳。 |
 
-启动后优先检查内存会话，再尝试 `session.json` 中的 Cookie；WebVPN 会话会通过教务系统当前用户接口验证。Cookie 已过期或被服务器撤销时，如果本地保存了匹配账号的密码，直连和 WebVPN 都会先在后端串行边界内静默尝试一次账号密码恢复。WebVPN 恢复若需要短信验证，不会自动发送短信或留下隐藏流程，而是按恢复失败处理并交给登录页重新认证。
+启动后优先检查内存会话，再尝试 `session.json` 中的 Cookie；WebVPN 会话会通过教务系统当前用户接口验证。Cookie 已过期或被服务器撤销时，如果本地保存了匹配账号的密码，直连和 WebVPN 都会先在后端串行边界内静默尝试一次账号密码恢复。WebVPN 恢复若进入短信验证，会把产生挑战的同一个客户端保存为“待认证候选 Session”并交给前台弹窗；后续页面读取和后台任务等待该 Flow 完成、取消或过期，不得再次提交密码表单或替换验证码。系统不会自动发送短信。Flow 过期或用户取消后，才允许下一次正常恢复。
 
 静默恢复成功时，原业务请求继续执行，前端不会被踢回登录页；恢复失败时才返回未认证状态。本地存在可离线读取的缓存时，前端询问用户进入只读离线模式还是重新登录；没有缓存时直接返回登录页。该降级不会调用清理数据的登出接口，也不会删除凭据、缓存或用户文档。
 
@@ -198,7 +214,7 @@ WebVPN 不会把上游 JWXK 的 `token` 直接写入本地 HTTP Cookie Jar；浏
 - 登录页和表单提交的 HTTP 状态、最终跳转主机与路径；
 - 是否检测到二次认证表单；
 - 官方 `secondAuthCode` 的状态和返回字段名；
-- OCR 初始化/识别耗时和脱敏失败类型；
+- 验证码图片请求是否返回受支持的图片类型；
 - 最终会话校验结果。
 
 日志不得记录密码、图形验证码、短信验证码、验证码图片、Cookie 值、CAS ticket、二维码 UUID 或完整重定向查询串。排障时可提供相关时间段的脱敏日志，不要直接分享 `data/session.json`。

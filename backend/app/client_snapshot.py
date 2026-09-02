@@ -28,11 +28,9 @@ def pending_auth_challenge_snapshot(clients: tuple[Any, ...] | None = None) -> d
             "flow_id": flow.get("id"),
             "source": flow.get("source", "password"),
             "captcha_image": (
-                f"data:image/png;base64,{flow['captcha_image']}"
+                f"data:{flow.get('captcha_media_type') or 'image/jpeg'};base64,{flow['captcha_image']}"
                 if flow.get("captcha_image") else None
             ),
-            "ocr_candidate": flow.get("ocr_candidate", ""),
-            "ocr_confidence": flow.get("ocr_confidence", 0.0),
             "expires_at": flow.get("expires_at"),
         }
     return {"required": False}

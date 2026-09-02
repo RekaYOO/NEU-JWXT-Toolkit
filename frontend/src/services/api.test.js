@@ -56,6 +56,22 @@ describe('JWXK automation settings API', () => {
   });
 });
 
+describe('WebVPN error compatibility helpers', () => {
+  test('prefer stable error codes and recognize expired flows', () => {
+    const { apiModule } = loadApiWithAxios();
+    expect(apiModule.getWebVPNErrorCode({
+      error_code: 'WEBVPN_FLOW_EXPIRED',
+      message: '旧版提示',
+    })).toBe('WEBVPN_FLOW_EXPIRED');
+    expect(apiModule.isWebVPNFlowInvalid({
+      error_code: 'WEBVPN_FLOW_EXPIRED',
+    })).toBe(true);
+    expect(apiModule.getWebVPNErrorMessage({
+      response: { data: { message: '服务端提示' } },
+    })).toBe('服务端提示');
+  });
+});
+
 describe('client bootstrap and request coalescing', () => {
   test('reuses timetable data already returned by the aggregate bootstrap', async () => {
     const { client, apiModule } = loadApiWithAxios();

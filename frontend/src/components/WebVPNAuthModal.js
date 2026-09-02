@@ -30,7 +30,7 @@ const WebVPNAuthModal = ({
   >
     <div className="sms-auth-content">
       <SafetyCertificateOutlined className="sms-auth-icon" />
-      <p>请先核对图形验证码，再获取短信验证码。</p>
+      <p>请先填写图片中的图形验证码，再获取短信验证码。</p>
       {error && <Alert type="warning" showIcon message={error} />}
       {flow?.captcha_image && (
         <div className="captcha-auth-row">
@@ -41,7 +41,7 @@ const WebVPNAuthModal = ({
       <Input
         value={captchaCode}
         onChange={(event) => setCaptchaCode(event.target.value.replace(/[^0-9A-Za-z]/g, ''))}
-        placeholder="请输入图形验证码（OCR 已预填，请核对）"
+        placeholder="请输入图片中的图形验证码"
         inputMode="text"
         autoComplete="off"
         maxLength={16}
@@ -58,7 +58,7 @@ const WebVPNAuthModal = ({
         maxLength={8}
         onPressEnter={onVerify}
       />
-      <p className="sms-auth-note">验证码识别仅用于预填，不会自动发送短信；识别不准时可直接修改。</p>
+      <p className="sms-auth-note">图形验证码需手动填写；短信只会在点击“获取短信验证码”后发送。</p>
     </div>
   </Modal>
 );

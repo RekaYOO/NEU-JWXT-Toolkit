@@ -10,6 +10,7 @@ import {
   syncJwxkAutomationTaskTimes,
   startWebVPNQRLogin, getWebVPNQRStatus, cancelWebVPNQRLogin,
   refreshWebVPNCaptcha, sendWebVPNSMSCode, verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
+  getWebVPNErrorMessage, isWebVPNFlowInvalid,
 } from '../services/api';
 import { changedOfficialBatchTimes, courseCampusLabels, selectionParticipantCount } from '../utils/jwxkSchedule';
 import WebVPNAuthModal from '../components/WebVPNAuthModal';
@@ -123,7 +124,7 @@ const CourseSelectionPage = () => {
           setWebvpnQrFlow(null);
           setWebvpnLoginOpen(false);
           setWebvpnSmsFlow(result);
-          setWebvpnCaptchaCode(result.ocr_candidate || '');
+          setWebvpnCaptchaCode('');
           setWebvpnSmsCode('');
           setWebvpnSmsSent(false);
         } else if (result.status === 'expired' || result.status === 'missing') {
@@ -131,7 +132,7 @@ const CourseSelectionPage = () => {
           setWebvpnQrMessage('二维码已失效，请重新获取。');
         } else if (!result.success || result.status === 'error') {
           setWebvpnQrFlow(null);
-          setWebvpnQrMessage(result.message || '二维码登录失败，请重新获取。');
+          setWebvpnQrMessage(getWebVPNErrorMessage(result, '二维码登录失败，请重新获取。'));
         }
       } catch (_error) {
         if (!stopped) setWebvpnQrMessage('暂时无法检查二维码状态，系统会继续重试。');
@@ -151,7 +152,7 @@ const CourseSelectionPage = () => {
       if (!result.success) throw new Error(result.message || '无法获取二维码');
       setWebvpnQrFlow(result);
     } catch (error) {
-      setWebvpnQrMessage(error.message || '无法获取 WebVPN 登录二维码。');
+      setWebvpnQrMessage(getWebVPNErrorMessage(error, '无法获取 WebVPN 登录二维码。'));
     } finally {
       setWebvpnQrLoading(false);
     }
@@ -170,17 +171,20 @@ const CourseSelectionPage = () => {
     setWebvpnCaptchaLoading(true);
     try {
       const result = await refreshWebVPNCaptcha(webvpnSmsFlow.flow_id);
-      if (!result.success) throw new Error(result.message || '刷新图形验证码失败');
+      if (!result.success) throw Object.assign(new Error(getWebVPNErrorMessage(result, '刷新图形验证码失败')), { response: { data: result } });
       setWebvpnSmsFlow(prev => ({ ...prev, ...result }));
-      setWebvpnCaptchaCode(result.ocr_candidate || '');
+      setWebvpnCaptchaCode('');
       setWebvpnSmsSent(false);
-    } catch (error) { message.error(error.message || '刷新图形验证码失败'); }
+    } catch (error) {
+      message.error(getWebVPNErrorMessage(error, '刷新图形验证码失败'));
+      if (isWebVPNFlowInvalid(error)) setWebvpnSmsFlow(null);
+    }
     finally { setWebvpnCaptchaLoading(false); }
   };
 
   const sendWebvpnSms = async () => {
     if (!webvpnSmsFlow || !webvpnCaptchaCode.trim()) {
-      message.warning('请先核对并填写图形验证码');
+      message.warning('请先填写图形验证码');
       return;
     }
     setWebvpnSmsLoading(true);
@@ -188,12 +192,15 @@ const CourseSelectionPage = () => {
       const result = await sendWebVPNSMSCode(webvpnSmsFlow.flow_id, webvpnCaptchaCode.trim());
       if (!result.success && result.captcha_invalid) {
         setWebvpnSmsFlow(prev => ({ ...prev, ...result }));
-        setWebvpnCaptchaCode(result.ocr_candidate || '');
+        setWebvpnCaptchaCode('');
         setWebvpnSmsSent(false);
-        message.warning(result.message || '图形验证码不正确，请核对新图片');
-      } else if (!result.success) throw new Error(result.message || '短信验证码发送失败');
+        message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
+      } else if (!result.success) {
+        if (isWebVPNFlowInvalid(result)) setWebvpnSmsFlow(null);
+        throw Object.assign(new Error(getWebVPNErrorMessage(result, '短信验证码发送失败')), { response: { data: result } });
+      }
       else { setWebvpnSmsSent(true); message.success('验证码已发送'); }
-    } catch (error) { message.error(error.message || '短信验证码发送失败'); }
+    } catch (error) { message.error(getWebVPNErrorMessage(error, '短信验证码发送失败')); }
     finally { setWebvpnSmsLoading(false); }
   };
 
@@ -207,17 +214,20 @@ const CourseSelectionPage = () => {
       const result = await verifyWebVPNSMSCode(webvpnSmsFlow.flow_id, webvpnSmsCode.trim());
       if (!result.success && result.status === 'captcha_invalid') {
         setWebvpnSmsFlow(prev => ({ ...prev, ...result }));
-        setWebvpnCaptchaCode(result.ocr_candidate || '');
+        setWebvpnCaptchaCode('');
         setWebvpnSmsSent(false);
-        message.warning(result.message || '图形验证码不正确，请核对新图片');
+        message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
         return;
       }
-      if (!result.success) throw new Error(result.message || '短信验证失败');
+      if (!result.success) {
+        if (isWebVPNFlowInvalid(result)) setWebvpnSmsFlow(null);
+        throw Object.assign(new Error(getWebVPNErrorMessage(result, '短信验证失败')), { response: { data: result } });
+      }
       setWebvpnSmsFlow(null);
       setWebvpnSmsCode('');
       message.success('WebVPN 登录成功，正在重新读取选课轮次');
       await load();
-    } catch (error) { message.error(error.message || '短信验证失败'); }
+    } catch (error) { message.error(getWebVPNErrorMessage(error, '短信验证失败')); }
     finally { setWebvpnSmsLoading(false); }
   };
 

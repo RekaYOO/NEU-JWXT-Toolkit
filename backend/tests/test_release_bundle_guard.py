@@ -53,6 +53,7 @@ def test_release_bundle_guard_rejects_new_private_artifact_types(tmp_path):
         "runtime.json",
         "config.json",
         "account.p12",
+        "captcha.onnx",
         "id_ed25519",
     ):
         (root / name).write_bytes(b"private")
@@ -64,6 +65,7 @@ def test_release_bundle_guard_rejects_new_private_artifact_types(tmp_path):
         "runtime.json",
         "config.json",
         "account.p12",
+        "captcha.onnx",
         "id_ed25519",
     }
 
@@ -218,6 +220,8 @@ def test_nuitka_build_keeps_inspectable_standalone_payload_and_windows_metadata(
     assert "PROJECT_ROOT / 'LICENSE'" in text
     assert '"--include-package=uvicorn"' in text
     assert '"--include-package-data=certifi"' in text
+    assert "onnxruntime" not in text
+    assert ".onnx" not in text
     assert '"--nofollow-import-to=pytest"' in text
     assert '"--nofollow-import-to=_pytest"' in text
     assert '"desktop"' in text

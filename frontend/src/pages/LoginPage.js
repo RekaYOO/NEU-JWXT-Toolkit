@@ -7,7 +7,7 @@ import {
 import {
   login, checkStatus, startWebVPNQRLogin, getWebVPNQRStatus, cancelWebVPNQRLogin,
   startWebVPNPasswordLogin, refreshWebVPNCaptcha, sendWebVPNSMSCode, verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
-  getOfflineStatus,
+  getOfflineStatus, getWebVPNErrorMessage, isWebVPNFlowInvalid,
 } from '../services/api';
 import './LoginPage.css';
 import { isManualLogoutActive } from '../utils/authSessionPolicy';
@@ -77,7 +77,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       try {
         const result = await getWebVPNQRStatus(qrFlow.flow_id);
         if (!result.success) {
-          setQrMessage(result.message || '二维码登录失败');
+          setQrMessage(getWebVPNErrorMessage(result, '二维码登录失败'));
           setQrFlow(null);
           return;
         }
@@ -90,7 +90,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
           // shared CAPTCHA/SMS modal instead of treating it as a QR failure.
           setQrFlow(null);
           setSmsFlow(result);
-          setCaptchaCode(result.ocr_candidate || '');
+          setCaptchaCode('');
           setSmsCode('');
           setSmsSent(false);
         } else if (result.status === 'expired') {
@@ -98,7 +98,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
           setQrFlow(null);
         }
       } catch (error) {
-        setQrMessage('二维码状态检查失败，请重新获取');
+        setQrMessage(getWebVPNErrorMessage(error, '二维码状态检查失败，请重新获取'));
         setQrFlow(null);
       }
     };
@@ -151,17 +151,17 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     try {
       const result = await startWebVPNPasswordLogin(values.username, values.password, values.remember);
       if (!result.success) {
-        message.error(result.message || 'WebVPN 登录失败');
+        message.error(getWebVPNErrorMessage(result, 'WebVPN 登录失败'));
       } else if (result.status === 'sms_required') {
         setSmsFlow(result);
-        setCaptchaCode(result.ocr_candidate || '');
+        setCaptchaCode('');
         setSmsCode('');
         setSmsSent(false);
       } else if (result.status === 'authenticated') {
         onLoginSuccess(result.username || values.username);
       }
     } catch (error) {
-      message.error('WebVPN 登录请求失败，请检查网络或使用微信扫码快速登录');
+      message.error(getWebVPNErrorMessage(error, 'WebVPN 登录请求失败，请检查网络或使用微信扫码快速登录'));
     } finally {
       clearTimeout(slowTimer);
       message.destroy(slowRequestKey);
@@ -170,7 +170,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
 
   const sendSMSCode = async () => {
     if (!smsFlow || !captchaCode.trim()) {
-      message.warning('请先核对并填写图形验证码');
+      message.warning('请先填写图形验证码');
       return;
     }
     setSmsLoading(true);
@@ -178,17 +178,22 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       const result = await sendWebVPNSMSCode(smsFlow.flow_id, captchaCode.trim());
       if (!result.success && result.captcha_invalid) {
         setSmsFlow(prev => ({ ...prev, ...result }));
-        setCaptchaCode(result.ocr_candidate || '');
+        setCaptchaCode('');
         setSmsSent(false);
-        message.warning(result.message || '图形验证码不正确，请核对新图片');
+        message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
       } else if (!result.success) {
-        message.error(result.message || '短信验证码发送失败');
+        if (isWebVPNFlowInvalid(result)) {
+          setSmsFlow(null);
+          setCaptchaCode('');
+          setSmsCode('');
+        }
+        message.error(getWebVPNErrorMessage(result, '短信验证码发送失败'));
       } else {
         setSmsSent(true);
         message.success('验证码已发送');
       }
     } catch (error) {
-      message.error('短信验证码发送失败');
+      message.error(getWebVPNErrorMessage(error, '短信验证码发送失败'));
     } finally {
       setSmsLoading(false);
     }
@@ -199,12 +204,13 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     setCaptchaLoading(true);
     try {
       const result = await refreshWebVPNCaptcha(smsFlow.flow_id);
-      if (!result.success) throw new Error(result.message || '刷新图形验证码失败');
+      if (!result.success) throw Object.assign(new Error(getWebVPNErrorMessage(result, '刷新图形验证码失败')), { response: { data: result } });
       setSmsFlow(prev => ({ ...prev, ...result }));
-      setCaptchaCode(result.ocr_candidate || '');
+      setCaptchaCode('');
       setSmsSent(false);
     } catch (error) {
-      message.error(error.message || '刷新图形验证码失败');
+      message.error(getWebVPNErrorMessage(error, '刷新图形验证码失败'));
+      if (isWebVPNFlowInvalid(error)) setSmsFlow(null);
     } finally {
       setCaptchaLoading(false);
     }
@@ -218,14 +224,27 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     setSmsLoading(true);
     try {
       const result = await verifyWebVPNSMSCode(smsFlow.flow_id, smsCode.trim());
+      if (!result.success && result.status === 'captcha_invalid') {
+        setSmsFlow(prev => ({ ...prev, ...result }));
+        setCaptchaCode('');
+        setSmsSent(false);
+        message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
+        return;
+      }
       if (!result.success) {
-        message.error(result.message || '验证码验证失败');
+        message.error(getWebVPNErrorMessage(result, '验证码验证失败'));
+        if (isWebVPNFlowInvalid(result)) {
+          setSmsFlow(null);
+          setCaptchaCode('');
+          setSmsCode('');
+        }
         return;
       }
       setSmsFlow(null);
       onLoginSuccess(result.username || form.getFieldValue('username'));
     } catch (error) {
-      message.error('验证码验证请求失败');
+      message.error(getWebVPNErrorMessage(error, '验证码验证请求失败'));
+      if (isWebVPNFlowInvalid(error)) setSmsFlow(null);
     } finally {
       setSmsLoading(false);
     }

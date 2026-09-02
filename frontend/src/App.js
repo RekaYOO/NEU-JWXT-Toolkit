@@ -28,6 +28,7 @@ import {
   checkStatus, getAccessStatus, getClientBootstrap, getHealth, getOfflineStatus,
   refreshWebVPNCaptcha, sendWebVPNSMSCode,
   verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
+  getWebVPNErrorMessage, isWebVPNFlowInvalid,
 } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
 import { isExportToolAvailable } from './export/exportTools';
@@ -329,7 +330,6 @@ function App() {
       const challenge = event.detail || {};
       if (!challenge.required) return;
       setPendingAuthFlow(previous => ({ ...previous, ...challenge }));
-      setPendingCaptchaCode(previous => previous || challenge.ocr_candidate || '');
     };
     const wake = () => window.dispatchEvent(new CustomEvent('neu-client-updates-wake'));
     window.addEventListener('neu-auth-pending', onPending);
@@ -345,17 +345,20 @@ function App() {
     setPendingCaptchaLoading(true);
     try {
       const result = await refreshWebVPNCaptcha(pendingAuthFlow.flow_id);
-      if (!result.success) throw new Error(result.message || '刷新图形验证码失败');
+      if (!result.success) throw Object.assign(new Error(getWebVPNErrorMessage(result, '刷新图形验证码失败')), { response: { data: result } });
       setPendingAuthFlow(previous => ({ ...previous, ...result }));
-      setPendingCaptchaCode(result.ocr_candidate || '');
+      setPendingCaptchaCode('');
       setPendingSmsSent(false);
-    } catch (error) { message.error(error.message || '刷新图形验证码失败'); }
+    } catch (error) {
+      message.error(getWebVPNErrorMessage(error, '刷新图形验证码失败'));
+      if (isWebVPNFlowInvalid(error)) setPendingAuthFlow(null);
+    }
     finally { setPendingCaptchaLoading(false); }
   };
 
   const sendPendingSms = async () => {
     if (!pendingAuthFlow || !pendingCaptchaCode.trim()) {
-      message.warning('请先核对并填写图形验证码');
+      message.warning('请先填写图形验证码');
       return;
     }
     setPendingSmsLoading(true);
@@ -363,12 +366,15 @@ function App() {
       const result = await sendWebVPNSMSCode(pendingAuthFlow.flow_id, pendingCaptchaCode.trim());
       if (!result.success && result.captcha_invalid) {
         setPendingAuthFlow(previous => ({ ...previous, ...result }));
-        setPendingCaptchaCode(result.ocr_candidate || '');
+        setPendingCaptchaCode('');
         setPendingSmsSent(false);
-        message.warning(result.message || '图形验证码不正确，请核对新图片');
-      } else if (!result.success) throw new Error(result.message || '短信验证码发送失败');
+        message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
+      } else if (!result.success) {
+        if (isWebVPNFlowInvalid(result)) setPendingAuthFlow(null);
+        throw Object.assign(new Error(getWebVPNErrorMessage(result, '短信验证码发送失败')), { response: { data: result } });
+      }
       else { setPendingSmsSent(true); message.success('验证码已发送'); }
-    } catch (error) { message.error(error.message || '短信验证码发送失败'); }
+    } catch (error) { message.error(getWebVPNErrorMessage(error, '短信验证码发送失败')); }
     finally { setPendingSmsLoading(false); }
   };
 
@@ -382,18 +388,21 @@ function App() {
       const result = await verifyWebVPNSMSCode(pendingAuthFlow.flow_id, pendingSmsCode.trim());
       if (!result.success && result.status === 'captcha_invalid') {
         setPendingAuthFlow(previous => ({ ...previous, ...result }));
-        setPendingCaptchaCode(result.ocr_candidate || '');
+        setPendingCaptchaCode('');
         setPendingSmsSent(false);
-        message.warning(result.message || '图形验证码不正确，请核对新图片');
+        message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
         return;
       }
-      if (!result.success) throw new Error(result.message || '短信验证失败');
+      if (!result.success) {
+        if (isWebVPNFlowInvalid(result)) setPendingAuthFlow(null);
+        throw Object.assign(new Error(getWebVPNErrorMessage(result, '短信验证失败')), { response: { data: result } });
+      }
       setPendingAuthFlow(null);
       setPendingCaptchaCode('');
       setPendingSmsCode('');
       setPendingSmsSent(false);
       handleLoginSuccess(result.username || userInfo || '已登录');
-    } catch (error) { message.error(error.message || '短信验证失败'); }
+    } catch (error) { message.error(getWebVPNErrorMessage(error, '短信验证失败')); }
     finally { setPendingSmsLoading(false); }
   };
 

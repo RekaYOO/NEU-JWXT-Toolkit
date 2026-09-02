@@ -282,6 +282,30 @@ export const cancelWebVPNSMSLogin = async (flowId) => {
   return response.data;
 };
 
+// WebVPN endpoints keep the historical ``message``/``status`` fields, but
+// also expose stable error codes.  UI entry points use these helpers so a
+// server-side wording change cannot accidentally leave a stale modal or QR
+// poll running.
+export const getWebVPNErrorCode = (value) => (
+  value?.error_code
+  || value?.response?.data?.error_code
+  || ''
+);
+
+export const getWebVPNErrorMessage = (value, fallback = 'WebVPN 操作失败') => {
+  const candidate = value?.message
+    || value?.response?.data?.message
+    || value?.response?.data?.detail;
+  return typeof candidate === 'string' && candidate.trim() ? candidate : fallback;
+};
+
+export const isWebVPNFlowInvalid = (value) => (
+  ['WEBVPN_FLOW_MISSING', 'WEBVPN_FLOW_REPLACED', 'WEBVPN_FLOW_EXPIRED'].includes(
+    getWebVPNErrorCode(value),
+  )
+  || ['missing', 'expired'].includes(String(value?.status || '').toLowerCase())
+);
+
 // 登出
 export const logout = async () => {
   const response = await api.post('/api/logout');

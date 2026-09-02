@@ -14,8 +14,3 @@ lxml>=4.9.0
 
 # Cryptography
 pycryptodome>=3.19.0
-
-# WebVPN numeric CAPTCHA prefill (CPU-only, loaded lazily; model is bundled)
-numpy>=1.26.0
-onnxruntime>=1.17.0
-Pillow>=10.0.0

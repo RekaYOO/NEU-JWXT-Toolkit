@@ -5,6 +5,7 @@
 """
 
 import os
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
@@ -621,8 +622,38 @@ def set_pending_auth_client(client: Optional[NEUAuthClient]) -> None:
     _auth_sessions.set_pending_client(client)
 
 
+def _has_live_interactive_auth_flow(client: Optional[NEUAuthClient]) -> bool:
+    """Return whether a client owns a non-expired QR or SMS login flow.
+
+    Expired flows are process-local state and can be discarded without any
+    remote request.  Pruning them here lets a later foreground/background
+    read resume the normal saved-session recovery path.
+    """
+    if client is None:
+        return False
+    now = time.time()
+    has_live_flow = False
+    for attribute in ("_webvpn_qr_flow", "_webvpn_sms_flow"):
+        flow = getattr(client, attribute, None)
+        if not flow:
+            continue
+        try:
+            expires_at = float(flow.get("expires_at", 0))
+        except (TypeError, ValueError, AttributeError):
+            expires_at = 0
+        if expires_at > now:
+            has_live_flow = True
+        else:
+            setattr(client, attribute, None)
+    return has_live_flow
+
+
 def peek_pending_auth_client() -> Optional[NEUAuthClient]:
-    return _auth_sessions.peek_pending_client()
+    client = _auth_sessions.peek_pending_client()
+    if client is not None and not _has_live_interactive_auth_flow(client):
+        _auth_sessions.clear_pending_client(client)
+        return None
+    return client
 
 
 def clear_pending_auth_client(
@@ -672,8 +703,17 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
     2. 尝试用保存的 Cookie 恢复（免密）
     3. 尝试用保存的密码重新登录
     """
-    # 1. 检查内存中的客户端
+    # An interactive candidate owns its requests.Session until it succeeds,
+    # expires or is cancelled.  Do not create another password-login client
+    # behind it: doing so replaces the CAPTCHA every few seconds and makes the
+    # challenge impossible for the user to complete.  A separately active and
+    # already authenticated identity may continue serving its existing pages.
+    pending_client = peek_pending_auth_client()
     active_client = _auth_sessions.peek_client()
+    if pending_client is not None:
+        return active_client if active_client is not None and active_client.is_logged_in else None
+
+    # 1. 检查内存中的客户端
     if active_client is not None:
         # 二维码或短信流程必须继续使用原 Session。状态查询不能在流程尚未
         # 完成时触发另一轮静默账密登录并覆盖 flow。
@@ -758,6 +798,12 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
                     network_mode=getattr(client, "active_mode", ""),
                 )
                 return client
+            if _has_live_interactive_auth_flow(client):
+                # Saved-credential recovery reached the school's SMS page.
+                # Keep this exact Session as the foreground candidate so
+                # subsequent readers wait instead of restarting login.
+                set_pending_auth_client(client)
+                return None
         except Exception as error:
             _api_logger.warning(
                 "[Auth] 已保存账号密码自动恢复失败: %s",

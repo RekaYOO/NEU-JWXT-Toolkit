@@ -22,6 +22,7 @@ FORBIDDEN_FILE_PATTERNS = (
     re.compile(r"^grade_tracking_(?:snapshot|state|outbox|config)(?:[._-].*)?\.json$", re.IGNORECASE),
     re.compile(r"^\.env(?:\..*)?$", re.IGNORECASE),
     re.compile(r".*\.(?:pfx|p12)$", re.IGNORECASE),
+    re.compile(r".*\.onnx$", re.IGNORECASE),
     re.compile(r"^(?:id_rsa|id_ed25519|private[_-]?key)(?:\..*)?$", re.IGNORECASE),
     re.compile(r".*\.log$", re.IGNORECASE),
 )

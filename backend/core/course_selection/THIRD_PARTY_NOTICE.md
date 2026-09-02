@@ -34,14 +34,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-## WebVPN CAPTCHA prefill
-
-The WebVPN numeric CAPTCHA helper bundles only the `common_old.onnx` OCR model
-from `ddddocr` 1.6.1 (MIT). The Python runtime adapter is implemented locally
-with Pillow, NumPy and ONNX Runtime; the full `ddddocr` package, detection
-model and slide-recognition model are not shipped. The model is used only to
-prefill an editable field; it does not submit a CAPTCHA or send an SMS. The
-upstream source and license are available at
-https://github.com/sml2h3/ddddocr. The bundled model remains a third-party
-component under the upstream MIT license.

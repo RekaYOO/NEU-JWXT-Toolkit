@@ -10,7 +10,6 @@ FastAPI 后端服务入口
 
 import os
 import sys
-import threading
 import time
 import logging
 from contextlib import asynccontextmanager
@@ -35,7 +34,6 @@ from backend.app.routers import auth, cache, client, logs, system_settings, scor
 from backend.core.runtime import get_runtime_config, resource_path
 from backend.core.runtime.access import AccessGatewayMiddleware
 from backend.core.runtime.static import PrecompressedStaticFiles, REVALIDATE_CACHE_CONTROL
-from backend.core.auth.captcha import warmup_captcha_ocr
 from backend.core.runtime.performance import observe_performance
 
 runtime_config = get_runtime_config()
@@ -50,22 +48,9 @@ async def lifespan(_app: FastAPI):
     startup_ms = (time.monotonic() - startup_started) * 1000
     observe_performance("startup:application-services", startup_ms)
     logger.info("application services started duration_ms=%.1f", startup_ms)
-    # Load the bundled OCR model in the background so the first WebVPN
-    # challenge does not pay cold-start latency, without delaying API startup.
-    warmup_cancelled = threading.Event()
-
-    def delayed_ocr_warmup() -> None:
-        if warmup_cancelled.wait(1):
-            return
-        started = time.monotonic()
-        warmup_captcha_ocr()
-        observe_performance("startup:captcha-ocr-warmup", (time.monotonic() - started) * 1000)
-
-    threading.Thread(target=delayed_ocr_warmup, name="captcha-ocr-warmup", daemon=True).start()
     try:
         yield
     finally:
-        warmup_cancelled.set()
         application_services.shutdown(timeout=8)
 
 

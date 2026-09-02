@@ -17,11 +17,33 @@ from backend.core.auth import NEUAuthClient
 from backend.core.auth.client import (
     DirectAccessError, LOGIN_ERR_WRONG_PWD, NEULoginError,
     WebVPNLoginError, WebVPNRequiredError,
+    WEBVPN_ERR_CAPTCHA_FETCH, WEBVPN_ERR_CAPTCHA_INVALID,
+    WEBVPN_ERR_FLOW_MISSING, WEBVPN_ERR_FLOW_REPLACED,
+    WEBVPN_ERR_FLOW_EXPIRED, WEBVPN_ERR_SMS_INVALID,
+    WEBVPN_ERR_SMS_RATE_LIMITED, WEBVPN_ERR_SMS_UNBOUND,
+    WEBVPN_ERR_UPSTREAM_TIMEOUT, WEBVPN_ERR_UPSTREAM_NON_JSON,
+    WEBVPN_ERR_UPSTREAM_REDIRECT, WEBVPN_ERR_SESSION_ESTABLISH,
+    WEBVPN_ERR_UNKNOWN,
 )
 from backend.core.log import log_application_error, log_security_event
 from backend.app.client_snapshot import pending_auth_challenge_snapshot
 
 router = APIRouter()
+
+
+def _webvpn_failure(message: str, *, error_code: str, status: str = "error", **extra):
+    """Return a stable, backwards-compatible WebVPN error envelope."""
+    return {
+        "success": False,
+        "status": status,
+        "error_code": error_code,
+        "message": message,
+        **extra,
+    }
+
+
+def _error_code(error: Exception, fallback: str = WEBVPN_ERR_UNKNOWN) -> str:
+    return str(getattr(error, "error_code", None) or fallback)
 
 
 def _webvpn_sms_client(flow_id: str):
@@ -233,6 +255,17 @@ def start_webvpn_qr_login(request: WebVPNQRStartRequest):
             network_mode="webvpn",
         )
         return {"success": True, **flow}
+    except WebVPNLoginError as e:
+        log_security_event(
+            "webvpn_qr_login",
+            "failure",
+            subject=request.username,
+            reason="qr_start_failed",
+            auth_method="qr_start",
+            network_mode="webvpn",
+            error_type=type(e).__name__,
+        )
+        return _webvpn_failure(str(e), error_code=_error_code(e))
     except Exception as e:
         error_id = log_application_error("auth.webvpn_qr_start", e, 500)
         log_security_event(
@@ -244,7 +277,11 @@ def start_webvpn_qr_login(request: WebVPNQRStartRequest):
             network_mode="webvpn",
             error_type=type(e).__name__,
         )
-        return {"success": False, "message": f"无法启动 WebVPN 二维码登录（错误编号：{error_id}）"}
+        return _webvpn_failure(
+            f"无法启动 WebVPN 二维码登录（错误编号：{error_id}）",
+            error_code=WEBVPN_ERR_UNKNOWN,
+            status="error",
+        )
 
 
 @router.post("/api/webvpn/qr/status")
@@ -259,7 +296,7 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
             auth_method="qr",
             network_mode="webvpn",
         )
-        return {"success": False, "status": "missing", "message": "二维码登录流程不存在"}
+        return _webvpn_failure("二维码登录流程不存在", error_code=WEBVPN_ERR_FLOW_MISSING, status="missing")
     try:
         with remote_session_guard():
             if peek_pending_auth_client() is not client:
@@ -270,11 +307,11 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
                     auth_method="qr",
                     network_mode="webvpn",
                 )
-                return {
-                    "success": False,
-                    "status": "missing",
-                    "message": "二维码登录流程不存在",
-                }
+                return _webvpn_failure(
+                    "二维码登录流程不存在",
+                    error_code=WEBVPN_ERR_FLOW_REPLACED,
+                    status="missing",
+                )
             result = client.poll_webvpn_qr_login(request.flow_id)
             if result.get("status") == "authenticated":
                 clear_pending_auth_client(client)
@@ -289,10 +326,17 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
                 )
             elif result.get("status") == "expired":
                 clear_pending_auth_client(client)
-        return {"success": True, **result}
+        response = {"success": True, **result}
+        if result.get("status") == "expired":
+            response["error_code"] = WEBVPN_ERR_FLOW_EXPIRED
+        return response
     except WebVPNLoginError as e:
         diagnostics = client.get_webvpn_qr_diagnostics()
-        clear_pending_auth_client(client)
+        # A stale QR poll can race with QR -> SMS conversion.  Do not discard
+        # the newer SMS challenge when the old QR flow has already been
+        # replaced; only clear the candidate if no SMS flow is alive.
+        if not getattr(client, "_webvpn_sms_flow", None):
+            clear_pending_auth_client(client)
         log_security_event(
             "webvpn_qr_login",
             "failure",
@@ -302,12 +346,11 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
             network_mode="webvpn",
             error_type=type(e).__name__,
         )
-        return {
-            "success": False,
-            "status": "error",
-            "message": str(e),
-            "diagnostics": diagnostics,
-        }
+        return _webvpn_failure(
+            str(e),
+            error_code=_error_code(e),
+            diagnostics=diagnostics,
+        )
     except Exception as e:
         clear_pending_auth_client(client)
         error_id = log_application_error("auth.webvpn_qr_poll", e, 500)
@@ -320,7 +363,10 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
             network_mode="webvpn",
             error_type=type(e).__name__,
         )
-        return {"success": False, "status": "error", "message": f"二维码登录暂时失败（错误编号：{error_id}）"}
+        return _webvpn_failure(
+            f"二维码登录暂时失败（错误编号：{error_id}）",
+            error_code=WEBVPN_ERR_UNKNOWN,
+        )
 
 
 @router.post("/api/webvpn/qr/cancel")
@@ -341,7 +387,10 @@ def cancel_webvpn_qr_login(request: WebVPNQRStatusRequest):
             auth_method="qr_cancel",
             error_type=type(error).__name__,
         )
-        return {"success": False, "message": f"取消二维码登录失败（错误编号：{error_id}）"}
+        return _webvpn_failure(
+            f"取消二维码登录失败（错误编号：{error_id}）",
+            error_code=WEBVPN_ERR_UNKNOWN,
+        )
     return {"success": True}
 
 
@@ -380,7 +429,11 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
             else:
                 # The flow stays only in memory and is discarded on server restart.
                 client._webvpn_sms_flow["remember"] = request.remember
-                set_auth_client(client)
+                previous = clear_pending_auth_client()
+                if previous is not None and previous is not client:
+                    previous.cancel_webvpn_qr_login()
+                    previous.cancel_webvpn_sms_login()
+                set_pending_auth_client(client)
                 log_security_event(
                     "webvpn_password_login",
                     "pending",
@@ -402,7 +455,11 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
         )
         return {
             "success": False, "message": str(error),
-            "error_code": "WRONG_PASSWORD" if error.error_type == LOGIN_ERR_WRONG_PWD else "WEBVPN_TIMEOUT",
+            "error_code": (
+                "WRONG_PASSWORD"
+                if error.error_type == LOGIN_ERR_WRONG_PWD
+                else (getattr(error, "error_code", None) or WEBVPN_ERR_UNKNOWN)
+            ),
             "suggestion": "请检查网络；响应较慢时建议优先使用微信扫码快速登录。",
         }
     except Exception as error:
@@ -418,7 +475,7 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
         )
         return {
             "success": False, "message": f"WebVPN 登录失败（错误编号：{error_id}）",
-            "error_code": "WEBVPN_TIMEOUT", "suggestion": "请检查网络或改用微信扫码快速登录。",
+            "error_code": WEBVPN_ERR_UNKNOWN, "suggestion": "请检查网络或改用微信扫码快速登录。",
         }
 
 
@@ -432,13 +489,22 @@ def send_webvpn_sms_code(request: WebVPNSMSSendRequest):
             reason="flow_missing",
             auth_method="sms",
         )
-        return {"success": False, "message": "短信验证流程不存在，请重新登录"}
+        return _webvpn_failure(
+            "短信验证流程不存在，请重新登录",
+            error_code=WEBVPN_ERR_FLOW_MISSING,
+            status="missing",
+        )
     try:
         with remote_session_guard():
             result = client.send_webvpn_sms_code(request.flow_id, request.captcha_code)
         if result.get("status") == "captcha_invalid":
             log_security_event("webvpn_sms_send", "failure", reason="captcha_invalid", auth_method="sms")
-            return {"success": False, "captcha_invalid": True, **result}
+            return {
+                "success": False,
+                "captcha_invalid": True,
+                "error_code": WEBVPN_ERR_CAPTCHA_INVALID,
+                **result,
+            }
         log_security_event("webvpn_sms_send", "success", auth_method="sms")
         return {"success": True, **result}
     except WebVPNLoginError as error:
@@ -449,7 +515,7 @@ def send_webvpn_sms_code(request: WebVPNSMSSendRequest):
             auth_method="sms",
             error_type=type(error).__name__,
         )
-        return {"success": False, "message": str(error)}
+        return _webvpn_failure(str(error), error_code=_error_code(error))
     except Exception as error:
         error_id = log_application_error("auth.webvpn_sms_send", error, 500)
         log_security_event(
@@ -459,23 +525,33 @@ def send_webvpn_sms_code(request: WebVPNSMSSendRequest):
             auth_method="sms",
             error_type=type(error).__name__,
         )
-        return {"success": False, "message": f"发送短信验证码失败（错误编号：{error_id}）"}
+        return _webvpn_failure(
+            f"发送短信验证码失败（错误编号：{error_id}）",
+            error_code=WEBVPN_ERR_UNKNOWN,
+        )
 
 
 @router.post("/api/webvpn/sms/captcha/refresh")
 def refresh_webvpn_captcha(request: WebVPNSMSCodeRequest):
     client = _webvpn_sms_client(request.flow_id)
     if client is None:
-        return {"success": False, "message": "短信验证流程不存在，请重新登录"}
+        return _webvpn_failure(
+            "短信验证流程不存在，请重新登录",
+            error_code=WEBVPN_ERR_FLOW_MISSING,
+            status="missing",
+        )
     try:
         with remote_session_guard():
             result = client.refresh_webvpn_captcha(request.flow_id)
         return {"success": True, **result}
     except WebVPNLoginError as error:
-        return {"success": False, "message": str(error)}
+        return _webvpn_failure(str(error), error_code=_error_code(error))
     except Exception as error:
         error_id = log_application_error("auth.webvpn_captcha_refresh", error, 500)
-        return {"success": False, "message": f"刷新图形验证码失败（错误编号：{error_id}）"}
+        return _webvpn_failure(
+            f"刷新图形验证码失败（错误编号：{error_id}）",
+            error_code=WEBVPN_ERR_CAPTCHA_FETCH,
+        )
 
 
 @router.post("/api/webvpn/sms/verify")
@@ -488,7 +564,11 @@ def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
             reason="flow_missing",
             auth_method="sms",
         )
-        return {"success": False, "message": "短信验证流程不存在，请重新登录"}
+        return _webvpn_failure(
+            "短信验证流程不存在，请重新登录",
+            error_code=WEBVPN_ERR_FLOW_MISSING,
+            status="missing",
+        )
     try:
         remember = bool((client._webvpn_sms_flow or {}).get("remember"))
         with remote_session_guard():
@@ -499,16 +579,22 @@ def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
                     reason="flow_replaced",
                     auth_method="sms",
                 )
-                return {"success": False, "message": "短信验证流程不存在，请重新登录"}
+                return _webvpn_failure(
+                    "短信验证流程不存在，请重新登录",
+                    error_code=WEBVPN_ERR_FLOW_REPLACED,
+                    status="missing",
+                )
             result = client.verify_webvpn_sms_code(request.flow_id, request.code, request.trust_device)
             if result.get("status") == "authenticated":
-                _save_webvpn_password_login(client, remember)
                 if peek_pending_auth_client() is client:
                     clear_pending_auth_client(client)
-                    set_auth_client(client, force_epoch=True)
-                    schedule_login_bootstrap(client)
+                _save_webvpn_password_login(client, remember)
         if result.get("status") != "authenticated":
-            return {"success": False, **result}
+            return {
+                "success": False,
+                "error_code": result.get("error_code", WEBVPN_ERR_CAPTCHA_INVALID),
+                **result,
+            }
         log_security_event(
             "webvpn_sms_verify",
             "success",
@@ -528,7 +614,7 @@ def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
             auth_method="sms",
             error_type=type(error).__name__,
         )
-        return {"success": False, "message": str(error)}
+        return _webvpn_failure(str(error), error_code=_error_code(error, WEBVPN_ERR_SMS_INVALID))
     except Exception as error:
         error_id = log_application_error("auth.webvpn_sms_verify", error, 500)
         log_security_event(
@@ -539,7 +625,10 @@ def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
             auth_method="sms",
             error_type=type(error).__name__,
         )
-        return {"success": False, "message": f"短信验证失败（错误编号：{error_id}）"}
+        return _webvpn_failure(
+            f"短信验证失败（错误编号：{error_id}）",
+            error_code=WEBVPN_ERR_UNKNOWN,
+        )
 
 
 @router.post("/api/webvpn/sms/cancel")
@@ -561,7 +650,10 @@ def cancel_webvpn_sms_login(request: WebVPNSMSCodeRequest):
             auth_method="sms_cancel",
             error_type=type(error).__name__,
         )
-        return {"success": False, "message": f"取消短信验证失败（错误编号：{error_id}）"}
+        return _webvpn_failure(
+            f"取消短信验证失败（错误编号：{error_id}）",
+            error_code=WEBVPN_ERR_UNKNOWN,
+        )
     return {"success": True}
 
 

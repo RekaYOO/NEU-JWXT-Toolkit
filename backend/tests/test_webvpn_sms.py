@@ -4,16 +4,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from backend.core.auth.client import NEUAuthClient
+from backend.core.auth.client import NEUAuthClient, WebVPNLoginError
 
 
 class WebVPNSMSLoginTests(unittest.TestCase):
-    def _response(self, url, text="", json_data=None):
+    def _response(self, url, text="", json_data=None, content=None, content_type=None):
         response = Mock()
         response.url = url
         response.text = text
-        response.content = text.encode("utf-8")
-        response.headers = {"Content-Type": "application/json" if json_data is not None else "text/html"}
+        response.content = content if content is not None else text.encode("utf-8")
+        response.headers = {
+            "Content-Type": content_type or ("application/json" if json_data is not None else "text/html")
+        }
         response.raise_for_status.return_value = None
         response.json.return_value = json_data or {}
         return response
@@ -33,11 +35,15 @@ class WebVPNSMSLoginTests(unittest.TestCase):
               <input name="_eventId" value="submit">
               <input name="method" value="mobile">
               <input name="imgCode" value="">
-              <img src="code?x=1">
+              <img src="/static/images/captcha-preview.jpg">
             </form>
             """,
         )
-        captcha = self._response("https://webvpn.neu.edu.cn/https/token/tpass/code?x=1", "captcha")
+        captcha = self._response(
+            "https://webvpn.neu.edu.cn/https/token/tpass/code?vpn-1&0.8967832515796772",
+            content=b"\xff\xd8\xffcaptcha",
+            content_type="image/jpeg",
+        )
         sms_sent = self._response(login_url, json_data={"info": "send"})
         completed = self._response("https://webvpn.neu.edu.cn/login")
 
@@ -49,14 +55,12 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         with (
             patch.object(client, "_webvpn_health_check", return_value=True),
             patch.object(client, "_sync_cas_cookie_to_webvpn"),
-            patch(
-                "backend.core.auth.captcha.recognize_numeric_captcha",
-                return_value={"ok": True, "value": "1234", "confidence": 0.94, "reason": "recognized"},
-            ),
+            patch("backend.core.auth.client.random.random", return_value=0.8967832515796772),
         ):
             started = client.start_webvpn_password_login()
             self.assertEqual(started["status"], "sms_required")
-            self.assertEqual(started["ocr_candidate"], "1234")
+            self.assertTrue(started["captcha_image"].startswith("data:image/jpeg;base64,"))
+            self.assertNotIn("ocr_candidate", started)
             self.assertEqual(client.send_webvpn_sms_code(started["flow_id"], "1234")["status"], "sent")
             completed_result = client.verify_webvpn_sms_code(started["flow_id"], "123456")
 
@@ -75,8 +79,11 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         self.assertEqual(post_calls[2].kwargs["data"]["_eventId"], "submit")
         self.assertEqual(
             client.session.get.call_args_list[1].args[0],
-            "https://webvpn.neu.edu.cn/https/token/tpass/code?vpn-1&x=1",
+            "https://webvpn.neu.edu.cn/https/token/tpass/code?vpn-1&0.8967832515796772",
         )
+        captcha_headers = client.session.get.call_args_list[1].kwargs["headers"]
+        self.assertEqual(captcha_headers["Referer"], login_url)
+        self.assertIn("image/*", captcha_headers["Accept"])
 
     def test_explicit_login_can_skip_stale_persisted_cookies(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -134,6 +141,39 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         self.assertEqual(client.session.get.call_count, 2)
         client.session.cookies.clear.assert_called_once_with()
 
+    def test_sms_send_accepts_numeric_zero_success_code(self):
+        client = NEUAuthClient("20250001", "secret", network_mode="webvpn")
+        client._webvpn_sms_flow = {"id": "flow", "page_url": "https://webvpn.neu.edu.cn/https/token/tpass/login", "expires_at": 4102444800}
+        response = self._response(
+            "https://webvpn.neu.edu.cn/https/token/tpass/secondAuthCode",
+            json_data={"info": 0},
+        )
+        client._session = Mock()
+        client.session.post.return_value = response
+        self.assertEqual(client.send_webvpn_sms_code("flow", "1234")["status"], "sent")
+
+    def test_sms_send_non_json_response_has_stable_error_code(self):
+        client = NEUAuthClient("20250001", "secret", network_mode="webvpn")
+        client._webvpn_sms_flow = {"id": "flow", "page_url": "https://webvpn.neu.edu.cn/https/token/tpass/login", "expires_at": 4102444800}
+        response = self._response(
+            "https://webvpn.neu.edu.cn/https/token/tpass/secondAuthCode",
+            text="<html>unexpected</html>",
+        )
+        response.json.side_effect = ValueError("not json")
+        client._session = Mock()
+        client.session.post.return_value = response
+        with self.assertRaises(WebVPNLoginError) as caught:
+            client.send_webvpn_sms_code("flow", "1234")
+        self.assertEqual(caught.exception.error_code, "WEBVPN_UPSTREAM_NON_JSON")
+
+    def test_malformed_sms_flow_is_expired_instead_of_raising_key_error(self):
+        client = NEUAuthClient("20250001", "secret", network_mode="webvpn")
+        client._webvpn_sms_flow = {"id": "flow"}
+        with self.assertRaises(WebVPNLoginError) as caught:
+            client.send_webvpn_sms_code("flow", "1234")
+        self.assertEqual(caught.exception.error_code, "WEBVPN_FLOW_EXPIRED")
+        self.assertIsNone(client._webvpn_sms_flow)
+
     def test_expired_webvpn_session_silently_reauthenticates_with_password(self):
         client = NEUAuthClient("20250001", "secret", network_mode="webvpn")
         with (
@@ -175,6 +215,24 @@ class WebVPNSMSLoginTests(unittest.TestCase):
 
         self.assertEqual(client._webvpn_sms_flow["id"], "silent-flow")
         self.assertFalse(client.is_logged_in)
+
+    def test_pending_sms_flow_blocks_repeated_background_password_login(self):
+        client = NEUAuthClient("20250001", "secret", network_mode="webvpn")
+        client._webvpn_sms_flow = {
+            "id": "pending-flow",
+            "expires_at": 4102444800,
+        }
+
+        with (
+            patch.object(client, "_webvpn_health_check") as health_check,
+            patch.object(client, "start_webvpn_password_login") as password_login,
+        ):
+            self.assertFalse(client.ensure_login())
+            self.assertFalse(client.ensure_login())
+
+        health_check.assert_not_called()
+        password_login.assert_not_called()
+        self.assertEqual(client._webvpn_sms_flow["id"], "pending-flow")
 
 
 if __name__ == "__main__":
