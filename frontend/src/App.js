@@ -57,6 +57,15 @@ const EMPTY_OFFLINE_CAPABILITIES = {
   has_festival_activities: false,
 };
 
+// Keep the shell compatible with older/mocked API facades during rolling
+// upgrades.  The campus-network classifier is an additive API helper, so its
+// absence must never abort application bootstrap or force a false login
+// redirect.
+const isCampusNetworkBlocked = value => (
+  typeof isWebVPNCampusNetworkBlocked === 'function'
+  && isWebVPNCampusNetworkBlocked(value)
+);
+
 const appTheme = {
   token: {
     colorPrimary: '#2563eb',
@@ -167,7 +176,7 @@ function App() {
       health = await getHealth();
     }
     setRuntimeProfile(bootstrap?.runtime?.profile || health?.profile || 'development');
-    if (isWebVPNCampusNetworkBlocked(bootstrap?.auth)) {
+    if (isCampusNetworkBlocked(bootstrap?.auth)) {
       window.dispatchEvent(new CustomEvent('neu-webvpn-campus-blocked', {
         detail: bootstrap.auth,
       }));
@@ -366,7 +375,7 @@ function App() {
     setPendingCaptchaLoading(true);
     try {
       const result = await refreshWebVPNCaptcha(pendingAuthFlow.flow_id);
-      if (isWebVPNCampusNetworkBlocked(result)) {
+      if (isCampusNetworkBlocked(result)) {
         setPendingAuthFlow(null);
         message.warning({
           duration: 8,
@@ -379,7 +388,7 @@ function App() {
       setPendingCaptchaCode('');
       setPendingSmsSent(false);
     } catch (error) {
-      if (isWebVPNCampusNetworkBlocked(error)) {
+      if (isCampusNetworkBlocked(error)) {
         setPendingAuthFlow(null);
         message.warning({
           duration: 8,
@@ -401,7 +410,7 @@ function App() {
     setPendingSmsLoading(true);
     try {
       const result = await sendWebVPNSMSCode(pendingAuthFlow.flow_id, pendingCaptchaCode.trim());
-      if (isWebVPNCampusNetworkBlocked(result)) {
+      if (isCampusNetworkBlocked(result)) {
         setPendingAuthFlow(null);
         message.warning({
           duration: 8,
@@ -420,7 +429,7 @@ function App() {
       }
       else { setPendingSmsSent(true); message.success('验证码已发送'); }
     } catch (error) {
-      if (isWebVPNCampusNetworkBlocked(error)) {
+      if (isCampusNetworkBlocked(error)) {
         setPendingAuthFlow(null);
         message.warning({ duration: 8, content: '校园网无法使用 WebVPN。当前页面会保留，请改用校内直连重新认证。' });
       } else {
@@ -438,7 +447,7 @@ function App() {
     setPendingSmsLoading(true);
     try {
       const result = await verifyWebVPNSMSCode(pendingAuthFlow.flow_id, pendingSmsCode.trim());
-      if (isWebVPNCampusNetworkBlocked(result)) {
+      if (isCampusNetworkBlocked(result)) {
         setPendingAuthFlow(null);
         message.warning({
           duration: 8,
@@ -463,7 +472,7 @@ function App() {
       setPendingSmsSent(false);
       handleLoginSuccess(result.username || userInfo || '已登录');
     } catch (error) {
-      if (isWebVPNCampusNetworkBlocked(error)) {
+      if (isCampusNetworkBlocked(error)) {
         setPendingAuthFlow(null);
         message.warning({ duration: 8, content: '校园网无法使用 WebVPN。当前页面会保留，请改用校内直连重新认证。' });
       } else {
