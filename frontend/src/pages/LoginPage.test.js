@@ -97,4 +97,16 @@ describe('LoginPage session recovery boundary', () => {
     container.remove();
   });
 
+  test('NEU 账号表单使用独立自动填充分区', async () => {
+    const { container, root } = await renderLoginPage();
+    const username = container.querySelector('input[placeholder="学号"]');
+    const password = container.querySelector('input[placeholder="密码"]');
+
+    expect(username?.getAttribute('autocomplete')).toBe('section-neu-account username');
+    expect(password?.getAttribute('autocomplete')).toBe('section-neu-account current-password');
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
 });

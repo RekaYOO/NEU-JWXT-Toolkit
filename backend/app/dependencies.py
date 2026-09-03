@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from backend.core.auth import AuthSessionManager, NEUAuthClient
 from backend.core.auth.client import WEBVPN_ERR_CAMPUS_NETWORK
@@ -79,9 +79,18 @@ _last_auth_recovery_error_code = ""
 
 
 @contextmanager
-def remote_session_guard(*, priority: str = "foreground", label: str = "remote-route"):
+def remote_session_guard(
+    *,
+    priority: str = "foreground",
+    label: str = "remote-route",
+    on_queued: Callable[[], None] | None = None,
+):
     """Serialize every operation that may touch the shared remote session."""
-    with _auth_sessions.remote_guard(priority=priority, label=label) as timing:
+    with _auth_sessions.remote_guard(
+        priority=priority,
+        label=label,
+        on_queued=on_queued,
+    ) as timing:
         yield timing
 
 

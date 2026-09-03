@@ -680,22 +680,48 @@ def logout(clear_data: bool = Query(True, description="是否清理用户数据"
     """
     result = {"success": True, "message": "已登出"}
 
-    # 清除当前内存会话及其持久化 Cookie。
+    # Linux/反向代理部署中，远端 Session 可能正被慢请求占用。登出必须
+    # 先在远端队列中预留 mutation 位置，再立即撤销应用内身份；否则
+    # “撤销身份”和“排队清理”之间的新登录可能抢先完成，随后又被旧
+    # logout 清除。
     client = peek_auth_client()
     pending_client = peek_pending_auth_client()
     account = str(getattr(client, "username", "") or "") or None
-    with remote_session_guard():
-        if client:
-            client.cancel_webvpn_qr_login()
-            client.cancel_webvpn_sms_login()
-            client.clear_cookies()
-            client.session.cookies.clear()
-        if pending_client:
-            pending_client.cancel_webvpn_qr_login()
-            pending_client.cancel_webvpn_sms_login()
-            pending_client.session.cookies.clear()
-            clear_pending_auth_client(pending_client)
+
+    def fence_identity() -> None:
         logout_auth_client(clear_cache=clear_data)
+
+    # 新登录看到 mutation 已排队后只能等待这次清理完成。正在执行的
+    # 旧认证请求不会被强制中断；若它在早期 fence 后迟到提交身份，
+    # 取得锁后再 fence 一次。
+    with remote_session_guard(
+        priority="mutation",
+        label="logout",
+        on_queued=fence_identity,
+    ):
+        late_client = peek_auth_client()
+        late_pending_client = peek_pending_auth_client()
+        if late_client is not None or late_pending_client is not None:
+            # An authentication request that already held the Session lock may
+            # have completed after the early fence. Revoke that result before
+            # any newly submitted login is allowed to acquire the lock.
+            logout_auth_client(clear_cache=clear_data)
+        clients_to_clear = {
+            id(candidate): candidate
+            for candidate in (
+                client,
+                pending_client,
+                late_client,
+                late_pending_client,
+            )
+            if candidate is not None
+        }
+        for candidate in clients_to_clear.values():
+            candidate.cancel_webvpn_qr_login()
+            candidate.cancel_webvpn_sms_login()
+            candidate.clear_cookies()
+            candidate.session.cookies.clear()
+            clear_pending_auth_client(candidate)
         _auto_login.clear_login()
         # Keep file cleanup in the same session critical section. A concurrent
         # login must not save fresh cookies/credentials that an older logout

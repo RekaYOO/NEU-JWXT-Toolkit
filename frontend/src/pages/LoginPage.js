@@ -31,6 +31,10 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   const [offlineLoading, setOfflineLoading] = useState(false);
   const [networkNotice, setNetworkNotice] = useState('');
   const [form] = Form.useForm();
+  const normalizedCredentials = values => ({
+    ...values,
+    username: String(values?.username || '').trim(),
+  });
 
   const handleCampusNetworkBlock = useCallback((value) => {
     const blocked = typeof isWebVPNCampusNetworkBlocked === 'function'
@@ -292,6 +296,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   };
 
   const onFinish = async (values) => {
+    const credentials = normalizedCredentials(values);
     if (networkMode === 'offline') {
       await beginOfflineMode();
       return;
@@ -308,13 +313,13 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     }, 5000) : null;
     try {
       if (networkMode === 'webvpn') {
-        await beginWebVPNPasswordLogin(values);
+        await beginWebVPNPasswordLogin(credentials);
         return;
       }
       const result = await login(
-        values.username,
-        values.password,
-        values.remember,
+        credentials.username,
+        credentials.password,
+        credentials.remember,
         networkMode,
       );
       
@@ -403,10 +408,10 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
         <div className="login-credentials-wrap" aria-hidden={loginView === 'qr'}>
           <Form
             form={form}
-            name="login"
+            name="neu-account-login"
             initialValues={{ remember: true }}
             onFinish={onFinish}
-            autoComplete="off"
+            autoComplete="on"
           >
           <Form.Item label="访问方式">
             <Radio.Group
@@ -444,7 +449,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
                   placeholder="学号"
                   size="large"
                   inputMode="numeric"
-                  autoComplete="username"
+                  autoComplete="section-neu-account username"
                   enterKeyHint="next"
                 />
               </Form.Item>
@@ -457,6 +462,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
                   prefix={<LockOutlined />}
                   placeholder="密码"
                   size="large"
+                  autoComplete="section-neu-account current-password"
                 />
               </Form.Item>
 

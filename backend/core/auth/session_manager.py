@@ -45,13 +45,18 @@ class AuthSessionManager:
         *,
         priority: str = "foreground",
         label: str = "remote-operation",
+        on_queued: Callable[[], None] | None = None,
     ) -> Iterator[dict[str, float | str]]:
         """Serialize the shared Session while letting user writes skip queued reads.
 
         The active request is never interrupted.  Once it releases the Session,
         mutations win over foreground reads, which win over background scans.
         After a bounded foreground streak, one background request may proceed so
-        cache/archive work cannot starve forever.
+        cache/archive work cannot starve forever.  ``on_queued`` runs after this
+        operation has reserved its queue position but before it waits for the
+        active request.  It is used by logout to revoke the local identity
+        immediately without leaving a gap in which a new login can overtake the
+        pending logout cleanup.
         """
         if priority not in _REMOTE_PRIORITIES:
             raise ValueError(f"unknown remote priority: {priority}")
@@ -60,6 +65,17 @@ class AuthSessionManager:
             ticket = self._remote_ticket
             self._remote_ticket += 1
             self._remote_waiting[priority].append(ticket)
+        try:
+            if on_queued is not None:
+                on_queued()
+        except Exception:
+            with self._remote_condition:
+                queue = self._remote_waiting[priority]
+                if ticket in queue:
+                    queue.remove(ticket)
+                self._remote_condition.notify_all()
+            raise
+        with self._remote_condition:
             while self._remote_active or not self._remote_turn(priority, ticket):
                 self._remote_condition.wait()
             self._remote_waiting[priority].pop(0)

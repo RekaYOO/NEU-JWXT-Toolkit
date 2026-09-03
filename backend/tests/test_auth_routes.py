@@ -1,4 +1,5 @@
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -18,6 +19,25 @@ from backend.core.auth.session_manager import AuthSessionManager
 
 
 class AuthRouteTests(unittest.TestCase):
+    def test_login_requests_normalize_browser_whitespace_and_full_width_digits(self):
+        direct = LoginRequest(
+            username=" ２０２５０００１ \n",
+            password=" password-keeps-spaces ",
+        )
+        webvpn = WebVPNPasswordStartRequest(
+            username="\t２０２５０００１ ",
+            password=" password-keeps-spaces ",
+        )
+
+        self.assertEqual(direct.username, "20250001")
+        self.assertEqual(webvpn.username, "20250001")
+        self.assertEqual(direct.password, " password-keeps-spaces ")
+        self.assertEqual(webvpn.password, " password-keeps-spaces ")
+
+    def test_login_requests_reject_embedded_username_whitespace(self):
+        with self.assertRaises(ValueError):
+            LoginRequest(username="2025 0001", password="password")
+
     def test_failed_active_session_is_replaced_without_intermediate_identity_gap(self):
         manager = AuthSessionManager()
         active = SimpleNamespace(
@@ -444,12 +464,26 @@ class AuthRouteTests(unittest.TestCase):
 
     def test_logout_uses_current_client_without_name_error(self):
         client = Mock()
+        client.username = "20250001"
         client.session = Mock()
         clear_result = {"deleted_count": 2, "preserved_count": 0}
+        calls = []
+
+        @contextmanager
+        def guarded_logout(*, priority, label, on_queued):
+            calls.append(("guard", priority, label))
+            on_queued()
+            yield {}
 
         with (
-            patch.object(auth, "peek_auth_client", return_value=client),
-            patch.object(auth, "logout_auth_client") as logout_client,
+            patch.object(auth, "peek_auth_client", side_effect=[client, None]),
+            patch.object(auth, "peek_pending_auth_client", return_value=None),
+            patch.object(
+                auth,
+                "logout_auth_client",
+                side_effect=lambda **kwargs: calls.append(("fence", kwargs["clear_cache"])),
+            ) as logout_client,
+            patch.object(auth, "remote_session_guard", side_effect=guarded_logout),
             patch.object(auth, "_auto_login") as auto_login,
             patch.object(auth, "_storage") as storage,
         ):
@@ -464,6 +498,55 @@ class AuthRouteTests(unittest.TestCase):
         client.session.cookies.clear.assert_called_once_with()
         logout_client.assert_called_once_with(clear_cache=True)
         auto_login.clear_login.assert_called_once_with()
+        self.assertEqual(calls[:2], [
+            ("guard", "mutation", "logout"),
+            ("fence", True),
+        ])
+
+    def test_logout_revokes_authentication_that_finishes_after_initial_fence(self):
+        original = Mock()
+        original.username = "20250001"
+        original.session = Mock()
+        late = Mock()
+        late.username = "20250001"
+        late.session = Mock()
+        calls = []
+
+        @contextmanager
+        def guarded_logout(*, priority, label, on_queued):
+            calls.append(("queued", priority, label))
+            on_queued()
+            calls.append(("old-auth-finished",))
+            yield {}
+
+        with (
+            patch.object(auth, "peek_auth_client", side_effect=[original, late]),
+            patch.object(auth, "peek_pending_auth_client", return_value=None),
+            patch.object(
+                auth,
+                "logout_auth_client",
+                side_effect=lambda **kwargs: calls.append(("fence", kwargs["clear_cache"])),
+            ) as logout_client,
+            patch.object(auth, "remote_session_guard", side_effect=guarded_logout),
+            patch.object(auth, "_auto_login"),
+            patch.object(auth, "_storage") as storage,
+        ):
+            response = auth.logout(clear_data=False)
+
+        self.assertTrue(response["success"])
+        self.assertEqual(
+            calls[:4],
+            [
+                ("queued", "mutation", "logout"),
+                ("fence", False),
+                ("old-auth-finished",),
+                ("fence", False),
+            ],
+        )
+        self.assertEqual(logout_client.call_count, 2)
+        original.clear_cookies.assert_called_once_with()
+        late.clear_cookies.assert_called_once_with()
+        storage.clear_all_data.assert_not_called()
 
 
 if __name__ == "__main__":

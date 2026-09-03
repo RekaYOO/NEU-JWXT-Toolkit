@@ -75,6 +75,56 @@ def test_remote_guard_prioritizes_mutation_over_queued_background_work():
     assert max_active == 1
 
 
+def test_logout_queue_callback_fences_before_new_login_can_enter():
+    manager = AuthSessionManager()
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+    logout_queued = threading.Event()
+    order: list[str] = []
+
+    def blocker():
+        with manager.remote_guard(priority="background", label="old-read"):
+            order.append("old-read")
+            blocker_started.set()
+            assert release_blocker.wait(timeout=2)
+
+    def logout():
+        with manager.remote_guard(
+            priority="mutation",
+            label="logout",
+            on_queued=lambda: (order.append("identity-fenced"), logout_queued.set()),
+        ):
+            order.append("logout-cleanup")
+
+    def login():
+        with manager.remote_guard(priority="foreground", label="new-login"):
+            order.append("new-login")
+
+    blocker_thread = threading.Thread(target=blocker)
+    logout_thread = threading.Thread(target=logout)
+    login_thread = threading.Thread(target=login)
+    blocker_thread.start()
+    assert blocker_started.wait(timeout=2)
+    logout_thread.start()
+    assert logout_queued.wait(timeout=2)
+    login_thread.start()
+    time.sleep(0.03)
+
+    assert order == ["old-read", "identity-fenced"]
+    release_blocker.set()
+
+    for thread in (blocker_thread, logout_thread, login_thread):
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+    assert order == [
+        "old-read",
+        "identity-fenced",
+        "logout-cleanup",
+        "new-login",
+    ]
+
+
 def test_remote_guard_places_foreground_between_mutation_and_background():
     manager = AuthSessionManager()
     blocker_started = threading.Event()

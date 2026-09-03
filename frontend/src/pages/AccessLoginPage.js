@@ -10,11 +10,11 @@ const AccessLoginPage = ({ configured, onSuccess }) => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
-  const handleSubmit = async ({ password }) => {
+  const handleSubmit = async ({ accessPassword }) => {
     setSubmitting(true);
     setError('');
     try {
-      await loginAccessGateway(password);
+      await loginAccessGateway(accessPassword);
       await onSuccess();
     } catch (requestError) {
       setError(requestError.response?.data?.detail || '验证失败，请稍后重试');
@@ -44,15 +44,21 @@ const AccessLoginPage = ({ configured, onSuccess }) => {
             description="请在服务器上重新运行安装脚本并设置访问密码。"
           />
         ) : (
-          <Form layout="vertical" onFinish={handleSubmit} className="access-login-form">
+          <Form
+            name="toolkit-access-login"
+            layout="vertical"
+            onFinish={handleSubmit}
+            className="access-login-form"
+            autoComplete="on"
+          >
             <Form.Item
               label="访问密码"
-              name="password"
+              name="accessPassword"
               rules={[{ required: true, message: '请输入访问密码' }]}
             >
               <Input.Password
                 autoFocus
-                autoComplete="current-password"
+                autoComplete="section-toolkit-access current-password"
                 prefix={<LockOutlined />}
                 placeholder="输入服务器访问密码"
                 size="large"
