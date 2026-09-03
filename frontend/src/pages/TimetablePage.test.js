@@ -117,6 +117,38 @@ describe('TimetablePage helpers', () => {
     }).state).toBe('error');
   });
 
+  test('keeps normal current-week auto detection silent', () => {
+    expect(automaticTimetableNotice({ hasCurrentCourses: true })).toBe('');
+  });
+
+  test('uses the weekday selector as the mobile initial focus target only once', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<MobileTimetable
+          coursesByDay={Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]))}
+          sections={[]}
+          selectedDay={1}
+          viewMode="week"
+          currentTerm
+          currentWeekNumber={3}
+          onDayChange={() => {}}
+          onCourseClick={() => {}}
+          personalConflictMap={{}}
+        />);
+      });
+      expect(container.querySelector('.timetable-mobile-day-selector')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
   test('conflict details fall back from an empty weeks array to known baseline weeks', () => {
     expect(conflictMeetingText({
       weeks: [], baseline_weeks: [11, 13], overlapping_weeks: [11],

@@ -1369,6 +1369,7 @@ function TimetablePage({
   const mobileDayFocusRef = useRef(null);
   const mobileFocusKeyRef = useRef('');
   const mobileFocusPendingRef = useRef('');
+  const mobileFocusReadyRef = useRef(false);
   const mobileDayScrollGeneration = useRef(0);
   const targetSelectRef = useRef(null);
   const targetSearchState = useRef({ keyword: '', page: 0, total: 0, loading: false, requestKey: '' });
@@ -1730,10 +1731,7 @@ function TimetablePage({
           setAutoNotice(previous => previous || automaticTimetableNotice());
         } else {
           setViewMode('week');
-          // Locating the current teaching week is the normal initial state;
-          // only exceptional fallbacks (such as switching to another term)
-          // should be surfaced as a notice.
-          setAutoNotice(automaticTimetableNotice({ hasCurrentCourses: true }));
+          setAutoNotice('');
         }
       }
 
@@ -2603,6 +2601,7 @@ function TimetablePage({
       || deepLink.current.term
       || deepLink.current.week
       || deepLink.current.day
+      || mobileFocusReadyRef.current
     ) return undefined;
     // The entry point for both timetable views is the weekday selector. The
     // week rail remains available above it, but should not be the initial
@@ -2667,6 +2666,7 @@ function TimetablePage({
         if (cancelled) return;
         alignSelector();
         mobileFocusKeyRef.current = focusKey;
+        mobileFocusReadyRef.current = true;
         if (mobileFocusPendingRef.current === focusKey) mobileFocusPendingRef.current = '';
       });
     });
@@ -2674,8 +2674,8 @@ function TimetablePage({
       cancelled = true;
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
-      if (mobileFocusPendingRef.current === focusKey) mobileFocusPendingRef.current = '';
-    };
+    if (mobileFocusPendingRef.current === focusKey) mobileFocusPendingRef.current = '';
+  };
   }, [embedded, isMobile, mode, schedule, termCode, viewMode]);
   const targetPlaceholder = mode === 'class'
     ? '搜索班级代码或名称'

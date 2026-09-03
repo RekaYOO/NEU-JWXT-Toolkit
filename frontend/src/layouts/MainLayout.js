@@ -196,12 +196,9 @@ const MainLayout = ({
       navigate('/login');
       return;
     }
-    try {
-      const result = await logout();
-      if (!result.success) {
-        throw new Error(result.message || '后端未完成登出');
-      }
-      // 清除头像缓存
+    // 先完成本地退出和导航，避免服务端会话锁、网络超时或已失效
+    // 的远端 Session 把用户卡在工作台。服务端清理在后台尽力执行。
+    const clearLocalSession = () => {
       localStorage.removeItem(AVATAR_STORAGE_KEY);
       localStorage.removeItem(AVATAR_TIMESTAMP_KEY);
       if (avatarUrl && avatarUrl.startsWith('blob:')) {
@@ -209,8 +206,15 @@ const MainLayout = ({
       }
       onLogout();
       navigate('/login');
+    };
+    clearLocalSession();
+    try {
+      const result = await logout();
+      if (!result.success) {
+        throw new Error(result.message || '后端未完成登出');
+      }
     } catch (error) {
-      message.error('登出失败');
+      message.warning('本地已退出登录，服务器会话清理将在下次连接时完成');
     }
   };
 

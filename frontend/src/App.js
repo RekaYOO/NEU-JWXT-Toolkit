@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ConfigProvider, Layout, Modal, Spin, message } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import {
+  BrowserRouter as Router, Routes, Route, Navigate, useLocation,
+} from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import MainLayout from './layouts/MainLayout';
 import AccessLoginPage from './pages/AccessLoginPage';
@@ -56,6 +58,12 @@ const EMPTY_OFFLINE_CAPABILITIES = {
   resources: [],
   has_festival_activities: false,
 };
+
+const isTimetableRoute = pathname => (
+  pathname === '/timetable'
+  || pathname.startsWith('/timetable/')
+  || (pathname === '/' && loadSetting('defaultTimetableOnOpen', false))
+);
 
 // Keep the shell compatible with older/mocked API facades during rolling
 // upgrades.  The campus-network classifier is an additive API helper, so its
@@ -119,12 +127,185 @@ const appTheme = {
   },
 };
 
+function AppContent({
+  isLoggedIn,
+  userInfo,
+  runtimeProfile,
+  offlineMode,
+  offlineCapabilities,
+  accessState,
+  isLoading,
+  initialAuthSlow,
+  timetableRecoveryIdentity,
+  timetableRecoveryActive,
+  timetableRecoveryNotice,
+  onLogout,
+  onLoginSuccess,
+  onOfflineSuccess,
+  onAccessSuccess,
+  offlineDefaultPath,
+  pendingAuthFlow,
+  pendingCaptchaCode,
+  setPendingCaptchaCode,
+  pendingSmsCode,
+  setPendingSmsCode,
+  pendingSmsLoading,
+  pendingCaptchaLoading,
+  pendingSmsSent,
+  onRefreshCaptcha,
+  onSendSMS,
+  onVerify,
+  onCancel,
+}) {
+  const location = useLocation();
+  const showTimetableRecovery = Boolean(
+    timetableRecoveryIdentity
+    && timetableRecoveryActive
+    && !isManualLogoutActive()
+    && isTimetableRoute(location.pathname),
+  );
+  // 本机课表恢复是“只读课表浏览”能力，不是登录态。尤其不能因为
+  // 有课表快照就挂载成绩、头像、培养计划等依赖真实身份的页面。
+  const canRenderCurrentRoute = isLoggedIn
+    || (showTimetableRecovery && isTimetableRoute(location.pathname));
+
+  if (isLoading && !showTimetableRecovery) {
+    return (
+      <div className="loading" role="status" aria-live="polite">
+        <Spin size="large" />
+        <span>{initialAuthSlow ? '正在恢复登录状态，请稍候' : '正在连接教务服务'}</span>
+      </div>
+    );
+  }
+
+  if (accessState.required && !accessState.authenticated) {
+    return (
+      <ConfigProvider theme={appTheme} locale={zhCN}>
+        <AccessLoginPage
+          configured={accessState.configured}
+          onSuccess={onAccessSuccess}
+        />
+      </ConfigProvider>
+    );
+  }
+
+  return (
+    <ResourceProvider
+      identity={isLoggedIn
+        ? String(userInfo || 'authenticated')
+        : (showTimetableRecovery ? timetableRecoveryIdentity : '')}
+      offlineMode={offlineMode}
+      recoveryMode={showTimetableRecovery}
+    >
+      <Layout className="app-layout">
+        <Content className="app-content">
+          <Routes>
+            <Route
+              path="/login"
+              element={
+                isLoggedIn
+                  ? <Navigate to="/" />
+                  : <LoginPage
+                    onLoginSuccess={onLoginSuccess}
+                    onOfflineSuccess={onOfflineSuccess}
+                  />
+              }
+            />
+            <Route
+              path="/"
+              element={
+                canRenderCurrentRoute
+                  ? <MainLayout
+                    userInfo={userInfo}
+                    onLogout={onLogout}
+                    runtimeProfile={runtimeProfile}
+                    offlineMode={offlineMode}
+                    offlineCapabilities={offlineCapabilities}
+                    recoveryMode={showTimetableRecovery}
+                  />
+                  : <Navigate to="/login" />
+              }
+            >
+              <Route index element={<Navigate to={showTimetableRecovery ? '/timetable' : (offlineMode ? offlineDefaultPath : (loadSetting('defaultTimetableOnOpen', false) ? '/timetable' : '/scores'))} />} />
+              <Route
+                path="scores"
+                element={featureAvailable('scores', { offlineMode, offlineCapabilities })
+                  ? <ScoresPage offlineMode={offlineMode} />
+                  : <Navigate to={offlineDefaultPath} />}
+              />
+              <Route path="grade-tracking" element={featureAvailable('grade-tracking', { offlineMode, offlineCapabilities }) ? <GradeTrackingPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route
+                path="academic-report"
+                element={featureAvailable('academic-report', { offlineMode, offlineCapabilities })
+                  ? <AcademicReportPage offlineMode={offlineMode} />
+                  : <Navigate to={offlineDefaultPath} />}
+              />
+              <Route path="experiment-courses" element={featureAvailable('experiment-courses', { offlineMode, offlineCapabilities }) ? <ExperimentCoursePage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route
+                path="research-training"
+                element={featureAvailable('research-training', { offlineMode, offlineCapabilities })
+                  ? <ResearchTrainingPage offlineMode={offlineMode} />
+                  : <Navigate to={offlineDefaultPath} />}
+              />
+              <Route path="evaluation" element={featureAvailable('evaluation', { offlineMode, offlineCapabilities }) ? <EvaluationPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="exams" element={featureAvailable('exams', { offlineMode, offlineCapabilities }) ? <ExamPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="timetable" element={featureAvailable('timetable', { offlineMode, offlineCapabilities }) ? <TimetablePage recoveryNotice={showTimetableRecovery ? timetableRecoveryNotice : ''} /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="course-selection" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="course-selection/archive/:archiveId" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionArchivePage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="course-selection/:batchCode/*" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionWorkspacePage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="course-outlines" element={featureAvailable('course-outlines', { offlineMode, offlineCapabilities }) ? <CourseOutlinePage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="logs" element={<Navigate to="/system-settings?tab=logs" replace />} />
+              <Route path="system-settings" element={featureAvailable('system-settings', { offlineMode, offlineCapabilities }) ? <SystemSettingsPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route
+                path="export"
+                element={featureAvailable('export', { offlineMode, offlineCapabilities })
+                  ? <ExportPage offlineMode={offlineMode} offlineCapabilities={offlineCapabilities} />
+                  : <Navigate to={offlineDefaultPath} />}
+              />
+              <Route
+                path="export/festival-activities"
+                element={isExportToolAvailable('festival-activities', {
+                  offlineMode,
+                  offlineCapabilities,
+                })
+                  ? <FestivalActivitiesPage offlineMode={offlineMode} />
+                  : <Navigate to="/export" />}
+              />
+              <Route
+                path="export/academic-documents"
+                element={isExportToolAvailable('academic-documents', {
+                  offlineMode,
+                  offlineCapabilities,
+                })
+                  ? <AcademicDocumentsPage />
+                  : <Navigate to="/export" />}
+              />
+            </Route>
+          </Routes>
+          <WebVPNAuthModal
+            flow={pendingAuthFlow}
+            captchaCode={pendingCaptchaCode}
+            setCaptchaCode={setPendingCaptchaCode}
+            smsCode={pendingSmsCode}
+            setSmsCode={setPendingSmsCode}
+            loading={pendingSmsLoading}
+            captchaLoading={pendingCaptchaLoading}
+            smsSent={pendingSmsSent}
+            onRefreshCaptcha={onRefreshCaptcha}
+            onSendSMS={onSendSMS}
+            onVerify={onVerify}
+            onCancel={onCancel}
+          />
+        </Content>
+      </Layout>
+    </ResourceProvider>
+  );
+}
+
 function App() {
-  const timetableEntryPath = window.location.pathname === '/timetable'
-    || (window.location.pathname === '/' && loadSetting('defaultTimetableOnOpen', false));
   const [timetableRecoveryIdentity] = useState(() => browserTimetableRecoveryIdentity());
   const [timetableRecoveryActive, setTimetableRecoveryActive] = useState(
-    () => timetableEntryPath
+    () => isTimetableRoute(window.location.pathname)
       && !isManualLogoutActive()
       && Boolean(browserTimetableRecoveryIdentity()),
   );
@@ -214,7 +395,7 @@ function App() {
         setIsLoggedIn(status.is_logged_in);
         setUserInfo(status.current_user);
         if (status.is_logged_in) setTimetableRecoveryActive(false);
-        else if (timetableRecoveryActive && timetableEntryPath) {
+        else if (timetableRecoveryActive && isTimetableRoute(window.location.pathname)) {
           setTimetableRecoveryNotice('当前教务会话未确认，正在保留本机课表并继续后台恢复登录');
         }
       } else {
@@ -224,7 +405,7 @@ function App() {
         setIsLoggedIn(status.is_logged_in);
         setUserInfo(status.current_user);
         if (status.is_logged_in) setTimetableRecoveryActive(false);
-        else if (timetableRecoveryActive && timetableEntryPath) {
+        else if (timetableRecoveryActive && isTimetableRoute(window.location.pathname)) {
           setTimetableRecoveryNotice('当前教务会话未确认，正在保留本机课表并继续后台恢复登录');
         }
       }
@@ -244,7 +425,7 @@ function App() {
       } catch (error) {
         // 静默处理，不弹窗打扰用户，只在控制台记录
         console.log('后端服务未就绪，以未登录状态启动');
-        if (timetableRecoveryActive && timetableEntryPath) {
+        if (timetableRecoveryActive && isTimetableRoute(window.location.pathname)) {
           setTimetableRecoveryNotice('教务服务暂时无法连接，正在保留本机课表并继续后台恢复登录');
         }
       } finally {
@@ -262,7 +443,7 @@ function App() {
     init();
     
     return () => clearTimeout(timer);
-  }, [recoveryToken, timetableEntryPath]);
+  }, [recoveryToken]);
 
   useEffect(() => {
     const requireAccess = () => {
@@ -490,7 +671,7 @@ function App() {
     setPendingSmsSent(false);
   };
 
-  const handleLoginSuccess = (username) => {
+  const handleLoginSuccess = useCallback((username) => {
     clearManualLogout();
     sessionStorage.removeItem(OFFLINE_SESSION_KEY);
     setOfflineMode(false);
@@ -500,9 +681,9 @@ function App() {
     setTimetableRecoveryActive(false);
     setTimetableRecoveryNotice('');
     message.success('登录成功');
-  };
+  }, []);
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     const wasOffline = offlineMode;
     markManualLogout();
     sessionStorage.removeItem(OFFLINE_SESSION_KEY);
@@ -513,9 +694,9 @@ function App() {
     setTimetableRecoveryActive(false);
     setTimetableRecoveryNotice('');
     message.success(wasOffline ? '已退出离线模式' : '已登出');
-  };
+  }, [offlineMode]);
 
-  const handleOfflineSuccess = (status) => {
+  const handleOfflineSuccess = useCallback((status) => {
     sessionStorage.setItem(OFFLINE_SESSION_KEY, '1');
     setOfflineMode(true);
     setOfflineCapabilities(status);
@@ -524,19 +705,15 @@ function App() {
     setTimetableRecoveryActive(false);
     setTimetableRecoveryNotice('');
     message.success('已进入只读离线模式');
-  };
+  }, []);
 
   const offlineDefaultPath = resolveOfflineDefaultPath(offlineCapabilities);
 
-  const showTimetableRecovery = Boolean(
+  if (isLoading && !(
     timetableRecoveryIdentity
     && timetableRecoveryActive
-    && timetableEntryPath
-    && !isManualLogoutActive()
-    && !recoveryToken,
-  );
-
-  if (isLoading && !showTimetableRecovery) {
+    && isTimetableRoute(window.location.pathname)
+  )) {
     return (
       <div className="loading" role="status" aria-live="polite">
         <Spin size="large" />
@@ -573,115 +750,45 @@ function App() {
 
   return (
     <ConfigProvider theme={appTheme} locale={zhCN}>
-      <ResourceProvider
-        identity={isLoggedIn ? String(userInfo || 'authenticated') : (showTimetableRecovery ? timetableRecoveryIdentity : '')}
-        offlineMode={offlineMode}
-        recoveryMode={showTimetableRecovery}
-      >
         <Router>
-          <Layout className="app-layout">
-            <Content className="app-content">
-      <Routes>
-            <Route 
-              path="/login" 
-              element={
-                isLoggedIn ? 
-                  <Navigate to="/" /> : 
-                  <LoginPage
-                    onLoginSuccess={handleLoginSuccess}
-                    onOfflineSuccess={handleOfflineSuccess}
-                  />
-              } 
-            />
-            <Route 
-              path="/" 
-              element={
-                (isLoggedIn || showTimetableRecovery) ?
-                  <MainLayout
-                    userInfo={userInfo}
-                    onLogout={handleLogout}
-                    runtimeProfile={runtimeProfile}
-                    offlineMode={offlineMode}
-                    offlineCapabilities={offlineCapabilities}
-                    recoveryMode={showTimetableRecovery}
-                  /> :
-                  <Navigate to="/login" />
+          <AppContent
+            isLoggedIn={isLoggedIn}
+            userInfo={userInfo}
+            runtimeProfile={runtimeProfile}
+            offlineMode={offlineMode}
+            offlineCapabilities={offlineCapabilities}
+            accessState={accessState}
+            isLoading={isLoading}
+            initialAuthSlow={initialAuthSlow}
+            timetableRecoveryIdentity={timetableRecoveryIdentity}
+            timetableRecoveryActive={timetableRecoveryActive}
+            timetableRecoveryNotice={timetableRecoveryNotice}
+            onLogout={handleLogout}
+            onLoginSuccess={handleLoginSuccess}
+            onOfflineSuccess={handleOfflineSuccess}
+            onAccessSuccess={async () => {
+              setIsLoading(true);
+              try {
+                await loadApplicationState();
+              } finally {
+                setIsLoading(false);
               }
-            >
-              <Route index element={<Navigate to={showTimetableRecovery ? '/timetable' : (offlineMode ? offlineDefaultPath : (loadSetting('defaultTimetableOnOpen', false) ? '/timetable' : '/scores'))} />} />
-              <Route
-                path="scores"
-                element={featureAvailable('scores', { offlineMode, offlineCapabilities })
-                  ? <ScoresPage offlineMode={offlineMode} />
-                  : <Navigate to={offlineDefaultPath} />}
-              />
-              <Route path="grade-tracking" element={featureAvailable('grade-tracking', { offlineMode, offlineCapabilities }) ? <GradeTrackingPage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route
-                path="academic-report"
-                element={featureAvailable('academic-report', { offlineMode, offlineCapabilities })
-                  ? <AcademicReportPage offlineMode={offlineMode} />
-                  : <Navigate to={offlineDefaultPath} />}
-              />
-              <Route path="experiment-courses" element={featureAvailable('experiment-courses', { offlineMode, offlineCapabilities }) ? <ExperimentCoursePage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route
-                path="research-training"
-                element={featureAvailable('research-training', { offlineMode, offlineCapabilities })
-                  ? <ResearchTrainingPage offlineMode={offlineMode} />
-                  : <Navigate to={offlineDefaultPath} />}
-              />
-              <Route path="evaluation" element={featureAvailable('evaluation', { offlineMode, offlineCapabilities }) ? <EvaluationPage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="exams" element={featureAvailable('exams', { offlineMode, offlineCapabilities }) ? <ExamPage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="timetable" element={featureAvailable('timetable', { offlineMode, offlineCapabilities }) ? <TimetablePage recoveryNotice={showTimetableRecovery ? timetableRecoveryNotice : ''} /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="course-selection" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionPage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="course-selection/archive/:archiveId" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionArchivePage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="course-selection/:batchCode/*" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionWorkspacePage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="course-outlines" element={featureAvailable('course-outlines', { offlineMode, offlineCapabilities }) ? <CourseOutlinePage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="logs" element={<Navigate to="/system-settings?tab=logs" replace />} />
-              <Route path="system-settings" element={featureAvailable('system-settings', { offlineMode, offlineCapabilities }) ? <SystemSettingsPage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route
-                path="export"
-                element={featureAvailable('export', { offlineMode, offlineCapabilities })
-                  ? <ExportPage offlineMode={offlineMode} offlineCapabilities={offlineCapabilities} />
-                  : <Navigate to={offlineDefaultPath} />}
-              />
-              <Route
-                path="export/festival-activities"
-                element={isExportToolAvailable('festival-activities', {
-                  offlineMode,
-                  offlineCapabilities,
-                })
-                  ? <FestivalActivitiesPage offlineMode={offlineMode} />
-                  : <Navigate to="/export" />}
-              />
-              <Route
-                path="export/academic-documents"
-                element={isExportToolAvailable('academic-documents', {
-                  offlineMode,
-                  offlineCapabilities,
-                })
-                  ? <AcademicDocumentsPage />
-                  : <Navigate to="/export" />}
-              />
-            </Route>
-      </Routes>
-      <WebVPNAuthModal
-        flow={pendingAuthFlow}
-        captchaCode={pendingCaptchaCode}
-        setCaptchaCode={setPendingCaptchaCode}
-        smsCode={pendingSmsCode}
-        setSmsCode={setPendingSmsCode}
-        loading={pendingSmsLoading}
-        captchaLoading={pendingCaptchaLoading}
-        smsSent={pendingSmsSent}
-        onRefreshCaptcha={refreshPendingCaptcha}
-        onSendSMS={sendPendingSms}
-        onVerify={verifyPendingSms}
-        onCancel={cancelPendingSms}
-      />
-            </Content>
-          </Layout>
+            }}
+            offlineDefaultPath={resolveOfflineDefaultPath(offlineCapabilities)}
+            pendingAuthFlow={pendingAuthFlow}
+            pendingCaptchaCode={pendingCaptchaCode}
+            setPendingCaptchaCode={setPendingCaptchaCode}
+            pendingSmsCode={pendingSmsCode}
+            setPendingSmsCode={setPendingSmsCode}
+            pendingSmsLoading={pendingSmsLoading}
+            pendingCaptchaLoading={pendingCaptchaLoading}
+            pendingSmsSent={pendingSmsSent}
+            onRefreshCaptcha={refreshPendingCaptcha}
+            onSendSMS={sendPendingSms}
+            onVerify={verifyPendingSms}
+            onCancel={cancelPendingSms}
+          />
         </Router>
-      </ResourceProvider>
     </ConfigProvider>
   );
 }

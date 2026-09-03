@@ -45,3 +45,45 @@ test('keeps a deep link behind the auth loading gate while status recovery is pe
     jest.useRealTimers();
   }
 });
+
+test('keeps timetable recovery read-only and redirects non-timetable pages to login', async () => {
+  jest.useFakeTimers();
+  sessionStorage.clear();
+  localStorage.setItem('neu-toolbox-timetable-recovery-namespace', 'account:abc123');
+  window.history.replaceState({}, '', '/timetable');
+  getAccessStatus.mockResolvedValue({ required: false, configured: true, authenticated: true });
+  getHealth.mockResolvedValue({ profile: 'development' });
+  getClientBootstrap.mockResolvedValue({ runtime: { profile: 'development' }, auth: { is_logged_in: false } });
+  checkStatus.mockResolvedValue({ is_logged_in: false, current_user: null });
+
+  const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+  global.IS_REACT_ACT_ENVIRONMENT = true;
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(<App />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(3500);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      window.history.pushState({}, '', '/scores');
+      window.dispatchEvent(new Event('popstate'));
+      await Promise.resolve();
+    });
+
+    expect(window.location.pathname).toBe('/login');
+    expect(container.querySelector('.scores-page')).toBeNull();
+    expect(container.querySelector('.login-page')).not.toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    localStorage.removeItem('neu-toolbox-timetable-recovery-namespace');
+    global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    jest.useRealTimers();
+  }
+});

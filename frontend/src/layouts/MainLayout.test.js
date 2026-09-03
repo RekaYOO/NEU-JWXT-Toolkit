@@ -8,6 +8,7 @@ import {
   getUserAvatarCache,
   requestCacheRefresh,
   waitForCacheRefreshJob,
+  logout,
 } from '../services/api';
 
 jest.mock('../services/api', () => ({
@@ -70,6 +71,8 @@ describe('MainLayout desktop lifecycle controls', () => {
   beforeEach(() => {
     shutdownRuntime.mockReset();
     shutdownRuntime.mockResolvedValue({ success: true });
+    logout.mockReset();
+    logout.mockResolvedValue({ success: true });
     getUserAvatarCache.mockReset();
     getUserAvatarCache.mockResolvedValue(null);
     requestCacheRefresh.mockReset();
@@ -131,5 +134,45 @@ describe('MainLayout desktop lifecycle controls', () => {
     });
     expect(getUserAvatarCache).toHaveBeenCalledTimes(2);
     await page.unmount();
+  });
+
+  test('leaves the workbench immediately when server logout is unavailable', async () => {
+    logout.mockRejectedValueOnce(new Error('session lock'));
+    const onLogout = jest.fn();
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter
+          initialEntries={['/scores']}
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        >
+          <Routes>
+            <Route
+              path="/"
+              element={(
+                <MainLayout
+                  runtimeProfile="development"
+                  userInfo="测试用户"
+                  onLogout={onLogout}
+                />
+              )}
+            >
+              <Route path="scores" element={<div>成绩页面</div>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    await click(container.querySelector('button[aria-label="打开用户菜单"]'));
+    const item = [...document.querySelectorAll('[role="menuitem"]')].find(
+      element => element.textContent.includes('退出登录'),
+    );
+    await click(item);
+    expect(onLogout).toHaveBeenCalledTimes(1);
+    expect(logout).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    container.remove();
   });
 });

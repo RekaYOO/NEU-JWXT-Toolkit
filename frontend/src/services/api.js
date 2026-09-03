@@ -68,6 +68,7 @@ api.interceptors.response.use(
       } else if (
         sessionStorage.getItem(OFFLINE_SESSION_KEY) !== '1'
         && error.config?.url !== '/api/status'
+        && error.config?.url !== '/api/logout'
         && !isManualLogoutActive()
         && !error.config?.skipAuthRedirect
         && !error.config?.url?.startsWith('/api/access/')
