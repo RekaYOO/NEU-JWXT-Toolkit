@@ -50,7 +50,7 @@ from backend.app.dependencies import (
     require_mutation_auth, require_serialized_auth,
     get_cache_coordinator,
     get_course_selection_automation_service,
-    get_grade_tracker,
+    get_system_mail_service,
 )
 from backend.core.auth.client import (
     DirectAccessError,
@@ -137,7 +137,7 @@ def get_jwxk_automation_settings(
     if not batch_code or len(batch_code) > 64:
         raise HTTPException(status_code=422, detail="轮次编号无效")
     metadata = _automation_batch_metadata(str(auth.username), batch_code)
-    mail = get_grade_tracker().get_mail_status()
+    mail = get_system_mail_service().get_status()
     return {
         **get_course_selection_automation_service().get_automation_settings(str(auth.username), batch_code, metadata=metadata),
         "smtp_configured": bool(mail.get("configured")),
@@ -156,7 +156,7 @@ def update_jwxk_automation_settings(
     result = get_course_selection_automation_service().update_automation_settings(
         str(auth.username), batch_code, request.model_dump(), metadata=metadata,
     )
-    mail = get_grade_tracker().get_mail_status()
+    mail = get_system_mail_service().get_status()
     return {**result, "smtp_configured": bool(mail.get("configured")), "smtp_status": str(mail.get("status") or "未配置")}
 
 

@@ -410,6 +410,80 @@ def test_selection_auth_notification_rearms_after_successful_check(tmp_path):
     assert messages[0][2] != messages[1][2]
 
 
+@pytest.mark.parametrize(
+    ("task_type", "expected_heading"),
+    [
+        ("selection", "抢课任务登录失效"),
+        ("vacancy_swap", "空位换课任务登录失效"),
+        ("weight_strategy", "策略投权任务登录失效"),
+    ],
+)
+def test_all_automation_task_types_use_shared_jwxk_recovery_notice(
+    tmp_path, task_type, expected_heading,
+):
+    recovery_messages = []
+    ordinary_messages = []
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        client_builder=lambda _auth: None,
+        auth_recovery_notification_provider=lambda **payload: recovery_messages.append(payload) or True,
+        notification_provider=lambda *payload: ordinary_messages.append(payload) or True,
+    )
+    task = service.create("student", {
+        "batch_code": f"batch-{task_type}",
+        "term_code": "2026-2027-1",
+        "name": "认证中断任务",
+        "task_type": task_type,
+        "groups": [{"group_id": "g", "name": "当前方案", "target_count": 1}],
+        "items": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "任务课程",
+            "plan_group_id": "g", "teaching_class_type": "TJKC",
+        }],
+    })
+    service.update_automation_settings("student", f"batch-{task_type}", {
+        "mail_enabled": True,
+        # Authentication interruption is critical and does not depend on the
+        # ordinary grab-result checkbox.
+        "notify_grab_result": False,
+    })
+
+    service._wait_for_auth(task, "JWXK 会话需要恢复")
+    service._wait_for_auth(task, "仍在等待恢复")
+
+    assert len(recovery_messages) == 1
+    assert ordinary_messages == []
+    notice = recovery_messages[0]
+    assert expected_heading in notice["subject"]
+    assert notice["target_service"] == "jwxk"
+    assert "任务课程" in notice["body"]
+    assert "重放" in notice["body"]
+    assert notice["dedupe_key"].endswith(f":task-auth:{task['task_id']}:1")
+
+
+def test_automation_auth_notice_falls_back_to_plain_notification(tmp_path):
+    messages = []
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        client_builder=lambda _auth: None,
+        auth_recovery_notification_provider=lambda **_payload: False,
+        notification_provider=lambda subject, body, key, html_body: messages.append(
+            (subject, body, key, html_body)
+        ) or True,
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "认证中断任务", "items": [],
+    })
+    service.update_automation_settings("student", "batch", {"mail_enabled": True})
+
+    service._wait_for_auth(task)
+
+    assert len(messages) == 1
+    assert "登录失效" in messages[0][0]
+
+
 def test_running_automation_task_resumes_with_reconciliation_after_restart(tmp_path):
     path = tmp_path / "course_selection_tasks.json"
     path.write_text(json.dumps([{

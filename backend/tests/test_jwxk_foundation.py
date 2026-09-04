@@ -509,8 +509,8 @@ def test_automation_settings_metadata_never_opens_remote_jwxk(monkeypatch):
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("remote JWXK must not be opened")),
     )
     monkeypatch.setattr(
-        course_selection, "get_grade_tracker",
-        lambda: type("Tracker", (), {"get_mail_status": lambda _self: {"configured": False}})(),
+        course_selection, "get_system_mail_service",
+        lambda: type("Mail", (), {"get_status": lambda _self: {"configured": False}})(),
     )
 
     result = course_selection.get_jwxk_automation_settings(

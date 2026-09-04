@@ -1,9 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Button, Card, Col, Form, Input, InputNumber, Modal, Row, Select, Space, Spin, Switch, Tabs, Typography, message } from 'antd';
+import { Button, Card, Checkbox, Col, Form, Input, InputNumber, Modal, Row, Select, Space, Spin, Switch, Tabs, Typography, message } from 'antd';
 import { FileTextOutlined, MailOutlined, SaveOutlined, SettingOutlined } from '@ant-design/icons';
 import LogsPage from './LogsPage';
-import { getGradeTrackingConfig, updateGradeTrackingConfig, testGradeTrackingEmail, getSystemCacheSettings, updateSystemCacheSettings } from '../services/api';
+import {
+  getAuthRecoverySettings,
+  getSystemCacheSettings,
+  getSystemMailSettings,
+  testSystemMail,
+  updateAuthRecoverySettings,
+  updateSystemCacheSettings,
+  updateSystemMailSettings,
+} from '../services/api';
 import { clearBrowserAvatarCache, clearBrowserTimetableCache } from '../resources/BrowserTimetableStore';
 import { useResourceIdentity } from '../resources/ResourceStore';
 import './SystemSettingsPage.css';
@@ -68,17 +76,48 @@ const BrowserTimetableCacheCard = () => {
   </Card>;
 };
 
-const TrackingMailForm = () => {
+const SystemMailForm = () => {
   const [form] = Form.useForm(); const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [testing, setTesting] = useState(false); const [passwordConfigured, setPasswordConfigured] = useState(false);
-  useEffect(() => { getGradeTrackingConfig().then(config => { const { smtp_password_configured, ...fields } = config; setPasswordConfigured(Boolean(smtp_password_configured)); form.setFieldsValue(fields); }).catch(() => message.error('邮件配置加载失败')).finally(() => setLoading(false)); }, [form]);
-  const save = async () => { const values = await form.validateFields(); setSaving(true); try { const result = await updateGradeTrackingConfig(values); setPasswordConfigured(Boolean(result.config.smtp_password_configured)); message.success('邮件配置已保存'); } catch (error) { message.error(error.response?.data?.detail || '邮件配置保存失败'); } finally { setSaving(false); } };
+  useEffect(() => { getSystemMailSettings().then(config => { const { smtp_password_configured, ...fields } = config; setPasswordConfigured(Boolean(smtp_password_configured)); form.setFieldsValue(fields); }).catch(() => message.error('邮件配置加载失败')).finally(() => setLoading(false)); }, [form]);
+  const save = async () => { const values = await form.validateFields(); setSaving(true); try { const result = await updateSystemMailSettings(values); setPasswordConfigured(Boolean(result.config.smtp_password_configured)); form.setFieldsValue({ smtp_password: undefined, clear_smtp_password: false }); message.success('邮件配置已保存'); } catch (error) { message.error(error.response?.data?.detail || '邮件配置保存失败'); } finally { setSaving(false); } };
   if (loading) return <Spin />;
-  const test = async () => { setTesting(true); try { await testGradeTrackingEmail(); message.success('测试邮件已发送'); } catch (error) { message.error(error.response?.data?.detail || '测试邮件发送失败'); } finally { setTesting(false); } };
-  return <Form form={form} layout="vertical" onFinish={save} initialValues={{ smtp_port: 465, smtp_security: 'ssl' }}><Row gutter={16}><Col xs={24} md={16}><Form.Item name="smtp_host" label="SMTP 服务器"><Input placeholder="例如 smtp.qq.com" autoComplete="off" /></Form.Item></Col><Col xs={24} md={8}><Form.Item name="smtp_port" label="端口"><InputNumber min={1} max={65535} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} md={12}><Form.Item name="smtp_security" label="连接安全"><Select options={[{ value: 'ssl', label: 'SSL/TLS' }, { value: 'starttls', label: 'STARTTLS' }, { value: 'none', label: '无加密（不推荐）' }]} /></Form.Item></Col><Col xs={24} md={12}><Form.Item name="smtp_username" label="SMTP 用户名"><Input autoComplete="username" placeholder="通常为完整邮箱地址" /></Form.Item></Col><Col xs={24}><Form.Item name="smtp_password" label={passwordConfigured ? 'SMTP 密码（留空则保持不变）' : 'SMTP 密码或授权码'}><Input.Password autoComplete="new-password" placeholder="推荐使用邮箱授权码" /></Form.Item></Col><Col xs={24} md={12}><Form.Item name="from_email" label="发件地址"><Input type="email" placeholder="sender@example.com" /></Form.Item></Col><Col xs={24} md={12}><Form.Item name="to_email" label="接收地址"><Input type="email" placeholder="me@example.com" /></Form.Item></Col></Row><Space><Button htmlType="submit" icon={<SaveOutlined />} loading={saving}>保存邮件配置</Button><Button icon={<MailOutlined />} loading={testing} onClick={test}>发送测试邮件</Button></Space></Form>;
+  const test = async () => { setTesting(true); try { await testSystemMail(); message.success('测试邮件已发送'); } catch (error) { message.error(error.response?.data?.detail || '测试邮件发送失败'); } finally { setTesting(false); } };
+  return <Form form={form} layout="vertical" onFinish={save} initialValues={{ smtp_port: 465, smtp_security: 'ssl', clear_smtp_password: false }}><Row gutter={16}><Col xs={24} md={16}><Form.Item name="smtp_host" label="SMTP 服务器"><Input placeholder="例如 smtp.qq.com" autoComplete="off" /></Form.Item></Col><Col xs={24} md={8}><Form.Item name="smtp_port" label="端口"><InputNumber min={1} max={65535} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} md={12}><Form.Item name="smtp_security" label="连接安全"><Select options={[{ value: 'ssl', label: 'SSL/TLS' }, { value: 'starttls', label: 'STARTTLS' }, { value: 'none', label: '无加密（不推荐）' }]} /></Form.Item></Col><Col xs={24} md={12}><Form.Item name="smtp_username" label="SMTP 用户名"><Input autoComplete="username" placeholder="通常为完整邮箱地址" /></Form.Item></Col><Col xs={24}><Form.Item name="smtp_password" label={passwordConfigured ? 'SMTP 密码（留空则保持不变）' : 'SMTP 密码或授权码'}><Input.Password autoComplete="new-password" placeholder="推荐使用邮箱授权码" /></Form.Item>{passwordConfigured && <Form.Item name="clear_smtp_password" valuePropName="checked"><Checkbox>清除已保存的 SMTP 密码</Checkbox></Form.Item>}</Col><Col xs={24} md={12}><Form.Item name="from_email" label="发件地址"><Input type="email" placeholder="sender@example.com" /></Form.Item></Col><Col xs={24} md={12}><Form.Item name="to_email" label="接收地址"><Input type="email" placeholder="me@example.com" /></Form.Item></Col></Row><Space><Button htmlType="submit" icon={<SaveOutlined />} loading={saving}>保存邮件配置</Button><Button icon={<MailOutlined />} loading={testing} onClick={test}>发送测试邮件</Button></Space></Form>;
+};
+
+const AuthRecoverySettings = () => {
+  const [form] = Form.useForm();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    getAuthRecoverySettings()
+      .then(config => form.setFieldsValue(config))
+      .catch(() => message.error('远程登录恢复配置加载失败'))
+      .finally(() => setLoading(false));
+  }, [form]);
+  const save = async () => {
+    const values = await form.validateFields();
+    setSaving(true);
+    try {
+      await updateAuthRecoverySettings(values);
+      message.success('远程登录恢复配置已保存');
+    } catch (error) {
+      message.error(error.response?.data?.detail || '远程登录恢复配置保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (loading) return <Spin />;
+  return <Form form={form} layout="vertical" onFinish={save}>
+    <Form.Item name="public_base_url" label="重新登录地址（可选）" extra="填写从邮件可访问的站点根地址。认证失效时，成绩追踪和自动选课会发送独立的一次性恢复链接；留空则只通知你进入系统手动登录。">
+      <Input type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" placeholder="https://jwxt.example.com" />
+    </Form.Item>
+    <Button htmlType="submit" icon={<SaveOutlined />} loading={saving}>保存恢复配置</Button>
+  </Form>;
 };
 
 export default function SystemSettingsPage() {
   const [params, setParams] = useSearchParams();
   const activeKey = params.get('tab') === 'logs' ? 'logs' : 'config';
-  return <main className="system-settings-page"><div className="system-settings-heading"><SettingOutlined /><div><Title level={2}>系统设置</Title><Text type="secondary">统一管理日志、缓存和系统通知配置</Text></div></div><Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={[{ key: 'config', label: <span><SettingOutlined /> 配置项</span>, children: <><CacheSettings /><BrowserTimetableCacheCard /><Card title="系统邮件" className="system-settings-card"><TrackingMailForm /></Card></> }, { key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded /> }]} /></main>;
+  return <main className="system-settings-page"><div className="system-settings-heading"><SettingOutlined /><div><Title level={2}>系统设置</Title><Text type="secondary">统一管理日志、缓存和系统通知配置</Text></div></div><Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={[{ key: 'config', label: <span><SettingOutlined /> 配置项</span>, children: <><CacheSettings /><BrowserTimetableCacheCard /><Card title="系统邮件" className="system-settings-card"><SystemMailForm /></Card><Card title="远程登录恢复" className="system-settings-card"><AuthRecoverySettings /></Card></> }, { key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded /> }]} /></main>;
 }

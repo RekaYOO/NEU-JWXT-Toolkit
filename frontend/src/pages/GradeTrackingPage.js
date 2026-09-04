@@ -6,7 +6,6 @@ import {
   Card,
   Col,
   Form,
-  Input,
   InputNumber,
   Row,
   Select,
@@ -21,7 +20,6 @@ import {
   BellOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
-  MailOutlined,
   ReloadOutlined,
   SaveOutlined,
 } from '@ant-design/icons';
@@ -30,7 +28,6 @@ import {
   getGradeTrackingConfig,
   getGradeTrackingStatus,
   setGradeTrackingEnabled,
-  testGradeTrackingEmail,
   updateGradeTrackingConfig,
 } from '../services/api';
 import { MobileActionBar } from '../components/mobile/MobileUX';
@@ -116,14 +113,14 @@ const GradeTrackingPage = () => {
   const saveConfig = async () => {
     try {
       const values = await form.validateFields();
-      const trackingValues = (({ interval_minutes, start_hour, end_hour, site_url }) => ({
-        interval_minutes, start_hour, end_hour, site_url,
+      const trackingValues = (({ interval_minutes, start_hour, end_hour }) => ({
+        interval_minutes, start_hour, end_hour,
       }))(values);
       setSaving(true);
       const result = await updateGradeTrackingConfig(trackingValues);
       const { enabled: configuredEnabled, ...fields } = result.config;
       setEnabled(configuredEnabled);
-      form.setFieldsValue({ ...fields, smtp_password: undefined });
+      form.setFieldsValue(fields);
       await loadStatus();
       message.success('配置已保存');
     } catch (error) {
@@ -305,11 +302,6 @@ const GradeTrackingPage = () => {
           </div>
         </Card>
 
-        <Card title="登录恢复" className="tracking-config-card">
-          <Form.Item name="site_url" label="重新登录地址（可选）" extra="填写时发送随机的一次性登录页面，打开页面后才生成二维码；留空时直接发送五分钟有效的微信扫码认证链接。">
-            <Input type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" placeholder="https://jwxt.example.com" />
-          </Form.Item>
-        </Card>
       </Form>
 
       <Alert

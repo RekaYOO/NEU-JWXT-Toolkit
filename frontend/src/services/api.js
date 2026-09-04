@@ -585,65 +585,65 @@ export const checkGradesNow = async () => {
   return response.data;
 };
 
-export const testGradeTrackingEmail = async () => {
-  const response = await api.post('/api/grade-tracking/test-email');
-  return response.data;
-};
-
 export const getSystemCacheSettings = async () => (await api.get('/api/system-settings/cache')).data;
 export const updateSystemCacheSettings = async (payload) => (await api.put('/api/system-settings/cache', payload)).data;
+export const getSystemMailSettings = async () => (await api.get('/api/system-settings/mail')).data;
+export const updateSystemMailSettings = async (payload) => (await api.put('/api/system-settings/mail', payload)).data;
+export const testSystemMail = async () => (await api.post('/api/system-settings/mail/test')).data;
+export const getAuthRecoverySettings = async () => (await api.get('/api/system-settings/auth-recovery')).data;
+export const updateAuthRecoverySettings = async (payload) => (await api.put('/api/system-settings/auth-recovery', payload)).data;
 
-export const getGradeTrackingRecoveryStatus = async (token) => {
+export const getAuthRecoveryStatus = async (token) => {
   const response = await api.get(
-    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/status`
+    `/api/auth-recovery/${encodeURIComponent(token)}/status`
   );
   return response.data;
 };
 
-export const startGradeTrackingRecovery = async (token) => {
+export const startAuthRecovery = async (token) => {
   const response = await api.post(
-    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/start`
+    `/api/auth-recovery/${encodeURIComponent(token)}/start`
   );
   return response.data;
 };
 
-export const pollGradeTrackingRecovery = async (token) => {
+export const pollAuthRecovery = async (token) => {
   const response = await api.get(
-    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/poll`
+    `/api/auth-recovery/${encodeURIComponent(token)}/poll`
   );
   return response.data;
 };
 
-export const refreshGradeTrackingRecoveryCaptcha = async (token) => {
+export const refreshAuthRecoveryCaptcha = async (token) => {
   const response = await api.post(
-    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/captcha/refresh`
+    `/api/auth-recovery/${encodeURIComponent(token)}/captcha/refresh`
   );
   return response.data;
 };
 
-export const sendGradeTrackingRecoverySMS = async (token, captchaCode) => {
+export const sendAuthRecoverySMS = async (token, captchaCode) => {
   const response = await api.post(
-    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/sms/send`,
+    `/api/auth-recovery/${encodeURIComponent(token)}/sms/send`,
     { captcha_code: captchaCode }
   );
   return response.data;
 };
 
-export const verifyGradeTrackingRecoverySMS = async (
+export const verifyAuthRecoverySMS = async (
   token,
   code,
   trustDevice = false
 ) => {
   const response = await api.post(
-    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/sms/verify`,
+    `/api/auth-recovery/${encodeURIComponent(token)}/sms/verify`,
     { code, trust_device: trustDevice }
   );
   return response.data;
 };
 
-export const cancelGradeTrackingRecovery = async (token) => {
+export const cancelAuthRecovery = async (token) => {
   const response = await api.post(
-    `/api/grade-tracking/recovery/${encodeURIComponent(token)}/cancel`
+    `/api/auth-recovery/${encodeURIComponent(token)}/cancel`
   );
   return response.data;
 };

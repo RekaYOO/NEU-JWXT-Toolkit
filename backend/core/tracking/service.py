@@ -3,19 +3,10 @@
 from __future__ import annotations
 
 import json
-import hashlib
-import secrets
-import smtplib
-import ssl
 import threading
 import time
 import uuid
-from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
-from email.header import Header
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.utils import formatdate, make_msgid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,14 +21,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "interval_minutes": 30,
     "start_hour": 9,
     "end_hour": 21,
-    "site_url": "",
-    "smtp_host": "",
-    "smtp_port": 465,
-    "smtp_security": "ssl",
-    "smtp_username": "",
-    "smtp_password": "",
-    "from_email": "",
-    "to_email": "",
 }
 DEFAULT_STATE: dict[str, Any] = {
     "stage": "disabled",
@@ -67,44 +50,40 @@ class GradeTrackingService:
         auth_provider: Callable[[], Any],
         score_storage: Any,
         logger: Any,
+        mail_service: Any,
+        auth_recovery_service: Any,
         report_storage: Any | None = None,
-        qr_login_starter: Callable[[], tuple[Any, dict[str, Any]]] | None = None,
-        auth_setter: Callable[[Any], None] | None = None,
         login_flow_pending: Callable[[], bool] | None = None,
-        pending_sms_provider: Callable[[], tuple[Any, dict[str, Any]] | None] | None = None,
         score_refresher: Callable[[str, bool], dict[str, Any]] | None = None,
         score_detail_lookup: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
-        remote_guard: Callable[[], Any] | None = None,
-        auth_error_code_provider: Callable[[], str] | None = None,
     ) -> None:
         root = Path(data_dir)
         root.mkdir(parents=True, exist_ok=True)
         self.config_path = root / "grade_tracking_config.json"
         self.snapshot_path = root / "grade_tracking_snapshot.json"
         self.state_path = root / "grade_tracking_state.json"
-        self.outbox_path = root / "grade_tracking_outbox.json"
         self.auth_provider = auth_provider
         self.score_storage = score_storage
         self.report_storage = report_storage
         self.logger = logger
-        self.qr_login_starter = qr_login_starter
-        self.auth_setter = auth_setter
+        self.mail_service = mail_service
+        self.auth_recovery_service = auth_recovery_service
         self.login_flow_pending = login_flow_pending
-        self.pending_sms_provider = pending_sms_provider
         self.score_refresher = score_refresher
         self.score_detail_lookup = score_detail_lookup
-        self.remote_guard = remote_guard or nullcontext
-        self.auth_error_code_provider = auth_error_code_provider
         self._lock = threading.RLock()
         self._check_lock = threading.Lock()
         self._revision_lock = threading.RLock()
-        self._recovery_lock = threading.RLock()
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._recovery_client: Any | None = None
-        self._recovery_flow: dict[str, Any] | None = None
         self._config = {**DEFAULT_CONFIG, **self._read_json(self.config_path, {})}
+        legacy_config_present = False
+        for legacy_key in (
+            "site_url", "smtp_host", "smtp_port", "smtp_security",
+            "smtp_username", "smtp_password", "from_email", "to_email",
+        ):
+            legacy_config_present = self._config.pop(legacy_key, None) is not None or legacy_config_present
         self._config.pop("notify_initial", None)
         try:
             interval = int(self._config.get("interval_minutes", 30))
@@ -112,25 +91,29 @@ class GradeTrackingService:
             interval = int(DEFAULT_CONFIG["interval_minutes"])
         self._config["interval_minutes"] = min(1440, max(5, interval))
         self._state = {**DEFAULT_STATE, **self._read_json(self.state_path, {})}
-        messages = self._read_json(
-            self.outbox_path,
-            {"messages": []},
-        ).get("messages", [])
-        self._outbox = list(messages) if isinstance(messages, list) else []
+        recovery_state_keys = {
+            "recovery_token_hash", "recovery_token_issued_at",
+            "recovery_target_service", "recovery_owner",
+            "manual_login_notice_sent", "manual_login_notice_at",
+            "last_login_notice_at",
+        }
+        state_cleaned = any(self._state.pop(key, None) is not None for key in recovery_state_keys)
+        if legacy_config_present:
+            self._write_json(self.config_path, self._config)
+        if state_cleaned:
+            self._write_json(self.state_path, self._state)
         # Keep the pending activation intent beside ``enabled`` so one atomic
         # config write records the complete switch transition.  Migrate the
         # earlier state marker (or a queued activation message) in memory.
         legacy_activation_id = str(
             self._state.pop("initial_notification_id", None) or ""
         )
-        queued_activation_id = next(
-            (
-                str(item.get("dedupe_key") or "").removeprefix("activation:")
-                for item in self._outbox
-                if str(item.get("dedupe_key") or "").startswith("activation:")
-            ),
-            "",
-        )
+        queued_activation_id = ""
+        configured_activation_id = str(self._config.get("_activation_id") or "")
+        if configured_activation_id and self.mail_service.has_pending(
+            "grade_tracking", f"activation:{configured_activation_id}",
+        ):
+            queued_activation_id = configured_activation_id
         if (
             queued_activation_id
             and queued_activation_id
@@ -189,91 +172,45 @@ class GradeTrackingService:
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
-        with self._recovery_lock:
-            self._cancel_recovery_flow_locked()
-            self._recovery_client = None
-            self._recovery_flow = None
         thread = self._thread
         if thread and thread.is_alive():
             thread.join(timeout=3)
 
     def get_config(self) -> dict[str, Any]:
         with self._lock:
-            result = {
-                key: value
-                for key, value in self._config.items()
-                if key != "smtp_password" and not key.startswith("_")
-            }
-            result["smtp_password_configured"] = bool(self._config.get("smtp_password"))
-            return result
-
-    def get_mail_status(self) -> dict[str, Any]:
-        """Expose only whether the shared SMTP channel is usable."""
-        with self._lock:
-            configured = bool(
-                self._config.get("smtp_host") and self._config.get("from_email")
-                and self._config.get("to_email")
-                and (self._config.get("smtp_password") or self._config.get("smtp_username"))
-            )
-            return {"configured": configured, "status": "邮件通道可用" if configured else "请前往系统设置配置邮件"}
-
-    def queue_system_notification(
-        self, subject: str, body: str, dedupe_key: str, html_body: str = "",
-    ) -> bool:
-        """Queue a non-grade notification in the existing durable SMTP outbox."""
-        if not self.get_mail_status()["configured"]:
-            return False
-        self._queue_email(
-            subject, body, f"course-selection:{dedupe_key}", html_body=html_body,
-        )
-        self._wake.set()
-        return True
+            return {key: value for key, value in self._config.items() if not key.startswith("_")}
 
     def get_status(self) -> dict[str, Any]:
         with self._lock:
             return {
                 **self._state,
                 "enabled": bool(self._config.get("enabled")),
-                "pending_notifications": len(self._outbox),
+                "pending_notifications": self.mail_service.pending_count("grade_tracking"),
             }
 
     def update_config(self, values: dict[str, Any]) -> dict[str, Any]:
-        incoming = dict(values)
+        allowed = {"enabled", "interval_minutes", "start_hour", "end_hour"}
+        incoming = {key: value for key, value in dict(values).items() if key in allowed}
         # Removed setting: every disabled -> enabled transition now schedules
         # one initial notification unconditionally.
         incoming.pop("notify_initial", None)
         incoming.pop("_activation_id", None)
         with self._lock:
-            previous_site_url = str(self._config.get("site_url", "")).strip()
             previously_enabled = bool(self._config.get("enabled"))
             candidate = self._config.copy()
-            password = incoming.pop("smtp_password", None)
-            clear_password = incoming.pop("clear_smtp_password", False)
             candidate.update(incoming)
-            if password:
-                candidate["smtp_password"] = password
-            elif clear_password:
-                candidate["smtp_password"] = ""
             if candidate.get("enabled") and not previously_enabled:
                 candidate["_activation_id"] = str(uuid.uuid4())
             elif not candidate.get("enabled"):
                 candidate.pop("_activation_id", None)
             self._validate_config(candidate, require_complete=bool(candidate["enabled"]))
-            site_url_changed = (
-                str(candidate.get("site_url", "")).strip() != previous_site_url
-            )
             self._write_json(self.config_path, candidate)
             self._config = candidate
             if self._config["enabled"]:
                 if not previously_enabled:
-                    self._outbox = [
-                        item
-                        for item in self._outbox
-                        if not str(item.get("dedupe_key") or "").startswith(
-                            "activation:"
-                        )
-                    ]
-                    self._save_outbox()
+                    self.mail_service.discard(
+                        source="grade_tracking", dedupe_prefix="activation:",
+                    )
                 # Config saves and idempotent PATCH true must preserve
                 # waiting_login/monitoring.  ``disabled`` is also accepted as
                 # recovery from a prior auxiliary state-file write failure.
@@ -285,22 +222,15 @@ class GradeTrackingService:
                         last_error=None,
                     )
             else:
-                self._outbox = [
-                    item
-                    for item in self._outbox
-                    if not str(item.get("dedupe_key") or "").startswith(
-                        "activation:"
-                    )
-                ]
-                self._save_outbox()
+                self.mail_service.discard(
+                    source="grade_tracking", dedupe_prefix="activation:",
+                )
                 self._state.update(
                     stage="disabled",
                     message="成绩追踪未启用",
                     next_check_at=None,
                 )
             self._save_state()
-        if site_url_changed:
-            self._invalidate_recovery_link()
         self._wake.set()
         return self.get_config()
 
@@ -308,8 +238,7 @@ class GradeTrackingService:
         """Persist and apply the tracking switch without changing form fields."""
         return self.update_config({"enabled": bool(enabled)})
 
-    @staticmethod
-    def _validate_config(config: dict[str, Any], require_complete: bool) -> None:
+    def _validate_config(self, config: dict[str, Any], require_complete: bool) -> None:
         interval = int(config.get("interval_minutes", 0))
         start = int(config.get("start_hour", -1))
         end = int(config.get("end_hour", -1))
@@ -317,34 +246,8 @@ class GradeTrackingService:
             raise ValueError("检查间隔必须在 5–1440 分钟之间")
         if not 0 <= start <= 23 or not 1 <= end <= 24 or start >= end:
             raise ValueError("每日检查时段必须是有效且递增的整点范围")
-        if config.get("smtp_security") not in {"ssl", "starttls", "none"}:
-            raise ValueError("不支持的 SMTP 安全方式")
-        if not 1 <= int(config.get("smtp_port", 0)) <= 65535:
-            raise ValueError("SMTP 端口无效")
-        if require_complete:
-            missing = [
-                label
-                for key, label in (
-                    ("smtp_host", "SMTP 服务器"),
-                    ("from_email", "发件地址"),
-                    ("to_email", "收件地址"),
-                )
-                if not str(config.get(key, "")).strip()
-            ]
-            if config.get("smtp_username") and not config.get("smtp_password"):
-                missing.append("SMTP 密码")
-            if missing:
-                raise ValueError("启用前请填写：" + "、".join(missing))
-
-    def test_email(self) -> None:
-        with self._lock:
-            config = self._config.copy()
-        self._validate_config(config, require_complete=True)
-        self._send_email(
-            config,
-            "[NEU 教务工具箱] 系统邮件配置测试",
-            "这是一封系统邮件配置测试邮件。\n\n如果你能收到这封邮件，说明当前 SMTP 服务器、端口、安全方式和账号配置可以正常发送邮件。\n\n此测试不代表任何具体业务功能，仅用于验证系统邮件通道。",
-        )
+        if require_complete and not self.mail_service.is_configured():
+            raise ValueError("启用前请先在系统设置中配置邮件")
 
     def check_now(self) -> dict[str, Any]:
         return self._run_check(manual=True)
@@ -359,19 +262,18 @@ class GradeTrackingService:
                 last_error=None,
             )
             if clear_personal_state:
-                for path in (self.snapshot_path, self.state_path, self.outbox_path):
+                for path in (self.snapshot_path, self.state_path):
                     try:
                         path.unlink(missing_ok=True)
                     except OSError:
                         pass
-                self._outbox = []
+                self.mail_service.discard(source="grade_tracking")
                 self._state = {
                     **DEFAULT_STATE,
                     "stage": "paused_logout",
                     "message": "教务登录已退出，重新登录后将自动恢复成绩追踪",
                 }
             self._save_state()
-        self._invalidate_recovery_link()
         self._wake.set()
 
     def resume_after_login(self, account_id: str) -> None:
@@ -381,7 +283,6 @@ class GradeTrackingService:
                 not previous_account
                 and (
                     self.snapshot_path.exists()
-                    or self._outbox
                     or self._state.get("last_seen_revision")
                     or self._state.get("last_notified_revision")
                 )
@@ -393,24 +294,16 @@ class GradeTrackingService:
                     self.snapshot_path.unlink(missing_ok=True)
                 except OSError:
                     pass
-                self._outbox = []
-                self._write_json(self.outbox_path, {"messages": []})
+                self.mail_service.discard(source="grade_tracking")
                 self._state = {
                     **DEFAULT_STATE,
                     "account_id": str(account_id),
                 }
             else:
                 self._state["account_id"] = str(account_id)
-            self._state.pop("manual_login_notice_sent", None)
-            self._state.pop("manual_login_notice_at", None)
-            self._outbox = [
-                item
-                for item in self._outbox
-                if not str(item.get("dedupe_key") or "").startswith(
-                    "login-required:"
-                )
-            ]
-            self._save_outbox()
+            self.mail_service.discard(
+                source="grade_tracking", dedupe_prefix="login-required:",
+            )
             if not self._config.get("enabled"):
                 self._save_state()
                 return
@@ -426,22 +319,6 @@ class GradeTrackingService:
     def _scheduler(self) -> None:
         while not self._stop.is_set():
             try:
-                with self._lock:
-                    activation_at_head = bool(
-                        self._outbox
-                        and str(self._outbox[0].get("dedupe_key") or "").startswith(
-                            "activation:"
-                        )
-                    )
-                    may_notify = bool(
-                        self._outbox and (
-                            self._config.get("enabled")
-                            and (self._within_window(_now()) or activation_at_head)
-                            or str(self._outbox[0].get("dedupe_key") or "").startswith("course-selection:")
-                        )
-                    )
-                if may_notify:
-                    self._flush_outbox()
                 if self._should_run():
                     self._run_check(manual=False)
             except Exception as error:
@@ -455,9 +332,8 @@ class GradeTrackingService:
             if not self._config.get("enabled"):
                 return False
             activation_key = f"activation:{self._config.get('_activation_id', '')}"
-            activation_already_queued = any(
-                str(item.get("dedupe_key") or "") == activation_key
-                for item in self._outbox
+            activation_already_queued = self.mail_service.has_pending(
+                "grade_tracking", activation_key,
             )
             if (
                 self._config.get("_activation_id")
@@ -526,7 +402,15 @@ class GradeTrackingService:
                 if auth is None:
                     return self.get_status()
             else:
-                self._invalidate_recovery_link()
+                self.auth_recovery_service.invalidate_matching(
+                    source="grade_tracking",
+                    target_service="primary",
+                    account_id=str(
+                        getattr(auth, "username", "")
+                        or self._state.get("account_id")
+                        or ""
+                    ),
+                )
             self.resume_after_login(str(auth.username))
 
             if not self.score_refresher:
@@ -588,388 +472,16 @@ class GradeTrackingService:
                 ).isoformat(),
             )
             self._save_state()
-        link = str(config.get("site_url", "")).strip()
-        # A campus-network WebVPN rejection is a routing problem, not a
-        # CAPTCHA challenge.  Do not issue a QR/SMS recovery link that cannot
-        # work on the current network; the next email tells the user to switch
-        # the application back to direct campus access.
-        auth_error_code = ""
-        if self.auth_error_code_provider is not None:
-            try:
-                auth_error_code = str(self.auth_error_code_provider() or "")
-            except Exception:
-                auth_error_code = ""
-        if auth_error_code == "WEBVPN_CAMPUS_NETWORK_BLOCKED":
-            self._email_manual_login_notice(config, campus_network=True)
-            return None
-        if link:
-            self._issue_recovery_link(link)
-            return None
-        self._email_manual_login_notice(config)
+        account_id = str(self._state.get("account_id") or "")
+        self.auth_recovery_service.request_notification(
+            source="grade_tracking",
+            target_service="primary",
+            account_id=account_id,
+            subject="[NEU 成绩追踪] 登录已失效",
+            body="成绩追踪无法访问教务系统，任务已暂停；恢复登录后会继续检查。",
+            dedupe_key=f"login-required:{account_id}",
+        )
         return None
-
-    @staticmethod
-    def _token_hash(token: str) -> str:
-        return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-    def _recovery_token_is_valid(self, token: str) -> bool:
-        expected = str(self._state.get("recovery_token_hash") or "")
-        return bool(
-            expected
-            and token
-            and secrets.compare_digest(expected, self._token_hash(token))
-        )
-
-    def _issue_recovery_link(self, site_url: str) -> None:
-        existing_token = False
-        with self._lock:
-            if self._state.get("recovery_token_hash"):
-                self._state.update(
-                    stage="waiting_login",
-                    message="等待用户打开邮件中的一次性登录链接",
-                )
-                self._save_state()
-                existing_token = True
-            else:
-                token = secrets.token_urlsafe(32)
-                self._state.update(
-                    recovery_token_hash=self._token_hash(token),
-                    recovery_token_issued_at=_iso(),
-                    stage="waiting_login",
-                    message="等待用户打开邮件中的一次性登录链接",
-                    last_login_notice_at=time.time(),
-                )
-                self._save_state()
-        continued_sms = self._adopt_pending_sms_recovery()
-        if existing_token:
-            return
-        recovery_url = (
-            f"{site_url.rstrip('/')}/grade-tracking/recovery/{token}"
-        )
-        recovery_intro = (
-            "后台已使用保存的账号信息完成第一步登录，请打开下面的一次性页面，"
-            "直接填写图形验证码并获取短信验证码：\n"
-            if continued_sms
-            else "请打开下面的一次性登录页面重新登录；页面会先提供微信扫码，"
-            "如果学校要求二次认证，会继续显示图形验证码、短信发送按钮和短信验证码输入框：\n"
-        )
-        self._queue_email(
-            "[NEU 成绩追踪] 请打开一次性链接恢复登录",
-            "成绩追踪无法访问教务系统。\n\n"
-            + recovery_intro
-            + f"{recovery_url}\n\n"
-            "网页链接会在成功建立教务会话后失效。二维码或短信流程过期后，"
-            "可在同一网页链接中重新开始登录。验证码不会由后台自动填写或发送。"
-            "请勿转发此链接。",
-            f"recovery-link:{self._token_hash(token)}",
-        )
-        self._flush_outbox()
-
-    def _adopt_pending_sms_recovery(self) -> bool:
-        """Continue a saved-credential SMS challenge without forcing another QR."""
-        if not self.pending_sms_provider:
-            return False
-        with self._recovery_lock:
-            if self._recovery_client and self._recovery_flow:
-                return self._recovery_flow.get("kind") == "sms"
-            candidate = self.pending_sms_provider()
-            if not candidate:
-                return False
-            client, flow = candidate
-            if not client or not flow or flow.get("status") != "sms_required":
-                return False
-            self._recovery_client = client
-            self._recovery_flow = self._recovery_flow_payload("sms", flow)
-            with self._lock:
-                self._state.update(
-                    stage="waiting_sms",
-                    message="已续接后台登录，等待图形验证码和短信验证",
-                )
-                self._save_state()
-            return True
-
-    def _email_manual_login_notice(self, config: dict[str, Any], campus_network: bool = False) -> None:
-        """Notify once when interactive recovery cannot be exposed safely."""
-        with self._lock:
-            if self._state.get("manual_login_notice_sent"):
-                self._state.update(
-                    stage="waiting_login",
-                    message="登录已失效，请重新进入系统完成登录",
-                )
-                self._save_state()
-                return
-            notice_id = secrets.token_hex(12)
-            self._state.update(
-                manual_login_notice_sent=notice_id,
-                manual_login_notice_at=_iso(),
-                stage="waiting_login",
-                message="登录失效通知已发送，请重新进入系统完成登录",
-            )
-            self._save_state()
-        body = (
-            "成绩追踪当前使用 WebVPN，但学校网关检测到校园网环境并拒绝了 WebVPN 请求。"
-            "请重新进入 NEU 教务工具箱，将访问方式切换为“校内直连”后完成登录；登录成功后，"
-            "成绩追踪会自动恢复。"
-            if campus_network else
-            "成绩追踪无法访问教务系统。\n\n"
-            "当前 WebVPN 重新登录可能需要图形验证码和短信验证，邮件本身无法安全完成此步骤。"
-            "请重新进入 NEU 教务工具箱并手动登录；登录成功后，成绩追踪会自动恢复。\n\n"
-            "若希望以后直接从邮件完成恢复，请在成绩追踪设置中配置可访问的“重新登录地址”。"
-        )
-        self._queue_email(
-            "[NEU 成绩追踪] 登录已失效",
-            body,
-            f"login-required:{notice_id}",
-        )
-        self._wake.set()
-
-    def _cancel_recovery_flow_locked(self) -> None:
-        if not self._recovery_client or not self._recovery_flow:
-            return
-        flow_id = self._recovery_flow.get("flow_id")
-        kind = self._recovery_flow.get("kind", "qr")
-        try:
-            with self.remote_guard():
-                if kind == "sms":
-                    self._recovery_client.cancel_webvpn_sms_login(flow_id)
-                else:
-                    self._recovery_client.cancel_webvpn_qr_login(flow_id)
-        except Exception:
-            self.logger.debug(
-                "[成绩追踪] 取消旧恢复会话失败",
-                exc_info=True,
-            )
-
-    @staticmethod
-    def _recovery_flow_payload(kind: str, flow: dict[str, Any]) -> dict[str, Any]:
-        payload = {"kind": kind, **flow}
-        try:
-            expires_in = max(1, int(payload.get("expires_in", 300)))
-        except (TypeError, ValueError):
-            expires_in = 300
-        payload["expires_in"] = expires_in
-        payload["expires_at"] = time.time() + expires_in
-        return payload
-
-    @staticmethod
-    def _update_recovery_flow(
-        flow: dict[str, Any], result: dict[str, Any],
-    ) -> None:
-        """Apply safe challenge fields and renew the local visible deadline."""
-        flow.update(
-            {
-                key: value
-                for key, value in result.items()
-                if key in {"captcha_image", "expires_in"}
-            }
-        )
-        if "expires_in" in result:
-            try:
-                expires_in = max(1, int(result.get("expires_in") or 300))
-            except (TypeError, ValueError):
-                expires_in = 300
-            flow["expires_in"] = expires_in
-            flow["expires_at"] = time.time() + expires_in
-
-    def _complete_recovery_locked(self) -> dict[str, Any]:
-        client = self._recovery_client
-        if client is None:
-            raise ValueError("登录恢复流程不存在，请重新开始")
-        if self.auth_setter:
-            self.auth_setter(client)
-        username = client.username or None
-        self._recovery_client = None
-        self._recovery_flow = None
-        self._invalidate_recovery_link(cancel_flow=False)
-        with self._lock:
-            self._state.update(
-                stage="scheduled",
-                message="登录已恢复，准备检查最新成绩",
-                next_check_at=_iso(),
-                last_error=None,
-            )
-            self._save_state()
-        self._wake.set()
-        return {"status": "authenticated", "username": username}
-
-    def start_recovery_login(self, token: str) -> dict[str, Any]:
-        with self._recovery_lock:
-            with self._lock:
-                if not self._recovery_token_is_valid(token):
-                    raise ValueError("一次性登录链接不存在或已失效")
-            if self._recovery_client and self._recovery_flow:
-                self._cancel_recovery_flow_locked()
-                self._recovery_client = None
-                self._recovery_flow = None
-            if not self.qr_login_starter:
-                raise RuntimeError("当前运行环境不支持二维码恢复")
-            with self.remote_guard():
-                client, flow = self.qr_login_starter()
-            self._recovery_client = client
-            self._recovery_flow = self._recovery_flow_payload("qr", flow)
-            with self._lock:
-                self._state.update(
-                    stage="waiting_qr",
-                    message="一次性登录页面已打开，五分钟内等待微信扫码确认",
-                )
-                self._save_state()
-            return {"status": "pending", **flow}
-
-    def poll_recovery_login(self, token: str) -> dict[str, Any]:
-        with self._recovery_lock:
-            with self._lock:
-                if not self._recovery_token_is_valid(token):
-                    raise ValueError("一次性登录链接不存在或已失效")
-            if not self._recovery_client or not self._recovery_flow:
-                return {"status": "not_started"}
-            if self._recovery_flow.get("kind") != "qr":
-                return {
-                    "status": "sms_required",
-                    **{
-                        key: value
-                        for key, value in self._recovery_flow.items()
-                        if key in {"flow_id", "captcha_image", "expires_in"}
-                    },
-                }
-            try:
-                with self.remote_guard():
-                    result = self._recovery_client.poll_webvpn_qr_login(
-                        self._recovery_flow["flow_id"]
-                    )
-            except Exception as error:
-                self.logger.warning(
-                    "[成绩追踪] 网页恢复二维码轮询失败：%s",
-                    type(error).__name__,
-                )
-                return {"status": "pending", "message": "状态查询暂时失败，正在重试"}
-            status = result.get("status")
-            if status == "authenticated":
-                return self._complete_recovery_locked()
-            if status == "sms_required":
-                self._recovery_flow = self._recovery_flow_payload("sms", result)
-                with self._lock:
-                    self._state.update(
-                        stage="waiting_sms",
-                        message="扫码已确认，等待图形验证码和短信验证",
-                    )
-                    self._save_state()
-                return result
-            if status in {"expired", "error"}:
-                self._recovery_client = None
-                self._recovery_flow = None
-            return result
-
-    def _require_sms_recovery_locked(self, token: str) -> tuple[Any, dict[str, Any]]:
-        with self._lock:
-            if not self._recovery_token_is_valid(token):
-                raise ValueError("一次性登录链接不存在或已失效")
-        if (
-            not self._recovery_client
-            or not self._recovery_flow
-            or self._recovery_flow.get("kind") != "sms"
-        ):
-            raise ValueError("短信验证流程不存在，请重新开始登录")
-        return self._recovery_client, self._recovery_flow
-
-    def refresh_recovery_captcha(self, token: str) -> dict[str, Any]:
-        with self._recovery_lock:
-            client, flow = self._require_sms_recovery_locked(token)
-            with self.remote_guard():
-                result = client.refresh_webvpn_captcha(flow["flow_id"])
-            self._update_recovery_flow(flow, result)
-            return {"success": True, **result}
-
-    def send_recovery_sms(self, token: str, captcha_code: str) -> dict[str, Any]:
-        with self._recovery_lock:
-            client, flow = self._require_sms_recovery_locked(token)
-            with self.remote_guard():
-                result = client.send_webvpn_sms_code(
-                    flow["flow_id"], captcha_code
-                )
-            self._update_recovery_flow(flow, result)
-            if result.get("status") == "sent":
-                with self._lock:
-                    self._state.update(
-                        stage="waiting_sms",
-                        message="短信验证码已发送，等待用户提交",
-                    )
-                    self._save_state()
-            return {"success": result.get("status") == "sent", **result}
-
-    def verify_recovery_sms(
-        self,
-        token: str,
-        code: str,
-        trust_device: bool = False,
-    ) -> dict[str, Any]:
-        with self._recovery_lock:
-            client, flow = self._require_sms_recovery_locked(token)
-            with self.remote_guard():
-                result = client.verify_webvpn_sms_code(
-                    flow["flow_id"], code, trust_device
-                )
-            if result.get("status") == "authenticated":
-                return self._complete_recovery_locked()
-            self._update_recovery_flow(flow, result)
-            return {"success": False, **result}
-
-    def cancel_recovery_login(self, token: str) -> dict[str, Any]:
-        with self._recovery_lock:
-            with self._lock:
-                if not self._recovery_token_is_valid(token):
-                    raise ValueError("一次性登录链接不存在或已失效")
-            self._cancel_recovery_flow_locked()
-            self._recovery_client = None
-            self._recovery_flow = None
-            with self._lock:
-                self._state.update(
-                    stage="waiting_login",
-                    message="登录恢复已取消，可在一次性页面重新开始",
-                )
-                self._save_state()
-            return {"success": True, "status": "ready"}
-
-    def get_recovery_status(self, token: str) -> dict[str, Any]:
-        with self._lock:
-            if not self._recovery_token_is_valid(token):
-                raise ValueError("一次性登录链接不存在或已失效")
-        with self._recovery_lock:
-            if not self._recovery_flow:
-                return {"status": "ready"}
-            kind = self._recovery_flow.get("kind", "qr")
-            status = "sms_required" if kind == "sms" else "qr_pending"
-            try:
-                expires_in = max(
-                    0,
-                    int(float(self._recovery_flow.get("expires_at", 0)) - time.time()),
-                )
-            except (TypeError, ValueError):
-                expires_in = int(self._recovery_flow.get("expires_in", 300))
-            return {
-                "status": status,
-                "expires_in": expires_in,
-                **{
-                    key: value
-                    for key, value in self._recovery_flow.items()
-                    if key in {"flow_id", "qr_content", "poll_interval", "captcha_image"}
-                },
-            }
-
-    def invalidate_recovery_link(self) -> None:
-        self._invalidate_recovery_link()
-
-    def _invalidate_recovery_link(self, cancel_flow: bool = True) -> None:
-        with self._recovery_lock:
-            if cancel_flow:
-                self._cancel_recovery_flow_locked()
-            self._recovery_client = None
-            self._recovery_flow = None
-            with self._lock:
-                token_hash = self._state.pop("recovery_token_hash", None)
-                issued_at = self._state.pop("recovery_token_issued_at", None)
-                changed = bool(token_hash or issued_at)
-                if changed:
-                    self._save_state()
 
     @staticmethod
     def _course_key(item: dict[str, Any]) -> str:
@@ -1072,9 +584,8 @@ class GradeTrackingService:
             activation_id = (
                 configured_activation_id
                 if configured_activation_id
-                and not any(
-                    str(item.get("dedupe_key") or "") == activation_key
-                    for item in self._outbox
+                and not self.mail_service.has_pending(
+                    "grade_tracking", activation_key,
                 )
                 else ""
             )
@@ -1177,7 +688,10 @@ class GradeTrackingService:
                 )
                 and (not activation_id or activation_is_current)
             ):
-                self._queue_email(*notification)
+                self.mail_service.queue_notification(
+                    "grade_tracking", *notification,
+                    priority=bool(activation_id),
+                )
                 self._state["last_notified_revision"] = revision
             self._state["last_revision_reason"] = reason
             self._state["last_change_count"] = (
@@ -1188,9 +702,6 @@ class GradeTrackingService:
                 if previous else 0
             )
             self._save_state()
-        if notification:
-            # SMTP belongs to the tracking scheduler, never a cache worker.
-            self._wake.set()
         return {
             "additions": additions,
             "changes": changes,
@@ -1309,104 +820,31 @@ class GradeTrackingService:
             f"检查时间：{current['updated_at']}"
         )
 
-    def _queue_email(
-        self, subject: str, body: str, dedupe_key: str, *, html_body: str = "",
-    ) -> None:
+    def handle_mail_delivered(self, message: dict[str, Any]) -> None:
+        """Commit tracking delivery state after the shared mail service succeeds."""
+        dedupe_key = str(message.get("dedupe_key") or "")
         with self._lock:
-            if any(item.get("dedupe_key") == dedupe_key for item in self._outbox):
-                return
-            message = {
-                "id": str(uuid.uuid4()),
-                "dedupe_key": dedupe_key,
-                "subject": subject,
-                "body": body,
-                "html_body": html_body,
-                "created_at": _iso(),
-                "attempts": 0,
-            }
             if dedupe_key.startswith("activation:"):
-                self._outbox.insert(0, message)
-            else:
-                self._outbox.append(message)
-            self._save_outbox()
+                activation_id = dedupe_key.removeprefix("activation:")
+                if str(self._config.get("_activation_id") or "") == activation_id:
+                    candidate = self._config.copy()
+                    candidate.pop("_activation_id", None)
+                    candidate["_activation_delivered_id"] = activation_id
+                    self._write_json(self.config_path, candidate)
+                    self._config = candidate
+            self._state["last_notification_at"] = _iso()
+            self._save_state()
 
-    def _flush_outbox(self) -> None:
+    def should_deliver_mail(self, message: dict[str, Any]) -> bool:
+        dedupe_key = str(message.get("dedupe_key") or "")
+        if not dedupe_key.startswith("activation:"):
+            return True
+        activation_id = dedupe_key.removeprefix("activation:")
         with self._lock:
-            if not self._outbox:
-                return
-            config = self._config.copy()
-            message = self._outbox[0].copy()
-            dedupe_key = str(message.get("dedupe_key") or "")
-            if dedupe_key.startswith("activation:") and (
-                not config.get("enabled")
-                or dedupe_key != f"activation:{config.get('_activation_id', '')}"
-            ):
-                self._outbox.pop(0)
-                self._save_outbox()
-                return
-        try:
-            self._validate_config(config, require_complete=True)
-            if message.get("html_body"):
-                self._send_email(
-                    config, message["subject"], message["body"], message["html_body"],
-                )
-            else:
-                self._send_email(config, message["subject"], message["body"])
-        except Exception as error:
-            with self._lock:
-                if self._outbox and self._outbox[0]["id"] == message["id"]:
-                    self._outbox[0]["attempts"] = int(message.get("attempts", 0)) + 1
-                    self._outbox[0]["last_attempt_at"] = _iso()
-                    self._outbox[0]["last_error"] = type(error).__name__
-                    self._save_outbox()
-            return
-        with self._lock:
-            if self._outbox and self._outbox[0]["id"] == message["id"]:
-                if dedupe_key.startswith("activation:"):
-                    activation_id = dedupe_key.removeprefix("activation:")
-                    if str(self._config.get("_activation_id") or "") == activation_id:
-                        candidate = self._config.copy()
-                        candidate.pop("_activation_id", None)
-                        candidate["_activation_delivered_id"] = activation_id
-                        self._write_json(self.config_path, candidate)
-                        self._config = candidate
-                self._outbox.pop(0)
-                self._state["last_notification_at"] = _iso()
-                self._save_outbox()
-                self._save_state()
-
-    @staticmethod
-    def _send_email(
-        config: dict[str, Any], subject: str, body: str, html_body: str = "",
-    ) -> None:
-        if html_body:
-            message: Any = MIMEMultipart("alternative")
-            message.attach(MIMEText(body, "plain", "utf-8"))
-            message.attach(MIMEText(html_body, "html", "utf-8"))
-        else:
-            message = MIMEText(body, "plain", "utf-8")
-        message["Subject"] = Header(subject, "utf-8")
-        message["From"] = config["from_email"]
-        message["To"] = config["to_email"]
-        message["Date"] = formatdate(localtime=True)
-        message["Message-ID"] = make_msgid()
-        security = config["smtp_security"]
-        host = config["smtp_host"]
-        port = int(config["smtp_port"])
-        context = ssl.create_default_context()
-        if security == "ssl":
-            connection: Any = smtplib.SMTP_SSL(host, port, timeout=15, context=context)
-        else:
-            connection = smtplib.SMTP(host, port, timeout=15)
-        with connection:
-            if security == "starttls":
-                connection.starttls(context=context)
-            if config.get("smtp_username"):
-                connection.login(config["smtp_username"], config.get("smtp_password", ""))
-            connection.sendmail(
-                config["from_email"],
-                [config["to_email"]],
-                message.as_string(),
+            return bool(
+                self._config.get("enabled")
+                and str(self._config.get("_activation_id") or "") == activation_id
+                and str(self._config.get("_activation_delivered_id") or "") != activation_id
             )
 
     def _record_error(self, message: str) -> None:
@@ -1423,6 +861,3 @@ class GradeTrackingService:
 
     def _save_state(self) -> None:
         self._write_json(self.state_path, self._state)
-
-    def _save_outbox(self) -> None:
-        self._write_json(self.outbox_path, {"messages": self._outbox})

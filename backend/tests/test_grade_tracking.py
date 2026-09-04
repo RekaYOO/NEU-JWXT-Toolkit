@@ -5,13 +5,133 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from backend.core.academic.api import CourseScore
-from backend.core.tracking import GradeTrackingService
+from backend.core.tracking import GradeTrackingService as CoreGradeTrackingService
+from backend.core.notifications import SystemMailService
+from backend.core.auth.recovery import RemoteAuthRecoveryService
 from backend.core.runtime.access import is_public_api_path
 from backend.core.log.access_logger import redact_sensitive_path
 from backend.core.cache.resources import canonicalize_scores, score_to_dict
 from backend.app.schemas.tracking import GradeTrackingConfigUpdate
+
+
+class TrackingTestFixture:
+    """Compose the three independent services for legacy behavioral cases."""
+
+    def __init__(self, data_dir, auth_provider, score_storage, logger, **kwargs):
+        qr_login_starter = kwargs.pop("qr_login_starter", None)
+        auth_setter = kwargs.pop("auth_setter", None)
+        pending_sms_provider = kwargs.pop("pending_sms_provider", None)
+        remote_guard = kwargs.pop("remote_guard", None)
+        auth_error_code_provider = kwargs.pop("auth_error_code_provider", None)
+        self.mail_service = SystemMailService(data_dir, logger)
+        self.recovery_service = RemoteAuthRecoveryService(
+            data_dir,
+            mail_service=self.mail_service,
+            logger=logger,
+            qr_login_starter=qr_login_starter,
+            auth_committer=auth_setter,
+            pending_sms_provider=pending_sms_provider,
+            remote_guard=remote_guard,
+            auth_error_code_provider=auth_error_code_provider,
+        )
+        self.tracker = CoreGradeTrackingService(
+            data_dir=data_dir,
+            auth_provider=auth_provider,
+            score_storage=score_storage,
+            logger=logger,
+            mail_service=self.mail_service,
+            auth_recovery_service=self.recovery_service,
+            **kwargs,
+        )
+        self.mail_service.register_delivery_listener(
+            "grade_tracking", self.tracker.handle_mail_delivered,
+        )
+        self.mail_service.register_delivery_validator(
+            "grade_tracking", self.tracker.should_deliver_mail,
+        )
+        self.recovery_service.register_recovered_callback(
+            "grade_tracking", self.tracker.resume_after_login,
+        )
+
+    def __getattr__(self, name):
+        recovery_methods = {
+            "start_recovery_login": "start",
+            "poll_recovery_login": "poll",
+            "refresh_recovery_captcha": "refresh_captcha",
+            "send_recovery_sms": "send_sms",
+            "verify_recovery_sms": "verify_sms",
+            "cancel_recovery_login": "cancel",
+            "get_recovery_status": "get_status",
+        }
+        if name in recovery_methods:
+            return getattr(self.recovery_service, recovery_methods[name])
+        if name == "queue_system_notification":
+            return lambda subject, body, dedupe_key, html_body="": self.mail_service.queue_notification(
+                "course_selection", subject, body, f"course-selection:{dedupe_key}", html_body,
+            )
+        if name == "request_auth_recovery_notification":
+            return lambda **payload: self.recovery_service.request_notification(
+                source="course_selection",
+                account_id=str(self.tracker._state.get("account_id") or "20250001"),
+                **payload,
+            )
+        if name == "_flush_outbox":
+            return self.mail_service.flush_once
+        if name == "_send_email":
+            return self.mail_service._send_email
+        if name == "_save_outbox":
+            return self.mail_service._save_outbox
+        if name == "_invalidate_recovery_link" or name == "invalidate_recovery_link":
+            return self.recovery_service.invalidate_all
+        if name == "test_email":
+            return self.mail_service.test_email
+        if name == "_recovery_flow":
+            record = next(iter(self.recovery_service._flows.values()), None)
+            return record.get("flow") if record else None
+        return getattr(self.tracker, name)
+
+    def __setattr__(self, name, value):
+        if name in {"mail_service", "recovery_service", "tracker"}:
+            object.__setattr__(self, name, value)
+        elif name == "_send_email":
+            self.mail_service._send_email = value
+        elif name == "_flush_outbox":
+            self.mail_service.flush_once = value
+        elif name == "_save_outbox":
+            self.mail_service._save_outbox = value
+        else:
+            setattr(self.tracker, name, value)
+
+    @property
+    def _outbox(self):
+        return self.mail_service._outbox
+
+    @_outbox.setter
+    def _outbox(self, value):
+        self.mail_service._outbox = value
+
+    @property
+    def outbox_path(self):
+        return self.mail_service.outbox_path
+
+    def update_config(self, values):
+        values = dict(values)
+        mail_fields = {
+            key: values.pop(key) for key in list(values)
+            if key.startswith("smtp_") or key in {"from_email", "to_email", "clear_smtp_password"}
+        }
+        if mail_fields:
+            self.mail_service.update_config(mail_fields)
+        if "site_url" in values:
+            self.recovery_service.update_config({"public_base_url": values.pop("site_url")})
+        return self.tracker.update_config(values)
+
+
+def GradeTrackingService(*args, **kwargs):
+    return TrackingTestFixture(*args, **kwargs)
 
 
 def make_score(score="88", gpa=3.8):
@@ -110,7 +230,8 @@ def mail_config(**overrides):
 
 def test_config_never_returns_password_and_blank_preserves_it(tmp_path):
     service, _, _ = build_service(tmp_path)
-    result = service.update_config(mail_config())
+    service.update_config(mail_config())
+    result = service.mail_service.get_config()
 
     assert "smtp_password" not in result
     assert result["smtp_password_configured"] is True
@@ -122,7 +243,7 @@ def test_config_never_returns_password_and_blank_preserves_it(tmp_path):
         score_storage=FakeStorage(),
         logger=logging.getLogger("grade-tracking-reload-test"),
     )
-    assert reloaded.get_config()["smtp_password_configured"] is True
+    assert reloaded.mail_service.get_config()["smtp_password_configured"] is True
 
 
 def test_tracking_update_payload_does_not_materialize_unset_smtp_defaults():
@@ -226,7 +347,7 @@ def test_tracking_switch_applies_immediately_without_changing_config(tmp_path):
 def test_failed_enable_does_not_mutate_memory_or_disk(tmp_path):
     service, _, _ = build_service(tmp_path)
 
-    with pytest.raises(ValueError, match="启用前请填写"):
+    with pytest.raises(ValueError, match="系统设置"):
         service.set_enabled(True)
 
     assert service.get_config()["enabled"] is False
@@ -406,6 +527,8 @@ def test_clear_personal_state_preserves_pending_activation_intent(tmp_path):
     activation_id = service._config["_activation_id"]
     service._outbox.append({
         "id": "old-account-mail",
+        "source": "grade_tracking",
+        "kind": "message",
         "dedupe_key": f"activation:{activation_id}",
     })
 
@@ -473,14 +596,12 @@ def test_partial_enable_write_is_recoverable(tmp_path, monkeypatch, failing_save
     assert service.get_status()["stage"] == "scheduled"
 
 
-def test_config_api_cannot_overwrite_enabled_switch():
-    legacy_payload = GradeTrackingConfigUpdate.model_validate({
-        "enabled": True,
-        "notify_initial": False,
-    })
-
-    assert "enabled" not in legacy_payload.model_dump()
-    assert "notify_initial" not in legacy_payload.model_dump()
+def test_config_api_rejects_removed_switch_and_initial_notification_fields():
+    with pytest.raises(ValidationError):
+        GradeTrackingConfigUpdate.model_validate({
+            "enabled": True,
+            "notify_initial": False,
+        })
 
 
 def test_account_switch_rebuilds_pending_activation_for_new_account(tmp_path):
@@ -665,8 +786,7 @@ def test_missing_site_url_sends_manual_login_notice_once(tmp_path, monkeypatch):
     assert started == []
     assert len(sent) == 1
     assert sent[0][0] == "[NEU 成绩追踪] 登录已失效"
-    assert "重新进入 NEU 教务工具箱" in sent[0][1]
-    assert "短信验证" in sent[0][1]
+    assert "进入 NEU 教务工具箱手动登录" in sent[0][1]
     assert "二维码" not in sent[0][1]
 
     service.resume_after_login("20250001")
@@ -697,7 +817,7 @@ def test_interactive_login_flow_is_not_replaced_and_user_is_notified(tmp_path, m
     service._flush_outbox()
 
     assert result["stage"] == "waiting_login"
-    assert "登录失效通知" in result["message"]
+    assert "登录已失效" in result["message"]
     assert started == []
     assert len(sent) == 1
 
@@ -775,7 +895,7 @@ def test_configured_site_uses_one_time_page_before_starting_qr(tmp_path, monkeyp
         data_dir=tmp_path,
         auth_provider=lambda: None,
         score_storage=storage,
-        logger=logging.getLogger("grade-tracking-recovery-page-test"),
+        logger=logging.getLogger("auth-recovery-page-test"),
         qr_login_starter=start_qr,
         auth_setter=accepted.append,
     )
@@ -789,16 +909,17 @@ def test_configured_site_uses_one_time_page_before_starting_qr(tmp_path, monkeyp
     )
 
     result = service.check_now()
+    service._flush_outbox()
 
     assert result["stage"] == "waiting_login"
     assert starts == []
     match = re.search(
-        r"https://grades\.example\.com/grade-tracking/recovery/([A-Za-z0-9_-]+)",
+        r"https://grades\.example\.com/auth-recovery/([A-Za-z0-9_.-]+)",
         sent[0][1],
     )
     assert match
     token = match.group(1)
-    assert "微信扫码" in sent[0][1]
+    assert "一次性页面恢复登录" in sent[0][1]
     assert "图形验证码" in sent[0][1]
     assert "短信验证码" in sent[0][1]
     assert "NEU Pass" not in sent[0][1]
@@ -859,7 +980,7 @@ def test_recovery_qr_can_continue_through_sms_challenge(tmp_path, monkeypatch):
             return {"status": "sent", "expires_in": 300}
 
         def verify_webvpn_sms_code(self, flow_id, code, trust_device=False):
-            assert (flow_id, code, trust_device) == ("sms-flow", "879766", False)
+            assert (flow_id, code, trust_device) == ("sms-flow", "246810", False)
             return {"status": "authenticated", "username": self.username}
 
         def cancel_webvpn_qr_login(self, flow_id):
@@ -892,8 +1013,9 @@ def test_recovery_qr_can_continue_through_sms_challenge(tmp_path, monkeypatch):
         lambda config, subject, body: sent.append((subject, body)),
     )
     service.check_now()
+    service._flush_outbox()
     token = re.search(
-        r"/grade-tracking/recovery/([A-Za-z0-9_-]+)", sent[0][1]
+        r"/auth-recovery/([A-Za-z0-9_.-]+)", sent[0][1]
     ).group(1)
 
     service.start_recovery_login(token)
@@ -906,11 +1028,11 @@ def test_recovery_qr_can_continue_through_sms_challenge(tmp_path, monkeypatch):
     assert service.send_recovery_sms(token, "1234")["status"] == "sent"
     renewed = service.get_recovery_status(token)
     assert 295 <= renewed["expires_in"] <= 300
-    completed = service.verify_recovery_sms(token, "879766")
+    completed = service.verify_recovery_sms(token, "246810")
 
     assert completed["status"] == "authenticated"
     assert accepted == [client]
-    assert service.get_status()["stage"] == "scheduled"
+    assert service.get_status()["stage"] == "waiting_login"
     with pytest.raises(ValueError):
         service.get_recovery_status(token)
 
@@ -949,17 +1071,140 @@ def test_saved_credentials_sms_challenge_is_reused_without_new_qr(tmp_path, monk
     )
 
     result = service.check_now()
+    service._flush_outbox()
     token = re.search(
-        r"/grade-tracking/recovery/([A-Za-z0-9_-]+)", sent[0][1]
+        r"/auth-recovery/([A-Za-z0-9_.-]+)", sent[0][1]
     ).group(1)
     status = service.get_recovery_status(token)
 
-    assert result["stage"] == "waiting_sms"
+    assert result["stage"] == "waiting_login"
     assert status["status"] == "sms_required"
     assert status["flow_id"] == "saved-password-sms"
     assert starts == []
     assert "已使用保存的账号信息" in sent[0][1]
     assert "直接填写图形验证码" in sent[0][1]
+
+
+def test_task_recovery_link_targets_jwxk_and_uses_generic_recovery_flow(tmp_path):
+    starts = []
+    accepted = []
+
+    class FakeJwxkRecoveryClient:
+        username = "20250001"
+
+        def poll_webvpn_qr_login(self, flow_id):
+            assert flow_id == "jwxk-recovery-flow"
+            return {"status": "authenticated", "target_service": "jwxk"}
+
+        def cancel_webvpn_qr_login(self, _flow_id):
+            return None
+
+    client = FakeJwxkRecoveryClient()
+
+    def start_qr(target_service):
+        starts.append(target_service)
+        return client, {
+            "flow_id": "jwxk-recovery-flow",
+            "qr_content": "https://pass.neu.edu.cn/qr",
+            "expires_in": 300,
+        }
+
+    service = GradeTrackingService(
+        data_dir=tmp_path,
+        auth_provider=lambda: None,
+        score_storage=FakeStorage(),
+        logger=logging.getLogger("task-jwxk-recovery-test"),
+        qr_login_starter=start_qr,
+        auth_setter=lambda candidate, target: accepted.append((candidate, target)),
+    )
+    service.update_config(mail_config(site_url="https://toolkit.example.com"))
+    assert service.get_status()["stage"] == "disabled"
+
+    queued = service.request_auth_recovery_notification(
+        subject="JWXK 自动任务登录失效",
+        body="任务已暂停，不会重放写操作。",
+        html_body="<html><body><p>任务已暂停</p></body></html>",
+        dedupe_key="student:batch:task:auth-required:1",
+        target_service="jwxk",
+    )
+
+    assert queued is True
+    assert service.get_status()["stage"] == "disabled"
+    assert len(service._outbox) == 1
+    message = service._outbox[0]
+    assert message["dedupe_key"].startswith("auth-recovery:course_selection:")
+    assert "/auth-recovery/" not in message["body"]
+    sent = []
+    service._send_email = lambda _config, _subject, body, html_body="": sent.append((body, html_body))
+    service._flush_outbox()
+    token = re.search(
+        r"/auth-recovery/([A-Za-z0-9_.-]+)", sent[0][0]
+    ).group(1)
+    assert "打开一次性登录页面" in sent[0][1]
+
+    service.start_recovery_login(token)
+    result = service.poll_recovery_login(token)
+
+    assert starts == ["jwxk"]
+    assert result["status"] == "authenticated"
+    assert accepted == [(client, "jwxk")]
+    assert service.get_status()["stage"] == "disabled"
+    with pytest.raises(ValueError):
+        service.get_recovery_status(token)
+
+
+def test_task_recovery_without_site_url_queues_manual_login_notice(tmp_path):
+    service = GradeTrackingService(
+        data_dir=tmp_path,
+        auth_provider=lambda: None,
+        score_storage=FakeStorage(),
+        logger=logging.getLogger("task-manual-recovery-test"),
+    )
+    service.update_config(mail_config(site_url=""))
+
+    assert service.request_auth_recovery_notification(
+        subject="自动任务登录失效",
+        body="任务已暂停。",
+        dedupe_key="student:batch:task:auth-required:1",
+        target_service="jwxk",
+    ) is True
+
+    assert len(service._outbox) == 1
+    assert service._outbox[0]["kind"] == "auth_recovery"
+    rendered = service.recovery_service.materialize_mail(service._outbox[0])
+    assert "手动登录" in rendered["body"]
+    assert "/grade-tracking/recovery/" not in service._outbox[0]["body"]
+    assert not service._state.get("recovery_token_hash")
+
+
+def test_pending_sms_recovery_must_match_requested_service(tmp_path):
+    starts = []
+    primary_challenge = {
+        "status": "sms_required",
+        "flow_id": "primary-sms",
+        "captcha_image": "data:image/jpeg;base64,abc",
+        "expires_in": 180,
+        "target_service": "primary",
+    }
+    service = GradeTrackingService(
+        data_dir=tmp_path,
+        auth_provider=lambda: None,
+        score_storage=FakeStorage(),
+        logger=logging.getLogger("task-target-isolation-test"),
+        qr_login_starter=lambda target: starts.append(target),
+        pending_sms_provider=lambda target: (object(), primary_challenge),
+    )
+    service.update_config(mail_config(site_url="https://toolkit.example.com"))
+
+    service.request_auth_recovery_notification(
+        subject="自动任务登录失效",
+        body="任务已暂停。",
+        dedupe_key="student:batch:task:auth-required:1",
+        target_service="jwxk",
+    )
+
+    assert service._recovery_flow is None
+    assert service._outbox[0]["template_metadata"]["continued_sms"] is False
 
 
 def test_recovery_sms_captcha_error_keeps_flow_for_retry(tmp_path, monkeypatch):
@@ -1006,8 +1251,9 @@ def test_recovery_sms_captcha_error_keeps_flow_for_retry(tmp_path, monkeypatch):
         lambda config, subject, body: sent.append((subject, body)),
     )
     service.check_now()
+    service._flush_outbox()
     token = re.search(
-        r"/grade-tracking/recovery/([A-Za-z0-9_-]+)", sent[0][1]
+        r"/auth-recovery/([A-Za-z0-9_.-]+)", sent[0][1]
     ).group(1)
     service.start_recovery_login(token)
     service.poll_recovery_login(token)
@@ -1021,16 +1267,19 @@ def test_recovery_sms_captcha_error_keeps_flow_for_retry(tmp_path, monkeypatch):
 
 
 def test_recovery_api_bypasses_server_password_only_with_token_path():
-    assert is_public_api_path(
+    assert not is_public_api_path(
         "/api/grade-tracking/recovery/token-value/start"
+    )
+    assert is_public_api_path(
+        "/api/auth-recovery/context.signature/start"
     )
     assert not is_public_api_path("/api/grade-tracking/config")
     assert redact_sensitive_path(
-        "/api/grade-tracking/recovery/secret-token/poll"
-    ) == "/api/grade-tracking/recovery/<redacted>/poll"
+        "/api/auth-recovery/context.signature/poll"
+    ) == "/api/auth-recovery/<redacted>/poll"
     assert redact_sensitive_path(
-        "/api/grade-tracking/recovery/secret-token/sms/verify"
-    ) == "/api/grade-tracking/recovery/<redacted>/sms/verify"
+        "/api/auth-recovery/context.signature/sms/verify"
+    ) == "/api/auth-recovery/<redacted>/sms/verify"
 
 
 def build_detail_tracking_service(tmp_path, lookup):

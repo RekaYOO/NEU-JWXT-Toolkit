@@ -17,8 +17,12 @@
 | --- | --- |
 | `backend/core/network/webvpn.py` | 将普通 HTTP/HTTPS 地址转换为东北大学 WebVPN 地址。保留路径、查询参数、片段和显式端口。 |
 | `backend/core/auth/client.py` | CAS 直连认证、WebVPN 二维码/短信状态机、Cookie 恢复和校内请求自动改写。 |
+| `backend/core/auth/recovery.py` | 成绩追踪与自动选课共享的一次性远程认证恢复上下文、签名令牌和内存 Flow。 |
+| `backend/core/notifications/mail.py` | 全系统 SMTP 配置、持久化 outbox、去重和失败重试。 |
 | `backend/app/routers/auth.py` | 对前端提供本地认证 API。 |
+| `backend/app/routers/auth_recovery.py` | 对一次性恢复页面提供 token-scoped API。 |
 | `frontend/src/pages/LoginPage.js` | 账号密码、二维码面板切换、二维码轮询和短信二次认证弹窗。 |
+| `frontend/src/pages/AuthRecoveryPage.js` | 邮件中的独立恢复页面，按上下文续接二维码或短信流程。 |
 
 `NEUAuthClient` 在 `webvpn` 模式下通常会将 `*.neu.edu.cn` 教务业务请求改写为 WebVPN
 URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控服务请求是例外：
@@ -73,8 +77,9 @@ URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控�
 
 `GET /api/auth/pending` 只读取当前进程内是否存在等待前台处理的图形验证码挑战，不触发远端请求，
 响应不包含密码、Cookie 或验证码原文；课表和选课后台任务遇到此状态会暂停静默恢复，等待用户在
-当前页面完成认证。成绩追踪还会发送一次登录恢复通知：未配置重新登录地址时提示进入工具箱手动登录；
-配置地址且保存账密已进入短信挑战时，一次性页面直接续接该 Session，否则先提供二维码重新登录。
+当前页面完成认证。成绩追踪和自动选课可调用独立远程恢复服务发送通知：未配置重新登录地址时提示
+进入工具箱手动登录；配置地址且保存账密已进入同目标短信挑战时，一次性页面直接续接该 Session，
+否则先提供二维码重新登录。
 
 Cookie 和已保存账密的自动恢复由进程级认证管理器统一退避。一次完整恢复链路失败后，所有页面、
 缓存刷新和后台任务共享同一个冷却状态，首次等待 30 秒，连续失败逐步延长，最长 5 分钟；冷却期间
@@ -132,12 +137,29 @@ WebVPN 专用接口在保留 `message` 和 `status` 的同时返回稳定的 `er
 | `POST /api/webvpn/sms/verify` | `flow_id`、`code`、`trust_device=false` | `status: "authenticated"`、`username`、`message` |
 | `POST /api/webvpn/sms/cancel` | `flow_id` | `success` |
 
-成绩追踪的一次性恢复页通过
-`/api/grade-tracking/recovery/{token}/captcha/refresh`、`sms/send`、`sms/verify` 和 `cancel`
-复用同一组官方验证码与短信操作，但授权边界是邮件中的高强度一次性 token。它只能操作该 token
-绑定的候选 Session，不能访问未绑定的其他登录流程；成功后 token 立即失效。若保存账密的后台
-恢复已经进入短信页，该候选 Session 会被明确绑定到恢复 token，链接不再要求重复扫码；没有可续接
-挑战时才从二维码重新登录开始。
+成绩追踪和自动选课任务共享的一次性恢复页使用以下独立接口：
+
+| 方法和路径 | 请求字段 | 用途 |
+| --- | --- | --- |
+| `GET /api/auth-recovery/{token}/status` | 无 | 只读当前上下文及进程内 Flow 状态 |
+| `POST /api/auth-recovery/{token}/start` | 无 | 续接已有短信挑战，或创建新的二维码 Flow |
+| `GET /api/auth-recovery/{token}/poll` | 无 | 轮询二维码，并在官方要求时切换到短信阶段 |
+| `POST /api/auth-recovery/{token}/captcha/refresh` | 无 | 从当前绑定 Session 刷新图形验证码 |
+| `POST /api/auth-recovery/{token}/sms/send` | `captcha_code` | 用户确认图形验证码后主动发送/重发短信 |
+| `POST /api/auth-recovery/{token}/sms/verify` | `code`、`trust_device=false` | 提交短信验证码并完成目标服务认证 |
+| `POST /api/auth-recovery/{token}/cancel` | 无 | 取消 Flow 并立即使本链接失效 |
+
+授权边界是邮件中的高强度签名 token。它只能操作该 token 绑定的候选 Session，不能访问未绑定的
+其他登录流程；成功、取消、主动退出或账号切换后 token 立即失效。二维码、图形验证码、短信 Flow、
+Cookie 和候选 Session 只在内存中存在；持久化状态只保存上下文 ID 与 token 哈希，邮件 outbox 只
+保存模板和上下文 ID，真正发送时才生成 URL。服务重启后已发送链接仍能重新开始二维码流程，但不会
+恢复已经丢失的内存验证码 Flow。
+
+恢复链接同时绑定目标服务：成绩追踪使用 `primary`，自动抢课、空位换课和策略投权使用 `jwxk`。
+`primary` 成功后原子接管主认证 Session；`jwxk` 成功后只合并 WebVPN 网关 Cookie 和 JWXK 子会话，
+或在主会话尚未恢复时保存为自动任务专用候选，不改变主 JWXT 的直连/WebVPN 选择。旧
+`/grade-tracking/recovery/` 页面和 `/api/grade-tracking/recovery/` API 已删除，升级前的旧链接
+直接失效，也不再绕过 Linux 网站访问密码。
 
 验证码响应中的关键字段：
 

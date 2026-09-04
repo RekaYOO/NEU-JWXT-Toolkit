@@ -69,6 +69,7 @@ class CourseSelectionAutomationService:
         client_builder: Callable[[Any], JwxkSessionClient],
         remote_guard: Callable[[], Any] | None = None,
         notification_provider: Callable[[str, str, str, str], bool] | None = None,
+        auth_recovery_notification_provider: Callable[..., bool] | None = None,
         plan_provider: Callable[[str, str], dict[str, Any]] | None = None,
     ) -> None:
         self.path = Path(data_dir) / "course_selection_tasks.json"
@@ -80,6 +81,7 @@ class CourseSelectionAutomationService:
         self.client_builder = client_builder
         self.remote_guard = remote_guard or nullcontext
         self.notification_provider = notification_provider
+        self.auth_recovery_notification_provider = auth_recovery_notification_provider
         self.plan_provider = plan_provider
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -1023,6 +1025,10 @@ class CourseSelectionAutomationService:
         if self._catalog_thread and self._catalog_thread.is_alive():
             self._catalog_thread.join(timeout=3)
 
+    def wake(self) -> None:
+        """Resume safe task checks after a shared authentication recovery."""
+        self._wake.set()
+
     def list(self, account: str, batch_code: str = "") -> list[dict[str, Any]]:
         with self._lock:
             return [
@@ -1953,16 +1959,20 @@ class CourseSelectionAutomationService:
         task["last_attempt_at"] = datetime.now().astimezone().isoformat()
         task["updated_at"] = task["last_attempt_at"]
         if new_episode:
-            self._notify_grab_auth_required(task, message)
+            self._notify_task_auth_required(task, message)
         self._persist_task(task)
 
-    def _notify_grab_auth_required(self, task: dict[str, Any], message: str) -> None:
-        if task.get("task_type") not in {"selection", "vacancy_swap"}:
+    def _notify_task_auth_required(self, task: dict[str, Any], message: str) -> None:
+        task_type = str(task.get("task_type") or "selection")
+        if task_type not in {"selection", "vacancy_swap", "weight_strategy"}:
             return
         account = str(task.get("account") or "")
         batch_code = str(task.get("batch_code") or "")
         settings = self.get_automation_settings(account, batch_code)
-        if not settings.get("mail_enabled") or not settings.get("notify_grab_result"):
+        # Authentication loss is a task-stopping event, so the round-level
+        # mail switch is sufficient even when ordinary result notifications
+        # are disabled.
+        if not settings.get("mail_enabled"):
             return
         sequence = int(task.get("auth_failure_sequence") or 1)
         key = f"{account}:{batch_code}:{task.get('task_id')}:auth_required:{sequence}"
@@ -1976,27 +1986,52 @@ class CourseSelectionAutomationService:
             "batch_code": batch_code,
             "batch_name": task.get("name"),
             "term_code": task.get("term_code"),
-            "selection_type_code": "02",
+            "selection_type_code": "04" if task_type == "weight_strategy" else "02",
         }
         courses = self._notification_audience(
             account, batch_code, metadata, task=task,
         )
+        if task_type == "weight_strategy":
+            heading = "策略投权任务登录失效"
+            safety_message = "恢复前会停留在当前策略阶段，不会自动重放撤回或投权操作。"
+        elif task_type == "vacancy_swap":
+            heading = "空位换课任务登录失效"
+            safety_message = "恢复前会停留在当前换课阶段，不会重复退课、降级目标或重放写操作。"
+        else:
+            heading = "抢课任务登录失效"
+            safety_message = "恢复前会停留在当前候选，不会降级候选或重放写操作。"
         body, html_body = self._notification_content(
             metadata,
-            heading="抢课任务登录失效",
+            heading=heading,
             reason=(
-                f"任务“{task.get('name') or task.get('task_id')}”暂停在当前候选：{message}。"
-                "请进入系统完成登录恢复；恢复前不会降级候选或重放写操作。"
+                f"任务“{task.get('name') or task.get('task_id')}”因 JWXK 登录失效而暂停：{message}。"
+                + safety_message
             ),
             courses=courses,
         )
-        if self._queue_notification(
-            account, batch_code,
-            f"JWXK 抢课任务登录失效 · {task.get('name') or task.get('task_id')}",
-            body,
-            f"grab-result:{task.get('task_id')}:auth-required:{sequence}",
-            html_body=html_body,
-        ):
+        subject = f"JWXK {heading} · {task.get('name') or task.get('task_id')}"
+        dedupe_key = f"{account}:{batch_code}:task-auth:{task.get('task_id')}:{sequence}"
+        queued = False
+        if self.auth_recovery_notification_provider:
+            try:
+                queued = bool(self.auth_recovery_notification_provider(
+                    source="course_selection",
+                    account_id=account,
+                    subject=subject,
+                    body=body,
+                    html_body=html_body,
+                    dedupe_key=dedupe_key,
+                    target_service="jwxk",
+                ))
+            except Exception:
+                logger.exception("course selection auth recovery notification enqueue failed")
+        if not queued:
+            queued = self._queue_notification(
+                account, batch_code, subject, body,
+                f"task-auth:{task.get('task_id')}:{sequence}",
+                html_body=html_body,
+            )
+        if queued:
             with self._lock:
                 self._notification_state[key] = datetime.now().astimezone().isoformat()
                 self._write_json_map(

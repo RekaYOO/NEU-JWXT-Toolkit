@@ -93,8 +93,13 @@ def test_server_access_gateway_and_static_frontend(tmp_path):
         recovery = requests.get(
             f"{base_url}/api/grade-tracking/recovery/invalid-token/status"
         )
-        assert recovery.status_code == 404
-        assert recovery.json()["detail"] == "一次性登录链接不存在或已失效"
+        assert recovery.status_code == 401
+        assert recovery.json()["code"] == "ACCESS_REQUIRED"
+        public_recovery = requests.get(
+            f"{base_url}/api/auth-recovery/invalid-token/status"
+        )
+        assert public_recovery.status_code == 404
+        assert public_recovery.json()["detail"] == "一次性登录链接不存在或已失效"
         protected = requests.get(
             f"{base_url}/api/status",
             headers={
@@ -123,6 +128,12 @@ def test_server_access_gateway_and_static_frontend(tmp_path):
             cookies={"neu_jwxt_access": cookie_value},
         )
         assert status.json()["authenticated"] is True
+        removed_recovery = requests.get(
+            f"{base_url}/api/grade-tracking/recovery/invalid-token/status",
+            cookies={"neu_jwxt_access": cookie_value},
+        )
+        assert removed_recovery.status_code == 404
+        assert removed_recovery.json()["detail"] == "Not Found"
 
         for _ in range(5):
             wrong = requests.post(

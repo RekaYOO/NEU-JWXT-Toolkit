@@ -15,7 +15,7 @@ import ExperimentCoursePage from './pages/ExperimentCoursePage';
 import EvaluationPage from './pages/EvaluationPage';
 import ExamPage from './pages/ExamPage';
 import GradeTrackingPage from './pages/GradeTrackingPage';
-import GradeTrackingRecoveryPage from './pages/GradeTrackingRecoveryPage';
+import AuthRecoveryPage from './pages/AuthRecoveryPage';
 import ResearchTrainingPage from './pages/ResearchTrainingPage';
 import ExportPage from './pages/ExportPage';
 import FestivalActivitiesPage from './pages/FestivalActivitiesPage';
@@ -311,7 +311,7 @@ function App() {
   );
   const [timetableRecoveryNotice, setTimetableRecoveryNotice] = useState('');
   const recoveryMatch = window.location.pathname.match(
-    /^\/grade-tracking\/recovery\/([^/]+)\/?$/
+    /^\/auth-recovery\/([^/]+)\/?$/
   );
   const recoveryToken = recoveryMatch
     ? decodeURIComponent(recoveryMatch[1])
@@ -725,7 +725,7 @@ function App() {
   if (recoveryToken) {
     return (
       <ConfigProvider theme={appTheme} locale={zhCN}>
-        <GradeTrackingRecoveryPage token={recoveryToken} />
+        <AuthRecoveryPage token={recoveryToken} />
       </ConfigProvider>
     );
   }

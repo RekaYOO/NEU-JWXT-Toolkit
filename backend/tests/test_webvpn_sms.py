@@ -217,6 +217,7 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         self.assertEqual(challenge["status"], "sms_required")
         self.assertEqual(challenge["flow_id"], "flow")
         self.assertEqual(challenge["captcha_image"], "data:image/jpeg;base64,YWJj")
+        self.assertEqual(challenge["target_service"], "primary")
         self.assertNotIn("hidden_fields", challenge)
 
     def test_sms_send_non_json_response_has_stable_error_code(self):

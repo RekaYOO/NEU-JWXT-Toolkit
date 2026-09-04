@@ -212,7 +212,7 @@ PUBLIC_API_PATHS = {
 def is_public_api_path(path: str) -> bool:
     return (
         path in PUBLIC_API_PATHS
-        or path.startswith("/api/grade-tracking/recovery/")
+        or path.startswith("/api/auth-recovery/")
     )
 
 

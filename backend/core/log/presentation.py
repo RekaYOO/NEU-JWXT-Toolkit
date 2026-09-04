@@ -21,7 +21,8 @@ _EVENT_TITLES = {
     "webvpn_password_login": "WebVPN 密码登录",
     "webvpn_sms_send": "WebVPN 短信发送",
     "webvpn_sms_verify": "WebVPN 短信验证",
-    "tracking_recovery_login": "成绩追踪登录恢复",
+    "auth_recovery_login": "远程登录恢复",
+    "auth_recovery_sms": "远程登录短信验证",
 }
 
 _OUTCOME_LABELS = {

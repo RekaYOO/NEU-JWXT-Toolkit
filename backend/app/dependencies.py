@@ -31,6 +31,8 @@ from backend.core.log import (
 )
 from backend.core.log.manager import LogManager
 from backend.core.tracking import GradeTrackingService
+from backend.core.notifications import SystemMailService
+from backend.core.auth.recovery import RemoteAuthRecoveryService
 from backend.core.cache import (
     AccountScope,
     CacheCoordinator,
@@ -158,7 +160,7 @@ def _jwxk_automation_auth() -> Optional[NEUAuthClient]:
     # A live JWXK task should not probe JWXT before every read.  Reuse the
     # process-wide authenticated client and let request_service repair only
     # the JWXK child session when its bearer token expires.
-    client = _auth_sessions.peek_client()
+    client = _jwxk_recovered_client or _auth_sessions.peek_client()
     if client is not None:
         return client
     return _get_auth_client_unlocked()
@@ -175,20 +177,8 @@ def _jwxk_automation_plan(account: str, batch_code: str) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-_course_selection_automation = CourseSelectionAutomationService(
-    _storage.config.data_dir,
-    auth_provider=lambda: _auth_sessions.peek_client(),
-    # Called only while the automation service holds remote_session_guard.
-    # It reuses the same AuthSessionManager and the normal cookie/password
-    # recovery chain; no second account or cookie store is created.
-    auth_recover_provider=_jwxk_automation_auth,
-    client_builder=_jwxk_automation_client,
-    remote_guard=background_remote_session_guard,
-    notification_provider=lambda subject, body, key, html_body="": _grade_tracker.queue_system_notification(
-        subject, body, key, html_body,
-    ),
-    plan_provider=_jwxk_automation_plan,
-)
+_course_selection_automation: CourseSelectionAutomationService | None = None
+_jwxk_recovered_client: Optional[NEUAuthClient] = None
 
 
 def _cache_client(context):
@@ -605,23 +595,35 @@ def set_auth_client(
     force_epoch: bool = False,
 ):
     """设置当前认证客户端"""
+    global _jwxk_recovered_client
     _auth_sessions.set_client(client, force_epoch=force_epoch)
-    tracker = globals().get("_grade_tracker")
-    if tracker and client is not None and client.is_logged_in:
-        tracker.invalidate_recovery_link()
+    if client is not None:
+        _jwxk_recovered_client = None
+    recovery = globals().get("_auth_recovery")
+    if recovery and client is not None and client.is_logged_in:
+        recovery.invalidate_all()
 
 
 def logout_auth_client(*, clear_cache: bool) -> str | None:
     """Fence background work and optionally clear the active account cache."""
+    global _jwxk_recovered_client
     def cleanup(account: str) -> None:
         _cache_coordinator.cancel_account(account, error_kind="identity_changed")
         if clear_cache:
             _cache_store.delete_account(account)
             _research_storage.delete_account(account)
     account = _auth_sessions.fence_and_clear(cleanup)
+    _jwxk_recovered_client = None
     tracker = globals().get("_grade_tracker")
     if tracker and hasattr(tracker, "pause_for_logout"):
         tracker.pause_for_logout(clear_personal_state=clear_cache)
+    recovery = globals().get("_auth_recovery")
+    if recovery:
+        recovery.invalidate_all(clear_state=clear_cache)
+    if clear_cache:
+        mail = globals().get("_system_mail")
+        if mail:
+            mail.discard()
     return account
 
 
@@ -928,13 +930,15 @@ def _get_tracking_auth_client() -> Optional[NEUAuthClient]:
         return _get_auth_client_unlocked()
 
 
-def _start_tracking_qr_login():
+def _start_auth_recovery_qr_login(target_service: str = "primary"):
     client = NEUAuthClient(
-        cookie_file=COOKIE_FILE,
         network_mode="webvpn",
         restore_session=False,
     )
-    return client, client.start_webvpn_qr_login(expires_in=300)
+    return client, client.start_webvpn_qr_login(
+        expires_in=300,
+        target_service="jwxk" if target_service == "jwxk" else "primary",
+    )
 
 
 def _interactive_login_pending() -> bool:
@@ -945,7 +949,7 @@ def _interactive_login_pending() -> bool:
     )
 
 
-def _pending_tracking_sms_login():
+def _pending_auth_recovery_sms_login(target_service: str = "primary"):
     """Expose only a live SMS challenge for the token-scoped recovery page."""
     client = peek_pending_auth_client() or peek_auth_client()
     if client is None:
@@ -954,12 +958,33 @@ def _pending_tracking_sms_login():
         challenge = client.get_webvpn_sms_challenge()
     except Exception:
         return None
+    if (
+        challenge
+        and str(challenge.get("target_service") or "primary") != target_service
+    ):
+        return None
     return (client, challenge) if challenge else None
 
 
-def _set_tracking_recovery_auth(client: NEUAuthClient) -> None:
+def _commit_recovered_auth(
+    client: NEUAuthClient,
+    target_service: str = "primary",
+) -> None:
+    global _jwxk_recovered_client
     clear_pending_auth_client(client)
-    set_auth_client(client)
+    if target_service == "jwxk":
+        active = peek_auth_client()
+        if active is not None:
+            active.adopt_webvpn_gateway_session(client)
+            _jwxk_recovered_client = None
+            _auth_sessions.clear_auth_recovery_backoff()
+            return
+        _jwxk_recovered_client = client
+        _auth_sessions.clear_auth_recovery_backoff()
+        return
+    client.cookie_file = COOKIE_FILE
+    client._save_cookies()
+    set_auth_client(client, force_epoch=True)
 
 
 def _tracking_score_refresh(account: str, manual: bool) -> dict:
@@ -1040,20 +1065,59 @@ def _tracking_score_detail_lookup(account: str, score: dict) -> dict:
     }
 
 
+_system_mail = SystemMailService(
+    data_dir=_storage.config.data_dir,
+    logger=_api_logger,
+)
+
+_auth_recovery = RemoteAuthRecoveryService(
+    data_dir=_storage.config.data_dir,
+    mail_service=_system_mail,
+    logger=_api_logger,
+    qr_login_starter=_start_auth_recovery_qr_login,
+    pending_sms_provider=_pending_auth_recovery_sms_login,
+    auth_committer=_commit_recovered_auth,
+    remote_guard=foreground_auth_session_guard,
+    auth_error_code_provider=lambda: _last_auth_recovery_error_code,
+)
+
 _grade_tracker = GradeTrackingService(
     data_dir=_storage.config.data_dir,
     auth_provider=_get_tracking_auth_client,
     score_storage=_storage,
     report_storage=_report_storage,
     logger=_api_logger,
-    qr_login_starter=_start_tracking_qr_login,
-    auth_setter=_set_tracking_recovery_auth,
+    mail_service=_system_mail,
+    auth_recovery_service=_auth_recovery,
     login_flow_pending=_interactive_login_pending,
-    pending_sms_provider=_pending_tracking_sms_login,
     score_refresher=_tracking_score_refresh,
     score_detail_lookup=_tracking_score_detail_lookup,
-    remote_guard=tracking_remote_session_guard,
-    auth_error_code_provider=lambda: _last_auth_recovery_error_code,
+)
+
+_course_selection_automation = CourseSelectionAutomationService(
+    _storage.config.data_dir,
+    auth_provider=lambda: _jwxk_recovered_client or _auth_sessions.peek_client(),
+    auth_recover_provider=_jwxk_automation_auth,
+    client_builder=_jwxk_automation_client,
+    remote_guard=background_remote_session_guard,
+    notification_provider=lambda subject, body, key, html_body="": _system_mail.queue_notification(
+        "course_selection", subject, body, f"course-selection:{key}", html_body,
+    ),
+    auth_recovery_notification_provider=_auth_recovery.request_notification,
+    plan_provider=_jwxk_automation_plan,
+)
+
+_system_mail.register_delivery_listener(
+    "grade_tracking", _grade_tracker.handle_mail_delivered,
+)
+_system_mail.register_delivery_validator(
+    "grade_tracking", _grade_tracker.should_deliver_mail,
+)
+_auth_recovery.register_recovered_callback(
+    "grade_tracking", _grade_tracker.resume_after_login,
+)
+_auth_recovery.register_recovered_callback(
+    "course_selection", lambda _account: _course_selection_automation.wake(),
 )
 
 
@@ -1119,6 +1183,8 @@ class ApplicationServices:
     cache_registry: CacheRegistry
     cache_store: CacheStore
     cache_coordinator: CacheCoordinator
+    system_mail: SystemMailService
+    auth_recovery: RemoteAuthRecoveryService
     grade_tracker: GradeTrackingService
     report_storage: AcademicReportStorage
     research_storage: ResearchTrainingStorage
@@ -1128,26 +1194,51 @@ class ApplicationServices:
     def start(self) -> None:
         self.cache_coordinator.start()
         try:
+            self.system_mail.start()
             self.grade_tracker.start()
             if self.course_selection_automation is not None:
                 self.course_selection_automation.start()
         except Exception:
-            self.cache_coordinator.shutdown(
-                wait=True,
-                cancel_queued=True,
-                timeout=8,
-            )
+            rollback_steps = []
+            if self.course_selection_automation is not None:
+                rollback_steps.append(getattr(self.course_selection_automation, "stop", None))
+            rollback_steps.extend((
+                getattr(self.grade_tracker, "stop", None),
+                getattr(self.auth_recovery, "stop", None),
+                getattr(self.system_mail, "stop", None),
+            ))
+            for step in rollback_steps:
+                if not callable(step):
+                    continue
+                try:
+                    step()
+                except Exception:
+                    pass
+            try:
+                self.cache_coordinator.shutdown(
+                    wait=True,
+                    cancel_queued=True,
+                    timeout=8,
+                )
+            except Exception:
+                pass
             raise
 
     def shutdown(self, *, timeout: float = 8) -> None:
-        tracker_error: Exception | None = None
-        cache_error: Exception | None = None
-        try:
-            if self.course_selection_automation is not None:
-                self.course_selection_automation.stop()
-            self.grade_tracker.stop()
-        except Exception as exc:
-            tracker_error = exc
+        errors: list[Exception] = []
+        shutdown_steps = []
+        if self.course_selection_automation is not None:
+            shutdown_steps.append(self.course_selection_automation.stop)
+        shutdown_steps.extend((
+            self.grade_tracker.stop,
+            self.auth_recovery.stop,
+            self.system_mail.stop,
+        ))
+        for step in shutdown_steps:
+            try:
+                step()
+            except Exception as exc:
+                errors.append(exc)
         try:
             self.cache_coordinator.shutdown(
                 wait=True,
@@ -1155,16 +1246,11 @@ class ApplicationServices:
                 timeout=timeout,
             )
         except Exception as exc:
-            cache_error = exc
-        if tracker_error is not None and cache_error is not None:
-            raise ExceptionGroup(
-                "application service shutdown failed",
-                [tracker_error, cache_error],
-            )
-        if tracker_error is not None:
-            raise tracker_error
-        if cache_error is not None:
-            raise cache_error
+            errors.append(exc)
+        if len(errors) > 1:
+            raise ExceptionGroup("application service shutdown failed", errors)
+        if errors:
+            raise errors[0]
 
 
 _application_services = ApplicationServices(
@@ -1176,6 +1262,8 @@ _application_services = ApplicationServices(
     cache_registry=_cache_registry,
     cache_store=_cache_store,
     cache_coordinator=_cache_coordinator,
+    system_mail=_system_mail,
+    auth_recovery=_auth_recovery,
     grade_tracker=_grade_tracker,
     report_storage=_report_storage,
     research_storage=_research_storage,
@@ -1206,6 +1294,14 @@ def get_api_logger():
 
 def get_grade_tracker() -> GradeTrackingService:
     return _application_services.grade_tracker
+
+
+def get_system_mail_service() -> SystemMailService:
+    return _application_services.system_mail
+
+
+def get_auth_recovery_service() -> RemoteAuthRecoveryService:
+    return _application_services.auth_recovery
 
 
 def get_cache_coordinator() -> CacheCoordinator:

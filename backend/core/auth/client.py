@@ -1193,6 +1193,7 @@ class NEUAuthClient:
             "status": "sms_required",
             "flow_id": flow["id"],
             "captcha_image": f"data:{media_type};base64,{image}" if image else "",
+            "target_service": str(flow.get("target_service") or "primary"),
             "expires_in": max(
                 0,
                 int(float(flow.get("code_expires_at") or flow["expires_at"]) - time.time()),

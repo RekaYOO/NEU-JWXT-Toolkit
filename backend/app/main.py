@@ -30,7 +30,7 @@ from backend.app.dependencies import (
     get_log_config,
     peek_auth_client,
 )
-from backend.app.routers import auth, cache, client, logs, system_settings, scores, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking, festival_activities, course_selection, timetable, scheduling, course_outline, academic_documents
+from backend.app.routers import auth, auth_recovery, cache, client, logs, system_settings, scores, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking, festival_activities, course_selection, timetable, scheduling, course_outline, academic_documents
 from backend.core.runtime import get_runtime_config, resource_path
 from backend.core.runtime.access import AccessGatewayMiddleware
 from backend.core.runtime.static import PrecompressedStaticFiles, REVALIDATE_CACHE_CONTROL
@@ -116,7 +116,18 @@ app.include_router(timetable.router, prefix="/api")
 app.include_router(scheduling.router, prefix="/api")
 app.include_router(course_outline.router, prefix="/api")
 app.include_router(tracking.router, prefix="/api/grade-tracking")
+app.include_router(auth_recovery.router, prefix="/api/auth-recovery")
 app.include_router(runtime.router)
+
+
+@app.api_route(
+    "/api/{full_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    include_in_schema=False,
+)
+def api_not_found(full_path: str):
+    """Keep removed and unknown API paths out of the SPA fallback."""
+    raise HTTPException(status_code=404, detail="Not Found")
 
 # ── 前端静态文件（生产/本地单端口模式）──────────────────────────────────────────
 
@@ -177,7 +188,15 @@ if _FRONTEND_STATIC.is_dir():
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
     """SPA fallback：非 API 路由都返回 index.html。"""
-    # API 路由已在上方注册，不会走到这里。
+    # Unknown API paths must remain real 404 responses.  In particular, this
+    # prevents removed token-scoped recovery endpoints from being disguised as
+    # a successful SPA response by the catch-all route.
+    if full_path == "api" or full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if full_path == "grade-tracking/recovery" or full_path.startswith(
+        "grade-tracking/recovery/"
+    ):
+        raise HTTPException(status_code=404, detail="Not Found")
     if _has_unsafe_spa_path(full_path):
         raise HTTPException(status_code=404, detail="Not Found")
     if not _FRONTEND_INDEX.is_file() or not _FRONTEND_STATIC.is_dir():

@@ -40,11 +40,12 @@ def _safe_text(value: Any, limit: int) -> str:
 
 def redact_sensitive_path(path: str) -> str:
     path = _safe_text(path, 2048)
-    if "/grade-tracking/recovery/" not in path:
+    marker = "/auth-recovery/"
+    if marker not in path:
         return path
-    prefix, _, suffix = path.partition("/grade-tracking/recovery/")
+    prefix, _, suffix = path.partition(marker)
     trailing = suffix.split("/", 1)[1] if "/" in suffix else ""
-    redacted = f"{prefix}/grade-tracking/recovery/<redacted>"
+    redacted = f"{prefix}{marker}<redacted>"
     return f"{redacted}/{trailing}" if trailing else redacted
 
 

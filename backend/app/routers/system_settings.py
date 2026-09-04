@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from backend.app.dependencies import get_cache_coordinator, get_storage
+from backend.app.dependencies import (
+    get_auth_recovery_service,
+    get_cache_coordinator,
+    get_storage,
+    get_system_mail_service,
+)
 from backend.app.schemas.system_settings import (
     CacheSettingsUpdate,
     CacheResourceSetting,
     SystemSettingsResponse,
+    SystemMailConfigUpdate,
+    AuthRecoveryConfigUpdate,
 )
 
 router = APIRouter(prefix="/system-settings", tags=["system-settings"])
@@ -83,3 +90,40 @@ def update_cache_settings(payload: CacheSettingsUpdate, storage=Depends(get_stor
             raise HTTPException(status_code=400, detail=f"未知缓存资源: {resource}")
         current[resource] = value
     return _apply(storage, coordinator, current)
+
+
+@router.get("/mail")
+def get_mail_settings(service=Depends(get_system_mail_service)):
+    return service.get_config()
+
+
+@router.put("/mail")
+def update_mail_settings(payload: SystemMailConfigUpdate, service=Depends(get_system_mail_service)):
+    try:
+        return {"success": True, "config": service.update_config(payload.model_dump(exclude_none=True))}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/mail/test")
+def test_mail_settings(service=Depends(get_system_mail_service)):
+    try:
+        service.test_email()
+        return {"success": True, "message": "测试邮件已发送"}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail="测试邮件发送失败") from error
+
+
+@router.get("/auth-recovery")
+def get_auth_recovery_settings(service=Depends(get_auth_recovery_service)):
+    return service.get_config()
+
+
+@router.put("/auth-recovery")
+def update_auth_recovery_settings(payload: AuthRecoveryConfigUpdate, service=Depends(get_auth_recovery_service)):
+    try:
+        return {"success": True, "config": service.update_config(payload.model_dump())}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error

@@ -27,6 +27,17 @@ def test_application_services_owns_background_lifecycle():
         def stop(self):
             calls.append(("tracking.stop", None))
 
+    class Mail:
+        def start(self):
+            calls.append(("mail.start", None))
+
+        def stop(self):
+            calls.append(("mail.stop", None))
+
+    class Recovery:
+        def stop(self):
+            calls.append(("recovery.stop", None))
+
     current = get_application_services()
     services = ApplicationServices(
         auth_sessions=current.auth_sessions,
@@ -37,6 +48,8 @@ def test_application_services_owns_background_lifecycle():
         cache_registry=current.cache_registry,
         cache_store=current.cache_store,
         cache_coordinator=Coordinator(),
+        system_mail=Mail(),
+        auth_recovery=Recovery(),
         grade_tracker=Tracker(),
         report_storage=current.report_storage,
         research_storage=current.research_storage,
@@ -47,8 +60,11 @@ def test_application_services_owns_background_lifecycle():
 
     assert calls == [
         ("cache.start", None),
+        ("mail.start", None),
         ("tracking.start", None),
         ("tracking.stop", None),
+        ("recovery.stop", None),
+        ("mail.stop", None),
         (
             "cache.shutdown",
             {"wait": True, "cancel_queued": True, "timeout": 3},
@@ -67,6 +83,8 @@ def _application_services(cache_coordinator, grade_tracker):
         cache_registry=current.cache_registry,
         cache_store=current.cache_store,
         cache_coordinator=cache_coordinator,
+        system_mail=type("Mail", (), {"start": lambda _self: None, "stop": lambda _self: None})(),
+        auth_recovery=type("Recovery", (), {"stop": lambda _self: None})(),
         grade_tracker=grade_tracker,
         report_storage=current.report_storage,
         research_storage=current.research_storage,
@@ -94,6 +112,62 @@ def test_application_services_rolls_back_partial_start():
         services.start()
 
     assert calls == ["cache.start", "cache.shutdown"]
+
+
+def test_application_services_continues_start_rollback_after_stop_error():
+    calls = []
+
+    class Coordinator:
+        def start(self):
+            calls.append("cache.start")
+
+        def shutdown(self, **_kwargs):
+            calls.append("cache.shutdown")
+
+    class Mail:
+        def start(self):
+            calls.append("mail.start")
+
+        def stop(self):
+            calls.append("mail.stop")
+
+    class Recovery:
+        def stop(self):
+            calls.append("recovery.stop")
+
+    class Tracker:
+        def start(self):
+            calls.append("tracking.start")
+            raise RuntimeError("tracking start failed")
+
+        def stop(self):
+            calls.append("tracking.stop")
+            raise RuntimeError("tracking stop failed")
+
+    current = get_application_services()
+    services = ApplicationServices(
+        auth_sessions=current.auth_sessions,
+        storage=current.storage,
+        log_config=current.log_config,
+        log_manager=current.log_manager,
+        api_logger=current.api_logger,
+        cache_registry=current.cache_registry,
+        cache_store=current.cache_store,
+        cache_coordinator=Coordinator(),
+        system_mail=Mail(),
+        auth_recovery=Recovery(),
+        grade_tracker=Tracker(),
+        report_storage=current.report_storage,
+        research_storage=current.research_storage,
+    )
+
+    with pytest.raises(RuntimeError, match="tracking start failed"):
+        services.start()
+
+    assert calls == [
+        "cache.start", "mail.start", "tracking.start", "tracking.stop",
+        "recovery.stop", "mail.stop", "cache.shutdown",
+    ]
 
 
 def test_application_services_always_closes_cache_on_shutdown_error():

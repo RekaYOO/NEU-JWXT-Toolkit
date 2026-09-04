@@ -21,6 +21,60 @@ from backend.core.auth.session_manager import AuthSessionManager
 
 
 class AuthRouteTests(unittest.TestCase):
+    def test_auth_recovery_qr_candidate_stays_memory_only_until_commit(self):
+        candidate = Mock()
+        candidate.start_webvpn_qr_login.return_value = {"flow_id": "flow"}
+        with patch.object(dependencies, "NEUAuthClient", return_value=candidate) as builder:
+            returned, flow = dependencies._start_auth_recovery_qr_login("jwxk")
+
+        self.assertIs(returned, candidate)
+        self.assertEqual(flow, {"flow_id": "flow"})
+        self.assertNotIn("cookie_file", builder.call_args.kwargs)
+        self.assertFalse(builder.call_args.kwargs["restore_session"])
+
+    def test_primary_recovery_persists_cookies_only_when_committed(self):
+        candidate = Mock(username="20250001", is_logged_in=True, cookie_file=None)
+        with (
+            patch.object(dependencies, "clear_pending_auth_client"),
+            patch.object(dependencies, "set_auth_client") as set_client,
+        ):
+            dependencies._commit_recovered_auth(candidate, "primary")
+
+        self.assertEqual(candidate.cookie_file, dependencies.COOKIE_FILE)
+        candidate._save_cookies.assert_called_once_with()
+        set_client.assert_called_once_with(candidate, force_epoch=True)
+
+    def test_shared_jwxk_recovery_merges_gateway_without_replacing_primary(self):
+        active = Mock(username="20250001", is_logged_in=True)
+        candidate = Mock(username="20250001", is_logged_in=True)
+        with (
+            patch.object(dependencies, "peek_auth_client", return_value=active),
+            patch.object(dependencies, "clear_pending_auth_client") as clear_pending,
+            patch.object(dependencies, "set_auth_client") as set_client,
+        ):
+            dependencies._commit_recovered_auth(candidate, "jwxk")
+
+        clear_pending.assert_called_once_with(candidate)
+        active.adopt_webvpn_gateway_session.assert_called_once_with(candidate)
+        set_client.assert_not_called()
+
+    def test_jwxk_recovery_without_primary_uses_dedicated_automation_client(self):
+        candidate = Mock(username="20250001", is_logged_in=True)
+        previous = dependencies._jwxk_recovered_client
+        try:
+            dependencies._jwxk_recovered_client = None
+            with (
+                patch.object(dependencies, "peek_auth_client", return_value=None),
+                patch.object(dependencies, "clear_pending_auth_client"),
+                patch.object(dependencies, "set_auth_client") as set_client,
+            ):
+                dependencies._commit_recovered_auth(candidate, "jwxk")
+
+            self.assertIs(dependencies._jwxk_recovered_client, candidate)
+            set_client.assert_not_called()
+        finally:
+            dependencies._jwxk_recovered_client = previous
+
     def test_password_rejections_have_one_public_message(self):
         direct_client = Mock()
         direct_client.login.side_effect = NEULoginError(

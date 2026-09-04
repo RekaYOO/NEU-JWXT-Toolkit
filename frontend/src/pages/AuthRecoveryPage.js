@@ -8,15 +8,14 @@ import {
 } from '@ant-design/icons';
 import WebVPNAuthFields from '../components/WebVPNAuthFields';
 import {
-  cancelGradeTrackingRecovery,
-  getGradeTrackingRecoveryStatus,
-  pollGradeTrackingRecovery,
-  refreshGradeTrackingRecoveryCaptcha,
-  sendGradeTrackingRecoverySMS,
-  startGradeTrackingRecovery,
-  verifyGradeTrackingRecoverySMS,
+  getAuthRecoveryStatus,
+  pollAuthRecovery,
+  refreshAuthRecoveryCaptcha,
+  sendAuthRecoverySMS,
+  startAuthRecovery,
+  verifyAuthRecoverySMS,
 } from '../services/api';
-import './GradeTrackingRecoveryPage.css';
+import './AuthRecoveryPage.css';
 
 const recoveryErrorMessage = (error, fallback) => {
   const detail = error?.response?.data?.detail;
@@ -31,7 +30,7 @@ const formatCountdown = (value) => {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 };
 
-const GradeTrackingRecoveryPage = ({ token }) => {
+const AuthRecoveryPage = ({ token }) => {
   const [stage, setStage] = useState('starting');
   const [flow, setFlow] = useState(null);
   const [message, setMessage] = useState('正在读取一次性登录状态');
@@ -68,19 +67,19 @@ const GradeTrackingRecoveryPage = ({ token }) => {
     setSmsSent(false);
     setAuthError('');
     setStage('sms_required');
-    setMessage('扫码已确认，请完成短信二次认证');
+    setMessage('请完成短信二次认证');
   }, [setCountdown, stopPolling]);
 
   const finishAuthenticated = useCallback(() => {
     stopPolling();
     setStage('authenticated');
-    setMessage('教务登录已经恢复，成绩追踪将自动继续');
+    setMessage('登录已经恢复，相关后台任务将自动继续');
     setFlow(null);
   }, [stopPolling]);
 
   const poll = useCallback(async () => {
     try {
-      const result = await pollGradeTrackingRecovery(token);
+      const result = await pollAuthRecovery(token);
       if (result.status === 'authenticated') {
         finishAuthenticated();
       } else if (result.status === 'sms_required') {
@@ -123,7 +122,11 @@ const GradeTrackingRecoveryPage = ({ token }) => {
     setSmsCode('');
     setSmsSent(false);
     try {
-      const result = await startGradeTrackingRecovery(token);
+      const result = await startAuthRecovery(token);
+      if (result.status === 'sms_required') {
+        enterSMSStage(result);
+        return;
+      }
       setFlow(result);
       setCountdown(result.expires_in, 300);
       setStage('qr_pending');
@@ -133,11 +136,11 @@ const GradeTrackingRecoveryPage = ({ token }) => {
       setStage(error.response?.status === 404 ? 'invalid' : 'error');
       setMessage(recoveryErrorMessage(error, '暂时无法创建二维码，请稍后重试'));
     }
-  }, [beginPolling, setCountdown, stopPolling, token]);
+  }, [beginPolling, enterSMSStage, setCountdown, stopPolling, token]);
 
   const restore = useCallback(async () => {
     try {
-      const result = await getGradeTrackingRecoveryStatus(token);
+      const result = await getAuthRecoveryStatus(token);
       if (result.status === 'ready' || result.status === 'not_started') {
         await start();
       } else if (['qr_pending', 'pending'].includes(result.status)) {
@@ -189,7 +192,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
     setCaptchaLoading(true);
     setAuthError('');
     try {
-      const result = await refreshGradeTrackingRecoveryCaptcha(token);
+      const result = await refreshAuthRecoveryCaptcha(token);
       setFlow((current) => ({ ...current, ...result }));
       setCountdown(result.expires_in, 300);
       setCaptchaCode('');
@@ -210,7 +213,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
     setActionLoading(true);
     setAuthError('');
     try {
-      const result = await sendGradeTrackingRecoverySMS(token, captchaCode.trim());
+      const result = await sendAuthRecoverySMS(token, captchaCode.trim());
       if (result.status === 'captcha_invalid') {
         setFlow((current) => ({ ...current, ...result }));
         setCaptchaCode('');
@@ -242,7 +245,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
     setActionLoading(true);
     setAuthError('');
     try {
-      const result = await verifyGradeTrackingRecoverySMS(token, smsCode.trim());
+      const result = await verifyAuthRecoverySMS(token, smsCode.trim());
       if (result.status === 'authenticated') {
         finishAuthenticated();
         return;
@@ -262,29 +265,20 @@ const GradeTrackingRecoveryPage = ({ token }) => {
   };
 
   const restart = async () => {
-    try {
-      await cancelGradeTrackingRecovery(token);
-    } catch (error) {
-      if (error.response?.status === 404) {
-        setStage('invalid');
-        setMessage('一次性登录链接不存在或已经完成使用');
-        return;
-      }
-    }
     start();
   };
 
   return (
-    <main className="tracking-recovery-page">
-      <Card className="tracking-recovery-card">
-        <div className="tracking-recovery-brand">
+    <main className="auth-recovery-page">
+      <Card className="auth-recovery-card">
+        <div className="auth-recovery-brand">
           <span>NEU</span>
           <SafetyCertificateOutlined />
         </div>
-        <h1>恢复成绩追踪登录</h1>
+        <h1>恢复教务登录</h1>
 
         {stage === 'starting' && (
-          <div className="tracking-recovery-state">
+          <div className="auth-recovery-state">
             <Spin size="large" />
             <p>{message}</p>
           </div>
@@ -292,10 +286,10 @@ const GradeTrackingRecoveryPage = ({ token }) => {
 
         {stage === 'qr_pending' && (
           <>
-            <div className="tracking-recovery-qr">
+            <div className="auth-recovery-qr">
               <QRCode value={flow?.qr_content || ''} size={220} status="active" />
             </div>
-            <div className="tracking-recovery-countdown">
+            <div className="auth-recovery-countdown">
               <ClockCircleOutlined />
               本次二维码剩余 <strong>{formatCountdown(secondsLeft)}</strong>
             </div>
@@ -305,7 +299,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
 
         {stage === 'sms_required' && (
           <>
-            <div className="tracking-recovery-countdown is-sms">
+            <div className="auth-recovery-countdown is-sms">
               <ClockCircleOutlined />
               {secondsLeft > 0 ? (
                 <>预计有效时间 <strong>{formatCountdown(secondsLeft)}</strong></>
@@ -328,7 +322,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
               onSendSMS={sendSMS}
               onVerify={verifySMS}
             />
-            <div className="tracking-recovery-sms-actions">
+            <div className="auth-recovery-sms-actions">
               <Button onClick={restart}>重新开始登录</Button>
               <Button
                 type="primary"
@@ -343,7 +337,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
         )}
 
         {stage === 'authenticated' && (
-          <div className="tracking-recovery-result is-success">
+          <div className="auth-recovery-result is-success">
             <CheckCircleOutlined />
             <h2>登录已恢复</h2>
             <p>{message}</p>
@@ -352,7 +346,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
         )}
 
         {['expired', 'error'].includes(stage) && (
-          <div className="tracking-recovery-result">
+          <div className="auth-recovery-result">
             <Alert type="warning" showIcon message={message} />
             <Button type="primary" icon={<ReloadOutlined />} onClick={restart}>
               重新开始登录
@@ -369,7 +363,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
           />
         )}
 
-        <p className="tracking-recovery-footnote">
+        <p className="auth-recovery-footnote">
           一次性页面会连续完成扫码和学校要求的短信二次认证；验证码不会自动填写或发送。
           登录成功后链接立即失效，请勿转发当前页面地址。
         </p>
@@ -378,4 +372,4 @@ const GradeTrackingRecoveryPage = ({ token }) => {
   );
 };
 
-export default GradeTrackingRecoveryPage;
+export default AuthRecoveryPage;
