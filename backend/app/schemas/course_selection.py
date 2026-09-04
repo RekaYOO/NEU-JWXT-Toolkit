@@ -165,9 +165,14 @@ class JwxkStatusResponse(StrictModel):
     effective_network_mode: Literal["direct", "webvpn"]
     cas_service: str
     primary_authenticated: bool = False
+    current_user: str = ""
     service_authenticated: bool = False
     authenticated: bool = False
-    service_auth_state: Literal["authenticated", "login_required", "unavailable"] = "unavailable"
+    service_auth_state: Literal[
+        "authenticated", "login_required", "network_unreachable",
+        "not_in_selection_round", "campus_network_blocked", "service_unavailable",
+        "checking", "unavailable",
+    ] = "service_unavailable"
     official_time: str = ""
     online_count: int | None = None
     current_campus: str = ""

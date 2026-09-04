@@ -248,8 +248,11 @@ export const login = async (username, password, remember = false, networkMode = 
   return response.data;
 };
 
-export const startWebVPNQRLogin = async (username = '') => {
-  const response = await api.post('/api/webvpn/qr/start', { username: username || null });
+export const startWebVPNQRLogin = async (username = '', targetService = 'primary') => {
+  const response = await api.post('/api/webvpn/qr/start', {
+    username: username || null,
+    target_service: targetService,
+  });
   return response.data;
 };
 
@@ -263,8 +266,10 @@ export const cancelWebVPNQRLogin = async (flowId) => {
   return response.data;
 };
 
-export const startWebVPNPasswordLogin = async (username, password, remember = false) => {
-  const response = await api.post('/api/webvpn/password/start', { username, password, remember });
+export const startWebVPNPasswordLogin = async (username, password, remember = false, targetService = 'primary') => {
+  const response = await api.post('/api/webvpn/password/start', {
+    username, password, remember, target_service: targetService,
+  });
   return response.data;
 };
 
@@ -960,13 +965,15 @@ export const getUserInfo = async () => {
 /**
  * 获取用户头像图片
  * @param {boolean} refresh - 是否强制刷新
- * @returns {Blob} 头像图片数据
+ * @returns {Promise<Blob|null>} 头像图片数据；学校暂无头像时返回 null
  */
 export const getUserAvatar = async (refresh = false) => {
   const response = await api.get('/api/user/avatar', {
     params: { refresh },
-    responseType: 'blob'
+    responseType: 'blob',
+    timeout: refresh ? 12000 : 8000,
   });
+  if (response.status === 204 || response.headers?.['x-avatar-unavailable'] === 'true') return null;
   return response.data;
 };
 
@@ -1149,6 +1156,7 @@ export const checkScheduleConflicts = async (data) => {
 export const getJwxkStatus = async (config = {}) => {
   const response = await api.get('/api/course-selection/jwxk/status', {
     authRecoveryScope: 'jwxk',
+    timeout: 10000,
     ...config,
   });
   return response.data;
@@ -1157,6 +1165,9 @@ export const getJwxkStatus = async (config = {}) => {
 export const updateJwxkSettings = async (networkMode) => {
   const response = await api.put('/api/course-selection/jwxk/settings', {
     network_mode: networkMode,
+  }, {
+    params: { probe: false },
+    timeout: 5000,
   });
   return response.data;
 };

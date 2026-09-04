@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Card, Checkbox, Col, Divider, Empty, Input, InputNumber, Modal, QRCode, Radio, Row, Select, Space, Spin, Tag, Typography, message } from 'antd';
-import { ClockCircleOutlined, DeleteOutlined, HistoryOutlined, QrcodeOutlined, QuestionCircleOutlined, ReloadOutlined, SafetyOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, DeleteOutlined, HistoryOutlined, LockOutlined, QrcodeOutlined, QuestionCircleOutlined, ReloadOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import {
@@ -8,7 +8,7 @@ import {
   getJwxkStatus, updateJwxkSettings,
   getJwxkAutomationSettings, updateJwxkAutomationSettings,
   syncJwxkAutomationTaskTimes,
-  startWebVPNQRLogin, getWebVPNQRStatus, cancelWebVPNQRLogin,
+  startWebVPNQRLogin, getWebVPNQRStatus, cancelWebVPNQRLogin, startWebVPNPasswordLogin,
   refreshWebVPNCaptcha, sendWebVPNSMSCode, verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
   getWebVPNErrorMessage, isWebVPNFlowInvalid, isWebVPNCampusNetworkBlocked,
 } from '../services/api';
@@ -35,6 +35,7 @@ const CourseSelectionPage = () => {
   const [archives, setArchives] = useState([]);
   const [archiveDetail, setArchiveDetail] = useState(null);
   const [archiveCampus, setArchiveCampus] = useState('all');
+  const statusRequestGeneration = useRef(0);
   const [automationBatch, setAutomationBatch] = useState(null);
   const [automationSettings, setAutomationSettings] = useState(null);
   const [automationLoading, setAutomationLoading] = useState(false);
@@ -44,6 +45,10 @@ const CourseSelectionPage = () => {
   const [webvpnQrFlow, setWebvpnQrFlow] = useState(null);
   const [webvpnQrLoading, setWebvpnQrLoading] = useState(false);
   const [webvpnQrMessage, setWebvpnQrMessage] = useState('');
+  const [webvpnLoginView, setWebvpnLoginView] = useState('password');
+  const [webvpnUsername, setWebvpnUsername] = useState('');
+  const [webvpnPassword, setWebvpnPassword] = useState('');
+  const [webvpnRemember, setWebvpnRemember] = useState(false);
   const [webvpnSmsFlow, setWebvpnSmsFlow] = useState(null);
   const [webvpnCaptchaCode, setWebvpnCaptchaCode] = useState('');
   const [webvpnSmsCode, setWebvpnSmsCode] = useState('');
@@ -66,18 +71,48 @@ const CourseSelectionPage = () => {
     return true;
   }, []);
 
-  const selectCampusNetworkRoute = async networkMode => {
+  const changeJwxkNetworkMode = async networkMode => {
+    const generation = ++statusRequestGeneration.current;
+    setStatus(current => current ? {
+      ...current,
+      network_mode: networkMode,
+      effective_network_mode: networkMode === 'follow'
+        ? current.effective_network_mode
+        : networkMode,
+      service_authenticated: false,
+      authenticated: false,
+      service_auth_state: 'service_unavailable',
+      error_code: null,
+      message: `正在核验${networkMode === 'webvpn' ? ' WebVPN' : networkMode === 'direct' ? '直连' : '跟随教务'}线路…`,
+    } : current);
     setSaving(true);
     try {
-      setStatus(await updateJwxkSettings(networkMode));
+      const saved = await updateJwxkSettings(networkMode);
+      if (generation !== statusRequestGeneration.current) return;
+      setStatus(current => ({
+        ...current,
+        ...saved,
+        batches: current?.batches?.length ? current.batches : (saved.batches || []),
+      }));
       setWebvpnQrMessage('');
-      message.success(networkMode === 'direct' ? '选课线路已切换为直连' : '选课线路已改为跟随教务');
-    } catch (error) {
-      message.error(error.message || '保存线路设置失败');
-    } finally {
+      message.success(
+        networkMode === 'direct'
+          ? '选课线路已切换为直连'
+          : networkMode === 'webvpn'
+            ? '选课线路已切换为 WebVPN'
+            : '选课线路已改为跟随教务',
+      );
       setSaving(false);
+      await load();
+    } catch (error) {
+      if (generation !== statusRequestGeneration.current) return;
+      message.error(error.message || '线路设置已提交，但可用性核验失败，请刷新确认');
+    } finally {
+      if (generation === statusRequestGeneration.current) setSaving(false);
     }
   };
+
+  const selectCampusNetworkRoute = changeJwxkNetworkMode;
 
   const promptTaskTimeSync = changes => Modal.confirm({
     title: '官方选课轮次时间已变更',
@@ -117,6 +152,7 @@ const CourseSelectionPage = () => {
   });
 
   const load = async ({ manual = false } = {}) => {
+    const generation = ++statusRequestGeneration.current;
     setLoading(true);
     let timeChanges = [];
     const archivesRequest = getJwxkCatalogArchives()
@@ -124,14 +160,30 @@ const CourseSelectionPage = () => {
       .catch(() => setArchives([]));
     try {
       const nextStatus = await getJwxkStatus();
+      if (generation !== statusRequestGeneration.current) return;
       if (manual) {
         timeChanges = changedOfficialBatchTimes(status?.batches || [], nextStatus.batches || []);
       }
       setStatus(nextStatus);
+      if (!webvpnUsername && nextStatus.current_user) setWebvpnUsername(nextStatus.current_user);
     }
-    catch (error) { message.error(error.message || '读取选课批次失败'); }
+    catch (error) {
+      if (generation !== statusRequestGeneration.current) return;
+      const timedOut = error?.code === 'ECONNABORTED';
+      if (timedOut) {
+        setStatus(current => current ? {
+          ...current,
+          service_authenticated: false,
+          authenticated: false,
+          service_auth_state: 'service_unavailable',
+          message: '选课系统状态核验超时，已保留历史工作台；请稍后重试或切换线路。',
+          error_code: 'JWXK_STATUS_TIMEOUT',
+        } : current);
+      }
+      message.error(timedOut ? '选课系统状态核验超时，已保留历史工作台' : (error.message || '读取选课批次失败'));
+    }
     finally {
-      setLoading(false);
+      if (generation === statusRequestGeneration.current) setLoading(false);
       await archivesRequest;
     }
     if (timeChanges.length) promptTaskTimeSync(timeChanges);
@@ -177,11 +229,12 @@ const CourseSelectionPage = () => {
   }, [handleWebvpnCampusBlock, webvpnQrFlow]);
 
   const openWebvpnQrLogin = async () => {
+    setWebvpnLoginView('qr');
     setWebvpnLoginOpen(true);
     setWebvpnQrMessage('');
     setWebvpnQrLoading(true);
     try {
-      const result = await startWebVPNQRLogin('');
+      const result = await startWebVPNQRLogin(status?.current_user || webvpnUsername || '', 'jwxk');
       if (handleWebvpnCampusBlock(result)) return;
       if (!result.success) throw new Error(result.message || '无法获取二维码');
       setWebvpnQrFlow(result);
@@ -199,6 +252,47 @@ const CourseSelectionPage = () => {
     setWebvpnLoginOpen(false);
     setWebvpnQrMessage('');
     if (flowId) await cancelWebVPNQRLogin(flowId).catch(() => {});
+  };
+
+  const openWebvpnPasswordLogin = async () => {
+    const qrFlowId = webvpnQrFlow?.flow_id;
+    setWebvpnQrFlow(null);
+    setWebvpnLoginView('password');
+    setWebvpnUsername(previous => previous || status?.current_user || '');
+    setWebvpnLoginOpen(true);
+    setWebvpnQrMessage('');
+    if (qrFlowId) await cancelWebVPNQRLogin(qrFlowId).catch(() => {});
+  };
+
+  const submitWebvpnPasswordLogin = async () => {
+    if (!webvpnUsername.trim() || !webvpnPassword) {
+      message.warning('请填写学号和密码');
+      return;
+    }
+    setWebvpnQrLoading(true);
+    try {
+      const result = await startWebVPNPasswordLogin(
+        webvpnUsername.trim(), webvpnPassword, webvpnRemember, 'jwxk',
+      );
+      if (handleWebvpnCampusBlock(result)) return;
+      if (!result.success) throw new Error(getWebVPNErrorMessage(result, 'WebVPN 登录失败'));
+      if (result.status === 'sms_required') {
+        setWebvpnLoginOpen(false);
+        setWebvpnSmsFlow(result);
+        setWebvpnCaptchaCode('');
+        setWebvpnSmsCode('');
+        setWebvpnSmsSent(false);
+        return;
+      }
+      setWebvpnLoginOpen(false);
+      setWebvpnPassword('');
+      message.success('WebVPN 登录已恢复，正在核验选课系统');
+      await load();
+    } catch (error) {
+      if (!handleWebvpnCampusBlock(error)) setWebvpnQrMessage(getWebVPNErrorMessage(error, 'WebVPN 登录失败'));
+    } finally {
+      setWebvpnQrLoading(false);
+    }
   };
 
   const refreshWebvpnCaptcha = async () => {
@@ -286,6 +380,8 @@ const CourseSelectionPage = () => {
     (status?.batches || []).forEach(batch => (result[batch.state] || result.unknown).push(batch));
     return result;
   }, [status]);
+  const serviceAlertType = ['campus_network_blocked', 'network_unreachable', 'service_unavailable']
+    .includes(status?.service_auth_state) ? 'error' : 'warning';
 
   const enter = async batch => {
     if (batch.need_confirm && !batch.confirmed) {
@@ -362,15 +458,13 @@ const CourseSelectionPage = () => {
       <Alert showIcon type="info" icon={<SafetyOutlined />} message="课程和批次状态实时读取" description="登录状态失效时，页面会引导你重新登录选课系统。" />
       <Card className="course-selection-settings" title="选课系统线路">
         <div className="course-selection-settings__body">
-          <Radio.Group value={status?.network_mode || 'follow'} disabled={saving} onChange={async event => {
-            setSaving(true);
-            try { setStatus(await updateJwxkSettings(event.target.value)); }
-            catch (error) { message.error(error.message || '保存线路设置失败'); }
-            finally { setSaving(false); }
-          }}>
+          <Radio.Group value={status?.network_mode || 'follow'} disabled={saving} onChange={event => changeJwxkNetworkMode(event.target.value)}>
             <Radio.Button value="follow">跟随教务</Radio.Button><Radio.Button value="direct">直连</Radio.Button><Radio.Button value="webvpn">WebVPN</Radio.Button>
           </Radio.Group>
-          <Text type="secondary">当前有效线路：{status?.effective_network_mode === 'webvpn' ? 'WebVPN' : '直连'}</Text>
+          <Text type="secondary">
+            当前有效线路：{status?.effective_network_mode === 'webvpn' ? 'WebVPN' : '直连'}
+            {saving || status?.service_auth_state === 'checking' ? '（正在核验）' : ''}
+          </Text>
         </div>
       </Card>
       {webvpnQrMessage && !webvpnLoginOpen && (
@@ -387,25 +481,28 @@ const CourseSelectionPage = () => {
       )}
       {!loading && !status?.service_authenticated && (
         <Alert
-          type={isWebVPNCampusNetworkBlocked(status) ? 'error' : 'warning'}
+          type={saving ? 'info' : (isWebVPNCampusNetworkBlocked(status) ? 'error' : serviceAlertType)}
           showIcon
           message={status?.message || '请先完成登录'}
-          action={isWebVPNCampusNetworkBlocked(status) ? (
+          action={saving ? null : isWebVPNCampusNetworkBlocked(status) || status?.service_auth_state === 'campus_network_blocked' ? (
             <Space wrap>
               <Button size="small" type="primary" loading={saving} onClick={() => selectCampusNetworkRoute('direct')}>切换为直连</Button>
               <Button size="small" loading={saving} onClick={() => selectCampusNetworkRoute('follow')}>跟随教务</Button>
             </Space>
           ) : status?.service_auth_state === 'login_required' ? (
-            <Button size="small" type="primary" icon={<QrcodeOutlined />} onClick={openWebvpnQrLogin}>
-              扫码登录 WebVPN
-            </Button>
+            <Space wrap>
+              <Button size="small" type="primary" icon={<LockOutlined />} onClick={openWebvpnPasswordLogin}>账号密码恢复</Button>
+              <Button size="small" icon={<QrcodeOutlined />} onClick={openWebvpnQrLogin}>微信扫码恢复</Button>
+            </Space>
+          ) : status?.service_auth_state === 'network_unreachable' && status?.effective_network_mode === 'direct' ? (
+            <Button size="small" type="primary" onClick={() => selectCampusNetworkRoute('webvpn')}>切换 WebVPN</Button>
           ) : (
             <Button size="small" onClick={() => load({ manual: true })}>重新检查</Button>
           )}
           description={isWebVPNCampusNetworkBlocked(status)
             ? '校园网会由学校网关直接拒绝 WebVPN 请求；系统不会继续扫码、短信验证或自动重放选课操作。'
-            : status?.service_auth_state === 'login_required'
-              ? '选课线路已切换为 WebVPN。完成登录后返回本页并刷新，即可读取账号轮次和课程。'
+            : status?.service_auth_state === 'login_required' && status?.primary_authenticated
+              ? '教务主登录仍然有效；这里只恢复选课系统所需的 WebVPN 会话，完成后会自动核验 JWXK。'
               : undefined}
         />
       )}
@@ -416,12 +513,21 @@ const CourseSelectionPage = () => {
         onCancel={closeWebvpnQrLogin}
         destroyOnHidden
       >
-        <div style={{ minHeight: 250, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+        <div className="course-selection-webvpn-login">
           {webvpnQrMessage && <Alert type="warning" showIcon message={webvpnQrMessage} style={{ width: '100%' }} />}
-          {webvpnQrFlow?.qr_content ? (
+          {webvpnLoginView === 'password' ? (
+            <>
+              <Input prefix={<UserOutlined />} value={webvpnUsername} onChange={event => setWebvpnUsername(event.target.value)} placeholder="学号" autoComplete="section-jwxk-webvpn username" />
+              <Input.Password prefix={<LockOutlined />} value={webvpnPassword} onChange={event => setWebvpnPassword(event.target.value)} placeholder="密码" autoComplete="section-jwxk-webvpn current-password" onPressEnter={submitWebvpnPasswordLogin} />
+              <Checkbox checked={webvpnRemember} onChange={event => setWebvpnRemember(event.target.checked)}>记住密码（本地保存）</Checkbox>
+              <Button type="primary" block loading={webvpnQrLoading} onClick={submitWebvpnPasswordLogin}>恢复 WebVPN 登录</Button>
+              <Button type="link" icon={<QrcodeOutlined />} onClick={openWebvpnQrLogin}>改用微信扫码</Button>
+            </>
+          ) : webvpnQrFlow?.qr_content ? (
             <>
               <QRCode value={webvpnQrFlow.qr_content} size={210} status="active" />
               <Text type="secondary">使用已关注东北大学微信企业号的微信扫码</Text>
+              <Button type="link" onClick={openWebvpnPasswordLogin}>返回账号密码恢复</Button>
             </>
           ) : (
             <Button type="primary" icon={<QrcodeOutlined />} loading={webvpnQrLoading} onClick={openWebvpnQrLogin}>

@@ -182,9 +182,11 @@ const MainLayout = ({
           if (cached?.blob) await writeBrowserAvatarCache(String(userInfo || ''), cached);
         } catch (_error) { /* freshly displayed avatar remains usable */ }
         message.success('头像已更新');
+      } else {
+        message.info('学校暂未返回头像，已保留当前显示');
       }
     } catch (error) {
-      message.error('头像更新失败');
+      message.error(error?.code === 'ECONNABORTED' ? '头像刷新超时，已保留当前显示' : '头像更新失败');
     } finally {
       setIsRefreshingAvatar(false);
     }

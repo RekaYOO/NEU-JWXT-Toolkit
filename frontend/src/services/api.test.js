@@ -54,6 +54,48 @@ describe('JWXK automation settings API', () => {
       },
     );
   });
+
+  test('targets JWXK for in-page WebVPN password and QR recovery', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.post.mockResolvedValue({ data: { success: true, status: 'pending' } });
+
+    await apiModule.startWebVPNQRLogin('20250001', 'jwxk');
+    await apiModule.startWebVPNPasswordLogin('20250001', 'secret', true, 'jwxk');
+
+    expect(client.post).toHaveBeenNthCalledWith(1, '/api/webvpn/qr/start', {
+      username: '20250001', target_service: 'jwxk',
+    });
+    expect(client.post).toHaveBeenNthCalledWith(2, '/api/webvpn/password/start', {
+      username: '20250001', password: 'secret', remember: true, target_service: 'jwxk',
+    });
+  });
+
+  test('saves the JWXK route locally before starting a separate short probe', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.put.mockResolvedValue({ data: { service_auth_state: 'checking' } });
+
+    await apiModule.updateJwxkSettings('follow');
+
+    expect(client.put).toHaveBeenCalledWith(
+      '/api/course-selection/jwxk/settings',
+      { network_mode: 'follow' },
+      { params: { probe: false }, timeout: 5000 },
+    );
+  });
+
+  test('treats an unavailable avatar as an empty optional resource', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.get.mockResolvedValue({
+      status: 204,
+      headers: { 'x-avatar-unavailable': 'true' },
+      data: new Blob([]),
+    });
+
+    await expect(apiModule.getUserAvatar(true)).resolves.toBeNull();
+    expect(client.get).toHaveBeenCalledWith('/api/user/avatar', {
+      params: { refresh: true }, responseType: 'blob', timeout: 12000,
+    });
+  });
 });
 
 describe('WebVPN error compatibility helpers', () => {

@@ -263,7 +263,11 @@ def start_webvpn_qr_login(request: WebVPNQRStartRequest):
                 network_mode="webvpn",
                 restore_session=False,
             )
-            flow = client.start_webvpn_qr_login()
+            flow = (
+                client.start_webvpn_qr_login(target_service="jwxk")
+                if request.target_service == "jwxk"
+                else client.start_webvpn_qr_login()
+            )
             set_pending_auth_client(client)
         log_security_event(
             "webvpn_qr_login",
@@ -332,9 +336,15 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
                 )
             result = client.poll_webvpn_qr_login(request.flow_id)
             if result.get("status") == "authenticated":
+                target_service = str(result.get("target_service") or "primary")
                 clear_pending_auth_client(client)
-                set_auth_client(client, force_epoch=True)
-                schedule_login_bootstrap(client)
+                if target_service == "jwxk":
+                    _commit_webvpn_login(
+                        client, target_service="jwxk", remember=False,
+                    )
+                else:
+                    set_auth_client(client, force_epoch=True)
+                    schedule_login_bootstrap(client)
                 log_security_event(
                     "webvpn_qr_login",
                     "success",
@@ -421,6 +431,25 @@ def _save_webvpn_password_login(client: NEUAuthClient, remember: bool) -> None:
         _auto_login.save_login(client)
 
 
+def _commit_webvpn_login(
+    client: NEUAuthClient, *, target_service: str, remember: bool,
+) -> None:
+    """Commit a primary login or merge a JWXK-only gateway recovery."""
+    if target_service != "jwxk":
+        _save_webvpn_password_login(client, remember)
+        return
+    active = peek_auth_client()
+    if active is None or not getattr(active, "is_logged_in", False):
+        raise WebVPNLoginError(
+            "当前教务登录已失效，请先重新登录系统",
+            error_code=WEBVPN_ERR_SESSION_ESTABLISH,
+        )
+    active.adopt_webvpn_gateway_session(client)
+    if remember and getattr(client, "password", ""):
+        active.password = client.password
+        _auto_login.save_login(active)
+
+
 @router.post("/api/webvpn/password/start")
 def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
     """Start real WebVPN password login and return an SMS challenge when required."""
@@ -433,9 +462,17 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
                 network_mode="webvpn",
                 restore_session=False,
             )
-            result = client.start_webvpn_password_login()
+            result = (
+                client.start_webvpn_password_login(target_service="jwxk")
+                if request.target_service == "jwxk"
+                else client.start_webvpn_password_login()
+            )
             if result["status"] == "authenticated":
-                _save_webvpn_password_login(client, request.remember)
+                _commit_webvpn_login(
+                    client,
+                    target_service=request.target_service,
+                    remember=request.remember,
+                )
                 log_security_event(
                     "webvpn_password_login",
                     "success",
@@ -589,7 +626,9 @@ def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
             status="missing",
         )
     try:
-        remember = bool((client._webvpn_sms_flow or {}).get("remember"))
+        flow = client._webvpn_sms_flow or {}
+        remember = bool(flow.get("remember"))
+        target_service = str(flow.get("target_service") or "primary")
         with remote_session_guard():
             if client is not peek_auth_client() and client is not peek_pending_auth_client():
                 log_security_event(
@@ -607,7 +646,11 @@ def verify_webvpn_sms_code(request: WebVPNSMSVerifyRequest):
             if result.get("status") == "authenticated":
                 if peek_pending_auth_client() is client:
                     clear_pending_auth_client(client)
-                _save_webvpn_password_login(client, remember)
+                _commit_webvpn_login(
+                    client,
+                    target_service=target_service,
+                    remember=remember,
+                )
         if result.get("status") != "authenticated":
             return {
                 "success": False,

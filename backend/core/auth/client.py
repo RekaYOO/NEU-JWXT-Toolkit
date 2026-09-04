@@ -108,6 +108,13 @@ SERVICE_CONFIGS = {
             "/xsxk/web/now",
             "/xsxk/web/studentInfo",
         ),
+        "access_denied_markers": (
+            {
+                "markers": ("学生不在选课轮次中", "暂时不能登录"),
+                "error_code": "JWXK_NOT_IN_SELECTION_ROUND",
+                "message": "当前账号不在学校开放的选课轮次中，暂时不能进入选课系统。",
+            },
+        ),
     },
 }
 
@@ -361,6 +368,15 @@ class WebVPNLoginError(NEULoginError):
 
 class DirectAccessError(NEULoginError):
     """A direct-campus request could not reach the academic system."""
+
+
+class ServiceAccessError(NEULoginError):
+    """The campus identity is valid, but the business system denied access."""
+
+    def __init__(self, message: str, *, service: str, error_code: str):
+        super().__init__(message)
+        self.service = service
+        self.error_code = error_code
 
 
 class NEUAuthClient:
@@ -691,7 +707,9 @@ class NEUAuthClient:
             if cookie.domain.lstrip(".").endswith("neu.edu.cn")
         ]
 
-    def start_webvpn_qr_login(self, expires_in: int = 180) -> Dict[str, Any]:
+    def start_webvpn_qr_login(
+        self, expires_in: int = 180, *, target_service: str = "primary",
+    ) -> Dict[str, Any]:
         """Create a QR login flow bound to this client's requests session."""
         expires_in = max(60, min(int(expires_in), 600))
         self.active_mode = "webvpn"
@@ -730,6 +748,7 @@ class NEUAuthClient:
             "qr_status_url": f"{CAS_BASE_URL}/checkQRCodeScan",
             "login_page_url": direct_login_url,
             "expires_at": time.time() + expires_in,
+            "target_service": target_service if target_service == "jwxk" else "primary",
         }
         return {
             "flow_id": self._webvpn_qr_flow["id"],
@@ -841,6 +860,7 @@ class NEUAuthClient:
                 challenge,
                 source="qr",
                 remember=False,
+                target_service=str(flow.get("target_service") or "primary"),
             )
             return result
         self._sync_cas_cookie_to_webvpn(flow)
@@ -848,13 +868,24 @@ class NEUAuthClient:
         # WebVPN may leave the browser on its proxied CAS page even after it
         # has issued the gateway ticket cookie.  The actual success criterion
         # is whether that cookie can establish the target JWXT session.
-        if not self._webvpn_health_check(flow):
-            raise WebVPNLoginError("扫码已完成，但未能建立教务系统会话", error_code=WEBVPN_ERR_SESSION_ESTABLISH)
+        target_service = str(flow.get("target_service") or "primary")
+        target = self._verify_webvpn_login_target(target_service, flow)
+        if not target["authenticated"]:
+            message = (
+                "扫码已完成，但未能建立选课系统的 WebVPN 会话"
+                if target_service == "jwxk"
+                else "扫码已完成，但未能建立教务系统会话"
+            )
+            raise WebVPNLoginError(message, error_code=WEBVPN_ERR_SESSION_ESTABLISH)
 
         self._logged_in = True
         self._webvpn_qr_flow = None
         self._save_cookies()
-        return {"status": "authenticated", "username": self.username or None}
+        return {
+            "status": "authenticated", "username": self.username or None,
+            "target_service": target_service,
+            "service_auth_state": target.get("service_auth_state", "authenticated"),
+        }
 
     def cancel_webvpn_qr_login(self, flow_id: Optional[str] = None) -> None:
         if self._webvpn_qr_flow and (flow_id is None or self._webvpn_qr_flow["id"] == flow_id):
@@ -987,6 +1018,7 @@ class NEUAuthClient:
         *,
         source: str,
         remember: bool = False,
+        target_service: str = "primary",
     ) -> Dict[str, Any]:
         flow = {
             "id": str(uuid.uuid4()),
@@ -997,6 +1029,7 @@ class NEUAuthClient:
             "hidden_fields": dict(challenge.get("hidden_fields") or {}),
             "expires_at": time.time() + 180,
             "remember": bool(remember),
+            "target_service": target_service if target_service == "jwxk" else "primary",
         }
         self._webvpn_sms_flow = flow
         result = self._fetch_webvpn_captcha(flow)
@@ -1020,7 +1053,7 @@ class NEUAuthClient:
             raise WebVPNLoginError("短信验证码登录已过期，请重新输入账号密码", error_code=WEBVPN_ERR_FLOW_EXPIRED)
         return flow
 
-    def start_webvpn_password_login(self) -> Dict[str, Any]:
+    def start_webvpn_password_login(self, *, target_service: str = "primary") -> Dict[str, Any]:
         """Submit the real proxied CAS form and detect WebVPN device verification."""
         self.active_mode = "webvpn"
         self._webvpn_sms_flow = None
@@ -1057,6 +1090,7 @@ class NEUAuthClient:
                     challenge,
                     source="password",
                     remember=False,
+                    target_service=target_service,
                 )
 
             if self._is_webvpn_login_url(response.url):
@@ -1068,11 +1102,21 @@ class NEUAuthClient:
                 )
 
             self._sync_cas_cookie_to_webvpn({})
-            if not self._webvpn_health_check():
-                raise WebVPNLoginError("账号认证完成，但未能建立教务系统会话", error_code=WEBVPN_ERR_SESSION_ESTABLISH)
+            target = self._verify_webvpn_login_target(target_service)
+            if not target["authenticated"]:
+                message = (
+                    "账号认证完成，但未能建立选课系统的 WebVPN 会话"
+                    if target_service == "jwxk"
+                    else "账号认证完成，但未能建立教务系统会话"
+                )
+                raise WebVPNLoginError(message, error_code=WEBVPN_ERR_SESSION_ESTABLISH)
             self._logged_in = True
             self._save_cookies()
-            return {"status": "authenticated", "username": self.username or None}
+            return {
+                "status": "authenticated", "username": self.username or None,
+                "target_service": target_service,
+                "service_auth_state": target.get("service_auth_state", "authenticated"),
+            }
         except requests.exceptions.Timeout as error:
             raise WebVPNLoginError("WebVPN 登录请求超时，请检查网络或改用微信扫码快速登录", error_code=WEBVPN_ERR_UPSTREAM_TIMEOUT) from error
         except requests.RequestException as error:
@@ -1270,14 +1314,104 @@ class NEUAuthClient:
 
         try:
             self._sync_cas_cookie_to_webvpn({})
-            if not self._webvpn_health_check():
-                raise WebVPNLoginError("短信验证完成，但未能建立教务系统会话", error_code=WEBVPN_ERR_SESSION_ESTABLISH)
+            target_service = str(flow.get("target_service") or "primary")
+            target = self._verify_webvpn_login_target(target_service)
+            if not target["authenticated"]:
+                message = (
+                    "短信验证完成，但未能建立选课系统的 WebVPN 会话"
+                    if target_service == "jwxk"
+                    else "短信验证完成，但未能建立教务系统会话"
+                )
+                raise WebVPNLoginError(message, error_code=WEBVPN_ERR_SESSION_ESTABLISH)
         finally:
             self._webvpn_sms_flow = None
 
         self._logged_in = True
         self._save_cookies()
-        return {"status": "authenticated", "username": self.username or None, "message": "登录成功"}
+        return {
+            "status": "authenticated", "username": self.username or None,
+            "message": "登录成功", "target_service": target_service,
+            "service_auth_state": target.get("service_auth_state", "authenticated"),
+        }
+
+    def _verify_webvpn_login_target(
+        self, target_service: str, diagnostics: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Verify the service the foreground flow was opened for.
+
+        JWXK is a sibling CAS application.  A valid gateway login may reach an
+        official eligibility notice instead of JWXT's ``currentUser`` API;
+        that is a successful WebVPN identity with a denied JWXK business
+        scope, not a failed login.
+        """
+        if target_service != "jwxk":
+            return {"authenticated": self._webvpn_health_check(diagnostics)}
+        config = SERVICE_CONFIGS["jwxk"]
+        callback = self._service_route_url(config["service"], "webvpn")
+        try:
+            response = self._request_service_redirects(
+                "GET", callback, service_config=config, network_mode="webvpn",
+                timeout=self.timeout, verify=self.verify_ssl,
+            )
+            access_error = self._service_access_error(response, config, "jwxk")
+            service_token = None if access_error is not None else self.get_service_token(
+                "jwxk", network_mode="webvpn", request_path="/xsxk/web/now",
+            )
+            # This method runs only after the CAS/second-auth callback has
+            # completed.  JWXK availability is a separate service state: an
+            # outage or a public profile without a token must not turn a
+            # successfully submitted SMS code back into "login failed".
+            authenticated = True
+            if diagnostics is not None:
+                diagnostics["target_service"] = {
+                    "service": "jwxk",
+                    "status_code": response.status_code,
+                    "final": self._safe_url_metadata(response.url),
+                    "access_state": (
+                        getattr(access_error, "error_code", "") if access_error else "authenticated"
+                    ),
+                }
+            self._close_response_safely(response)
+            return {
+                "authenticated": authenticated,
+                "service_auth_state": (
+                    "not_in_selection_round" if access_error
+                    else "authenticated" if service_token
+                    else "service_unavailable"
+                ),
+            }
+        except NEULoginError as error:
+            if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
+                raise
+            return {"authenticated": True, "service_auth_state": "service_unavailable"}
+        except requests.RequestException:
+            return {"authenticated": True, "service_auth_state": "service_unavailable"}
+
+    def adopt_webvpn_gateway_session(self, candidate: "NEUAuthClient") -> None:
+        """Merge a foreground JWXK gateway login into an existing identity."""
+        if candidate is self:
+            self._save_cookies()
+            return
+        current_account = str(self.username or "")
+        candidate_account = str(candidate.username or current_account)
+        if current_account and candidate_account and current_account != candidate_account:
+            raise NEULoginError("WebVPN 登录账号与当前账号不一致")
+        for cookie in list(self._session.cookies):
+            if cookie.domain.lstrip(".") == "webvpn.neu.edu.cn":
+                try:
+                    self._session.cookies.clear(cookie.domain, cookie.path, cookie.name)
+                except KeyError:
+                    pass
+        for cookie in candidate.session.cookies:
+            if cookie.domain.lstrip(".") == "webvpn.neu.edu.cn":
+                self._session.cookies.set_cookie(cookie)
+        self._service_token_cache.update({
+            key: value for key, value in candidate._service_token_cache.items()
+            if key[1] == "webvpn"
+        })
+        if candidate.password and not self.password:
+            self.password = candidate.password
+        self._save_cookies()
 
     def cancel_webvpn_sms_login(self, flow_id: Optional[str] = None) -> None:
         if self._webvpn_sms_flow and (flow_id is None or self._webvpn_sms_flow["id"] == flow_id):
@@ -1605,6 +1739,10 @@ class NEUAuthClient:
         response = self._request_service_redirects(
             method, url, service_config=config, network_mode=network_mode, **request_options
         )
+        access_error = self._service_access_error(response, config, service)
+        if access_error is not None:
+            self._close_response_safely(response)
+            raise access_error
         if self._is_service_auth_required(
             response, config, network_mode, request_path=normalized_path,
         ) and retry_on_auth:
@@ -1625,6 +1763,10 @@ class NEUAuthClient:
             response = self._request_service_redirects(
                 method, url, service_config=config, network_mode=network_mode, **request_options
             )
+            access_error = self._service_access_error(response, config, service)
+            if access_error is not None:
+                self._close_response_safely(response)
+                raise access_error
         if self._is_service_auth_required(
             response, config, network_mode, request_path=normalized_path,
         ):
@@ -1637,6 +1779,27 @@ class NEUAuthClient:
             self._close_response_safely(response)
             raise NEULoginError("业务系统返回了不受信任的跳转地址")
         return response
+
+    @staticmethod
+    def _service_access_error(
+        response: requests.Response, config: Dict[str, Any], service: str,
+    ) -> Optional[ServiceAccessError]:
+        rules = config.get("access_denied_markers") or ()
+        if not rules:
+            return None
+        try:
+            body = re.sub(r"\s+", "", str(response.text or ""))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        for rule in rules:
+            markers = tuple(re.sub(r"\s+", "", str(item)) for item in rule.get("markers") or ())
+            if markers and all(marker in body for marker in markers):
+                return ServiceAccessError(
+                    str(rule.get("message") or "当前账号不能访问该业务系统"),
+                    service=service,
+                    error_code=str(rule.get("error_code") or "SERVICE_ACCESS_DENIED"),
+                )
+        return None
 
     @staticmethod
     def _service_auth_response_kind(response: requests.Response) -> str:
@@ -1823,7 +1986,7 @@ class NEUAuthClient:
             self.target = original_target
             self.active_mode = original_mode
 
-    def _login_webvpn_service_identity(self) -> Dict[str, Any]:
+    def _login_webvpn_service_identity(self, *, target_service: str = "primary") -> Dict[str, Any]:
         """Authenticate WebVPN without changing a direct primary login.
 
         A user may keep JWXT on the direct route while selecting WebVPN only
@@ -1841,7 +2004,7 @@ class NEUAuthClient:
             if cookie.domain.lstrip(".") != "webvpn.neu.edu.cn"
         ]
         try:
-            return self.start_webvpn_password_login()
+            return self.start_webvpn_password_login(target_service=target_service)
         finally:
             self.active_mode = original_mode
             for cookie in preserved:
@@ -1854,7 +2017,7 @@ class NEUAuthClient:
 
     def ensure_service_session(
         self, service: str, *, network_mode_override: Optional[str] = None,
-        force_refresh: bool = False,
+        force_refresh: bool = False, allow_identity_recovery: bool = True,
     ) -> bool:
         """Establish one business-system session from the shared CAS identity."""
         config = SERVICE_CONFIGS.get(service)
@@ -1885,6 +2048,10 @@ class NEUAuthClient:
                 timeout=self.timeout,
                 verify=self.verify_ssl,
             )
+            access_error = self._service_access_error(ticket_response, config, service)
+            if access_error is not None:
+                self._close_response_safely(ticket_response)
+                raise access_error
             established = (
                 self._is_service_destination(ticket_response.url, config, network_mode)
                 and not self._is_service_auth_required(ticket_response, config, network_mode)
@@ -1896,6 +2063,8 @@ class NEUAuthClient:
             try:
                 return establish()
             except NEULoginError as error:
+                if isinstance(error, ServiceAccessError):
+                    raise
                 if network_mode != "webvpn":
                     raise
                 if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
@@ -1924,9 +2093,14 @@ class NEUAuthClient:
                 request_path=token_probe_path,
             ))
         if not established:
+            if not allow_identity_recovery:
+                raise NEULoginError("业务系统会话需要重新认证")
             logger.info("跨系统 CAS 会话已过期，尝试恢复统一认证后重建业务会话...")
             cross_route_webvpn = (
                 network_mode == "webvpn" and self.active_mode != "webvpn"
+            )
+            cross_route_direct = (
+                network_mode == "direct" and self.active_mode != "direct"
             )
             webvpn_password_attempted = False
             identity_recovered = False
@@ -1938,7 +2112,7 @@ class NEUAuthClient:
             if cross_route_webvpn and self.username and self.password:
                 webvpn_password_attempted = True
                 try:
-                    webvpn_result = self._login_webvpn_service_identity()
+                    webvpn_result = self._login_webvpn_service_identity(target_service=service)
                 except NEULoginError as error:
                     if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
                         raise
@@ -1958,7 +2132,7 @@ class NEUAuthClient:
                     logger.info("WebVPN service recovery requires foreground CAPTCHA/SMS")
 
             primary_recovered = False
-            if not cross_route_webvpn:
+            if not cross_route_webvpn and not cross_route_direct:
                 primary_recovered = self.ensure_login()
                 identity_recovered = bool(primary_recovered)
             if primary_recovered:
@@ -1994,7 +2168,7 @@ class NEUAuthClient:
                 and not webvpn_password_attempted
             ):
                 try:
-                    webvpn_result = self._login_webvpn_service_identity()
+                    webvpn_result = self._login_webvpn_service_identity(target_service=service)
                 except NEULoginError as error:
                     if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
                         raise

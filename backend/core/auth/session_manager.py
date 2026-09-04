@@ -21,6 +21,9 @@ _REMOTE_PRIORITIES = {
     "tracking": 4,
 }
 
+_AUTH_RECOVERY_BASE_DELAY_SECONDS = 30.0
+_AUTH_RECOVERY_MAX_DELAY_SECONDS = 300.0
+
 
 class AuthSessionManager:
     """Own the active client, identity fencing and remote serialization."""
@@ -38,6 +41,10 @@ class AuthSessionManager:
         }
         self._remote_foreground_streak = 0
         self._remote_background_streak = 0
+        self._recovery_subject = ""
+        self._recovery_failures = 0
+        self._recovery_retry_at = 0.0
+        self._recovery_error_code = ""
 
     @contextmanager
     def remote_guard(
@@ -170,6 +177,8 @@ class AuthSessionManager:
             if force_epoch or self._client is not client:
                 self._identity_epoch += 1
             self._client = client
+            if client is not None and getattr(client, "is_logged_in", False):
+                self._clear_recovery_backoff_unlocked()
 
     def peek_client(self) -> Any | None:
         with self._state_lock:
@@ -196,6 +205,57 @@ class AuthSessionManager:
         with self._state_lock:
             return self._identity_epoch
 
+    def auth_recovery_allowed(self, subject: str | None = None) -> bool:
+        """Return whether another automatic login recovery may start now."""
+        normalized = str(subject or "")
+        with self._state_lock:
+            if normalized != self._recovery_subject:
+                self._clear_recovery_backoff_unlocked()
+            return time.monotonic() >= self._recovery_retry_at
+
+    def note_auth_recovery_failure(
+        self,
+        subject: str | None = None,
+        *,
+        error_code: str = "",
+    ) -> float:
+        """Record one exhausted recovery chain and return its cooldown."""
+        normalized = str(subject or "")
+        with self._state_lock:
+            if normalized != self._recovery_subject:
+                self._recovery_subject = normalized
+                self._recovery_failures = 0
+            self._recovery_failures += 1
+            delay = min(
+                _AUTH_RECOVERY_BASE_DELAY_SECONDS
+                * (2 ** min(self._recovery_failures - 1, 8)),
+                _AUTH_RECOVERY_MAX_DELAY_SECONDS,
+            )
+            self._recovery_retry_at = time.monotonic() + delay
+            self._recovery_error_code = str(error_code or "")
+            return delay
+
+    def clear_auth_recovery_backoff(self) -> None:
+        with self._state_lock:
+            self._clear_recovery_backoff_unlocked()
+
+    def auth_recovery_backoff(self) -> dict[str, float | int | str | bool]:
+        """Return a non-sensitive recovery cooldown snapshot."""
+        with self._state_lock:
+            remaining = max(0.0, self._recovery_retry_at - time.monotonic())
+            return {
+                "active": remaining > 0,
+                "retry_after_seconds": remaining,
+                "failures": self._recovery_failures,
+                "error_code": self._recovery_error_code,
+            }
+
+    def _clear_recovery_backoff_unlocked(self) -> None:
+        self._recovery_subject = ""
+        self._recovery_failures = 0
+        self._recovery_retry_at = 0.0
+        self._recovery_error_code = ""
+
     def is_current(self, epoch: int, account: str | None = None) -> bool:
         with self._state_lock:
             if epoch != self._identity_epoch:
@@ -220,6 +280,7 @@ class AuthSessionManager:
             self._identity_epoch += 1
             self._client = None
             self._pending_client = None
+            self._clear_recovery_backoff_unlocked()
             if cleanup and account:
                 cleanup(account)
             return account

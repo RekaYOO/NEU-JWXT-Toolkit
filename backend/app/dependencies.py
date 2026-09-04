@@ -4,6 +4,7 @@
 所有全局单例状态集中在此，供 routers 通过 FastAPI Depends 使用。
 """
 
+import json
 import os
 import time
 from contextlib import contextmanager
@@ -629,6 +630,23 @@ def peek_auth_client() -> Optional[NEUAuthClient]:
     return _auth_sessions.peek_client()
 
 
+def get_primary_network_mode_hint(
+    client: Optional[NEUAuthClient] = None,
+) -> str:
+    """Return the last locally confirmed primary route without remote I/O."""
+    source = client or _auth_sessions.peek_client()
+    mode = str(getattr(source, "active_mode", "") or "")
+    if mode in {"direct", "webvpn"}:
+        return mode
+    try:
+        with open(COOKIE_FILE, "r", encoding="utf-8") as file:
+            saved = json.load(file)
+        mode = str(saved.get("active_mode") or "") if isinstance(saved, dict) else ""
+    except (OSError, ValueError, TypeError):
+        mode = ""
+    return mode if mode in {"direct", "webvpn"} else "direct"
+
+
 def set_pending_auth_client(client: Optional[NEUAuthClient]) -> None:
     _auth_sessions.set_pending_client(client)
 
@@ -715,7 +733,6 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
     3. 尝试用保存的密码重新登录
     """
     global _last_auth_recovery_error_code
-    _last_auth_recovery_error_code = ""
     # An interactive candidate owns its requests.Session until it succeeds,
     # expires or is cancelled.  Do not create another password-login client
     # behind it: doing so replaces the CAPTCHA every few seconds and makes the
@@ -725,6 +742,30 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
     active_client = _auth_sessions.peek_client()
     if pending_client is not None:
         return active_client if active_client is not None and active_client.is_logged_in else None
+
+    # Resolve only local identity data before touching the school systems.
+    # Once one request exhausts the recovery chain, all page/status/cache
+    # callers share the manager cooldown instead of replaying the same Cookie
+    # and password login serially every few seconds.
+    saved_credentials = None
+    recovery_subject = str(getattr(active_client, "username", "") or "")
+    if not recovery_subject:
+        try:
+            saved_credentials = _storage.load_credentials()
+        except (OSError, ValueError, TypeError):
+            saved_credentials = None
+        if saved_credentials:
+            recovery_subject = str(saved_credentials[0] or "")
+    if not _auth_sessions.auth_recovery_allowed(recovery_subject):
+        return active_client if active_client is not None and active_client.is_logged_in else None
+
+    recovery_error_code = ""
+
+    def remember_failure(error: Exception) -> None:
+        nonlocal recovery_error_code
+        recovery_error_code = str(
+            getattr(error, "error_code", None) or recovery_error_code
+        )
 
     # 1. 检查内存中的客户端
     if active_client is not None:
@@ -742,6 +783,7 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
                 _last_auth_recovery_error_code = ""
                 return active_client
         except Exception as error:
+            remember_failure(error)
             _api_logger.warning(
                 "[Auth] 当前会话自动恢复失败: %s",
                 type(error).__name__,
@@ -759,6 +801,10 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
                 # not create more cookie/password clients in this same status
                 # check and repeat a request that cannot succeed.
                 _last_auth_recovery_error_code = WEBVPN_ERR_CAMPUS_NETWORK
+                _auth_sessions.note_auth_recovery_failure(
+                    recovery_subject,
+                    error_code=WEBVPN_ERR_CAMPUS_NETWORK,
+                )
                 return None
         # Do not clear the process-wide identity yet.  A transient probe or a
         # polluted requests.Session can still be repaired by a clean client
@@ -784,6 +830,7 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
             )
             return session_client
     except Exception as error:
+        remember_failure(error)
         _api_logger.warning(
             "[Auth] Cookie 会话自动恢复失败: %s",
             type(error).__name__,
@@ -797,10 +844,14 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
         )
         if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
             _last_auth_recovery_error_code = WEBVPN_ERR_CAMPUS_NETWORK
+            _auth_sessions.note_auth_recovery_failure(
+                recovery_subject,
+                error_code=WEBVPN_ERR_CAMPUS_NETWORK,
+            )
             return None
 
     # 3. 尝试加载保存的凭证并创建客户端
-    creds = _storage.load_credentials()
+    creds = saved_credentials if saved_credentials is not None else _storage.load_credentials()
     if creds:
         username, password = creds
         # 创建客户端时会自动尝试从 Cookie 文件恢复
@@ -830,6 +881,7 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
                 set_pending_auth_client(client)
                 return None
         except Exception as error:
+            remember_failure(error)
             _api_logger.warning(
                 "[Auth] 已保存账号密码自动恢复失败: %s",
                 type(error).__name__,
@@ -844,10 +896,23 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
             )
             if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
                 _last_auth_recovery_error_code = WEBVPN_ERR_CAMPUS_NETWORK
+                _auth_sessions.note_auth_recovery_failure(
+                    recovery_subject or username,
+                    error_code=WEBVPN_ERR_CAMPUS_NETWORK,
+                )
                 return None
 
     if active_client is not None:
         set_auth_client(None)
+    delay = _auth_sessions.note_auth_recovery_failure(
+        recovery_subject,
+        error_code=recovery_error_code,
+    )
+    _last_auth_recovery_error_code = recovery_error_code
+    _api_logger.info(
+        "[Auth] 自动恢复进入退避，%.0f 秒内不再重复登录",
+        delay,
+    )
     return None
 
 

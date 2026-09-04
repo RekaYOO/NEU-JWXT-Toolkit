@@ -44,10 +44,13 @@ def get_user_avatar(
                 reason="manual" if refresh else "page_swr",
             )
         if entry is None or refresh:
-            wait_for_job(submission.job_id if submission else None, timeout=30)
+            wait_for_job(submission.job_id if submission else None, timeout=8)
             entry, stale = read_cache(auth.username, "avatar")
         if entry is None:
-            raise HTTPException(status_code=404, detail="头像不存在")
+            return Response(
+                status_code=204,
+                headers={"X-Avatar-Unavailable": "true"},
+            )
         data = avatar_bytes(entry.payload)
         return Response(
             content=data,

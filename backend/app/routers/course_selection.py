@@ -46,15 +46,17 @@ from backend.app.schemas.course_selection import (
     JwxkAutomationTaskTimeSyncRequest,
 )
 from backend.app.dependencies import (
-    attach_saved_auth_credentials, get_storage, peek_auth_client, remote_session_guard, require_cached_auth_identity,
+    attach_saved_auth_credentials, get_primary_network_mode_hint, get_storage, peek_auth_client, remote_session_guard, require_cached_auth_identity,
     require_mutation_auth, require_serialized_auth,
     get_cache_coordinator,
     get_course_selection_automation_service,
     get_grade_tracker,
 )
 from backend.core.auth.client import (
+    DirectAccessError,
     NEUAuthClient,
     NEULoginError,
+    WebVPNRequiredError,
     WEBVPN_ERR_CAMPUS_NETWORK,
 )
 from backend.core.cache import mutation_policy
@@ -93,6 +95,7 @@ router = APIRouter(prefix="/course-selection", tags=["course-selection"])
 logger = logging.getLogger(__name__)
 _solver_slots = BoundedSemaphore(value=2)
 _JWXK_CONFIG_KEY = "course_selection"
+_JWXK_STATUS_TIMEOUT_SECONDS = 6
 _JWXK_SCOPE_NAMES = {
     "TJKC": "任务推荐班课程", "FANKC": "培养方案内课",
     "FAWKC": "培养方案外课程", "XGKC": "通识选修课",
@@ -109,27 +112,20 @@ def _catalog_query_cache_key(request: JwxkCatalogSearchRequest) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _automation_batch_metadata(account: str, batch_code: str, storage: Storage, auth: NEUAuthClient) -> dict[str, Any]:
-    archive = get_course_selection_automation_service().get_catalog_archive_view(account, batch_code) or {}
-    metadata = {
+def _automation_batch_metadata(account: str, batch_code: str) -> dict[str, Any]:
+    """Read automation display metadata without touching the school system."""
+    service = get_course_selection_automation_service()
+    metadata_reader = getattr(service, "get_catalog_archive_metadata", None)
+    archive = (
+        metadata_reader(account, batch_code)
+        if callable(metadata_reader)
+        else service.get_catalog_archive_view(account, batch_code)
+    ) or {}
+    return {
         "batch_name": str(archive.get("batch_name") or ""),
         "term_code": str(archive.get("term_code") or ""),
         "selection_type_code": str(archive.get("selection_type_code") or ""),
     }
-    if metadata["batch_name"] and metadata["selection_type_code"]:
-        return metadata
-    try:
-        context = _jwxk_mutation_client(auth, storage).get_context()
-        batch = next((item for item in context.get("batches") or [] if str(getattr(item, "code", "")) == batch_code), None)
-        if batch is not None:
-            metadata.update({
-                "batch_name": str(getattr(batch, "name", "") or metadata["batch_name"]),
-                "term_code": str(getattr(batch, "term_code", "") or metadata["term_code"]),
-                "selection_type_code": str(getattr(batch, "selection_type_code", "") or metadata["selection_type_code"]),
-            })
-    except Exception:
-        pass
-    return metadata
 
 
 @router.get("/jwxk/batches/{batch_code}/automation-settings", response_model=JwxkAutomationSettingsResponse)
@@ -140,7 +136,7 @@ def get_jwxk_automation_settings(
 ):
     if not batch_code or len(batch_code) > 64:
         raise HTTPException(status_code=422, detail="轮次编号无效")
-    metadata = _automation_batch_metadata(str(auth.username), batch_code, storage, auth)
+    metadata = _automation_batch_metadata(str(auth.username), batch_code)
     mail = get_grade_tracker().get_mail_status()
     return {
         **get_course_selection_automation_service().get_automation_settings(str(auth.username), batch_code, metadata=metadata),
@@ -156,7 +152,7 @@ def update_jwxk_automation_settings(
     auth: NEUAuthClient = Depends(require_cached_auth_identity),
     storage: Storage = Depends(get_storage),
 ):
-    metadata = _automation_batch_metadata(str(auth.username), batch_code, storage, auth)
+    metadata = _automation_batch_metadata(str(auth.username), batch_code)
     result = get_course_selection_automation_service().update_automation_settings(
         str(auth.username), batch_code, request.model_dump(), metadata=metadata,
     )
@@ -171,6 +167,51 @@ def _read_jwxk_preference(storage: Storage) -> str:
     return value if value in {"follow", "direct", "webvpn"} else "follow"
 
 
+def _jwxk_service_failure(error: Exception, *, effective: str) -> tuple[str, str]:
+    code = str(getattr(error, "error_code", None) or "")
+    if code == "JWXK_NOT_IN_SELECTION_ROUND":
+        return "not_in_selection_round", code
+    if code == WEBVPN_ERR_CAMPUS_NETWORK:
+        return "campus_network_blocked", code
+    if isinstance(error, (
+        requests.Timeout,
+        requests.ConnectionError,
+        DirectAccessError,
+        WebVPNRequiredError,
+    )):
+        return "network_unreachable", "JWXK_NETWORK_UNREACHABLE"
+    if isinstance(error, NEULoginError):
+        return "login_required", code or "JWXK_LOGIN_REQUIRED"
+    return "service_unavailable", code or "JWXK_SERVICE_UNAVAILABLE"
+
+
+def _jwxk_status_message(
+    state: str, *, effective: str, primary_authenticated: bool = True,
+) -> str:
+    messages = {
+        "authenticated": "已按账号资格和官方时间读取全部轮次。",
+        "not_in_selection_round": "当前账号不在学校开放的选课轮次中，暂时不能进入选课系统。历史课程备份仍可查看。",
+        "campus_network_blocked": "当前处于校园网环境，学校 WebVPN 不可用；请将选课线路切换为“直连”或“跟随教务”。",
+        "network_unreachable": (
+            "当前网络无法直连选课系统，请切换 WebVPN 或校园网后重试。历史课程备份仍可查看。"
+            if effective == "direct"
+            else "当前无法连接学校 WebVPN 或选课系统，请稍后重试。历史课程备份仍可查看。"
+        ),
+        "login_required": (
+            "当前尚未登录教务系统，请先完成登录。"
+            if not primary_authenticated
+            else (
+                "选课系统的 WebVPN 登录已失效，请使用账号密码或微信扫码恢复。"
+                if effective == "webvpn"
+                else "教务登录有效，但选课系统会话未能建立，请重新登录后重试。"
+            )
+        ),
+        "service_unavailable": "选课系统当前暂不可用，可能尚未开放服务。历史课程备份仍可查看。",
+        "checking": "选课线路设置已保存，正在后台核验可用性。",
+    }
+    return messages.get(state, messages["service_unavailable"])
+
+
 @router.get("/jwxk/status", response_model=JwxkStatusResponse)
 def get_jwxk_status(
     response: Response,
@@ -179,11 +220,11 @@ def get_jwxk_status(
     response.headers["Cache-Control"] = "no-store"
     preference = _read_jwxk_preference(storage)
     primary = peek_auth_client()
-    primary_mode = str(getattr(primary, "active_mode", "direct") or "direct")
+    primary_mode = get_primary_network_mode_hint(primary)
     effective = resolve_network_mode(preference, primary_mode)
     primary_authenticated = bool(primary and getattr(primary, "is_logged_in", False))
     service_authenticated = False
-    service_auth_state = "login_required" if effective == "webvpn" else "unavailable"
+    service_auth_state = "service_unavailable" if primary_authenticated else "login_required"
     authenticated_batches = None
     account_context = {}
     service_error_code = ""
@@ -197,7 +238,22 @@ def get_jwxk_status(
         try:
             with remote_session_guard():
                 if peek_auth_client() is primary:
-                    context = JwxkSessionClient(primary, network_mode=effective).get_context()
+                    original_timeout = getattr(primary, "timeout", None)
+                    if original_timeout is not None:
+                        primary.timeout = min(
+                            float(original_timeout),
+                            _JWXK_STATUS_TIMEOUT_SECONDS,
+                        )
+                    try:
+                        status_client = JwxkSessionClient(
+                            primary,
+                            network_mode=effective,
+                        )
+                        setattr(status_client, "allow_identity_recovery", False)
+                        context = status_client.get_context()
+                    finally:
+                        if original_timeout is not None:
+                            primary.timeout = original_timeout
                     account_context = context
                     authenticated_batches = context["batches"]
                     service_authenticated = True
@@ -207,11 +263,8 @@ def get_jwxk_status(
             # distinction is still useful to the UI: a WebVPN service session
             # normally needs an interactive WebVPN login, while a direct
             # session failure can be retried without changing the route.
-            service_error_code = str(getattr(error, "error_code", None) or "")
-            service_auth_state = (
-                "unavailable"
-                if service_error_code == WEBVPN_ERR_CAMPUS_NETWORK
-                else ("login_required" if effective == "webvpn" else "unavailable")
+            service_auth_state, service_error_code = _jwxk_service_failure(
+                error, effective=effective,
             )
             logger.info(
                 "jwxk service session unavailable mode=%s primary_authenticated=%s error=%s",
@@ -222,7 +275,13 @@ def get_jwxk_status(
     try:
         source_batches = authenticated_batches
         if source_batches is None:
-            source_batches = JwxkPublicClient().get_batches()
+            source_batches = (
+                []
+                if primary_authenticated and service_error_code
+                else JwxkPublicClient(
+                    timeout=_JWXK_STATUS_TIMEOUT_SECONDS,
+                ).get_batches()
+            )
         batches = [item.to_dict() for item in source_batches]
         return JwxkStatusResponse(
             available=True,
@@ -230,6 +289,7 @@ def get_jwxk_status(
             effective_network_mode=effective,
             cas_service=JWXK_CAS_SERVICE,
             primary_authenticated=primary_authenticated,
+            current_user=str(getattr(primary, "username", "") or ""),
             service_authenticated=service_authenticated,
             authenticated=service_authenticated,
             service_auth_state=service_auth_state,
@@ -238,22 +298,17 @@ def get_jwxk_status(
             current_campus=str(account_context.get("current_campus") or ""),
             current_campus_name=str(account_context.get("current_campus_name") or ""),
             batches=batches,
-            message=(
-                "已按账号资格和官方时间读取全部轮次。"
-                if service_authenticated
-                else (
-                    "当前处于校园网环境，学校 WebVPN 不可用；请将选课线路切换为“直连”或“跟随教务”。"
-                    if service_error_code == WEBVPN_ERR_CAMPUS_NETWORK
-                    else (
-                        "当前已选择 WebVPN，但尚未完成 WebVPN 登录；请先完成 WebVPN 认证。"
-                        if service_auth_state == "login_required"
-                        else "当前仅展示公开批次；登录后可读取账号轮次和课程。"
-                    )
-                )
+            message=_jwxk_status_message(
+                service_auth_state, effective=effective,
+                primary_authenticated=primary_authenticated,
             ),
             error_code=service_error_code or None,
         )
     except (JwxkError, requests.RequestException) as error:
+        if not service_error_code:
+            service_auth_state, service_error_code = _jwxk_service_failure(
+                error, effective=effective,
+            )
         logger.warning("jwxk public status unavailable error=%s", type(error).__name__)
         return JwxkStatusResponse(
             available=False,
@@ -261,6 +316,7 @@ def get_jwxk_status(
             effective_network_mode=effective,
             cas_service=JWXK_CAS_SERVICE,
             primary_authenticated=primary_authenticated,
+            current_user=str(getattr(primary, "username", "") or ""),
             service_authenticated=service_authenticated,
             authenticated=service_authenticated,
             service_auth_state=service_auth_state,
@@ -269,7 +325,10 @@ def get_jwxk_status(
             current_campus=str(account_context.get("current_campus") or ""),
             current_campus_name=str(account_context.get("current_campus_name") or ""),
             batches=[],
-            message="暂时无法读取选课系统批次，请稍后重试。",
+            message=_jwxk_status_message(
+                service_auth_state, effective=effective,
+                primary_authenticated=primary_authenticated,
+            ),
             error_code=service_error_code or None,
         )
 
@@ -279,11 +338,34 @@ def update_jwxk_settings(
     request: JwxkSettingsUpdate,
     response: Response,
     storage: Storage = Depends(get_storage),
+    probe: bool = Query(True, description="保存后是否同步核验学校选课系统"),
 ) -> JwxkStatusResponse:
+    response.headers["Cache-Control"] = "no-store"
     config = storage.load_config()
     config = dict(config) if isinstance(config, dict) else {}
     config[_JWXK_CONFIG_KEY] = {"network_mode": request.network_mode}
     storage.save_config(config)
+    if not probe:
+        primary = peek_auth_client()
+        effective = resolve_network_mode(
+            request.network_mode,
+            get_primary_network_mode_hint(primary),
+        )
+        return JwxkStatusResponse(
+            available=False,
+            network_mode=request.network_mode,
+            effective_network_mode=effective,
+            cas_service=JWXK_CAS_SERVICE,
+            primary_authenticated=bool(
+                primary and getattr(primary, "is_logged_in", False)
+            ),
+            current_user=str(getattr(primary, "username", "") or ""),
+            service_authenticated=False,
+            authenticated=False,
+            service_auth_state="checking",
+            batches=[],
+            message=_jwxk_status_message("checking", effective=effective),
+        )
     return get_jwxk_status(response, storage)
 
 
@@ -500,7 +582,7 @@ def get_jwxk_selected(
     metadata = {}
     auth = peek_auth_client()
     if auth is not None and account:
-        metadata = _automation_batch_metadata(account, request.batch_code, storage, auth)
+        metadata = _automation_batch_metadata(account, request.batch_code)
     result = annotate_selection_result(
         result,
         selection_type_code=str(metadata.get("selection_type_code") or ""),

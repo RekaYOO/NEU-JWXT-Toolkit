@@ -261,6 +261,54 @@ class AuthRouteTests(unittest.TestCase):
         set_client.assert_called_once_with(candidate, force_epoch=True)
         bootstrap.assert_called_once_with(candidate)
 
+    def test_jwxk_qr_success_merges_gateway_without_replacing_primary(self):
+        active = Mock(username="20250001", is_logged_in=True)
+        candidate = Mock(username="20250001")
+        candidate.poll_webvpn_qr_login.return_value = {
+            "status": "authenticated", "username": "20250001",
+            "target_service": "jwxk",
+        }
+        with (
+            patch.object(auth, "peek_pending_auth_client", return_value=candidate),
+            patch.object(auth, "peek_auth_client", return_value=active),
+            patch.object(auth, "clear_pending_auth_client") as clear_pending,
+            patch.object(auth, "set_auth_client") as set_client,
+            patch.object(auth, "schedule_login_bootstrap") as bootstrap,
+        ):
+            response = auth.get_webvpn_qr_status(
+                auth.WebVPNQRStatusRequest(flow_id="qr-flow")
+            )
+
+        self.assertTrue(response["success"])
+        clear_pending.assert_called_once_with(candidate)
+        active.adopt_webvpn_gateway_session.assert_called_once_with(candidate)
+        set_client.assert_not_called()
+        bootstrap.assert_not_called()
+
+    def test_jwxk_password_recovery_targets_selection_service(self):
+        active = Mock(username="20250001", is_logged_in=True)
+        candidate = Mock(username="20250001", password="not-used")
+        candidate.start_webvpn_password_login.return_value = {
+            "status": "authenticated", "username": "20250001",
+            "target_service": "jwxk",
+        }
+        with (
+            patch.object(auth, "NEUAuthClient", return_value=candidate),
+            patch.object(auth, "peek_auth_client", return_value=active),
+            patch.object(auth, "set_auth_client") as set_client,
+        ):
+            response = auth.start_webvpn_password_login(
+                WebVPNPasswordStartRequest(
+                    username="20250001", password="not-used", remember=False,
+                    target_service="jwxk",
+                )
+            )
+
+        self.assertTrue(response["success"])
+        candidate.start_webvpn_password_login.assert_called_once_with(target_service="jwxk")
+        active.adopt_webvpn_gateway_session.assert_called_once_with(candidate)
+        set_client.assert_not_called()
+
     def test_webvpn_qr_expiry_has_stable_flow_error_code(self):
         candidate = Mock(username="20250001")
         candidate.poll_webvpn_qr_login.return_value = {"status": "expired"}
@@ -428,6 +476,61 @@ class AuthRouteTests(unittest.TestCase):
         self.assertIs(resolved, recovered)
         self.assertIsNone(manager.peek_pending_client())
 
+    def test_failed_saved_credentials_recovery_enters_shared_cooldown(self):
+        manager = AuthSessionManager()
+        cookie_candidate = SimpleNamespace(
+            username="",
+            password="",
+            is_logged_in=False,
+            active_mode="direct",
+            _webvpn_qr_flow=None,
+            _webvpn_sms_flow=None,
+            ensure_login=Mock(return_value=False),
+        )
+        password_candidate = SimpleNamespace(
+            username="20250001",
+            password="saved-password",
+            is_logged_in=False,
+            active_mode="direct",
+            _webvpn_qr_flow=None,
+            _webvpn_sms_flow=None,
+            ensure_login=Mock(side_effect=NEULoginError("temporary failure")),
+        )
+        storage = Mock()
+        storage.load_credentials.return_value = ("20250001", "saved-password")
+
+        with (
+            patch.object(dependencies, "_auth_sessions", manager),
+            patch.object(dependencies, "_storage", storage),
+            patch.object(
+                dependencies,
+                "NEUAuthClient",
+                side_effect=[cookie_candidate, password_candidate],
+            ) as client_class,
+            patch.object(dependencies, "log_security_event"),
+        ):
+            self.assertIsNone(dependencies._get_auth_client_unlocked())
+            calls_after_failure = client_class.call_count
+            self.assertIsNone(dependencies._get_auth_client_unlocked())
+
+        self.assertEqual(calls_after_failure, 2)
+        self.assertEqual(client_class.call_count, calls_after_failure)
+        self.assertTrue(manager.auth_recovery_backoff()["active"])
+        self.assertEqual(manager.auth_recovery_backoff()["failures"], 1)
+
+    def test_successful_identity_and_logout_clear_recovery_cooldown(self):
+        manager = AuthSessionManager()
+        manager.note_auth_recovery_failure("20250001", error_code="REQUEST_ERROR")
+        self.assertFalse(manager.auth_recovery_allowed("20250001"))
+
+        authenticated = SimpleNamespace(username="20250001", is_logged_in=True)
+        manager.set_client(authenticated)
+        self.assertTrue(manager.auth_recovery_allowed("20250001"))
+
+        manager.note_auth_recovery_failure("20250001", error_code="REQUEST_ERROR")
+        manager.fence_and_clear()
+        self.assertTrue(manager.auth_recovery_allowed("20250001"))
+
     def test_sms_success_promotes_pending_candidate_once(self):
         candidate = Mock(username="20250001")
         candidate._webvpn_sms_flow = {"remember": False}
@@ -454,6 +557,46 @@ class AuthRouteTests(unittest.TestCase):
         self.assertTrue(response["success"])
         clear_pending.assert_called_once_with(candidate)
         save_login.assert_called_once_with(candidate, False)
+
+    def test_jwxk_sms_success_merges_gateway_without_replacing_primary(self):
+        active = Mock(username="20250001", is_logged_in=True)
+        candidate = Mock(username="20250001", password="not-used")
+        candidate._webvpn_sms_flow = {
+            "remember": True,
+            "target_service": "jwxk",
+        }
+        candidate.verify_webvpn_sms_code.return_value = {
+            "status": "authenticated",
+            "username": "20250001",
+            "target_service": "jwxk",
+            "service_auth_state": "service_unavailable",
+        }
+        with (
+            patch.object(auth, "_webvpn_sms_client", return_value=candidate),
+            patch.object(auth, "peek_auth_client", return_value=active),
+            patch.object(auth, "peek_pending_auth_client", return_value=candidate),
+            patch.object(auth, "clear_pending_auth_client") as clear_pending,
+            patch.object(auth, "set_auth_client") as set_client,
+            patch.object(auth, "schedule_login_bootstrap") as bootstrap,
+            patch.object(auth._auto_login, "save_login") as save_login,
+            patch.object(auth, "log_security_event"),
+        ):
+            response = auth.verify_webvpn_sms_code(
+                auth.WebVPNSMSVerifyRequest(
+                    flow_id="sms-flow",
+                    code="123456",
+                    trust_device=False,
+                )
+            )
+
+        self.assertTrue(response["success"])
+        self.assertEqual(response["service_auth_state"], "service_unavailable")
+        clear_pending.assert_called_once_with(candidate)
+        active.adopt_webvpn_gateway_session.assert_called_once_with(candidate)
+        self.assertEqual(active.password, "not-used")
+        save_login.assert_called_once_with(active)
+        set_client.assert_not_called()
+        bootstrap.assert_not_called()
 
     def test_pending_auth_endpoint_exposes_only_safe_challenge_fields(self):
         client = SimpleNamespace(

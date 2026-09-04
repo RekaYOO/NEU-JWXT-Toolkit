@@ -37,3 +37,35 @@ def test_avatar_cache_route_returns_empty_response_on_cache_miss(monkeypatch):
     assert response.status_code == 204
     assert response.headers["x-cache-miss"] == "true"
     assert calls == [("student", "avatar")]
+
+
+def test_forced_avatar_refresh_returns_empty_response_when_school_has_no_avatar(
+    monkeypatch,
+):
+    reads = []
+    waited = []
+    monkeypatch.setattr(
+        user_router,
+        "read_cache",
+        lambda account, resource: (reads.append((account, resource)) or (None, True)),
+    )
+    monkeypatch.setattr(
+        user_router,
+        "submit_refresh",
+        lambda *_args, **_kwargs: SimpleNamespace(job_id="avatar-job"),
+    )
+    monkeypatch.setattr(
+        user_router,
+        "wait_for_job",
+        lambda job_id, timeout: waited.append((job_id, timeout)),
+    )
+
+    response = user_router.get_user_avatar(
+        refresh=True,
+        auth=SimpleNamespace(username="student"),
+    )
+
+    assert response.status_code == 204
+    assert response.headers["x-avatar-unavailable"] == "true"
+    assert reads == [("student", "avatar"), ("student", "avatar")]
+    assert waited == [("avatar-job", 8)]

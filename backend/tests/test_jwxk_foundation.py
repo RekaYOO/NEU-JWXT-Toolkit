@@ -20,10 +20,16 @@ from backend.core.course_selection import (
     resolve_network_mode,
 )
 from backend.core.auth import NEUAuthClient
-from backend.core.auth.client import NEULoginError, SERVICE_CONFIGS
+from backend.core.auth.client import (
+    NEULoginError,
+    SERVICE_CONFIGS,
+    ServiceAccessError,
+    WebVPNRequiredError,
+)
 from backend.core.course_selection.jwxk import JwxkRateLimitError
 import backend.core.course_selection.jwxk as jwxk_module
 from backend.core.network import WebVPNUrlCodec
+from backend.app import dependencies as app_dependencies
 from backend.app.routers import course_selection
 from backend.app.schemas.course_selection import JwxkSettingsUpdate
 
@@ -185,7 +191,7 @@ def test_service_auth_reason_keeps_official_semantics_but_redacts_identity():
         "status_code": 200,
         "json": lambda _self: {
             "code": 403,
-            "msg": "用户 20241643 登录状态失效 token=abcdefghijklmnopqrstuvwxyz123456",
+            "msg": "用户 20240000 登录状态失效 token=abcdefghijklmnopqrstuvwxyz123456",
         },
     })()
 
@@ -193,7 +199,7 @@ def test_service_auth_reason_keeps_official_semantics_but_redacts_identity():
 
     assert "code=403" in reason
     assert "登录状态失效" in reason
-    assert "20241643" not in reason
+    assert "20240000" not in reason
     assert "abcdefghijklmnopqrstuvwxyz123456" not in reason
 
 
@@ -356,6 +362,24 @@ def test_jwxk_network_mode_rejects_unknown_values():
         resolve_network_mode("automatic", "direct")
 
 
+def test_follow_mode_uses_saved_primary_webvpn_route_without_live_client(
+    monkeypatch, tmp_path,
+):
+    session_file = tmp_path / "session.json"
+    session_file.write_text('{"active_mode":"webvpn"}', encoding="utf-8")
+    storage = MemoryStorage({"course_selection": {"network_mode": "follow"}})
+
+    monkeypatch.setattr(app_dependencies, "COOKIE_FILE", str(session_file))
+    monkeypatch.setattr(app_dependencies._auth_sessions, "peek_client", lambda: None)
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: None)
+    monkeypatch.setattr(course_selection.JwxkPublicClient, "get_batches", lambda _self: [])
+
+    result = course_selection.get_jwxk_status(Response(), storage)
+
+    assert result.network_mode == "follow"
+    assert result.effective_network_mode == "webvpn"
+
+
 def test_status_route_is_no_store_and_preserves_public_batch_contract(monkeypatch):
     storage = MemoryStorage()
     monkeypatch.setattr(course_selection, "peek_auth_client", lambda: None)
@@ -376,7 +400,194 @@ def test_status_route_is_no_store_and_preserves_public_batch_contract(monkeypatc
     assert result.authenticated is False
     assert result.primary_authenticated is False
     assert result.service_authenticated is False
-    assert result.service_auth_state == "unavailable"
+    assert result.service_auth_state == "login_required"
+
+
+def test_status_route_distinguishes_jwxk_round_ineligibility(monkeypatch):
+    storage = MemoryStorage({"course_selection": {"network_mode": "webvpn"}})
+    primary = type("Primary", (), {
+        "active_mode": "direct", "is_logged_in": True, "username": "student",
+    })()
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: primary)
+    monkeypatch.setattr(course_selection, "attach_saved_auth_credentials", lambda _client: False)
+    monkeypatch.setattr(
+        course_selection, "JwxkSessionClient",
+        lambda *_args, **_kwargs: type("Client", (), {
+            "get_context": lambda _self: (_ for _ in ()).throw(ServiceAccessError(
+                "当前账号不在学校开放的选课轮次中",
+                service="jwxk", error_code="JWXK_NOT_IN_SELECTION_ROUND",
+            )),
+        })(),
+    )
+    monkeypatch.setattr(course_selection.JwxkPublicClient, "get_batches", lambda _self: [])
+
+    result = course_selection.get_jwxk_status(Response(), storage)
+
+    assert result.primary_authenticated is True
+    assert result.service_authenticated is False
+    assert result.service_auth_state == "not_in_selection_round"
+    assert result.error_code == "JWXK_NOT_IN_SELECTION_ROUND"
+    assert "不在学校开放的选课轮次" in result.message
+
+
+def test_status_route_distinguishes_direct_network_timeout(monkeypatch):
+    storage = MemoryStorage({"course_selection": {"network_mode": "direct"}})
+    primary = type("Primary", (), {
+        "active_mode": "direct", "is_logged_in": True, "username": "student",
+    })()
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: primary)
+    monkeypatch.setattr(course_selection, "attach_saved_auth_credentials", lambda _client: False)
+    monkeypatch.setattr(
+        course_selection, "JwxkSessionClient",
+        lambda *_args, **_kwargs: type("Client", (), {
+            "get_context": lambda _self: (_ for _ in ()).throw(__import__("requests").Timeout()),
+        })(),
+    )
+    monkeypatch.setattr(course_selection.JwxkPublicClient, "get_batches", lambda _self: [])
+
+    result = course_selection.get_jwxk_status(Response(), storage)
+
+    assert result.primary_authenticated is True
+    assert result.service_auth_state == "network_unreachable"
+    assert result.error_code == "JWXK_NETWORK_UNREACHABLE"
+    assert "无法直连选课系统" in result.message
+
+
+def test_status_route_treats_direct_webvpn_redirect_as_network_unreachable(monkeypatch):
+    storage = MemoryStorage({"course_selection": {"network_mode": "direct"}})
+    primary = type("Primary", (), {
+        "active_mode": "webvpn", "is_logged_in": True, "username": "student",
+    })()
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: primary)
+    monkeypatch.setattr(course_selection, "attach_saved_auth_credentials", lambda _client: False)
+    monkeypatch.setattr(
+        course_selection, "JwxkSessionClient",
+        lambda *_args, **_kwargs: type("Client", (), {
+            "get_context": lambda _self: (_ for _ in ()).throw(
+                WebVPNRequiredError("直连入口跳转到 WebVPN")
+            ),
+        })(),
+    )
+    monkeypatch.setattr(course_selection.JwxkPublicClient, "get_batches", lambda _self: [])
+
+    result = course_selection.get_jwxk_status(Response(), storage)
+
+    assert result.network_mode == "direct"
+    assert result.effective_network_mode == "direct"
+    assert result.service_auth_state == "network_unreachable"
+    assert result.error_code == "JWXK_NETWORK_UNREACHABLE"
+
+
+def test_automation_settings_metadata_never_opens_remote_jwxk(monkeypatch):
+    defaults = {
+        "strategy_schedule_mode": "interval", "rebalance_seconds": 1800,
+        "force_final_rebalance": True, "final_check_minutes": 3,
+        "final_notice_minutes": 5, "final_notice_latest_time": "23:00",
+        "mail_enabled": False, "notify_round_start": False,
+        "notify_round_end": False, "notify_final_rebalance": False,
+        "notify_capacity_transition": False, "notify_over_capacity": False,
+        "notify_underfilled_warning": False, "notify_grab_result": False,
+        "over_capacity_ratio": 0.2,
+    }
+    class Automation:
+        @staticmethod
+        def get_catalog_archive_metadata(_account, _batch):
+            return {
+                "batch_name": "历史轮次", "term_code": "2026-2027-1",
+                "selection_type_code": "02",
+            }
+
+        @staticmethod
+        def get_automation_settings(_account, batch, metadata=None):
+            return {**defaults, "batch_code": batch, **(metadata or {})}
+
+    service = Automation()
+    monkeypatch.setattr(course_selection, "get_course_selection_automation_service", lambda: service)
+    monkeypatch.setattr(
+        course_selection, "_jwxk_mutation_client",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("remote JWXK must not be opened")),
+    )
+    monkeypatch.setattr(
+        course_selection, "get_grade_tracker",
+        lambda: type("Tracker", (), {"get_mail_status": lambda _self: {"configured": False}})(),
+    )
+
+    result = course_selection.get_jwxk_automation_settings(
+        "batch", type("Auth", (), {"username": "student"})(), MemoryStorage(),
+    )
+
+    assert result["batch_name"] == "历史轮次"
+    assert result["selection_type_code"] == "02"
+
+
+def test_webvpn_jwxk_target_accepts_official_round_access_notice(monkeypatch):
+    client = NEUAuthClient(username="student", network_mode="webvpn", restore_session=False)
+    response = __import__("requests").Response()
+    response.status_code = 200
+    response.url = WebVPNUrlCodec.convert_url(
+        "https://jwxk.neu.edu.cn/xsxk/profile/index.html"
+    )
+    response._content = "<h1>访问提示</h1><p>学生不在选课轮次中，暂时不能登录</p>".encode()
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    monkeypatch.setattr(client, "_request_service_redirects", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(client, "get_service_token", lambda *_args, **_kwargs: None)
+
+    result = client._verify_webvpn_login_target("jwxk")
+
+    assert result == {
+        "authenticated": True,
+        "service_auth_state": "not_in_selection_round",
+    }
+
+
+def test_webvpn_jwxk_target_keeps_login_success_when_service_has_no_token(monkeypatch):
+    client = NEUAuthClient(username="student", network_mode="webvpn", restore_session=False)
+    response = __import__("requests").Response()
+    response.status_code = 200
+    response.url = WebVPNUrlCodec.convert_url(
+        "https://jwxk.neu.edu.cn/xsxk/profile/index.html"
+    )
+    response._content = _html('[]').encode()
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    monkeypatch.setattr(client, "_request_service_redirects", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(client, "get_service_token", lambda *_args, **_kwargs: None)
+
+    result = client._verify_webvpn_login_target("jwxk")
+
+    assert result == {
+        "authenticated": True,
+        "service_auth_state": "service_unavailable",
+    }
+
+
+def test_jwxk_access_notice_is_not_retried_as_login_html(monkeypatch):
+    client = NEUAuthClient(username="student", network_mode="webvpn", restore_session=False)
+    client._logged_in = True
+    response = __import__("requests").Response()
+    response.status_code = 200
+    response.url = WebVPNUrlCodec.convert_url(
+        "https://jwxk.neu.edu.cn/xsxk/profile/index.html"
+    )
+    response._content = "访问提示 学生不在选课轮次中，暂时不能登录".encode()
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    calls = []
+    monkeypatch.setattr(client, "get_service_token", lambda *_args, **_kwargs: "token")
+    monkeypatch.setattr(
+        client, "_request_service_redirects",
+        lambda *_args, **_kwargs: calls.append(True) or response,
+    )
+    monkeypatch.setattr(
+        client, "ensure_service_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not retry CAS")),
+    )
+
+    with pytest.raises(ServiceAccessError) as captured:
+        client.request_service(
+            "jwxk", "POST", "/xsxk/web/now", network_mode_override="webvpn",
+        )
+
+    assert captured.value.error_code == "JWXK_NOT_IN_SELECTION_ROUND"
+    assert calls == [True]
 
 
 def test_status_route_explains_webvpn_login_requirement(monkeypatch):
@@ -465,9 +676,11 @@ def test_status_route_reuses_primary_client_under_remote_guard(monkeypatch):
     class SessionClient:
         def __init__(self, auth, *, network_mode):
             assert auth is primary
+            self.allow_identity_recovery = True
             events.append(("client", network_mode))
 
         def get_context(self):
+            assert self.allow_identity_recovery is False
             events.append("context")
             return {"batches": []}
 
@@ -720,7 +933,8 @@ def test_direct_primary_uses_saved_password_for_webvpn_jwxk_without_changing_rou
         item._content = b"profile"
         return item
 
-    def fake_password_login():
+    def fake_password_login(*, target_service="primary"):
+        assert target_service == "jwxk"
         assert client.active_mode == "direct"
         # Mirror the real method's temporary mutation and clean-cookie retry.
         client.active_mode = "webvpn"
@@ -755,6 +969,48 @@ def test_direct_primary_uses_saved_password_for_webvpn_jwxk_without_changing_rou
     ) == "fresh"
 
 
+def test_webvpn_primary_uses_direct_jwxk_recovery_without_relogging_webvpn(monkeypatch):
+    client = NEUAuthClient(
+        username="student", password="saved-password",
+        network_mode="webvpn", restore_session=False,
+    )
+    client._logged_in = True
+    state = {"direct_authenticated": False, "direct_logins": 0}
+
+    def fake_redirects(_method, _url, **_kwargs):
+        item = __import__("requests").Response()
+        item.status_code = 200
+        item.url = "https://pass.neu.edu.cn/tpass/login"
+        item._content = b"login"
+        return item
+
+    def fake_token(_service, *, network_mode=None, request_path=""):
+        assert network_mode == "direct"
+        return "direct-token" if state["direct_authenticated"] else None
+
+    def fake_direct_login(_config):
+        state["direct_logins"] += 1
+        assert client.active_mode == "webvpn"
+        state["direct_authenticated"] = True
+        return True
+
+    monkeypatch.setattr(client, "_request_service_redirects", fake_redirects)
+    monkeypatch.setattr(client, "get_service_token", fake_token)
+    monkeypatch.setattr(client, "_clear_service_token", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(client, "_login_direct_service", fake_direct_login)
+    monkeypatch.setattr(
+        client, "ensure_login",
+        lambda: (_ for _ in ()).throw(AssertionError("must not restore primary WebVPN")),
+    )
+    monkeypatch.setattr(client, "_save_cookies", lambda: None)
+
+    assert client.ensure_service_session(
+        "jwxk", network_mode_override="direct",
+    ) is True
+    assert state["direct_logins"] == 1
+    assert client.active_mode == "webvpn"
+
+
 def test_direct_primary_webvpn_verification_falls_back_to_visible_login(monkeypatch):
     client = NEUAuthClient(
         username="student", password="saved-password",
@@ -772,7 +1028,8 @@ def test_direct_primary_webvpn_verification_falls_back_to_visible_login(monkeypa
     monkeypatch.setattr(client, "get_service_token", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(client, "_save_cookies", lambda: None)
 
-    def verification_required():
+    def verification_required(*, target_service="primary"):
+        assert target_service == "jwxk"
         attempts.append(True)
         client.active_mode = "webvpn"
         client._webvpn_sms_flow = {"id": "hidden-flow"}
@@ -1675,6 +1932,36 @@ def test_network_setting_update_keeps_unrelated_config(monkeypatch):
     assert storage.config["other"] == {"enabled": True}
     assert storage.config["course_selection"] == {"network_mode": "webvpn"}
     assert result.effective_network_mode == "webvpn"
+
+
+def test_network_setting_can_be_saved_without_remote_probe(monkeypatch):
+    storage = MemoryStorage({"other": {"enabled": True}})
+    primary = type("Primary", (), {
+        "active_mode": "webvpn", "is_logged_in": True, "username": "student",
+    })()
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: primary)
+    monkeypatch.setattr(
+        course_selection,
+        "JwxkSessionClient",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("probe=false must not open JWXK")
+        ),
+    )
+
+    response = Response()
+    result = course_selection.update_jwxk_settings(
+        JwxkSettingsUpdate(network_mode="follow"),
+        response,
+        storage,
+        probe=False,
+    )
+
+    assert storage.config["other"] == {"enabled": True}
+    assert storage.config["course_selection"] == {"network_mode": "follow"}
+    assert result.effective_network_mode == "webvpn"
+    assert result.service_auth_state == "checking"
+    assert result.service_authenticated is False
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_course_catalog_groups_teaching_classes_and_sorts_selectable_first():

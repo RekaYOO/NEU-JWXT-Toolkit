@@ -966,9 +966,16 @@ class JwxkSessionClient:
     _MUTATION_MATERIAL_TTL_SECONDS = 300
     _GATE_CREATION_LOCK = threading.Lock()
 
-    def __init__(self, auth: "NEUAuthClient", *, network_mode: str = "direct"):
+    def __init__(
+        self,
+        auth: "NEUAuthClient",
+        *,
+        network_mode: str = "direct",
+        allow_identity_recovery: bool = True,
+    ):
         self.auth = auth
         self.network_mode = network_mode
+        self.allow_identity_recovery = allow_identity_recovery
 
     def _pace_catalog_request(self) -> None:
         gate = getattr(self.auth, "_jwxk_catalog_rate_gate", None)
@@ -999,6 +1006,7 @@ class JwxkSessionClient:
             raise JwxkRateLimitError(max(1, round(cooldown_until - now)))
         if path == "/xsxk/elective/clazz/list":
             self._pace_catalog_request()
+        kwargs.setdefault("retry_on_auth", self.allow_identity_recovery)
         response = self.auth.request_service(
             "jwxk", method, path,
             network_mode_override=self.network_mode,
@@ -1057,7 +1065,11 @@ class JwxkSessionClient:
         }
 
     def get_context(self) -> dict[str, Any]:
-        self.auth.ensure_service_session("jwxk", network_mode_override=self.network_mode)
+        self.auth.ensure_service_session(
+            "jwxk",
+            network_mode_override=self.network_mode,
+            allow_identity_recovery=self.allow_identity_recovery,
+        )
         now = self._post_form("/xsxk/web/now").get("data") or {}
         token = self.auth.get_service_token(
             "jwxk", network_mode=self.network_mode,

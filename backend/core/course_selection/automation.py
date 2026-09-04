@@ -815,6 +815,24 @@ class CourseSelectionAutomationService:
                 "courses": tuple(source.get("courses") or ()),
             }
 
+    def get_catalog_archive_metadata(
+        self, account: str, batch_code: str,
+    ) -> dict[str, Any] | None:
+        """Return round identity fields without traversing the course catalog."""
+        with self._lock:
+            source = next((item for item in self._archives if (
+                item.get("account") == account and item.get("batch_code") == batch_code
+            )), None)
+            if source is None:
+                return None
+            return {
+                "batch_code": str(source.get("batch_code") or ""),
+                "batch_name": str(source.get("batch_name") or ""),
+                "term_code": str(source.get("term_code") or ""),
+                "term_name": str(source.get("term_name") or ""),
+                "selection_type_code": str(source.get("selection_type_code") or ""),
+            }
+
     def query_catalog_archive(
         self,
         account: str,
