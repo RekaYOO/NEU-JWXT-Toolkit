@@ -33,6 +33,7 @@ import {
   mobileCourseSummary,
   adjacentMobileTimetableDay,
   timetableCacheIndicator,
+  timetableRecoveryNoticeClassName,
   courseTeacherText,
   shouldHighlightToday,
   selectDefaultTerm,
@@ -128,6 +129,11 @@ describe('TimetablePage helpers', () => {
       source: 'server',
       payload: { cache: { last_error_kind: 'remote_error' } },
     }).state).toBe('error');
+  });
+
+  test('places the recovery notice above the desktop timetable and below the mobile timetable', () => {
+    expect(timetableRecoveryNoticeClassName(false)).toContain('notice-top');
+    expect(timetableRecoveryNoticeClassName(true)).toContain('notice-below');
   });
 
   test('keeps normal current-week auto detection silent', () => {

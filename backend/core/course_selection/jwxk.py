@@ -70,6 +70,7 @@ class JwxkBatch:
     notice: str
     state: Literal["not_started", "active", "ended", "unknown"]
     can_enter: bool
+    access_scope: Literal["account", "public"] = "account"
     account_selectable: bool = False
     confirmed: bool = False
     week_range: str = ""
@@ -141,6 +142,7 @@ def parse_public_batches(html: str, *, now: datetime | None = None) -> list[Jwxk
             notice=str(row.get("confirmInfo") or "").strip(),
             state=state,
             can_enter=state == "active" and str(row.get("active") or "") == "1",
+            access_scope="public",
             allow_cross_campus=str(row.get("notRetakeMultiCampus") or "0") == "1",
         ))
     return result
@@ -190,6 +192,7 @@ def parse_account_batches(rows: Any, *, official_now: Any) -> list[JwxkBatch]:
             notice=str(row.get("confirmInfo") or "").strip(),
             state=state,
             can_enter=selectable and state == "active",
+            access_scope="account",
             account_selectable=selectable,
             confirmed=str(row.get("isConfirmed") or "0") == "1",
             week_range=str(row.get("weekRange") or "").strip(),

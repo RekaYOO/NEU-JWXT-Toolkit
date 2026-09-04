@@ -13,7 +13,7 @@ import {
   getWebVPNErrorMessage, isWebVPNFlowInvalid, isWebVPNCampusNetworkBlocked,
 } from '../services/api';
 import { changedOfficialBatchTimes, courseCampusLabels, selectionParticipantCount } from '../utils/jwxkSchedule';
-import { jwxkSelectionMode } from '../utils/jwxkModes';
+import { jwxkBatchAccessMeta, jwxkSelectionMode } from '../utils/jwxkModes';
 import WebVPNAuthModal from '../components/WebVPNAuthModal';
 import './CourseSelectionPage.css';
 
@@ -384,6 +384,13 @@ const CourseSelectionPage = () => {
     .includes(status?.service_auth_state) ? 'error' : 'warning';
 
   const enter = async batch => {
+    const access = jwxkBatchAccessMeta(batch, status?.service_authenticated);
+    if (!access.canUse) {
+      message.warning(access.kind === 'account_unavailable'
+        ? '该轮次由选课接口返回，但当前账号不可参与'
+        : '该轮次仅供查看，当前账号不能进入');
+      return;
+    }
     if (batch.need_confirm && !batch.confirmed) {
       setConfirming(batch.code);
       try {
@@ -399,6 +406,10 @@ const CourseSelectionPage = () => {
   };
 
   const openAutomation = async batch => {
+    if (!jwxkBatchAccessMeta(batch, status?.service_authenticated).canUse) {
+      message.warning('当前账号不可参与该轮次，不能配置本轮自动任务');
+      return;
+    }
     setAutomationBatch(batch);
     setAutomationLoading(true);
     try { setAutomationSettings(await getJwxkAutomationSettings(batch.code)); }
@@ -555,14 +566,16 @@ const CourseSelectionPage = () => {
           <div className="course-selection-section__title"><div><Title level={4}>{title}</Title><Text type="secondary">{groups[key].length} 个轮次</Text></div></div>
           <Row gutter={[16, 16]}>{groups[key].map(batch => {
             const [type, description] = TYPE_LABELS[batch.selection_type_code] || [batch.selection_type || '选课轮次', batch.tactic_name || '以官方规则为准'];
+            const access = jwxkBatchAccessMeta(batch, status?.service_authenticated);
             return <Col xs={24} md={12} xl={8} key={batch.code}><Card className={`course-selection-batch is-${batch.state}`}>
-              <Space wrap><Tag color={batch.state === 'active' ? 'success' : 'blue'}>{type}</Tag>{batch.term_name && <Tag>{batch.term_name}</Tag>}{batch.account_selectable && <Tag color="processing">账号可进入</Tag>}</Space>
+              <Space wrap><Tag color={batch.state === 'active' ? 'success' : 'blue'}>{type}</Tag>{batch.term_name && <Tag>{batch.term_name}</Tag>}<Tag color={access.tagColor}>{access.label}</Tag></Space>
               <Title level={4}>{batch.name}</Title><Paragraph type="secondary">{description}</Paragraph>
               <div className="course-selection-time"><ClockCircleOutlined /><span>{dayjs(batch.begin_time).format('YYYY-MM-DD HH:mm')} — {dayjs(batch.end_time).format('YYYY-MM-DD HH:mm')}</span></div>
-              {batch.need_confirm && !batch.confirmed && <Paragraph className="course-selection-confirm">进入前需阅读并确认官方轮次须知</Paragraph>}
+              {access.kind === 'account_unavailable' && <Paragraph type="secondary">该轮次由选课接口返回，但当前账号不具备进入资格。</Paragraph>}
+              {batch.need_confirm && !batch.confirmed && access.canUse && <Paragraph className="course-selection-confirm">进入前需阅读并确认官方轮次须知</Paragraph>}
               <Space direction="vertical" style={{ width: '100%' }}>
-                <Button block type={batch.state === 'active' ? 'primary' : 'default'} loading={confirming === batch.code} disabled={!status?.service_authenticated || !batch.account_selectable} onClick={() => enter(batch)}>{batch.state === 'ended' ? '查看结果' : '进入选课工作台'}</Button>
-                {['02', '04'].includes(batch.selection_type_code) && <Button block onClick={() => openAutomation(batch)}>本轮自动化与通知配置</Button>}
+                <Button block type={batch.state === 'active' ? 'primary' : 'default'} loading={confirming === batch.code} disabled={!access.canUse} onClick={() => enter(batch)}>{batch.state === 'ended' ? '查看结果' : '进入选课工作台'}</Button>
+                {['02', '04'].includes(batch.selection_type_code) && access.canUse && <Button block onClick={() => openAutomation(batch)}>本轮自动化与通知配置</Button>}
               </Space>
             </Card></Col>;
           })}</Row>

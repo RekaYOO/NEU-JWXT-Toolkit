@@ -42,3 +42,31 @@ export const jwxkScheduleOverlayMeta = (layer, selectionTypeCode = '') => ({
     color: '#16a34a',
   },
 }[layer] || { label: '待选课程', color: '#2563eb' });
+
+export const jwxkBatchAccessMeta = (batch = {}, serviceAuthenticated = false) => {
+  const accessScope = batch.access_scope === 'public' || batch.access_scope === 'account'
+    ? batch.access_scope
+    : serviceAuthenticated ? 'account' : 'public';
+  if (accessScope === 'public') {
+    return {
+      kind: 'public',
+      label: '公开轮次',
+      tagColor: 'default',
+      canUse: false,
+    };
+  }
+  if (!batch.account_selectable) {
+    return {
+      kind: 'account_unavailable',
+      label: '当前账号不可参与',
+      tagColor: 'warning',
+      canUse: false,
+    };
+  }
+  return {
+    kind: 'account_selectable',
+    label: '账号可进入',
+    tagColor: 'processing',
+    canUse: Boolean(serviceAuthenticated),
+  };
+};

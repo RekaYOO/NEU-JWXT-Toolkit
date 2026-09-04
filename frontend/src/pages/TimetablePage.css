@@ -45,6 +45,10 @@
   margin-top: var(--space-4);
 }
 
+.timetable-recovery-notice-top {
+  margin-bottom: var(--space-4);
+}
+
 .timetable-controls {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(160px, .72fr) auto minmax(170px, .9fr) auto;

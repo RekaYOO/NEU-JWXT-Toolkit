@@ -1064,6 +1064,10 @@ export const timetableCacheIndicator = ({ payload, source = '', failed = false }
   return { state: 'server', label: '当前显示服务器缓存，正在核验' };
 };
 
+export const timetableRecoveryNoticeClassName = isMobile => (
+  `timetable-recovery-notice timetable-recovery-notice-${isMobile ? 'below' : 'top'}`
+);
+
 export const shouldHighlightToday = ({
   termCode,
   currentTermCode,
@@ -2882,6 +2886,17 @@ function TimetablePage({
   const overlayVisibleForTerm = termCode === preferredTermCode && Boolean(overlayCourses?.length);
   const hasArrangedCourses = Boolean(schedule?.courses?.length || overlayVisibleForTerm);
   const hasOtherCourses = Boolean(schedule?.unscheduled?.length || schedule?.practices?.length);
+  const recoveryAlert = (recoveryNotice || cacheAuthFailure) ? (
+    <Alert
+      type="warning"
+      showIcon
+      message={cacheAuthFailure
+        ? '登录已失效，请重新登录'
+        : '当前显示本机课表，正在后台恢复登录'}
+      action={<Button size="small" onClick={() => navigate('/login')}>重新登录</Button>}
+      className={timetableRecoveryNoticeClassName(isMobile)}
+    />
+  ) : null;
 
   return (
     <div
@@ -2952,6 +2967,8 @@ function TimetablePage({
       {mode === 'personal' && autoNotice && (
         <Alert type="info" showIcon message={autoNotice} className="timetable-auto-notice" />
       )}
+
+      {!isMobile && recoveryAlert}
 
       {mode !== 'personal' && conflictDetectionEnabled && conflictDetectionError && (
         <Alert type="warning" showIcon message={conflictDetectionError} className="timetable-conflict-notice" />
@@ -3049,17 +3066,7 @@ function TimetablePage({
         </>
       ) : null}
 
-      {(recoveryNotice || cacheAuthFailure) && (
-        <Alert
-          type="warning"
-          showIcon
-          message={cacheAuthFailure
-            ? '登录已失效，请重新登录'
-            : '当前显示本机课表，正在后台恢复登录'}
-          action={<Button size="small" onClick={() => navigate('/login')}>重新登录</Button>}
-          className="timetable-recovery-notice timetable-recovery-notice-below"
-        />
-      )}
+      {isMobile && recoveryAlert}
 
       <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} conflictMap={effectiveConflictMap} courseScheduleMap={conflictCourseScheduleMap} />
 

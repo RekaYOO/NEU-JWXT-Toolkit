@@ -151,6 +151,7 @@ class JwxkBatchModel(StrictModel):
     notice: str
     state: Literal["not_started", "active", "ended", "unknown"]
     can_enter: bool
+    access_scope: Literal["account", "public"] = "account"
     account_selectable: bool = False
     confirmed: bool = False
     week_range: str = ""

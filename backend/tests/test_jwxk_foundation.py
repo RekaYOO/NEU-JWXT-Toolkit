@@ -218,6 +218,7 @@ def test_public_batch_parser_distinguishes_weight_and_grab_windows():
     ]'''), now=datetime(2026, 8, 13, 12, 0, 0))
 
     assert [item.selection_type for item in batches] == ["权重", "抢选"]
+    assert all(item.access_scope == "public" for item in batches)
     assert all(item.state == "not_started" and not item.can_enter for item in batches)
     active = parse_public_batches(_html(r'''[
       {"code":"weight","name":"选修课调整","beginTime":"2026-08-18 13:00:00",
@@ -1269,9 +1270,27 @@ def test_account_batches_use_official_time_and_keep_account_eligibility():
     assert batches[0].state == "active"
     assert batches[0].can_enter is True
     assert batches[0].account_selectable is True
+    assert batches[0].access_scope == "account"
     assert batches[0].confirmed is True
     assert batches[0].allow_cross_campus is True
     assert batches[0].menus == ({"code": "FANKC", "name": "培养方案内课"},)
+
+
+def test_account_batch_interface_keeps_rounds_current_account_cannot_enter():
+    batches = parse_account_batches([{
+        "code": "other-round",
+        "name": "其他年级选课",
+        "beginTime": "2026-09-04 08:00:00",
+        "endTime": "2026-09-05 18:00:00",
+        "canSelect": "0",
+        "typeCode": "02",
+        "typeName": "抢选",
+    }], official_now=1788508800000)
+
+    assert len(batches) == 1
+    assert batches[0].access_scope == "account"
+    assert batches[0].account_selectable is False
+    assert batches[0].can_enter is False
 
 
 def test_course_selection_refetches_secret_and_performs_explicit_301_confirmation():
