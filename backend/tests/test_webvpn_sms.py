@@ -65,6 +65,7 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         ):
             started = client.start_webvpn_password_login()
             self.assertEqual(started["status"], "sms_required")
+            self.assertEqual(started["expires_in"], 300)
             self.assertTrue(started["captcha_image"].startswith("data:image/jpeg;base64,"))
             self.assertNotIn("ocr_candidate", started)
             self.assertEqual(client.send_webvpn_sms_code(started["flow_id"], "1234")["status"], "sent")
@@ -194,7 +195,13 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         )
         client._session = Mock()
         client.session.post.return_value = response
-        self.assertEqual(client.send_webvpn_sms_code("flow", "1234")["status"], "sent")
+        with patch("backend.core.auth.client.time.time", return_value=1000):
+            result = client.send_webvpn_sms_code("flow", "1234")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["expires_in"], 300)
+        self.assertEqual(client._webvpn_sms_flow["code_expires_at"], 1300)
+        self.assertEqual(client._webvpn_sms_flow["expires_at"], 1360)
 
     def test_sms_challenge_safe_view_reuses_current_captcha(self):
         client = NEUAuthClient("20250001", "secret", network_mode="webvpn")

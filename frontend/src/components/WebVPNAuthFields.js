@@ -97,6 +97,7 @@ const WebVPNAuthFields = ({
 
     <p className="sms-auth-note">
       图形验证码需手动填写；只有点击“获取验证码”后，学校才会发送短信。
+      未收到短信时可再次点击“重新发送”，学校可能会限制短时间内的发送频率。
     </p>
   </div>
 );

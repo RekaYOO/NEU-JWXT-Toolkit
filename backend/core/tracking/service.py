@@ -751,6 +751,26 @@ class GradeTrackingService:
         payload["expires_at"] = time.time() + expires_in
         return payload
 
+    @staticmethod
+    def _update_recovery_flow(
+        flow: dict[str, Any], result: dict[str, Any],
+    ) -> None:
+        """Apply safe challenge fields and renew the local visible deadline."""
+        flow.update(
+            {
+                key: value
+                for key, value in result.items()
+                if key in {"captcha_image", "expires_in"}
+            }
+        )
+        if "expires_in" in result:
+            try:
+                expires_in = max(1, int(result.get("expires_in") or 300))
+            except (TypeError, ValueError):
+                expires_in = 300
+            flow["expires_in"] = expires_in
+            flow["expires_at"] = time.time() + expires_in
+
     def _complete_recovery_locked(self) -> dict[str, Any]:
         client = self._recovery_client
         if client is None:
@@ -856,7 +876,7 @@ class GradeTrackingService:
             client, flow = self._require_sms_recovery_locked(token)
             with self.remote_guard():
                 result = client.refresh_webvpn_captcha(flow["flow_id"])
-            flow.update(result)
+            self._update_recovery_flow(flow, result)
             return {"success": True, **result}
 
     def send_recovery_sms(self, token: str, captcha_code: str) -> dict[str, Any]:
@@ -866,13 +886,7 @@ class GradeTrackingService:
                 result = client.send_webvpn_sms_code(
                     flow["flow_id"], captcha_code
                 )
-            flow.update(
-                {
-                    key: value
-                    for key, value in result.items()
-                    if key in {"captcha_image", "expires_in"}
-                }
-            )
+            self._update_recovery_flow(flow, result)
             if result.get("status") == "sent":
                 with self._lock:
                     self._state.update(
@@ -896,13 +910,7 @@ class GradeTrackingService:
                 )
             if result.get("status") == "authenticated":
                 return self._complete_recovery_locked()
-            flow.update(
-                {
-                    key: value
-                    for key, value in result.items()
-                    if key in {"captcha_image", "expires_in"}
-                }
-            )
+            self._update_recovery_flow(flow, result)
             return {"success": False, **result}
 
     def cancel_recovery_login(self, token: str) -> dict[str, Any]:

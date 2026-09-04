@@ -53,7 +53,8 @@ const GradeTrackingRecoveryPage = ({ token }) => {
   }, []);
 
   const setCountdown = useCallback((value, fallback = 300) => {
-    const next = Math.max(1, Number(value) || fallback);
+    const parsed = Number(value);
+    const next = Math.max(1, Number.isFinite(parsed) ? parsed : fallback);
     secondsLeftRef.current = next;
     setSecondsLeft(next);
   }, []);
@@ -61,7 +62,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
   const enterSMSStage = useCallback((result) => {
     stopPolling();
     setFlow((current) => ({ ...current, ...result }));
-    setCountdown(result.expires_in, 180);
+    setCountdown(result.expires_in, 300);
     setCaptchaCode('');
     setSmsCode('');
     setSmsSent(false);
@@ -164,17 +165,21 @@ const GradeTrackingRecoveryPage = ({ token }) => {
   useEffect(() => {
     if (!['qr_pending', 'sms_required'].includes(stage)) return undefined;
     const countdown = window.setInterval(() => {
-      const nextValue = Math.max(0, secondsLeftRef.current - 1);
+      const previousValue = secondsLeftRef.current;
+      const nextValue = Math.max(0, previousValue - 1);
       secondsLeftRef.current = nextValue;
       setSecondsLeft(nextValue);
-      if (nextValue === 0) {
-        stopPolling();
-        setStage('expired');
-        setMessage(
-          stage === 'sms_required'
-            ? '本次短信验证已失效，请重新开始登录'
-            : '本次二维码已失效，请重新开始登录'
-        );
+      if (nextValue === 0 && previousValue > 0) {
+        if (stage === 'sms_required') {
+          // The school's five-minute SMS validity is approximate.  Keep the
+          // form usable and let the official endpoint decide; the user may
+          // still retry or explicitly resend without rebuilding the login.
+          setMessage('验证码已超过预计有效时间；未收到短信可重新发送，也可直接尝试验证');
+        } else {
+          stopPolling();
+          setStage('expired');
+          setMessage('本次二维码已失效，请重新开始登录');
+        }
       }
     }, 1000);
     return () => window.clearInterval(countdown);
@@ -186,6 +191,7 @@ const GradeTrackingRecoveryPage = ({ token }) => {
     try {
       const result = await refreshGradeTrackingRecoveryCaptcha(token);
       setFlow((current) => ({ ...current, ...result }));
+      setCountdown(result.expires_in, 300);
       setCaptchaCode('');
       setSmsCode('');
       setSmsSent(false);
@@ -214,7 +220,13 @@ const GradeTrackingRecoveryPage = ({ token }) => {
         return;
       }
       setSmsSent(true);
-      setMessage('短信验证码已发送，请查收并填写');
+      setSmsCode('');
+      setCountdown(result.expires_in, 300);
+      setMessage(
+        smsSent
+          ? '短信验证码已重新发送，请使用最新收到的验证码'
+          : '短信验证码已发送，请查收并填写'
+      );
     } catch (error) {
       setAuthError(recoveryErrorMessage(error, '短信验证码发送失败，请重试'));
     } finally {
@@ -295,7 +307,11 @@ const GradeTrackingRecoveryPage = ({ token }) => {
           <>
             <div className="tracking-recovery-countdown is-sms">
               <ClockCircleOutlined />
-              本次验证剩余 <strong>{formatCountdown(secondsLeft)}</strong>
+              {secondsLeft > 0 ? (
+                <>预计有效时间 <strong>{formatCountdown(secondsLeft)}</strong></>
+              ) : (
+                <strong>可重新发送或继续尝试验证</strong>
+              )}
             </div>
             <WebVPNAuthFields
               embedded

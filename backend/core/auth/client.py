@@ -166,6 +166,14 @@ WEBVPN_ERR_SESSION_ESTABLISH = "WEBVPN_SESSION_ESTABLISH_FAILED"
 WEBVPN_ERR_CAMPUS_NETWORK = "WEBVPN_CAMPUS_NETWORK_BLOCKED"
 WEBVPN_ERR_UNKNOWN = "WEBVPN_UNKNOWN_ERROR"
 
+# The school describes SMS codes as having an approximately five-minute
+# validity window.  Keep that as the user-facing countdown, but retain a short
+# server-side grace period so clock skew, page scheduling and a request already
+# in flight do not make the toolkit reject a code before the official service
+# has had a chance to decide.
+WEBVPN_SMS_VALIDITY_SECONDS = 300
+WEBVPN_SMS_FLOW_GRACE_SECONDS = 60
+
 _WEBVPN_CAMPUS_BLOCK_MARKERS = (
     "WebVPN仅用于我校师生在校外登录",
     "校园网用户无需使用WebVPN",
@@ -1020,6 +1028,7 @@ class NEUAuthClient:
         remember: bool = False,
         target_service: str = "primary",
     ) -> Dict[str, Any]:
+        now = time.time()
         flow = {
             "id": str(uuid.uuid4()),
             "source": source,
@@ -1027,7 +1036,12 @@ class NEUAuthClient:
             "form_action": challenge["form_action"],
             "page_url": challenge["page_url"],
             "hidden_fields": dict(challenge.get("hidden_fields") or {}),
-            "expires_at": time.time() + 180,
+            "code_expires_at": now + WEBVPN_SMS_VALIDITY_SECONDS,
+            "expires_at": (
+                now
+                + WEBVPN_SMS_VALIDITY_SECONDS
+                + WEBVPN_SMS_FLOW_GRACE_SECONDS
+            ),
             "remember": bool(remember),
             "target_service": target_service if target_service == "jwxk" else "primary",
         }
@@ -1036,9 +1050,19 @@ class NEUAuthClient:
         return {
             "status": "sms_required",
             "flow_id": flow["id"],
-            "expires_in": 180,
+            "expires_in": WEBVPN_SMS_VALIDITY_SECONDS,
             **result,
         }
+
+    @staticmethod
+    def _renew_webvpn_sms_window(flow: Dict[str, Any]) -> int:
+        """Renew the nominal SMS window after a user refresh/send action."""
+        now = time.time()
+        flow["code_expires_at"] = now + WEBVPN_SMS_VALIDITY_SECONDS
+        flow["expires_at"] = (
+            flow["code_expires_at"] + WEBVPN_SMS_FLOW_GRACE_SECONDS
+        )
+        return WEBVPN_SMS_VALIDITY_SECONDS
 
     def _get_webvpn_sms_flow(self, flow_id: str) -> Dict[str, Any]:
         flow = self._webvpn_sms_flow
@@ -1149,7 +1173,13 @@ class NEUAuthClient:
 
     def refresh_webvpn_captcha(self, flow_id: str) -> Dict[str, Any]:
         flow = self._get_webvpn_sms_flow(flow_id)
-        return {"status": "captcha_refreshed", **self._fetch_webvpn_captcha(flow)}
+        result = self._fetch_webvpn_captcha(flow)
+        expires_in = self._renew_webvpn_sms_window(flow)
+        return {
+            "status": "captcha_refreshed",
+            "expires_in": expires_in,
+            **result,
+        }
 
     def get_webvpn_sms_challenge(self) -> Optional[Dict[str, Any]]:
         """Return the safe, user-facing view of the current SMS challenge."""
@@ -1163,7 +1193,10 @@ class NEUAuthClient:
             "status": "sms_required",
             "flow_id": flow["id"],
             "captcha_image": f"data:{media_type};base64,{image}" if image else "",
-            "expires_in": max(0, int(float(flow["expires_at"]) - time.time())),
+            "expires_in": max(
+                0,
+                int(float(flow.get("code_expires_at") or flow["expires_at"]) - time.time()),
+            ),
         }
 
     def send_webvpn_sms_code(self, flow_id: str, captcha_code: str) -> Dict[str, Any]:
@@ -1231,7 +1264,10 @@ class NEUAuthClient:
                 error_code=WEBVPN_ERR_UPSTREAM_NON_JSON,
             )
         if info in {"send", "success", "ok", 0, "0"} or result.get("success") is True:
-            return {"status": "sent"}
+            return {
+                "status": "sent",
+                "expires_in": self._renew_webvpn_sms_window(flow),
+            }
         if info == "max" or "频繁" in message:
             raise WebVPNLoginError("发送过于频繁，请稍后再试", error_code=WEBVPN_ERR_SMS_RATE_LIMITED)
         if info == "unknow":

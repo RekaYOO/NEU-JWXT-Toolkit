@@ -52,7 +52,7 @@ URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控�
    `code=<图形验证码>&method=mobile`。短信发送失败或图形验证码错误时会刷新图片并保留当前 Flow。
 6. 用户输入短信验证码后调用 `POST /api/webvpn/sms/verify`，后端提交二次认证表单并校验教务系统会话。
 
-短信分支由统一认证服务决定；某些账户、设备授信状态或保护期不会触发该分支。未触发并不代表项目跳过了短信流程。待提交表单只存在于内存中、有效 180 秒，且绝不会写入 `session.json`、日志或接口响应。
+短信分支由统一认证服务决定；某些账户、设备授信状态或保护期不会触发该分支。未触发并不代表项目跳过了短信流程。待提交表单只存在于内存中，短信验证码按学校约五分钟的有效时间展示；服务器额外保留一分钟请求容错，避免浏览器调度、时钟差或在途请求导致本地提前拒绝，最终有效性仍由学校接口判断。表单绝不会写入 `session.json`、日志或接口响应。
 
 账号密码校验失败时，学校页面可能分别返回“账号不存在”或“密码错误”。工具箱对外统一
 显示“账号或密码错误”，避免依据远端提示误判具体是哪一项有误。
@@ -98,7 +98,7 @@ WebVPN 专用接口在保留 `message` 和 `status` 的同时返回稳定的 `er
 | --- | --- | --- |
 | `WEBVPN_FLOW_MISSING` | 服务端没有对应的内存流程 | 关闭当前弹窗/二维码，提示重新开始登录 |
 | `WEBVPN_FLOW_REPLACED` | 流程已被另一轮登录替换 | 丢弃旧表单状态，提示重新开始 |
-| `WEBVPN_FLOW_EXPIRED` | 图形验证码/短信流程超过 180 秒 | 关闭旧流程，要求重新输入账号密码 |
+| `WEBVPN_FLOW_EXPIRED` | 二维码已过期，或短信 Flow 超过五分钟预计窗口及一分钟请求容错 | 关闭旧流程，要求重新输入账号密码 |
 | `WEBVPN_CAPTCHA_FETCH_FAILED` | 图形验证码缺失、空响应或无法识别为图片 | 保留页面，允许刷新或重新开始 |
 | `WEBVPN_CAPTCHA_INVALID` | 图形验证码为空或官方校验失败 | 保留弹窗，使用返回的新图片重新填写 |
 | `WEBVPN_SMS_RATE_LIMITED` | 官方短信发送限流 | 不刷新登录流程，等待官方冷却 |
@@ -127,8 +127,8 @@ WebVPN 专用接口在保留 `message` 和 `status` 的同时返回稳定的 `er
 | 方法和路径 | 请求字段 | 成功响应/状态 |
 | --- | --- | --- |
 | `POST /api/webvpn/password/start` | `username`、`password`、`remember=false`、`target_service=primary|jwxk`（默认 `primary`） | `status: "authenticated"` 或 `status: "sms_required"`；后者附带 `flow_id`、`expires_in` |
-| `POST /api/webvpn/sms/captcha/refresh` | `flow_id` | 学校实时返回的新验证码图片 |
-| `POST /api/webvpn/sms/send` | `flow_id`、`captcha_code` | `status: "sent"`；只在用户明确点击后发送 |
+| `POST /api/webvpn/sms/captcha/refresh` | `flow_id` | 学校实时返回的新验证码图片，并以 `expires_in` 重新给出约五分钟预计窗口 |
+| `POST /api/webvpn/sms/send` | `flow_id`、`captcha_code` | `status: "sent"`、`expires_in`；只在用户明确点击后发送，成功重发会重置预计窗口 |
 | `POST /api/webvpn/sms/verify` | `flow_id`、`code`、`trust_device=false` | `status: "authenticated"`、`username`、`message` |
 | `POST /api/webvpn/sms/cancel` | `flow_id` | `success` |
 

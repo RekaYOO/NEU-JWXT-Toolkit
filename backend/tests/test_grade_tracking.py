@@ -856,7 +856,7 @@ def test_recovery_qr_can_continue_through_sms_challenge(tmp_path, monkeypatch):
 
         def send_webvpn_sms_code(self, flow_id, captcha_code):
             assert (flow_id, captcha_code) == ("sms-flow", "1234")
-            return {"status": "sent"}
+            return {"status": "sent", "expires_in": 300}
 
         def verify_webvpn_sms_code(self, flow_id, code, trust_device=False):
             assert (flow_id, code, trust_device) == ("sms-flow", "879766", False)
@@ -904,6 +904,8 @@ def test_recovery_qr_can_continue_through_sms_challenge(tmp_path, monkeypatch):
     refreshed = service.refresh_recovery_captcha(token)
     assert refreshed["captcha_image"].endswith("new")
     assert service.send_recovery_sms(token, "1234")["status"] == "sent"
+    renewed = service.get_recovery_status(token)
+    assert 295 <= renewed["expires_in"] <= 300
     completed = service.verify_recovery_sms(token, "879766")
 
     assert completed["status"] == "authenticated"
