@@ -55,6 +55,7 @@ import {
 } from '../resources/BrowserTimetableStore';
 import { compareAcademicTermsNewestFirst } from '../utils/termSort';
 import { mergeSelectionConflictMatches, sameSelectionCourse } from '../utils/jwxkSchedule';
+import { jwxkScheduleOverlayMeta } from '../utils/jwxkModes';
 import { loadSetting, saveSetting } from '../utils/settings';
 import './TimetablePage.css';
 
@@ -768,6 +769,16 @@ export const courseIsPreselected = course => Boolean(
   course?.preselected || (course?.tags || []).some(tag => String(tag).includes('预选'))
 );
 
+export const selectionCourseStateLabel = course => {
+  if (!course?.layer) return '';
+  const explicit = [...(course.tags || []), course.course_type].find(
+    value => ['已抢到课程', '已选课程'].includes(String(value || '').trim()),
+  );
+  return explicit || jwxkScheduleOverlayMeta(
+    course.layer, course.selection_type_code,
+  ).label;
+};
+
 const courseLayerClass = course => `${(
   course.layer === 'candidate' ? ' is-plan-candidate'
     : course.layer === 'preview' ? ' is-selection-preview'
@@ -945,9 +956,9 @@ export const courseTeacherText = course => normalizedCourseTeachers(course).join
  */
 export const mobileCourseSummary = (
   courses = [],
-  { now = new Date(), currentTerm = false, currentWeekNumber = null } = {},
+  { now = new Date(), currentTerm = false, currentWeekNumber = null, weeks = [] } = {},
 ) => {
-  if (!currentTerm || !currentWeekNumber) return { kind: 'none', label: '无课', courses: [] };
+  if (!currentTerm || !currentWeekNumber) return { kind: 'complete', label: '今明两天课程结束', courses: [] };
   const today = todayWeekday(now);
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
   const timedToday = (courses || [])
@@ -987,7 +998,57 @@ export const mobileCourseSummary = (
       startTime: upcoming.start_time,
     };
   }
-  return { kind: 'none', label: '无课', courses: [] };
+  const tomorrow = today === 6 ? 7 : today + 1;
+  let tomorrowWeek = currentWeekNumber;
+  if (today === 6) {
+    const orderedWeeks = (weeks || [])
+      .map(item => Number(item?.number))
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right);
+    tomorrowWeek = orderedWeeks.find(number => number > currentWeekNumber) || null;
+  }
+  const tomorrowCourse = tomorrowWeek == null ? null : (courses || [])
+    .filter(course => (
+      Number(course?.weekday) === tomorrow
+      && !course?.recurrence_unknown
+      && Array.isArray(course?.weeks)
+      && course.weeks.includes(tomorrowWeek)
+      && timeToMinutes(course?.start_time) != null
+    ))
+    .sort((left, right) => (
+      timeToMinutes(left.start_time) - timeToMinutes(right.start_time)
+      || String(left.course_name || '').localeCompare(String(right.course_name || ''))
+    ))[0];
+  if (tomorrowCourse) {
+    return {
+      kind: 'tomorrow',
+      label: '明日',
+      course: tomorrowCourse,
+      courses: [tomorrowCourse],
+      startTime: tomorrowCourse.start_time,
+    };
+  }
+  return { kind: 'complete', label: '今明两天课程结束', courses: [] };
+};
+
+export const adjacentMobileTimetableDay = ({ day, week, direction, weeks = [] }) => {
+  const dayIndex = TIMETABLE_DAY_ORDER.indexOf(Number(day));
+  if (dayIndex < 0 || ![-1, 1].includes(direction)) return null;
+  const nextIndex = dayIndex + direction;
+  if (nextIndex >= 0 && nextIndex < TIMETABLE_DAY_ORDER.length) {
+    return { day: TIMETABLE_DAY_ORDER[nextIndex], week };
+  }
+  const orderedWeeks = (weeks || [])
+    .map(item => Number(item?.number))
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  const weekIndex = orderedWeeks.indexOf(Number(week));
+  const nextWeek = orderedWeeks[weekIndex + direction];
+  if (weekIndex < 0 || nextWeek == null) return null;
+  return {
+    day: direction > 0 ? TIMETABLE_DAY_ORDER[0] : TIMETABLE_DAY_ORDER[TIMETABLE_DAY_ORDER.length - 1],
+    week: nextWeek,
+  };
 };
 
 export const timetableCacheIndicator = ({ payload, source = '', failed = false } = {}) => {
@@ -1188,7 +1249,10 @@ function TargetResultPanel({
   );
 }
 
+export const TIMETABLE_LOGIN_ERROR_TEXT = '登录错误，请手动尝试重新登录';
+
 export const requestErrorText = (error, fallback, timeoutFallback = fallback) => {
+  if (error.response?.status === 401) return TIMETABLE_LOGIN_ERROR_TEXT;
   const detail = error.response?.data?.detail;
   if (detail) return detail;
   if (error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '')) {
@@ -2467,7 +2531,23 @@ function TimetablePage({
     });
   };
 
+  const navigateMobileDay = direction => {
+    const next = adjacentMobileTimetableDay({
+      day: mobileDay,
+      week: weekNumber,
+      direction,
+      weeks: context?.weeks || [],
+    });
+    if (!next) return;
+    if (next.week !== weekNumber) switchWeek(next.week);
+    handleMobileDayChange(next.day);
+  };
+
   const retryError = () => {
+    if (error?.message === TIMETABLE_LOGIN_ERROR_TEXT) {
+      navigate('/login');
+      return;
+    }
     if (error?.stage === 'terms') loadTerms();
     else if (error?.stage === 'personal') loadPersonalTimetable(termCode);
     else if (error?.stage === 'targets') searchTargets(targetSearchState.current.keyword || '');
@@ -2560,6 +2640,7 @@ function TimetablePage({
     source: cacheTier,
     failed: cacheSyncFailed,
   });
+  const cacheAuthFailure = cacheStatusPayload?.cache?.last_error_kind === 'NEULoginError';
   const refreshButtonClass = mode === 'personal'
     ? `timetable-refresh-button is-cache-${cacheIndicator.state}`
     : 'timetable-refresh-button';
@@ -2815,6 +2896,7 @@ function TimetablePage({
           summary={mobileCourseSummary(mobileSummaryCourses, {
             currentTerm: termCode === currentTermCode,
             currentWeekNumber: effectiveCurrentWeekNumber,
+            weeks: context?.weeks || [],
           })}
           defaultTimetableOnOpen={defaultTimetableOnOpen}
           onToggleDefault={toggleDefaultTimetable}
@@ -2822,16 +2904,6 @@ function TimetablePage({
           onViewModeChange={switchViewMode}
         />,
         headerPortalTarget,
-      )}
-      {recoveryNotice && (
-        <Alert
-          type="warning"
-          showIcon
-          message={recoveryNotice}
-          description="当前仅可查看本机快照；登录恢复后会自动核验并更新课表，其他教务操作暂不可用。"
-          action={<Button size="small" onClick={() => navigate('/login')}>重新登录</Button>}
-          className="timetable-recovery-notice"
-        />
       )}
       <Tabs activeKey={mode} onChange={switchMode} items={TIMETABLE_MODES} className="timetable-mode-tabs" />
 
@@ -2898,7 +2970,9 @@ function TimetablePage({
           showIcon
           message={error.message}
           className="timetable-error"
-          action={<Button size="small" onClick={retryError}>重试</Button>}
+          action={<Button size="small" onClick={retryError}>
+            {error.message === TIMETABLE_LOGIN_ERROR_TEXT ? '重新登录' : '重试'}
+          </Button>}
         />
       )}
 
@@ -2934,6 +3008,7 @@ function TimetablePage({
                   currentTerm={termCode === currentTermCode}
                   currentWeekNumber={effectiveCurrentWeekNumber}
                   onDayChange={handleMobileDayChange}
+                  onSwipeDay={navigateMobileDay}
                   onCourseClick={setDetailCourse}
                   personalConflictMap={effectiveConflictMap}
                   presentation={presentation}
@@ -2973,6 +3048,18 @@ function TimetablePage({
           <OtherCourses schedule={schedule} />
         </>
       ) : null}
+
+      {(recoveryNotice || cacheAuthFailure) && (
+        <Alert
+          type="warning"
+          showIcon
+          message={cacheAuthFailure
+            ? '登录已失效，请重新登录'
+            : '当前显示本机课表，正在后台恢复登录'}
+          action={<Button size="small" onClick={() => navigate('/login')}>重新登录</Button>}
+          className="timetable-recovery-notice timetable-recovery-notice-below"
+        />
+      )}
 
       <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} conflictMap={effectiveConflictMap} courseScheduleMap={conflictCourseScheduleMap} />
 
@@ -3288,7 +3375,7 @@ function DesktopTimetable({
                     {!compact && <span className="course-location"><EnvironmentOutlined /> {content.location}</span>}
                     {!compact && contextText && <span className="course-context">{contextText}</span>}
                     {!compact && <span className="course-secondary">{uniqueTexts([content.type, sectionText]).join(' · ')}</span>}
-                    {compact && course.layer && <small className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'pending' ? '已投权待结果' : course.layer === 'selected' ? '已选' : '待选方案'}</small>}
+                    {compact && course.layer && <small className="selection-course-state">{selectionCourseStateLabel(course)}</small>}
                   </button>
                   </PersonalConflictPopover>
                 );
@@ -3402,7 +3489,7 @@ function DesktopTimetable({
                         {!compact && <span className="timetable-cluster-stack-detail"><EnvironmentOutlined /> {content.location}</span>}
                         {!compact && contextText && <span className="timetable-cluster-stack-detail">{contextText}</span>}
                         {!compact && content.type && <span className="timetable-cluster-stack-detail">{content.type}</span>}
-                        {compact && course.layer && <small className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'pending' ? '已投权待结果' : course.layer === 'selected' ? '已选' : '待选方案'}</small>}
+                        {compact && course.layer && <small className="selection-course-state">{selectionCourseStateLabel(course)}</small>}
                         {course.hasActualConflict && <small>{isExpanded ? '同周时间冲突' : '冲突'}</small>}
                       </button>
                       </PersonalConflictPopover>
@@ -3473,7 +3560,7 @@ export function MobileTimetableSummary({
   onViewModeChange,
 }) {
   const [expanded, setExpanded] = useState(false);
-  const summaryName = summary?.course?.course_name || summary?.label || '无课';
+  const summaryName = summary?.course?.course_name || summary?.label || '今明两天课程结束';
   const summaryCourse = summary?.course || null;
   const summaryCourseContent = summaryCourse ? courseCardContent(summaryCourse) : null;
   const summaryTeacher = summaryCourse ? courseTeacherText(summaryCourse) : '';
@@ -3502,11 +3589,11 @@ export function MobileTimetableSummary({
         aria-controls="timetable-mobile-summary-controls"
         onClick={() => setExpanded(value => !value)}
       >
-        {summary?.kind !== 'none' && <span className={`timetable-mobile-summary-status is-${summary?.kind}`}>
-          {summary?.kind === 'current' ? '当前' : '下节'}
+        {summary?.kind !== 'complete' && <span className={`timetable-mobile-summary-status is-${summary?.kind}`}>
+          {summary?.kind === 'current' ? '当前' : summary?.kind === 'tomorrow' ? '明日' : '下节'}
         </span>}
         <strong className="timetable-mobile-summary-name" title={summaryName}>
-          {summary?.kind === 'none' ? summaryName : `${summaryName}${countSuffix}`}
+          {summary?.kind === 'complete' ? summaryName : `${summaryName}${countSuffix}`}
         </strong>
         {summary?.startTime && <small>{summary.startTime}</small>}
         <span className={`timetable-mobile-summary-chevron${expanded ? ' is-expanded' : ''}`} aria-hidden="true" />
@@ -3628,6 +3715,7 @@ export function MobileTimetable({
   currentTerm,
   currentWeekNumber,
   onDayChange,
+  onSwipeDay,
   onCourseClick,
   personalConflictMap,
   presentation = 'default',
@@ -3635,6 +3723,8 @@ export function MobileTimetable({
   dayAnchorRef,
 }) {
   const [now, setNow] = useState(() => new Date());
+  const swipeStartRef = useRef(null);
+  const suppressSwipeClickRef = useRef(false);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 30000);
     return () => window.clearInterval(timer);
@@ -3676,12 +3766,36 @@ export function MobileTimetable({
           <span className="mobile-course-teacher">{teacherText}</span>
         )}
         {!compact && content.type && <span className="mobile-course-type">{content.type}</span>}
-        {compact && course.layer && <span className="selection-course-state">{course.layer === 'preview' ? '正在预览' : course.layer === 'pending' ? '已投权待结果' : course.layer === 'selected' ? '已选' : '待选方案'}</span>}
+        {compact && course.layer && <span className="selection-course-state">{selectionCourseStateLabel(course)}</span>}
       </Card>
     );
   };
   return (
-    <section className={`timetable-mobile${compact ? ' is-selection-compact' : ''}`} aria-label="手机课表">
+    <section
+      className={`timetable-mobile${compact ? ' is-selection-compact' : ''}`}
+      aria-label="手机课表"
+      onClickCapture={event => {
+        if (!suppressSwipeClickRef.current) return;
+        suppressSwipeClickRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      onPointerDown={event => {
+        if (compact || event.pointerType === 'mouse' || event.target.closest('button, a, input, .ant-segmented')) return;
+        swipeStartRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+      }}
+      onPointerUp={event => {
+        const start = swipeStartRef.current;
+        swipeStartRef.current = null;
+        if (!start || start.pointerId !== event.pointerId) return;
+        const dx = event.clientX - start.x;
+        const dy = event.clientY - start.y;
+        if (Math.abs(dx) < 50 || Math.abs(dx) <= Math.abs(dy) * 1.2) return;
+        suppressSwipeClickRef.current = true;
+        onSwipeDay?.(dx < 0 ? 1 : -1);
+      }}
+      onPointerCancel={() => { swipeStartRef.current = null; }}
+    >
       <div className="timetable-mobile-day-selector" ref={dayAnchorRef}>
         <Segmented
           block
@@ -3764,10 +3878,7 @@ function CourseDetailContent({ course, conflictMap = {}, courseScheduleMap = {} 
       <div className="timetable-detail-lead">
         <span>{WEEKDAY_NAMES[course.weekday - 1] || '未安排'} · 第{course.start_section}–{course.end_section}节</span>
         <strong><EnvironmentOutlined /> {content.location}</strong>
-        {course.layer === 'candidate' && <Tag color="blue">待选方案</Tag>}
-        {course.layer === 'preview' && <Tag color="blue">正在预览</Tag>}
-        {course.layer === 'pending' && <Tag color="blue">已投权待结果</Tag>}
-        {course.layer === 'selected' && <Tag color="green">已选课程</Tag>}
+        {course.layer && <Tag color={course.layer === 'selected' ? 'green' : 'blue'}>{selectionCourseStateLabel(course)}</Tag>}
         {content.type && <Tag>{content.type}</Tag>}
       </div>
       <Descriptions size="small" column={1} colon={false}>

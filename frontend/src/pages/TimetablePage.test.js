@@ -1,6 +1,7 @@
 import {
   courseCardContent,
   courseIsPreselected,
+  selectionCourseStateLabel,
   courseMatchesWeek,
   courseVisibleLines,
   formatWeekNumbers,
@@ -30,6 +31,7 @@ import {
   preferredMobileDay,
   isCourseHappeningNow,
   mobileCourseSummary,
+  adjacentMobileTimetableDay,
   timetableCacheIndicator,
   courseTeacherText,
   shouldHighlightToday,
@@ -45,6 +47,7 @@ import {
   personalConflictMapFromResponse,
   mergeScheduleWithSelectionOverlays,
   requestErrorText,
+  TIMETABLE_LOGIN_ERROR_TEXT,
   restorePersonalTimetableMemory,
   timetableSnapshotIsNewer,
   timetableContentSignature,
@@ -73,6 +76,16 @@ jest.mock('../services/api', () => ({
 
 
 describe('TimetablePage helpers', () => {
+  test('uses the shared selection overlay labels without losing the round-specific selected state', () => {
+    expect(selectionCourseStateLabel({ layer: 'candidate' })).toBe('方案候选');
+    expect(selectionCourseStateLabel({ layer: 'pending' })).toBe('已投权待结果');
+    expect(selectionCourseStateLabel({ layer: 'preview' })).toBe('正在预览');
+    expect(selectionCourseStateLabel({
+      layer: 'selected', tags: ['已抢到课程'],
+    })).toBe('已抢到课程');
+    expect(selectionCourseStateLabel({ layer: 'selected' })).toBe('已选课程');
+  });
+
   test('centers the selected week inside the horizontal rail without document scrolling', () => {
     const rail = { scrollWidth: 900, clientWidth: 300 };
     const active = { offsetLeft: 420, offsetWidth: 90 };
@@ -283,6 +296,10 @@ describe('TimetablePage helpers', () => {
   });
 
   test('explains frontend request timeouts instead of reporting an unknown term failure', () => {
+    expect(requestErrorText(
+      { response: { status: 401, data: { detail: '登录状态已失效，请重新登录' } } },
+      'fallback',
+    )).toBe(TIMETABLE_LOGIN_ERROR_TEXT);
     expect(requestErrorText(
       { code: 'ECONNABORTED', message: 'timeout of 30000ms exceeded' },
       '无法读取课表学期，请稍后重试',
@@ -741,7 +758,36 @@ describe('TimetablePage helpers', () => {
     }));
     expect(mobileCourseSummary(courses, {
       now: new Date('2026-08-17T19:00:00'), currentTerm: true, currentWeekNumber: 3,
-    })).toEqual(expect.objectContaining({ kind: 'none', label: '无课' }));
+    })).toEqual(expect.objectContaining({ kind: 'complete', label: '今明两天课程结束' }));
+  });
+
+  test('shows tomorrow first course and advances the teaching week from Saturday to Sunday', () => {
+    const courses = [
+      { course_name: '明日早课', weekday: 7, weeks: [4], start_time: '08:30', end_time: '10:00' },
+      { course_name: '明日晚课', weekday: 7, weeks: [4], start_time: '13:00', end_time: '14:30' },
+    ];
+    expect(mobileCourseSummary(courses, {
+      now: new Date('2026-08-22T20:00:00'),
+      currentTerm: true,
+      currentWeekNumber: 3,
+      weeks: [{ number: 3 }, { number: 4 }],
+    })).toEqual(expect.objectContaining({
+      kind: 'tomorrow',
+      label: '明日',
+      startTime: '08:30',
+      course: expect.objectContaining({ course_name: '明日早课' }),
+    }));
+  });
+
+  test('moves mobile days one at a time and crosses teaching-week boundaries', () => {
+    const weeks = [{ number: 2 }, { number: 3 }, { number: 4 }];
+    expect(adjacentMobileTimetableDay({ day: 1, week: 3, direction: 1, weeks }))
+      .toEqual({ day: 2, week: 3 });
+    expect(adjacentMobileTimetableDay({ day: 6, week: 3, direction: 1, weeks }))
+      .toEqual({ day: 7, week: 4 });
+    expect(adjacentMobileTimetableDay({ day: 7, week: 3, direction: -1, weeks }))
+      .toEqual({ day: 6, week: 2 });
+    expect(adjacentMobileTimetableDay({ day: 6, week: 4, direction: 1, weeks })).toBeNull();
   });
 
   test('keeps simultaneous current courses countable and normalizes teacher names', () => {

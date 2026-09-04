@@ -11,6 +11,8 @@ from backend.app.schemas.auth import (
     WebVPNQRStartRequest,
 )
 from backend.core.auth.client import (
+    LOGIN_ERR_WRONG_PWD,
+    NEULoginError,
     WEBVPN_ERR_CAMPUS_NETWORK,
     WebVPNRequiredError,
     WebVPNLoginError,
@@ -19,6 +21,39 @@ from backend.core.auth.session_manager import AuthSessionManager
 
 
 class AuthRouteTests(unittest.TestCase):
+    def test_password_rejections_have_one_public_message(self):
+        direct_client = Mock()
+        direct_client.login.side_effect = NEULoginError(
+            "账号不存在",
+            error_type=LOGIN_ERR_WRONG_PWD,
+        )
+        with patch.object(auth, "NEUAuthClient", return_value=direct_client):
+            direct = auth.login(
+                LoginRequest(
+                    username="20250001",
+                    password="wrong-password",
+                    network_mode="direct",
+                )
+            )
+
+        webvpn_client = Mock()
+        webvpn_client.start_webvpn_password_login.side_effect = NEULoginError(
+            "账号不存在",
+            error_type=LOGIN_ERR_WRONG_PWD,
+        )
+        with patch.object(auth, "NEUAuthClient", return_value=webvpn_client):
+            webvpn = auth.start_webvpn_password_login(
+                WebVPNPasswordStartRequest(
+                    username="20250001",
+                    password="wrong-password",
+                )
+            )
+
+        self.assertEqual(direct.message, "账号或密码错误")
+        self.assertEqual(webvpn["message"], "账号或密码错误")
+        self.assertEqual(direct.error_code, "WRONG_PASSWORD")
+        self.assertEqual(webvpn["error_code"], "WRONG_PASSWORD")
+
     def test_login_requests_normalize_browser_whitespace_and_full_width_digits(self):
         direct = LoginRequest(
             username=" ２０２５０００１ \n",

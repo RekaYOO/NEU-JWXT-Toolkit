@@ -19,6 +19,14 @@ from .weight_optimizer import (
     optimize_grouped_weights,
 )
 from .automation import CourseSelectionAutomationService
+from .modes import (
+    SELECTION_MODES,
+    annotate_selection_result,
+    classify_selection_record,
+    current_selection_records,
+    is_real_teaching_class_type,
+    selection_mode,
+)
 from .jwxk import (
     JWXK_CAS_SERVICE,
     JwxkBatch,
@@ -46,6 +54,12 @@ __all__ = [
     "CourseSelectionError",
     "CourseSelectionProvider",
     "CourseSelectionAutomationService",
+    "SELECTION_MODES",
+    "annotate_selection_result",
+    "classify_selection_record",
+    "current_selection_records",
+    "is_real_teaching_class_type",
+    "selection_mode",
     "MarketSnapshot",
     "SelectionPolicy",
     "optimize_course_weights",

@@ -41,6 +41,10 @@
   margin-bottom: 0;
 }
 
+.timetable-recovery-notice-below {
+  margin-top: var(--space-4);
+}
+
 .timetable-controls {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(160px, .72fr) auto minmax(170px, .9fr) auto;
@@ -1570,6 +1574,7 @@
   }
 
   .timetable-mobile-list {
+    touch-action: pan-y;
     display: flex;
     flex-direction: column;
     gap: var(--space-2);

@@ -25,6 +25,7 @@ from bs4 import BeautifulSoup
 
 from backend.core.auth.client import NEULoginError
 from backend.core.scheduling import parse_weeks
+from .modes import current_selection_records, is_real_teaching_class_type
 
 if TYPE_CHECKING:
     from backend.core.auth.client import NEUAuthClient
@@ -645,6 +646,16 @@ def _normalize_class(row: dict[str, Any], parent: dict[str, Any]) -> dict[str, A
         "weight_participant_count": _number(course.get("QZXKRS")),
         "devoted_weight": _number(course.get("TRQZ")),
         "selection_source": _text(course.get("_selection_source")),
+        "record_batch_code": _text(
+            course.get("electiveBatchCode") or course.get("batchCode")
+            or parent.get("electiveBatchCode") or parent.get("batchCode")
+        ),
+        "record_term_code": _text(
+            course.get("schoolTerm") or course.get("termCode")
+            or course.get("semester") or course.get("xnxq")
+            or parent.get("schoolTerm") or parent.get("termCode")
+            or parent.get("semester") or parent.get("xnxq")
+        ),
         "conflict": _text(course.get("SFCT")) == "1",
         "conflict_description": _text(course.get("conflictDesc")),
         "restricted": _text(course.get("SFXZXK")) == "1",
@@ -1512,13 +1523,51 @@ class JwxkSessionClient:
         queued = code == "200" and any(marker in message for marker in (
             "队列", "排队", "处理中", "等待处理", "等待确认",
         ))
+        failure_class = self._classify_mutation_failure(code, message, success=code == "200")
         return {
             "success": code == "200",
             "queued": queued,
             "requires_confirmation": code == "301",
             "code": code,
             "message": message,
+            "failure_class": failure_class,
         }
+
+    @staticmethod
+    def _classify_mutation_failure(code: str, message: str, *, success: bool) -> str:
+        """Classify official failures conservatively for automation fallback.
+
+        Only deterministic capacity/eligibility outcomes may advance a grab
+        group to a lower-priority candidate.  Any unrecognized response stays
+        UNKNOWN and therefore requires verification instead of guessing from a
+        broad substring such as ``失败``.
+        """
+
+        if success:
+            return ""
+        normalized = re.sub(r"\s+", "", _text(message))
+        if code in {"401", "403"} or any(value in normalized for value in (
+            "登录失效", "重新登录", "身份认证", "未登录",
+        )):
+            return "AUTH_REQUIRED"
+        if code == "429" or any(value in normalized for value in (
+            "请求过快", "操作频繁", "访问频繁", "稍后再试",
+        )):
+            return "RATE_LIMITED"
+        if any(value in normalized for value in (
+            "课程已满", "教学班已满", "容量已满", "人数已满", "没有余量", "无剩余名额",
+        )):
+            return "FULL"
+        if any(value in normalized for value in (
+            "已被其他同学选中", "已被他人选中", "名额已被抢", "抢先失败",
+        )):
+            return "RACE_LOST"
+        if any(value in normalized for value in (
+            "不在选课范围", "当前不可选", "不能选择该教学班", "不允许选择",
+            "不符合选课条件", "无选课资格",
+        )):
+            return "UNAVAILABLE"
+        return "UNKNOWN"
 
     def confirm_batch(self, *, batch_code: str) -> dict[str, Any]:
         context = self.get_context()
@@ -1554,8 +1603,14 @@ class JwxkSessionClient:
         batch_ready_at = time.monotonic()
         if not skip_preflight_checks:
             official = self.get_selected(batch_code=batch_code, include_withdrawal=False)
+            current_rows = current_selection_records(
+                official,
+                selection_type_code=batch.selection_type_code,
+                batch_code=batch_code,
+                term_code=batch.term_code,
+            )
             duplicate = next((
-                row for row in [*(official.get("selected") or []), *(official.get("volunteered") or [])]
+                row for row in current_rows
                 if course_code and _text(row.get("course_code")).casefold() == _text(course_code).casefold()
             ), None)
             if duplicate is not None:
@@ -1673,8 +1728,11 @@ class JwxkSessionClient:
                     break
         if item is None or not _text(item.get("secretVal")):
             raise JwxkError("已选课程信息已变化，请刷新后重试")
+        teaching_class_type = _text(item.get("teachingClassType"))
+        if not is_real_teaching_class_type(teaching_class_type):
+            raise JwxkError("已选课程缺少真实课程类型，请刷新结果后重试")
         data = {
-            "clazzType": _text(item.get("teachingClassType")) or "ALLKC",
+            "clazzType": teaching_class_type,
             "clazzId": class_id,
             "secretVal": _text(item.get("secretVal")),
         }

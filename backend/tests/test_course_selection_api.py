@@ -355,6 +355,35 @@ def test_jwxk_weight_apply_rejects_duplicate_courses_before_any_write(monkeypatc
     assert client.writes == 0
 
 
+def test_jwxk_weight_apply_rejects_catalog_only_type_before_withdrawal(monkeypatch):
+    class FakeClient:
+        writes = 0
+
+        def get_selected(self, **_kwargs):
+            raise AssertionError("invalid teaching class type must be rejected before remote reads")
+
+        def deselect_course(self, **_kwargs):
+            self.writes += 1
+
+        def select_course(self, **_kwargs):
+            self.writes += 1
+
+    client = FakeClient()
+    monkeypatch.setattr(course_selection, "_jwxk_mutation_client", lambda *_args: client)
+    request = JwxkSavedPlanRequest.model_validate({
+        "batch_code": "weight-batch", "term_code": "2026-2027-1", "groups": [],
+        "items": [{
+            "course_code": "COURSE-A", "course_name": "课程A", "class_id": "A-1",
+            "teaching_class_type": "ALLKC", "weight": 55,
+        }],
+    })
+
+    with pytest.raises(HTTPException, match="缺少真实可提交类型"):
+        course_selection.apply_jwxk_weights(request, auth=object(), storage=object())
+
+    assert client.writes == 0
+
+
 def test_jwxk_weight_apply_withdraws_confirms_and_reapplies_existing_weight(monkeypatch):
     class FakeClient:
         def __init__(self):
@@ -480,7 +509,7 @@ def test_jwxk_select_invalidates_personal_timetable_only_after_success(monkeypat
     result = course_selection.select_jwxk_course(
         JwxkCourseSelectRequest(
             batch_code="BATCH-1",
-            teaching_class_type="ALLKC",
+            teaching_class_type="TJKC",
             class_id="CLASS-1",
             course_code="COURSE-1",
             confirm_risk=True,
@@ -493,6 +522,17 @@ def test_jwxk_select_invalidates_personal_timetable_only_after_success(monkeypat
     assert result.success is True
     assert result.queued is True
     assert invalidations == [("student", "2026-2027-1", "jwxk.select")]
+
+
+def test_jwxk_select_schema_rejects_catalog_only_scope():
+    with pytest.raises(ValueError, match="catalog-only"):
+        JwxkCourseSelectRequest(
+            batch_code="BATCH-1",
+            teaching_class_type="ALLKC",
+            class_id="CLASS-1",
+            course_code="COURSE-1",
+            confirm_risk=True,
+        )
 
 
 def test_jwxk_deselect_rejection_does_not_invalidate_cache(monkeypatch):
@@ -1024,7 +1064,7 @@ def test_jwxk_mutation_expired_login_is_exposed_as_401(monkeypatch):
         course_selection.select_jwxk_course(
             JwxkCourseSelectRequest(
                 batch_code="BATCH-1",
-                teaching_class_type="ALLKC",
+                teaching_class_type="TJKC",
                 class_id="CLASS-1",
                 course_code="COURSE-1",
                 confirm_risk=True,

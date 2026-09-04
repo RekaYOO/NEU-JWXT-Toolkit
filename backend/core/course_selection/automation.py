@@ -24,6 +24,7 @@ from .jwxk import (
     JwxkError, JwxkRateLimitError, JwxkSessionClient, course_categories_equivalent,
     group_course_rows, normalize_jwxk_campus_code,
 )
+from .modes import current_selection_records, is_real_teaching_class_type
 from .weight_optimizer import (
     SCENARIO_MULTIPLIERS,
     SCENARIO_NAMES,
@@ -105,6 +106,7 @@ class CourseSelectionAutomationService:
         self._last_archive_scan = 0.0
         self._catalog_sync_queue: set[tuple[str, str]] = set()
         for task in self._tasks:
+            task.setdefault("task_type", "selection")
             task["items"] = self._normalize_task_items(task.get("items") or [])
             self._normalize_group_results(task)
             self._normalize_swap_results(task)
@@ -263,6 +265,7 @@ class CourseSelectionAutomationService:
         archive: dict[str, Any],
         *,
         official: dict[str, Any] | None = None,
+        task: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Return only user-owned bids, saved-plan rows and task rows.
 
@@ -285,7 +288,10 @@ class CourseSelectionAutomationService:
                 official_rows = copy.deepcopy(self._notification_state.get(official_key) or [])
 
         try:
-            plan = self.plan_provider(account, batch_code) if self.plan_provider else {}
+            plan = (
+                self.plan_provider(account, batch_code)
+                if self.plan_provider and task is None else {}
+            )
         except Exception:
             logger.exception("course selection notification plan read failed")
             plan = {}
@@ -295,9 +301,13 @@ class CourseSelectionAutomationService:
             for group in plan.get("groups") or [] if isinstance(group, dict)
         }
         with self._lock:
-            tasks = [copy.deepcopy(task) for task in self._tasks if (
-                task.get("account") == account and task.get("batch_code") == batch_code
-            )]
+            tasks = (
+                [copy.deepcopy(task)]
+                if task is not None else
+                [copy.deepcopy(item) for item in self._tasks if (
+                    item.get("account") == account and item.get("batch_code") == batch_code
+                )]
+            )
 
         archived = [item for item in archive.get("courses") or [] if isinstance(item, dict)]
         archive_by_class = {
@@ -336,8 +346,8 @@ class CourseSelectionAutomationService:
                 item, "方案组课程",
                 group_name=str(item.get("plan_group_name") or plan_group_names.get(group_id) or "方案组"),
             )
-        for task in tasks:
-            recommendation = task.get("weight_status", {}).get("recommendation") or []
+        for audience_task in tasks:
+            recommendation = audience_task.get("weight_status", {}).get("recommendation") or []
             recommendation_by_class = {
                 str(item.get("class_id") or "").casefold(): item
                 for item in recommendation if isinstance(item, dict) and item.get("class_id")
@@ -346,7 +356,7 @@ class CourseSelectionAutomationService:
                 str(item.get("course_code") or "").casefold(): item
                 for item in recommendation if isinstance(item, dict) and item.get("course_code")
             }
-            for item in task.get("items") or []:
+            for item in audience_task.get("items") or []:
                 if not isinstance(item, dict):
                     continue
                 enriched = {
@@ -357,8 +367,23 @@ class CourseSelectionAutomationService:
                         or {}
                     ),
                 }
-                add(enriched, "自动任务课程", task_name=str(task.get("name") or "自动任务"))
-        if str(archive.get("selection_type_code") or "") == "04":
+                add(enriched, "自动任务课程", task_name=str(audience_task.get("name") or "自动任务"))
+            for swap_group in audience_task.get("swap_groups") or []:
+                target = swap_group.get("target")
+                if isinstance(target, dict):
+                    add(
+                        target, "空位追踪目标",
+                        group_name=str(swap_group.get("name") or "空位换课组"),
+                        task_name=str(audience_task.get("name") or "自动任务"),
+                    )
+                for drop in swap_group.get("drop_courses") or []:
+                    if isinstance(drop, dict):
+                        add(
+                            drop, "换课退选课程",
+                            group_name=str(swap_group.get("name") or "空位换课组"),
+                            task_name=str(audience_task.get("name") or "自动任务"),
+                        )
+        if task is None and str(archive.get("selection_type_code") or "") == "04":
             for item in official_rows:
                 add(item, "我的投权")
         return sorted(merged.values(), key=lambda item: (
@@ -436,7 +461,14 @@ class CourseSelectionAutomationService:
             f"{heading}\n\n轮次：{archive.get('batch_name') or archive.get('batch_code')}\n"
             f"学期：{archive.get('term_name') or archive.get('term_code') or '待定'}\n"
             f"触发原因：{reason}\n数据时间：{datetime.now().astimezone().isoformat()}\n\n"
-            + ("\n\n".join(plain_rows) or "当前没有我的投权、方案组或自动任务课程。")
+            + (
+                "\n\n".join(plain_rows)
+                or (
+                    "当前没有我的投权、方案组或策略任务课程。"
+                    if is_weight else
+                    "当前任务没有需要通知的方案组或抢选课程。"
+                )
+            )
         )
         extra_headers = '<th style="padding:10px 12px">当前投权</th><th style="padding:10px 12px">预测选中概率</th>' if is_weight else ''
         column_count = 4 if is_weight else 2
@@ -1014,12 +1046,17 @@ class CourseSelectionAutomationService:
         snapshot["poll_interval_seconds"] = interval
         snapshot["next_attempt_at"] = None
         if task.get("desired_state") == "running" and task.get("status") in {"running", "waiting"}:
+            last_attempt = self._parse_task_time(task.get("last_attempt_at"))
+            safe_at = (
+                last_attempt + timedelta(seconds=interval)
+                if last_attempt is not None else datetime.now(_OFFICIAL_TIMEZONE)
+            )
             if task.get("manual_check_requested_at"):
-                snapshot["next_attempt_at"] = datetime.now().astimezone().isoformat()
-            else:
-                last_attempt = self._parse_task_time(task.get("last_attempt_at"))
-                if last_attempt is not None:
-                    snapshot["next_attempt_at"] = (last_attempt + timedelta(seconds=interval)).isoformat()
+                snapshot["next_attempt_at"] = max(
+                    safe_at, datetime.now(_OFFICIAL_TIMEZONE),
+                ).isoformat()
+            elif last_attempt is not None:
+                snapshot["next_attempt_at"] = safe_at.isoformat()
         return snapshot
 
     @staticmethod
@@ -1052,6 +1089,18 @@ class CourseSelectionAutomationService:
             "success_count": 0,
             "selected": [],
             "pending_class_ids": [],
+            "pending_checks": 0,
+            "candidate_index": 0,
+            "current_class_id": "",
+            "current_course_code": "",
+            "current_course_name": "",
+            "current_utility": None,
+            "candidate_status": "pending",
+            "pending_since": None,
+            "confirmation_deadline": None,
+            "fallback_reason": "",
+            "last_participant_snapshot": None,
+            "data_updated_at": None,
         }
 
     def _normalize_group_results(self, task: dict[str, Any]) -> None:
@@ -1076,11 +1125,28 @@ class CourseSelectionAutomationService:
                     if str(item.get("course_code") or item.get("class_id") or "")
                 }),
                 "pending_class_ids": list(value.get("pending_class_ids") or []),
+                "pending_checks": int(value.get("pending_checks") or 0),
+                "candidate_index": max(0, int(value.get("candidate_index") or 0)),
+                "current_class_id": str(value.get("current_class_id") or ""),
+                "current_course_code": str(value.get("current_course_code") or ""),
+                "current_course_name": str(value.get("current_course_name") or ""),
+                "current_utility": value.get("current_utility"),
+                "candidate_status": str(value.get("candidate_status") or "pending"),
+                "pending_since": value.get("pending_since"),
+                "confirmation_deadline": value.get("confirmation_deadline"),
+                "fallback_reason": str(value.get("fallback_reason") or ""),
+                "last_participant_snapshot": value.get("last_participant_snapshot"),
+                "data_updated_at": value.get("data_updated_at"),
             })
             if value["success_count"] >= value["target_count"]:
                 value["status"] = "success"
             else:
-                value["status"] = "verifying" if value["pending_class_ids"] else "pending"
+                previous_status = str(value.get("status") or "")
+                value["status"] = (
+                    "verifying" if value["pending_class_ids"]
+                    else previous_status if previous_status == "needs_review"
+                    else "pending"
+                )
                 value.setdefault("message", "等待监测")
             normalized[group_id] = value
         task["group_results"] = normalized
@@ -1095,6 +1161,11 @@ class CourseSelectionAutomationService:
                 "pending_drop_ids": list((previous.get(str(group.get("group_id") or "")) or {}).get("pending_drop_ids") or []),
                 "pending_checks": int((previous.get(str(group.get("group_id") or "")) or {}).get("pending_checks") or 0),
                 "target_pending": bool((previous.get(str(group.get("group_id") or "")) or {}).get("target_pending")),
+                "current_drop_id": str((previous.get(str(group.get("group_id") or "")) or {}).get("current_drop_id") or ""),
+                "drop_states": dict((previous.get(str(group.get("group_id") or "")) or {}).get("drop_states") or {}),
+                "pending_since": (previous.get(str(group.get("group_id") or "")) or {}).get("pending_since"),
+                "confirmation_deadline": (previous.get(str(group.get("group_id") or "")) or {}).get("confirmation_deadline"),
+                "last_official_response": str((previous.get(str(group.get("group_id") or "")) or {}).get("last_official_response") or ""),
             }
             for group in task.get("swap_groups") or []
             if str(group.get("group_id") or "")
@@ -1104,7 +1175,11 @@ class CourseSelectionAutomationService:
         self, account: str, payload: dict[str, Any], *, replace_existing: bool = False,
     ) -> dict[str, Any]:
         now = datetime.now().astimezone().isoformat()
-        payload = {**payload, "items": self._normalize_task_items(payload.get("items") or [])}
+        payload = {
+            **payload,
+            "task_type": str(payload.get("task_type") or "selection"),
+            "items": self._normalize_task_items(payload.get("items") or []),
+        }
         task = {
             **payload,
             "task_id": uuid.uuid4().hex,
@@ -1158,13 +1233,14 @@ class CourseSelectionAutomationService:
             existing = [item for item in self._tasks if (
                 item.get("account") == account
                 and item.get("batch_code") == task.get("batch_code")
-                and item.get("task_type") == "weight_strategy"
-                and task.get("task_type") == "weight_strategy"
+                and item.get("task_type") == task.get("task_type")
+                and task.get("task_type") in {"selection", "weight_strategy"}
                 and item.get("status") != "cancelled"
                 and item.get("desired_state") != "cancelled"
             )]
             if existing and not replace_existing:
-                raise ValueError("当前轮次已经存在策略投权任务；确认覆盖后再创建")
+                label = "策略投权" if task.get("task_type") == "weight_strategy" else "自动抢课"
+                raise ValueError(f"当前轮次已经存在{label}任务；确认覆盖后再创建")
             for previous in existing:
                 previous["desired_state"] = "cancelled"
                 previous["status"] = "cancelled"
@@ -1319,6 +1395,7 @@ class CourseSelectionAutomationService:
                 task["desired_state"] = "running"
                 task["status"] = "waiting" if self._before_start(task) else "running"
                 task["restart_reconcile"] = True
+                task["polling_mode"] = self._polling_mode_at_start(task)
                 if task.get("task_type") == "vacancy_swap":
                     task["message"] = f"正在同时追踪 {len(task.get('swap_results') or {})} 个空位换课组"
                 elif task.get("task_type") == "weight_strategy":
@@ -1332,18 +1409,15 @@ class CourseSelectionAutomationService:
                 task["status"] = "paused"
                 task["message"] = "任务已暂停"
             elif action == "check_now":
-                if task.get("task_type") != "weight_strategy":
-                    raise ValueError("立即检查并执行策略仅适用于策略投权任务")
                 if task.get("desired_state") != "running" or task.get("status") not in {"running", "waiting"}:
                     raise ValueError("请先启动任务，再执行立即检查")
                 task["manual_check_requested_at"] = datetime.now().astimezone().isoformat()
                 if (task.get("execution") or {}).get("state") == "running":
-                    task["message"] = "当前检查仍在执行，完成后将立即再次检查并按策略行动"
+                    task["message"] = "当前检查仍在执行，完成并满足安全间隔后将再检查一次"
                 else:
-                    task["message"] = "已请求立即检查，正在等待后台执行"
+                    task["message"] = "已请求立即检查，将在满足学校端最小请求间隔后执行"
             elif action == "cancel":
-                task["desired_state"] = "cancelled"
-                task["status"] = "cancelled"
+                self._set_state(task, "cancelled", "任务已取消并删除")
                 self._tasks = [item for item in self._tasks if item is not task]
                 self._write()
                 return {
@@ -1478,6 +1552,17 @@ class CourseSelectionAutomationService:
         created = cls._parse_task_time(task.get("created_at")) or datetime.now(_OFFICIAL_TIMEZONE)
         return "opening_burst" if start and created < start else "vacancy_watch"
 
+    @classmethod
+    def _polling_mode_at_start(cls, task: dict[str, Any]) -> str:
+        if task.get("task_type") == "weight_strategy":
+            return "weight_rebalance"
+        if task.get("task_type") == "vacancy_swap":
+            return "vacancy_watch"
+        start = cls._parse_task_time(task.get("start_at"))
+        now = datetime.now(_OFFICIAL_TIMEZONE)
+        created = cls._parse_task_time(task.get("created_at")) or now
+        return "opening_burst" if start and now < start and created < start else "vacancy_watch"
+
     @staticmethod
     def _poll_interval(task: dict[str, Any]) -> int:
         if task.get("polling_mode") == "weight_rebalance":
@@ -1489,6 +1574,62 @@ class CourseSelectionAutomationService:
     @staticmethod
     def _consume_manual_check(task: dict[str, Any]) -> bool:
         return bool(task.pop("manual_check_requested_at", None))
+
+    @classmethod
+    def _after_end(cls, task: dict[str, Any]) -> bool:
+        end = cls._parse_task_time(task.get("end_at"))
+        return bool(end and datetime.now(_OFFICIAL_TIMEZONE) > end)
+
+    @staticmethod
+    def _task_has_uncertain_mutation(task: dict[str, Any]) -> bool:
+        if isinstance(task.get("inflight_mutation"), dict):
+            return True
+        if any(
+            (result.get("pending_class_ids") or [])
+            or result.get("status") in {"verifying", "needs_review"}
+            for result in (task.get("group_results") or {}).values()
+        ):
+            return True
+        if any(
+            (result.get("pending_drop_ids") or [])
+            or result.get("target_pending")
+            or result.get("current_drop_id")
+            or result.get("status") in {"verifying", "verifying_drop", "needs_review"}
+            for result in (task.get("swap_results") or {}).values()
+        ):
+            return True
+        weight = task.get("weight_status") or {}
+        return bool(weight.get("inflight") or weight.get("pending_drop") or weight.get("pending_add"))
+
+    def _finish_after_round_end(self, task: dict[str, Any]) -> None:
+        """Close an expired task once, preserving uncertain writes for review."""
+
+        if task.get("status") in {"success", "failed", "needs_review", "cancelled"}:
+            return
+        if self._task_has_uncertain_mutation(task):
+            self._set_state(task, "needs_review", "选课轮次已经结束，但仍有提交结果未完成官方核验")
+            return
+        task_type = str(task.get("task_type") or "selection")
+        if task_type == "selection":
+            results = list((task.get("group_results") or {}).values())
+            complete = bool(results) and all(result.get("status") == "success" for result in results)
+            self._set_state(
+                task,
+                "success" if complete else "failed",
+                "选课轮次已经结束，全部方案组均已达标"
+                if complete else "选课轮次已经结束，仍有方案组未达到目标",
+            )
+        elif task_type == "vacancy_swap":
+            results = list((task.get("swap_results") or {}).values())
+            complete = bool(results) and all(result.get("status") == "success" for result in results)
+            self._set_state(
+                task,
+                "success" if complete else "failed",
+                "选课轮次已经结束，全部空位换课组均已完成"
+                if complete else "选课轮次已经结束，空位换课目标未完成",
+            )
+        else:
+            self._set_state(task, "success", "权重选课轮次已经结束，策略任务已停止")
 
     @staticmethod
     def _execution_elapsed_ms(started_at: Any) -> int | None:
@@ -1528,7 +1669,7 @@ class CourseSelectionAutomationService:
         })
         self._append_execution_event(
             task,
-            "手动立即检查已开始" if trigger == "manual" else "定时策略检查已开始",
+            "手动立即检查已开始" if trigger == "manual" else "定时任务检查已开始",
             stage_code="starting",
         )
         self._persist_task(task)
@@ -1555,6 +1696,7 @@ class CourseSelectionAutomationService:
         now = datetime.now().astimezone().isoformat()
         execution = task.setdefault("execution", {})
         duration = self._execution_elapsed_ms(execution.get("check_started_at"))
+        task["auth_waiting"] = False
         execution.update({
             "state": "idle",
             "stage": task.get("message") or "检查完成",
@@ -1617,6 +1759,7 @@ class CourseSelectionAutomationService:
         self, client: JwxkSessionClient, task: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
         live_by_class: dict[str, dict[str, Any]] = {}
+        state_errors: dict[str, str] = {}
         with self._lock:
             archive = next((item for item in self._archives if (
                 item.get("account") == task.get("account")
@@ -1667,7 +1810,17 @@ class CourseSelectionAutomationService:
                 class_type = next((
                     str(value) for value in archived.get("source_scopes") or []
                     if str(value) not in {"", "ALL", "ROUND", "ALLKC"}
-                ), "ALLKC")
+                ), "")
+            if not is_real_teaching_class_type(class_type):
+                if item_class_id:
+                    state_errors[item_class_id] = "缺少真实可提交课程类型"
+                self._append_execution_event(
+                    task,
+                    f"候选“{item.get('course_name') or query or item_class_id}”缺少真实课程类型，未发起目录请求",
+                    stage_code="market_refresh",
+                    level="error",
+                )
+                continue
             query_key = (query.upper(), class_type)
             if not query:
                 continue
@@ -1733,9 +1886,12 @@ class CourseSelectionAutomationService:
                 class_type, len(rows), len(matched_ids), len(expected_ids), elapsed_ms,
             )
             if missing_ids:
-                raise JwxkError(
-                    f"刷新“{course_label}”人数时未找到方案中的教学班（{len(missing_ids)} 个），已停止本轮计算"
-                )
+                for class_id in missing_ids:
+                    state_errors[class_id] = "学校目录没有返回该教学班，数据尚未确认"
+                if task.get("task_type") == "weight_strategy":
+                    raise JwxkError(
+                        f"刷新“{course_label}”人数时未找到方案中的教学班（{len(missing_ids)} 个），已停止本轮计算"
+                    )
         now = datetime.now().astimezone().isoformat()
         previous = task.get("course_states") if isinstance(task.get("course_states"), dict) else {}
         fields = (
@@ -1753,6 +1909,11 @@ class CourseSelectionAutomationService:
                     if str(item.get("class_id") or "") in live_by_class
                     and field in live_by_class[str(item.get("class_id") or "")]
                 },
+                "candidate_status": (
+                    "data_unknown" if str(item.get("class_id") or "") in state_errors
+                    else "available"
+                ),
+                "state_error": state_errors.get(str(item.get("class_id") or ""), ""),
                 "updated_at": now if str(item.get("class_id") or "") in live_by_class else (
                     previous.get(str(item.get("class_id") or ""), {}).get("updated_at")
                 ),
@@ -1760,15 +1921,69 @@ class CourseSelectionAutomationService:
             for item in task.get("items") or []
             if str(item.get("class_id") or "")
         }
+        task["course_state_errors"] = state_errors
         return live_by_class
 
     def _wait_for_auth(self, task: dict[str, Any], message: str = "正在自动恢复登录，恢复后继续任务") -> None:
+        new_episode = not bool(task.get("auth_waiting"))
+        task["auth_waiting"] = True
+        if new_episode:
+            task["auth_failure_sequence"] = int(task.get("auth_failure_sequence") or 0) + 1
         self._switch_to_vacancy_watch(task)
         task["status"] = "waiting"
         task["message"] = message
         task["last_attempt_at"] = datetime.now().astimezone().isoformat()
         task["updated_at"] = task["last_attempt_at"]
+        if new_episode:
+            self._notify_grab_auth_required(task, message)
         self._persist_task(task)
+
+    def _notify_grab_auth_required(self, task: dict[str, Any], message: str) -> None:
+        if task.get("task_type") not in {"selection", "vacancy_swap"}:
+            return
+        account = str(task.get("account") or "")
+        batch_code = str(task.get("batch_code") or "")
+        settings = self.get_automation_settings(account, batch_code)
+        if not settings.get("mail_enabled") or not settings.get("notify_grab_result"):
+            return
+        sequence = int(task.get("auth_failure_sequence") or 1)
+        key = f"{account}:{batch_code}:{task.get('task_id')}:auth_required:{sequence}"
+        with self._lock:
+            if self._notification_state.get(key):
+                return
+            archive = next((copy.deepcopy(item) for item in self._archives if (
+                item.get("account") == account and item.get("batch_code") == batch_code
+            )), None)
+        metadata = archive or {
+            "batch_code": batch_code,
+            "batch_name": task.get("name"),
+            "term_code": task.get("term_code"),
+            "selection_type_code": "02",
+        }
+        courses = self._notification_audience(
+            account, batch_code, metadata, task=task,
+        )
+        body, html_body = self._notification_content(
+            metadata,
+            heading="抢课任务登录失效",
+            reason=(
+                f"任务“{task.get('name') or task.get('task_id')}”暂停在当前候选：{message}。"
+                "请进入系统完成登录恢复；恢复前不会降级候选或重放写操作。"
+            ),
+            courses=courses,
+        )
+        if self._queue_notification(
+            account, batch_code,
+            f"JWXK 抢课任务登录失效 · {task.get('name') or task.get('task_id')}",
+            body,
+            f"grab-result:{task.get('task_id')}:auth-required:{sequence}",
+            html_body=html_body,
+        ):
+            with self._lock:
+                self._notification_state[key] = datetime.now().astimezone().isoformat()
+                self._write_json_map(
+                    self.notification_state_path, self._notification_state,
+                )
 
     def _switch_to_vacancy_watch(self, task: dict[str, Any]) -> None:
         if task.get("polling_mode") != "opening_burst":
@@ -1776,6 +1991,54 @@ class CourseSelectionAutomationService:
         task["polling_mode"] = "vacancy_watch"
         task["poll_seconds"] = max(15, int(task.get("poll_seconds") or 15))
         task["message"] = "首轮抢选未完成，已切换为每 15 秒追踪空位"
+
+    @staticmethod
+    def _set_group_candidate(
+        result: dict[str, Any],
+        item: dict[str, Any],
+        index: int,
+        status: str,
+        *,
+        reason: str = "",
+        live: dict[str, Any] | None = None,
+    ) -> None:
+        now = datetime.now().astimezone().isoformat()
+        result.update({
+            "candidate_index": index,
+            "current_class_id": str(item.get("class_id") or ""),
+            "current_course_code": str(item.get("course_code") or ""),
+            "current_course_name": str(item.get("course_name") or item.get("course_code") or ""),
+            "current_utility": item.get("utility", 5),
+            "candidate_status": status,
+            "fallback_reason": reason,
+            "data_updated_at": (
+                (live or {}).get("capacity_updated_at")
+                or (live or {}).get("updated_at")
+                or now
+            ) if live is not None else result.get("data_updated_at"),
+            "last_participant_snapshot": {
+                "selected_count": (live or {}).get("selected_count"),
+                "capacity": (live or {}).get("capacity"),
+            } if live is not None else result.get("last_participant_snapshot"),
+        })
+
+    @staticmethod
+    def _start_confirmation_window(
+        result: dict[str, Any], *, minimum_seconds: int,
+    ) -> None:
+        now = datetime.now().astimezone()
+        result["pending_since"] = result.get("pending_since") or now.isoformat()
+        result["confirmation_deadline"] = result.get("confirmation_deadline") or (
+            now + timedelta(seconds=max(45, minimum_seconds * 3))
+        ).isoformat()
+
+    @staticmethod
+    def _confirmation_window_expired(result: dict[str, Any]) -> bool:
+        try:
+            deadline = datetime.fromisoformat(str(result.get("confirmation_deadline") or "")).astimezone()
+        except ValueError:
+            return False
+        return datetime.now().astimezone() >= deadline
 
     def _tick_catalog_sync(self) -> None:
         with self._lock:
@@ -2128,6 +2391,7 @@ class CourseSelectionAutomationService:
                 continue
             if begin is not None and now >= begin and now < end:
                 self._notify_round_start(account, archive)
+                self._notify_grab_overdue(account, archive, now)
             if str(archive.get("selection_type_code") or "") == "04" and now < end:
                 settings = self.get_automation_settings(
                     account, str(archive.get("batch_code") or ""),
@@ -2178,10 +2442,15 @@ class CourseSelectionAutomationService:
             if self._notification_state.get(key):
                 return
         courses = self._notification_audience(account, batch_code, archive)
+        is_weight = str(archive.get("selection_type_code") or "") == "04"
         plain, html_body = self._notification_content(
             archive,
             heading="选课轮次已经开始",
-            reason="轮次已到官方开始时间；以下仅列出你的投权、方案组和自动任务课程。",
+            reason=(
+                "轮次已到官方开始时间；以下仅列出你的投权、方案组和策略任务课程。"
+                if is_weight else
+                "轮次已到官方开始时间；以下仅列出你的方案组和自动抢选任务课程。"
+            ),
             courses=courses,
         )
         if self._queue_notification(
@@ -2192,6 +2461,66 @@ class CourseSelectionAutomationService:
             with self._lock:
                 self._notification_state[key] = datetime.now().astimezone().isoformat()
                 self._write_json_map(self.notification_state_path, self._notification_state)
+
+    def _notify_grab_overdue(
+        self, account: str, archive: dict[str, Any], now: datetime,
+    ) -> None:
+        """Notify once when an active grab task is still below target after 3 minutes."""
+
+        if str(archive.get("selection_type_code") or "") != "02":
+            return
+        batch_code = str(archive.get("batch_code") or "")
+        settings = self.get_automation_settings(account, batch_code)
+        if not settings.get("mail_enabled") or not settings.get("notify_grab_result"):
+            return
+        begin = self._archive_begin_time(archive)
+        if begin is None or now < begin + timedelta(minutes=3):
+            return
+        with self._lock:
+            tasks = [
+                copy.deepcopy(task) for task in self._tasks
+                if task.get("account") == account
+                and task.get("batch_code") == batch_code
+                and task.get("task_type") in {"selection", "vacancy_swap"}
+                and task.get("status") not in {"success", "failed", "needs_review", "cancelled"}
+            ]
+        for task in tasks:
+            task_id = str(task.get("task_id") or "")
+            key = f"{account}:{batch_code}:{task_id}:grab_overdue"
+            with self._lock:
+                if self._notification_state.get(key):
+                    continue
+            result_map = (
+                task.get("swap_results") or {}
+                if task.get("task_type") == "vacancy_swap"
+                else task.get("group_results") or {}
+            )
+            if result_map and all(
+                value.get("status") == "success" for value in result_map.values()
+            ):
+                continue
+            courses = self._notification_audience(
+                account, batch_code, archive, task=task,
+            )
+            plain, html_body = self._notification_content(
+                archive,
+                heading="抢选轮次开始超过 3 分钟仍未达标",
+                reason=(
+                    f"任务“{task.get('name') or task_id}”仍在运行；"
+                    "未知数据、登录恢复、请求退避或待核验提交不会触发低意愿候选。"
+                ),
+                courses=courses,
+            )
+            if self._queue_notification(
+                account, batch_code,
+                f"JWXK 抢选任务仍未达标 · {task.get('name') or batch_code}",
+                plain, f"grab-overdue-{task_id}", html_body=html_body,
+            ):
+                with self._lock:
+                    self._notification_state[key] = now.isoformat()
+                    self._write_json_map(
+                        self.notification_state_path, self._notification_state,
+                    )
 
     def _notify_round_end_summary(self, account: str, archive: dict[str, Any]) -> None:
         settings = self.get_automation_settings(account, str(archive.get("batch_code") or ""))
@@ -2204,10 +2533,15 @@ class CourseSelectionAutomationService:
         courses = self._notification_audience(
             account, str(archive.get("batch_code") or ""), archive,
         )
+        is_weight = str(archive.get("selection_type_code") or "") == "04"
         plain, html_body = self._notification_content(
             archive,
             heading="选课轮次结束总结",
-            reason="轮次已结束；报告只包含你的投权、方案组和自动任务课程。",
+            reason=(
+                "轮次已结束；报告只包含你的投权、方案组和策略任务课程。"
+                if is_weight else
+                "轮次已结束；报告只包含你的方案组和自动抢选任务课程。"
+            ),
             courses=courses,
         )
         queued = self._queue_notification(
@@ -2484,6 +2818,9 @@ class CourseSelectionAutomationService:
             if task.get("task_type") in {"selection", "vacancy_swap"} and selection_type_code != "02":
                 self._set_state(task, "needs_review", "该任务不属于抢选轮次，已停止执行")
                 return
+        if self._after_end(task):
+            self._finish_after_round_end(task)
+            return
         if task.get("task_type") == "vacancy_swap":
             self._tick_vacancy_swap(task)
             return
@@ -2504,8 +2841,11 @@ class CourseSelectionAutomationService:
                     return
             except ValueError:
                 pass
+        trigger = "manual" if self._consume_manual_check(task) else "scheduled"
+        self._begin_execution(task, trigger=trigger)
         mutation_started = False
         submitted_any = False
+        execution_failed = False
         try:
             with self.remote_guard():
                 auth = self._task_auth(task)
@@ -2514,6 +2854,7 @@ class CourseSelectionAutomationService:
                     return
                 client = self.client_builder(auth)
                 task["status"] = "running"
+                self._set_execution_stage(task, "official_results", "正在读取当前抢选轮次的官方已选结果")
                 grouped: dict[str, list[dict[str, Any]]] = {}
                 for item in task.get("items") or []:
                     group_id = str(item.get("plan_group_id") or item.get("course_code") or item.get("class_id") or "")
@@ -2522,7 +2863,12 @@ class CourseSelectionAutomationService:
                 specs = {spec["group_id"]: spec for spec in self._group_specs(task)}
                 group_results = task.setdefault("group_results", {})
                 official = client.get_selected(batch_code=task["batch_code"])
-                confirmed_rows = [*(official.get("selected") or []), *(official.get("volunteered") or [])]
+                confirmed_rows = current_selection_records(
+                    official,
+                    selection_type_code="02",
+                    batch_code=str(task.get("batch_code") or ""),
+                    term_code=str(task.get("term_code") or ""),
+                )
                 confirmed_by_class = {
                     str(row.get("class_id") or ""): row
                     for row in confirmed_rows
@@ -2536,17 +2882,55 @@ class CourseSelectionAutomationService:
                 inflight = task.get("inflight_mutation")
                 if isinstance(inflight, dict):
                     class_id = str(inflight.get("class_id") or "")
-                    course_code = str(inflight.get("course_code") or "").casefold()
-                    if class_id in confirmed_by_class or (course_code and course_code in confirmed_by_code):
-                        task["inflight_mutation"] = None
-                    else:
-                        self._set_state(task, "needs_review", "程序重启或登录恢复前有一项提交结果不明确，请先核验官方已选结果")
+                    group_id = str(inflight.get("group_id") or "")
+                    if not group_id or group_id not in grouped:
+                        self._set_state(
+                            task, "needs_review",
+                            "发现无法归属到方案组的历史提交记录，请人工核验官方已选结果",
+                        )
                         return
+                    result = group_results.get(group_id) or {}
+                    if class_id in confirmed_by_class:
+                        task["inflight_mutation"] = None
+                        result["pending_class_ids"] = [
+                            value for value in result.get("pending_class_ids") or []
+                            if str(value) != class_id
+                        ]
+                        result["pending_checks"] = 0
+                        result["pending_since"] = None
+                        result["confirmation_deadline"] = None
+                    else:
+                        item = next((
+                            value for value in task.get("items") or []
+                            if str(value.get("class_id") or "") == class_id
+                        ), {"class_id": class_id, "course_code": inflight.get("course_code") or ""})
+                        index = max(0, int(result.get("candidate_index") or 0))
+                        self._set_group_candidate(
+                            result, item, index, "mutation_uncertain",
+                            reason="写操作已发出，但官方结果尚未确认",
+                        )
+                        result["status"] = "verifying"
+                        result["pending_class_ids"] = [class_id]
+                        result["pending_checks"] = int(result.get("pending_checks") or 0) + 1
+                        self._start_confirmation_window(
+                            result, minimum_seconds=self._poll_interval(task),
+                        )
+                        if self._confirmation_window_expired(result):
+                            result["status"] = "needs_review"
+                            self._set_state(
+                                task, "needs_review",
+                                "程序重启或登录恢复前有一项提交结果仍未确认，请人工核验官方已选结果",
+                            )
+                            return
+                        task["last_attempt_at"] = datetime.now().astimezone().isoformat()
+                        task["message"] = "上一项抢选提交正在等待官方结果确认，不会重复提交"
+                        self._persist_task(task)
+                        return
+                self._set_execution_stage(task, "candidate_refresh", "正在刷新方案组候选的已选人数和容量")
                 live_by_class = self._refresh_task_course_states(client, task)
                 for row in confirmed_rows:
                     class_id = str(row.get("class_id") or "")
                     if class_id in task.get("course_states", {}):
-                        task["course_states"][class_id]["devoted_weight"] = row.get("devoted_weight")
                         task["course_states"][class_id]["selected"] = True
                 for group_id, alternatives in grouped.items():
                     spec = specs.get(group_id) or {
@@ -2557,9 +2941,7 @@ class CourseSelectionAutomationService:
                     confirmed = []
                     confirmed_keys = set()
                     for item in alternatives:
-                        row = confirmed_by_class.get(str(item.get("class_id") or "")) or confirmed_by_code.get(
-                            str(item.get("course_code") or "").casefold()
-                        )
+                        row = confirmed_by_class.get(str(item.get("class_id") or ""))
                         if not row:
                             continue
                         course_key = str(item.get("course_code") or item.get("class_id") or "")
@@ -2580,45 +2962,160 @@ class CourseSelectionAutomationService:
                     ]
                     result["pending_class_ids"] = pending
                     if result["success_count"] >= target_count:
-                        result["status"] = "success"
-                        result["message"] = f"已选中 {result['success_count']}/{target_count} 门"
+                        result.update({
+                            "status": "success",
+                            "candidate_status": "complete",
+                            "pending_since": None,
+                            "confirmation_deadline": None,
+                            "fallback_reason": "",
+                            "message": f"已选中 {result['success_count']}/{target_count} 门",
+                        })
                         continue
                     if pending:
-                        checks = int(result.get("pending_checks") or 0) + 1
-                        result["pending_checks"] = checks
+                        result["pending_checks"] = int(result.get("pending_checks") or 0) + 1
                         result["status"] = "verifying"
                         result["message"] = f"已有提交等待官方确认，当前 {result['success_count']}/{target_count} 门"
-                        if checks >= 3:
+                        pending_item = next((
+                            item for item in alternatives
+                            if str(item.get("class_id") or "") == str(pending[0])
+                        ), alternatives[0])
+                        self._set_group_candidate(
+                            result, pending_item,
+                            max(0, int(result.get("candidate_index") or 0)),
+                            "verifying",
+                            reason="提交已受理，等待官方已选结果",
+                            live=live_by_class.get(str(pending_item.get("class_id") or "")),
+                        )
+                        self._start_confirmation_window(
+                            result, minimum_seconds=self._poll_interval(task),
+                        )
+                        if self._confirmation_window_expired(result):
                             result["status"] = "needs_review"
                             self._set_state(task, "needs_review", f"方案组“{spec['name']}”的提交长时间未确认，请人工核验")
                             return
                         continue
                     result["pending_checks"] = 0
-                    for item in sorted(
+                    result["pending_since"] = None
+                    result["confirmation_deadline"] = None
+                    ordered = sorted(
                         alternatives,
-                        key=lambda value: -float(value.get("utility") or 5),
-                    ):
+                        key=lambda value: (
+                            -float(value.get("utility") or 5),
+                            str(value.get("course_code") or ""),
+                            str(value.get("class_id") or ""),
+                        ),
+                    )
+                    start_index = (
+                        max(0, int(result.get("candidate_index") or 0))
+                        if result.get("candidate_status") not in {
+                            "full", "unavailable", "race_lost", "exhausted",
+                        } else 0
+                    )
+                    attempted = False
+                    for index in range(start_index, len(ordered)):
+                        item = ordered[index]
                         course_key = str(item.get("course_code") or item.get("class_id") or "")
-                        if course_key in confirmed_keys or str(item.get("course_code") or "").casefold() in confirmed_by_code:
+                        if course_key in confirmed_keys:
                             continue
                         candidate = live_by_class.get(str(item.get("class_id") or ""))
-                        if not candidate or candidate.get("full") or candidate.get("restricted") or candidate.get("conflict"):
+                        if not candidate:
+                            reason = (
+                                (task.get("course_state_errors") or {}).get(str(item.get("class_id") or ""))
+                                or "没有读取到精确教学班，当前数据无法确认"
+                            )
+                            self._set_group_candidate(
+                                result, item, index, "data_unknown", reason=reason,
+                            )
+                            result.update({
+                                "status": "monitoring",
+                                "message": f"高意愿候选“{item.get('course_name') or item.get('course_code')}”数据未确认，不会尝试低意愿课程",
+                            })
+                            self._start_confirmation_window(
+                                result, minimum_seconds=self._poll_interval(task),
+                            )
+                            if self._confirmation_window_expired(result):
+                                result["status"] = "needs_review"
+                                self._set_state(
+                                    task, "needs_review",
+                                    f"方案组“{spec['name']}”的高意愿候选长时间无法确认",
+                                )
+                                return
+                            break
+                        if candidate.get("full"):
+                            reason = "官方人数已达到容量"
+                            self._set_group_candidate(
+                                result, item, index, "full", reason=reason, live=candidate,
+                            )
+                            result["fallback_reason"] = reason
                             continue
+                        if candidate.get("restricted"):
+                            reason = candidate.get("eligibility_reason") or "官方明确标记当前不可选"
+                            self._set_group_candidate(
+                                result, item, index, "unavailable", reason=reason, live=candidate,
+                            )
+                            result["fallback_reason"] = reason
+                            continue
+                        if candidate.get("conflict"):
+                            reason = "官方返回冲突提示，但尚未确认属于不可选的真实时间冲突"
+                            self._set_group_candidate(
+                                result, item, index, "conflict_unknown", reason=reason, live=candidate,
+                            )
+                            result.update({
+                                "status": "monitoring",
+                                "message": f"高意愿候选“{item.get('course_name') or item.get('course_code')}”冲突性质待核验，不会降级",
+                            })
+                            break
+                        self._set_execution_stage(
+                            task, "eligibility",
+                            f"正在核验方案组“{spec['name']}”的候选“{item.get('course_name') or item.get('course_code')}”",
+                        )
                         eligibility = client.check_course_eligibility(
                             batch_code=task["batch_code"],
                             class_ids=[item["class_id"]],
                         ).get("results", [{}])[0]
                         if eligibility.get("status") == "unavailable":
+                            reason = eligibility.get("reason") or "官方明确不可选"
+                            self._set_group_candidate(
+                                result, item, index, "unavailable", reason=reason, live=candidate,
+                            )
+                            result["fallback_reason"] = reason
                             continue
                         if eligibility.get("status") != "selectable":
-                            group_results[group_id].update({
-                                "status": "needs_review",
-                                "message": eligibility.get("reason") or "教学班可选性暂时无法确认",
+                            reason = eligibility.get("reason") or "教学班可选性暂时无法确认"
+                            self._set_group_candidate(
+                                result, item, index, "eligibility_unknown",
+                                reason=reason, live=candidate,
+                            )
+                            result.update({
+                                "status": "monitoring",
+                                "message": f"高意愿候选可选性未确认，不会尝试低意愿课程：{reason}",
                             })
-                            self._set_state(task, "needs_review", f"方案组“{spec['name']}”的教学班可选性需要核验")
+                            self._start_confirmation_window(
+                                result, minimum_seconds=self._poll_interval(task),
+                            )
+                            if self._confirmation_window_expired(result):
+                                result["status"] = "needs_review"
+                                self._set_state(task, "needs_review", f"方案组“{spec['name']}”的教学班可选性长时间无法确认")
+                                return
+                            break
+                        if not is_real_teaching_class_type(item.get("teaching_class_type")):
+                            reason = "缺少真实可提交课程类型，ALLKC 仅能用于目录查询"
+                            self._set_group_candidate(
+                                result, item, index, "data_unknown",
+                                reason=reason, live=candidate,
+                            )
+                            result.update({"status": "needs_review", "message": reason})
+                            self._set_state(task, "needs_review", f"方案组“{spec['name']}”包含不可提交的课程来源")
                             return
                         if task.get("status") != "running":
                             return
+                        self._set_group_candidate(
+                            result, item, index, "submitting", live=candidate,
+                        )
+                        self._set_execution_stage(
+                            task, "selection_submit",
+                            f"正在提交“{item.get('course_name') or item.get('course_code')}”",
+                        )
                         task["inflight_mutation"] = {
                             "action": "select", "group_id": group_id,
                             "class_id": item["class_id"], "course_code": item["course_code"],
@@ -2628,7 +3125,7 @@ class CourseSelectionAutomationService:
                         mutation_started = True
                         mutation = client.select_course(
                             batch_code=task["batch_code"],
-                            teaching_class_type=item.get("teaching_class_type") or "ALLKC",
+                            teaching_class_type=str(item.get("teaching_class_type") or ""),
                             class_id=item["class_id"], course_code=item["course_code"],
                             weight=item.get("weight"), confirm_risk=False,
                         )
@@ -2637,6 +3134,7 @@ class CourseSelectionAutomationService:
                             "course_code": item.get("course_code") or "",
                             "course_name": item.get("course_name") or "",
                             "code": mutation.get("code"), "message": mutation.get("message"),
+                            "failure_class": mutation.get("failure_class") or "",
                             "at": datetime.now().astimezone().isoformat(),
                         }
                         task.setdefault("results", []).append(record)
@@ -2645,22 +3143,69 @@ class CourseSelectionAutomationService:
                             group_result["status"] = "verifying"
                             group_result["pending_class_ids"] = [item["class_id"]]
                             group_result["pending_checks"] = 0
+                            self._set_group_candidate(
+                                group_result, item, index, "verifying",
+                                reason="提交已受理，等待官方已选结果", live=candidate,
+                            )
+                            self._start_confirmation_window(
+                                group_result, minimum_seconds=self._poll_interval(task),
+                            )
                             group_result["message"] = (
                                 f"已提交“{item.get('course_name') or item.get('course_code')}”，"
                                 f"等待官方确认；当前 {group_result['success_count']}/{target_count} 门"
                             )
                             task["inflight_mutation"] = None
                             submitted_any = True
+                            attempted = True
                             self._persist_task(task)
                             break
                         task["inflight_mutation"] = None
                         self._persist_task(task)
-                        group_results[group_id].update({
+                        failure_class = str(mutation.get("failure_class") or "UNKNOWN")
+                        if failure_class in {"FULL", "UNAVAILABLE", "RACE_LOST"}:
+                            status = {
+                                "FULL": "full",
+                                "UNAVAILABLE": "unavailable",
+                                "RACE_LOST": "race_lost",
+                            }[failure_class]
+                            reason = mutation.get("message") or failure_class
+                            self._set_group_candidate(
+                                result, item, index, status, reason=reason, live=candidate,
+                            )
+                            result["fallback_reason"] = reason
+                            continue
+                        if failure_class in {"AUTH_REQUIRED", "RATE_LIMITED"}:
+                            status = "auth_required" if failure_class == "AUTH_REQUIRED" else "rate_limited"
+                            reason = mutation.get("message") or (
+                                "登录状态需要恢复" if failure_class == "AUTH_REQUIRED" else "学校接口请求过快"
+                            )
+                            self._set_group_candidate(
+                                result, item, index, status, reason=reason, live=candidate,
+                            )
+                            result.update({"status": "monitoring", "message": reason})
+                            task["status"] = "waiting"
+                            task["message"] = f"方案组“{spec['name']}”暂缓：{reason}"
+                            self._switch_to_vacancy_watch(task)
+                            break
+                        self._set_group_candidate(
+                            result, item, index, "needs_review",
+                            reason=mutation.get("message") or "官方返回未分类错误",
+                            live=candidate,
+                        )
+                        result.update({
                             "status": "needs_review",
                             "message": mutation.get("message") or "提交结果需要核验",
                         })
-                        self._set_state(task, "needs_review", f"方案组“{spec['name']}”需要核验")
+                        self._set_state(task, "needs_review", f"方案组“{spec['name']}”的提交结果无法安全分类")
                         return
+                    else:
+                        result.update({
+                            "status": "monitoring",
+                            "candidate_status": "exhausted",
+                            "message": "所有候选当前均已满员或被官方明确判定不可选，继续追踪",
+                        })
+                    if not attempted and result.get("candidate_status") == "exhausted":
+                        result["candidate_index"] = 0
                 if grouped and all((group_results.get(group_id) or {}).get("status") == "success" for group_id in grouped):
                     total = sum(int(value.get("success_count") or 0) for value in group_results.values())
                     self._set_state(task, "success", f"{len(grouped)} 个方案组均已达标，共选中 {total} 门课程")
@@ -2674,12 +3219,15 @@ class CourseSelectionAutomationService:
             targets = sum(int(value.get("target_count") or 1) for value in (task.get("group_results") or {}).values())
             task["message"] = f"已完成 {completed}/{len(task.get('group_results') or {})} 个方案组，已选 {slots}/{targets} 门"
             self._persist_task(task)
-        except NEULoginError:
+        except NEULoginError as error:
+            execution_failed = True
             if mutation_started:
                 self._set_state(task, "needs_review", "提交期间登录状态变化，结果不明确，请核验官方已选结果")
             else:
                 self._wait_for_auth(task)
+            self._fail_execution(task, error)
         except (requests.RequestException, JwxkError) as error:
+            execution_failed = True
             if mutation_started:
                 self._set_state(task, "needs_review", f"提交结果不明确，请核验官方已选结果：{error}")
             else:
@@ -2688,6 +3236,10 @@ class CourseSelectionAutomationService:
                 self._switch_to_vacancy_watch(task)
                 task["last_attempt_at"] = datetime.now().astimezone().isoformat()
                 self._persist_task(task)
+            self._fail_execution(task, error)
+        finally:
+            if not execution_failed:
+                self._finish_execution(task)
 
     @staticmethod
     def _weight_task_targets(task: dict[str, Any], live_by_class: dict[str, dict]) -> list[dict[str, Any]]:
@@ -2752,6 +3304,9 @@ class CourseSelectionAutomationService:
 
     def _tick_weight_strategy(self, task: dict[str, Any]) -> None:
         if task.get("desired_state") != "running" or task.get("status") not in {"running", "waiting"}:
+            return
+        if self._after_end(task):
+            self._finish_after_round_end(task)
             return
         if not self._inside_window(task):
             if self._before_start(task):
@@ -2885,8 +3440,9 @@ class CourseSelectionAutomationService:
                         return
                 except ValueError:
                     pass
-                return
-        if last and not busy and not manual_check and not market_snapshot_ready and not weight_status.get("final_rebalance_requested") and not window_requested:
+                if not manual_check:
+                    return
+        if last and not busy and not market_snapshot_ready and not weight_status.get("final_rebalance_requested") and not window_requested:
             try:
                 interval = max(600, int(settings.get("rebalance_seconds") or task.get("rebalance_seconds") or 1800))
                 if time.time() - datetime.fromisoformat(last).timestamp() < interval:
@@ -3082,6 +3638,12 @@ class CourseSelectionAutomationService:
 
                 if weight_status.get("pending_add"):
                     item = dict(weight_status["pending_add"][0])
+                    if not is_real_teaching_class_type(item.get("teaching_class_type")):
+                        self._set_state(
+                            task, "needs_review",
+                            f"“{item.get('course_name') or item.get('course_code')}”缺少真实可提交类型，未执行投权",
+                        )
+                        return
                     self._set_execution_stage(
                         task, "weight_add",
                         f"正在为“{item.get('course_name') or item.get('course_code')}”投放 {int(item['weight'])} 点权重",
@@ -3096,7 +3658,7 @@ class CourseSelectionAutomationService:
                     mutation_started = True
                     result = client.select_course(
                         batch_code=task["batch_code"],
-                        teaching_class_type=item.get("teaching_class_type") or "ALLKC",
+                        teaching_class_type=str(item.get("teaching_class_type") or ""),
                         class_id=item["class_id"], course_code=item["course_code"],
                         weight=int(item["weight"]), confirm_risk=False,
                     )
@@ -3231,7 +3793,7 @@ class CourseSelectionAutomationService:
                             "class_id": str(target.get("class_id") or ""),
                             "course_code": str(target.get("course_code") or target.get("course_key") or ""),
                             "course_name": str(target.get("course_name") or ""),
-                            "teaching_class_type": str(target.get("teaching_class_type") or "ALLKC"),
+                            "teaching_class_type": str(target.get("teaching_class_type") or ""),
                             "weight": int(target["weight"]),
                         })
                 optimized_by_code = {
@@ -3402,6 +3964,9 @@ class CourseSelectionAutomationService:
     def _tick_vacancy_swap(self, task: dict[str, Any]) -> None:
         if task.get("desired_state") != "running" or task.get("status") not in {"running", "waiting"}:
             return
+        if self._after_end(task):
+            self._finish_after_round_end(task)
+            return
         if not self._inside_window(task):
             return
         last = task.get("last_attempt_at")
@@ -3411,7 +3976,10 @@ class CourseSelectionAutomationService:
                     return
             except ValueError:
                 pass
+        trigger = "manual" if self._consume_manual_check(task) else "scheduled"
+        self._begin_execution(task, trigger=trigger)
         mutation_started = False
+        execution_failed = False
         try:
             with self.remote_guard():
                 auth = self._task_auth(task)
@@ -3420,65 +3988,122 @@ class CourseSelectionAutomationService:
                     return
                 client = self.client_builder(auth)
                 task["status"] = "running"
+                self._set_execution_stage(task, "official_results", "正在读取当前抢选轮次的官方已选结果")
                 official = client.get_selected(batch_code=task["batch_code"])
-                confirmed = [*(official.get("selected") or []), *(official.get("volunteered") or [])]
+                confirmed = current_selection_records(
+                    official,
+                    selection_type_code="02",
+                    batch_code=str(task.get("batch_code") or ""),
+                    term_code=str(task.get("term_code") or ""),
+                )
                 selected_by_class = {str(row.get("class_id") or ""): row for row in confirmed}
                 selected_codes = {
                     str(row.get("course_code") or "").casefold() for row in confirmed
                     if str(row.get("course_code") or "")
                 }
+                results = task.setdefault("swap_results", {})
+                groups_by_id = {
+                    str(group.get("group_id") or ""): group
+                    for group in task.get("swap_groups") or []
+                }
                 inflight = task.get("inflight_mutation")
                 if isinstance(inflight, dict):
                     inflight_class = str(inflight.get("class_id") or "")
                     action = str(inflight.get("action") or "")
-                    reconciled = (
-                        action == "select" and inflight_class in selected_by_class
-                    ) or (
-                        action == "drop" and inflight_class not in selected_by_class
-                    )
-                    if reconciled:
+                    group_id = str(inflight.get("group_id") or "")
+                    result = results.setdefault(group_id, {
+                        "status": "monitoring", "message": "正在追踪空位",
+                        "pending_drop_ids": [], "pending_checks": 0, "target_pending": False,
+                        "current_drop_id": "", "drop_states": {},
+                    })
+                    if action == "select" and inflight_class in selected_by_class:
+                        result.update({
+                            "status": "success",
+                            "message": "意向课程已经从官方结果确认",
+                            "target_pending": False,
+                            "pending_checks": 0,
+                            "pending_since": None,
+                            "confirmation_deadline": None,
+                        })
+                        task["inflight_mutation"] = None
+                    elif action == "drop" and inflight_class not in selected_by_class:
+                        result.setdefault("drop_states", {})[inflight_class] = "confirmed"
+                        result["pending_drop_ids"] = [
+                            value for value in result.get("pending_drop_ids") or []
+                            if str(value) != inflight_class
+                        ]
+                        result.update({
+                            "current_drop_id": "",
+                            "pending_checks": 0,
+                            "pending_since": None,
+                            "confirmation_deadline": None,
+                            "status": "monitoring",
+                            "message": "上一门退课已确认，继续处理换课步骤",
+                        })
                         task["inflight_mutation"] = None
                     else:
-                        self._set_state(task, "needs_review", "程序重启或登录恢复前有一项换课提交结果不明确，请先核验官方结果")
+                        result["pending_checks"] = int(result.get("pending_checks") or 0) + 1
+                        result["status"] = "verifying" if action == "select" else "verifying_drop"
+                        result["message"] = (
+                            "意向课程已提交，等待官方已选结果确认"
+                            if action == "select"
+                            else "退课已提交，等待官方确认后再处理下一门"
+                        )
+                        self._start_confirmation_window(
+                            result, minimum_seconds=self._poll_interval(task),
+                        )
+                        if self._confirmation_window_expired(result):
+                            result["status"] = "needs_review"
+                            self._set_state(
+                                task, "needs_review",
+                                "程序重启或登录恢复前有一项换课提交仍未确认，请人工核验官方结果",
+                            )
+                            return
+                        task["last_attempt_at"] = datetime.now().astimezone().isoformat()
+                        self._persist_task(task)
                         return
-                results = task.setdefault("swap_results", {})
                 for group in task.get("swap_groups") or []:
                     group_id = str(group.get("group_id") or "")
                     target = dict(group.get("target") or {})
                     result = results.setdefault(group_id, {
                         "status": "monitoring", "message": "正在追踪空位",
                         "pending_drop_ids": [], "pending_checks": 0, "target_pending": False,
+                        "current_drop_id": "", "drop_states": {},
                     })
                     target_code = str(target.get("course_code") or "").casefold()
-                    if target_code and target_code in selected_codes:
-                        result.update({"status": "success", "message": "意向课程已经选中", "target_pending": False})
+                    target_class_id = str(target.get("class_id") or "")
+                    if target_class_id and target_class_id in selected_by_class:
+                        result.update({
+                            "status": "success", "message": "意向课程已经选中",
+                            "target_pending": False, "pending_since": None,
+                            "confirmation_deadline": None,
+                        })
                         continue
                     if result.get("target_pending"):
-                        checks = int(result.get("pending_checks") or 0) + 1
-                        result["pending_checks"] = checks
+                        result["pending_checks"] = int(result.get("pending_checks") or 0) + 1
                         result["status"] = "verifying"
                         result["message"] = "意向课程已提交，等待官方已选结果确认"
-                        if checks >= 3:
+                        self._start_confirmation_window(
+                            result, minimum_seconds=self._poll_interval(task),
+                        )
+                        if self._confirmation_window_expired(result):
                             self._set_state(task, "needs_review", f"空位组“{group.get('name') or group_id}”的选课结果长时间未确认")
                             return
                         continue
-                    pending_drop_ids = list(result.get("pending_drop_ids") or [])
-                    if pending_drop_ids:
-                        remaining = [class_id for class_id in pending_drop_ids if class_id in selected_by_class]
-                        if remaining:
-                            checks = int(result.get("pending_checks") or 0) + 1
-                            result.update({
-                                "status": "verifying_drop", "pending_checks": checks,
-                                "message": f"等待官方确认退选 {len(remaining)} 门课程",
-                            })
-                            if checks >= 3:
-                                self._set_state(task, "needs_review", f"空位组“{group.get('name') or group_id}”的退选结果长时间未确认")
-                                return
-                            continue
-                        result.update({"pending_drop_ids": [], "pending_checks": 0, "status": "monitoring", "message": "退选已确认，正在提交意向课程"})
+                    if not is_real_teaching_class_type(target.get("teaching_class_type")):
+                        result.update({
+                            "status": "needs_review",
+                            "message": "意向课程缺少真实可提交类型，ALLKC 不能用于换课",
+                        })
+                        self._set_state(task, "needs_review", f"空位组“{group.get('name') or group_id}”的目标课程来源无法确认")
+                        return
+                    self._set_execution_stage(
+                        task, "vacancy_refresh",
+                        f"正在检查“{target.get('course_name') or target.get('course_code')}”的空位",
+                    )
                     catalog = client.search_courses(
                         batch_code=task["batch_code"],
-                        teaching_class_type=target.get("teaching_class_type") or "ALLKC",
+                        teaching_class_type=str(target.get("teaching_class_type") or ""),
                         page_number=1, page_size=50,
                         keyword=target.get("course_code") or target.get("course_name") or "",
                     )
@@ -3489,45 +4114,82 @@ class CourseSelectionAutomationService:
                     if candidate.get("full"):
                         result.update({"status": "monitoring", "message": "课程仍然满员，继续追踪空位"})
                         continue
+                    drop_states = result.setdefault("drop_states", {})
                     drops = [
                         item for item in group.get("drop_courses") or []
                         if str(item.get("class_id") or "") in selected_by_class
+                        and drop_states.get(str(item.get("class_id") or "")) != "confirmed"
                     ]
                     if drops:
-                        submitted = []
-                        for drop in drops:
-                            if task.get("status") != "running":
-                                return
-                            task["inflight_mutation"] = {
-                                "action": "drop", "group_id": group_id,
-                                "class_id": drop["class_id"],
-                                "course_code": drop.get("course_code") or "",
-                                "started_at": datetime.now().astimezone().isoformat(),
-                            }
-                            self._persist_task(task)
-                            mutation_started = True
-                            mutation = client.deselect_course(
-                                batch_code=task["batch_code"], class_id=drop["class_id"],
-                                confirm_risk=False,
-                            )
-                            task.setdefault("results", []).append({
-                                "group_id": group_id, "action": "drop", "class_id": drop["class_id"],
-                                "course_code": drop.get("course_code") or "",
-                                "course_name": drop.get("course_name") or "",
-                                "code": mutation.get("code"), "message": mutation.get("message"),
-                                "at": datetime.now().astimezone().isoformat(),
-                            })
-                            if not mutation.get("success"):
-                                self._set_state(task, "needs_review", mutation.get("message") or "自动退选结果需要人工核验")
-                                return
-                            submitted.append(drop["class_id"])
-                            task["inflight_mutation"] = None
-                            self._persist_task(task)
+                        drop = drops[0]
+                        if task.get("status") != "running":
+                            return
+                        drop_id = str(drop.get("class_id") or "")
+                        self._set_execution_stage(
+                            task, "swap_drop",
+                            f"正在退选“{drop.get('course_name') or drop.get('course_code')}”",
+                        )
+                        task["inflight_mutation"] = {
+                            "action": "drop", "group_id": group_id,
+                            "class_id": drop_id,
+                            "course_code": drop.get("course_code") or "",
+                            "started_at": datetime.now().astimezone().isoformat(),
+                        }
+                        result["current_drop_id"] = drop_id
+                        drop_states[drop_id] = "submitting"
+                        self._persist_task(task)
+                        mutation_started = True
+                        mutation = client.deselect_course(
+                            batch_code=task["batch_code"], class_id=drop_id,
+                            confirm_risk=False,
+                        )
+                        task.setdefault("results", []).append({
+                            "group_id": group_id, "action": "drop", "class_id": drop_id,
+                            "course_code": drop.get("course_code") or "",
+                            "course_name": drop.get("course_name") or "",
+                            "code": mutation.get("code"), "message": mutation.get("message"),
+                            "failure_class": mutation.get("failure_class") or "",
+                            "at": datetime.now().astimezone().isoformat(),
+                        })
+                        if not mutation.get("success"):
+                            drop_states[drop_id] = "needs_review"
+                            self._set_state(task, "needs_review", mutation.get("message") or "自动退选结果需要人工核验")
+                            return
+                        drop_states[drop_id] = "submitted"
+                        result["pending_drop_ids"] = list(dict.fromkeys([
+                            *(result.get("pending_drop_ids") or []), drop_id,
+                        ]))
+                        result["pending_checks"] = 0
+                        result["status"] = "verifying_drop"
+                        result["message"] = "已提交 1 门退课，等待官方确认后再处理下一门"
+                        self._start_confirmation_window(
+                            result, minimum_seconds=self._poll_interval(task),
+                        )
+                        task["last_attempt_at"] = datetime.now().astimezone().isoformat()
+                        self._persist_task(task)
+                        return
+                    for drop in group.get("drop_courses") or []:
+                        drop_id = str(drop.get("class_id") or "")
+                        if drop_id and drop_id not in selected_by_class:
+                            drop_states[drop_id] = "confirmed"
+                    if any(
+                        state != "confirmed"
+                        for state in drop_states.values()
+                    ):
                         result.update({
-                            "status": "verifying_drop", "pending_drop_ids": submitted,
-                            "pending_checks": 0, "message": f"已提交退选 {len(submitted)} 门课程，等待官方确认",
+                            "status": "verifying_drop",
+                            "message": "仍有退课步骤未确认，不会提交意向课程",
                         })
                         continue
+                    result.update({
+                        "pending_drop_ids": [], "current_drop_id": "",
+                        "pending_checks": 0, "pending_since": None,
+                        "confirmation_deadline": None,
+                    })
+                    self._set_execution_stage(
+                        task, "swap_eligibility",
+                        f"正在核验意向课程“{target.get('course_name') or target.get('course_code')}”",
+                    )
                     eligibility = client.check_course_eligibility(
                         batch_code=task["batch_code"], class_ids=[target["class_id"]],
                     ).get("results", [{}])[0]
@@ -3539,6 +4201,10 @@ class CourseSelectionAutomationService:
                         return
                     if task.get("status") != "running":
                         return
+                    self._set_execution_stage(
+                        task, "swap_select",
+                        f"所有必要退课已确认，正在提交“{target.get('course_name') or target.get('course_code')}”",
+                    )
                     task["inflight_mutation"] = {
                         "action": "select", "group_id": group_id,
                         "class_id": target["class_id"],
@@ -3549,7 +4215,7 @@ class CourseSelectionAutomationService:
                     mutation_started = True
                     mutation = client.select_course(
                         batch_code=task["batch_code"],
-                        teaching_class_type=target.get("teaching_class_type") or "ALLKC",
+                        teaching_class_type=str(target.get("teaching_class_type") or ""),
                         class_id=target["class_id"], course_code=target["course_code"],
                         weight=None, confirm_risk=False,
                     )
@@ -3558,17 +4224,22 @@ class CourseSelectionAutomationService:
                         "course_code": target.get("course_code") or "",
                         "course_name": target.get("course_name") or "",
                         "code": mutation.get("code"), "message": mutation.get("message"),
+                        "failure_class": mutation.get("failure_class") or "",
                         "at": datetime.now().astimezone().isoformat(),
                     })
                     if not mutation.get("success"):
                         self._set_state(task, "needs_review", mutation.get("message") or "意向课程提交结果需要人工核验")
                         return
-                    task["inflight_mutation"] = None
-                    self._persist_task(task)
                     result.update({
                         "status": "verifying", "target_pending": True,
                         "pending_checks": 0, "message": "意向课程已提交，等待官方确认",
                     })
+                    self._start_confirmation_window(
+                        result, minimum_seconds=self._poll_interval(task),
+                    )
+                    task["last_attempt_at"] = datetime.now().astimezone().isoformat()
+                    self._persist_task(task)
+                    return
                 if task.get("swap_groups") and all(value.get("status") == "success" for value in results.values()):
                     self._set_state(task, "success", "全部空位换课组均已完成")
                     return
@@ -3576,12 +4247,15 @@ class CourseSelectionAutomationService:
             task["attempt_count"] = int(task.get("attempt_count") or 0) + 1
             task["message"] = f"正在追踪 {len(task.get('swap_groups') or [])} 个空位换课组"
             self._persist_task(task)
-        except NEULoginError:
+        except NEULoginError as error:
+            execution_failed = True
             if mutation_started:
                 self._set_state(task, "needs_review", "换课提交期间登录状态变化，结果不明确，请核验官方结果")
             else:
                 self._wait_for_auth(task)
+            self._fail_execution(task, error)
         except (requests.RequestException, JwxkError) as error:
+            execution_failed = True
             if mutation_started:
                 self._set_state(task, "needs_review", f"换课提交结果不明确，请核验官方结果：{error}")
             else:
@@ -3589,15 +4263,28 @@ class CourseSelectionAutomationService:
                 task["message"] = f"读取空位失败，将自动重试：{error}"
                 task["last_attempt_at"] = datetime.now().astimezone().isoformat()
                 self._persist_task(task)
+            self._fail_execution(task, error)
+        finally:
+            if not execution_failed:
+                self._finish_execution(task)
 
     def _set_state(self, task: dict[str, Any], status: str, message: str) -> None:
         task["status"] = status
         task["message"] = message
         task["updated_at"] = datetime.now().astimezone().isoformat()
-        if task.get("task_type") in {"selection", "vacancy_swap"} and status in {"success", "needs_review"}:
+        if status in {"success", "failed", "needs_review", "cancelled"}:
+            task["desired_state"] = "paused" if status != "cancelled" else "cancelled"
+        if task.get("task_type") in {"selection", "vacancy_swap"} and status in {"success", "failed", "needs_review", "cancelled"}:
             settings = self.get_automation_settings(str(task.get("account") or ""), str(task.get("batch_code") or ""))
             if settings.get("mail_enabled") and settings.get("notify_grab_result"):
-                key = f"{task.get('account')}:{task.get('batch_code')}:{task.get('task_id')}:{status}"
+                candidate_signature = "|".join(sorted(
+                    f"{group_id}:{value.get('current_class_id') or ''}:{value.get('candidate_status') or value.get('status') or ''}"
+                    for group_id, value in (task.get("group_results") or task.get("swap_results") or {}).items()
+                ))
+                key = (
+                    f"{task.get('account')}:{task.get('batch_code')}:{task.get('task_id')}:"
+                    f"{status}:{candidate_signature}"
+                )
                 with self._lock:
                     already = self._notification_state.get(key)
                     archive = next((copy.deepcopy(item) for item in self._archives if (
@@ -3610,19 +4297,26 @@ class CourseSelectionAutomationService:
                         "batch_code": task.get("batch_code"), "batch_name": task.get("name"),
                         "term_code": task.get("term_code"), "selection_type_code": "02",
                     },
+                    task=task,
                 )
+                status_label = {
+                    "success": "成功",
+                    "failed": "最终失败",
+                    "needs_review": "需要核验",
+                    "cancelled": "已取消",
+                }[status]
                 body, html_body = self._notification_content(
                     archive or {
                         "batch_code": task.get("batch_code"), "batch_name": task.get("name"),
                         "term_code": task.get("term_code"), "selection_type_code": "02",
                     },
-                    heading=f"抢课任务{'成功' if status == 'success' else '需要核验'}",
+                    heading=f"抢课任务{status_label}",
                     reason=f"任务“{task.get('name') or task.get('task_id')}”：{message}",
                     courses=courses,
                 )
                 if not already and self._queue_notification(
                     str(task.get("account") or ""), str(task.get("batch_code") or ""),
-                    f"JWXK 抢课任务{'成功' if status == 'success' else '待核验'} · {task.get('name') or task.get('task_id')}",
+                    f"JWXK 抢课任务{status_label} · {task.get('name') or task.get('task_id')}",
                     body,
                     f"grab-result:{task.get('task_id')}:{status}",
                     html_body=html_body,

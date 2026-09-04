@@ -1,3 +1,5 @@
+import { jwxkSelectionMode } from './jwxkModes';
+
 const normalizedName = value => String(value || '').replace(/\s+/g, '').toLocaleLowerCase();
 
 export const UNGROUPED_WEIGHT_GROUP_ID = 'ungrouped_weighted';
@@ -102,14 +104,14 @@ export const mergeCatalogFilterLayers = (manual = {}, plan = {}, keys = []) => O
 
 export const selectionParticipantCount = (course, selectionTypeCode = '') => {
   if (course?.market_participant_count != null) return Number(course.market_participant_count);
-  const effectiveType = String(selectionTypeCode || course?.selection_type_code || '');
-  const value = effectiveType === '04' ? course?.weight_participant_count : course?.selected_count;
+  const mode = jwxkSelectionMode(selectionTypeCode || course?.selection_type_code);
+  const value = course?.[mode.participantField];
   return value == null ? null : Number(value);
 };
 
 export const selectionParticipantLabel = (course, selectionTypeCode = '') => (
   course?.market_participant_label
-  || (String(selectionTypeCode || course?.selection_type_code || '') === '04' ? '已投注人数' : '已选人数')
+  || jwxkSelectionMode(selectionTypeCode || course?.selection_type_code).participantLabel
 );
 
 export const selectionTimeConflictStatus = result => {
@@ -154,12 +156,16 @@ export const toggleCatalogPreviewCourse = (courses = [], course = {}) => {
     : [...(courses || []), course];
 };
 
-/** 权重结果中的 0/0 记录来自其他轮次，不属于当前轮次可操作结果。 */
+/** 当前轮次结果以服务端分类为准；旧后端回退时两种模式都排除 0/0。 */
 export const isCurrentBatchSelectionRecord = (course, selectionTypeCode = '') => {
-  if (String(selectionTypeCode || course?.selection_type_code || '') !== '04') return true;
+  const mode = jwxkSelectionMode(selectionTypeCode || course?.selection_type_code);
+  const recordType = String(course?.selection_record_type || '');
+  if (recordType && !mode.currentRecordTypes.includes(recordType)) return false;
   const participants = selectionParticipantCount(course, selectionTypeCode);
   const capacity = course?.capacity == null ? null : Number(course.capacity);
-  return !(Number(participants) === 0 && capacity === 0);
+  if (Number(participants) === 0 && capacity === 0) return false;
+  if (course?.current_batch_record != null) return Boolean(course.current_batch_record);
+  return true;
 };
 
 /** 当前权重轮次中已投权、但尚未归入任何方案组的教学班。 */

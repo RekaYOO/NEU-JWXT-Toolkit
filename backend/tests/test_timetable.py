@@ -941,6 +941,40 @@ def test_personal_timetable_rejects_old_cache_when_schema_refresh_fails(
     assert error.value.status_code == 503
 
 
+def test_personal_timetable_reports_failed_cache_login_as_authentication_error(monkeypatch):
+    class Coordinator:
+        registry = type("Registry", (), {
+            "get": lambda self, resource: type("Spec", (), {
+                "schema_version": 3,
+                "revision_algorithm_version": 1,
+                "payload_type": "json",
+            })(),
+        })()
+
+        def read(self, **kwargs):
+            return None, True
+
+        def submit(self, **kwargs):
+            return type("Submission", (), {"job_id": "login-failed"})()
+
+    monkeypatch.setattr(timetable_router, "get_cache_coordinator", Coordinator)
+    monkeypatch.setattr(
+        timetable_router,
+        "wait_for_job",
+        lambda job_id: type("Job", (), {"error_kind": "NEULoginError"})(),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        timetable_router.get_personal_timetable(
+            term_code="2025-2026-2",
+            refresh=False,
+            auth=_current_timetable_auth("2025-2026-2"),
+        )
+
+    assert error.value.status_code == 401
+    assert "重新登录" in error.value.detail
+
+
 def test_personal_timetable_cache_rejects_non_current_term(monkeypatch):
     class Coordinator:
         def read(self, **kwargs):

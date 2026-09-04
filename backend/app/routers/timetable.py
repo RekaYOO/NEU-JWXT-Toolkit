@@ -278,7 +278,7 @@ def get_personal_timetable(
                 reason="manual" if refresh else "page_swr",
             )
         if entry is None or refresh:
-            wait_for_job(submission.job_id if submission else None)
+            completed_job = wait_for_job(submission.job_id if submission else None)
             entry, stale = coordinator.read(
                 account_id=account,
                 resource="personal-timetable",
@@ -289,6 +289,12 @@ def get_personal_timetable(
             if not _cache_entry_is_compatible(entry, spec):
                 entry = None
                 stale = True
+            if (
+                entry is None
+                and completed_job is not None
+                and getattr(completed_job, "error_kind", None) == "NEULoginError"
+            ):
+                raise _authentication_failure()
         if entry is None:
             raise HTTPException(status_code=503, detail="暂时无法获取个人课表且没有本地缓存")
         return _personal_response(entry, stale)

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from backend.core.auth import AuthSessionManager, NEUAuthClient
-from backend.core.auth.client import WEBVPN_ERR_CAMPUS_NETWORK
+from backend.core.auth.client import NEULoginError, WEBVPN_ERR_CAMPUS_NETWORK
 from backend.core.storage import (
     AcademicReportStorage,
     AutoLoginManager,
@@ -200,7 +200,7 @@ def _cache_client(context):
             or str(getattr(client, "username", "") or "") != context.key.account_id
             or not getattr(client, "is_logged_in", False)
         ):
-            raise RuntimeError("cache identity is no longer active")
+            raise NEULoginError("登录状态已失效")
         return client
 
 

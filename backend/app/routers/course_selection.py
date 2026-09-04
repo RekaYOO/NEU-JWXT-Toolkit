@@ -72,6 +72,8 @@ from backend.core.course_selection import (
     jwxk_campus_label,
     normalize_saved_plan_items,
     normalize_jwxk_campus_code,
+    annotate_selection_result,
+    is_real_teaching_class_type,
     resolve_network_mode,
     WeightCandidate,
     WeightGroupTarget,
@@ -495,6 +497,16 @@ def get_jwxk_selected(
                 and field in live_by_class[str(item.get("class_id") or "")]
             },
         } for item in result.get(key) or []]
+    metadata = {}
+    auth = peek_auth_client()
+    if auth is not None and account:
+        metadata = _automation_batch_metadata(account, request.batch_code, storage, auth)
+    result = annotate_selection_result(
+        result,
+        selection_type_code=str(metadata.get("selection_type_code") or ""),
+        batch_code=request.batch_code,
+        term_code=str(metadata.get("term_code") or ""),
+    )
     return JwxkSelectedResponse.model_validate(result)
 
 
@@ -1008,6 +1020,23 @@ def create_jwxk_automation_task(
     if request.task_type in {"selection", "vacancy_swap"} and selection_type_code != "02":
         raise HTTPException(status_code=422, detail="自动抢课和空位追踪只适用于抢选轮次")
     payload = request.model_dump()
+    invalid_courses: list[str] = []
+    refs = list(payload.get("items") or [])
+    for group in payload.get("swap_groups") or []:
+        refs.append(group.get("target") or {})
+        refs.extend(group.get("drop_courses") or [])
+    for item in refs:
+        if not is_real_teaching_class_type(item.get("teaching_class_type")):
+            invalid_courses.append(str(
+                item.get("course_name") or item.get("course_code")
+                or item.get("class_id") or "未命名课程"
+            ))
+    if invalid_courses:
+        names = "、".join(dict.fromkeys(invalid_courses))
+        raise HTTPException(
+            status_code=422,
+            detail=f"以下课程缺少真实可提交类型，不能创建自动任务：{names}",
+        )
     replace_existing = bool(payload.pop("replace_existing", False))
     try:
         return get_course_selection_automation_service().create(
@@ -1364,6 +1393,16 @@ def apply_jwxk_weights(
     course_codes = [str(item.get("course_code") or "").strip().upper() for item in request.items]
     if not all(course_codes) or len(course_codes) != len(set(course_codes)):
         raise HTTPException(status_code=422, detail="同一课程只能投放一次权重")
+    invalid_types = [
+        str(item.get("course_name") or item.get("course_code") or item.get("class_id") or "未知课程")
+        for item in request.items
+        if not is_real_teaching_class_type(item.get("teaching_class_type"))
+    ]
+    if invalid_types:
+        raise HTTPException(
+            status_code=422,
+            detail=f"以下课程缺少真实可提交类型，不能投权：{'、'.join(invalid_types)}",
+        )
     client = _jwxk_mutation_client(auth, storage)
     try:
         official = client.get_selected(batch_code=request.batch_code, include_withdrawal=False)
@@ -1445,7 +1484,7 @@ def apply_jwxk_weights(
                     break
             result = client.select_course(
                 batch_code=request.batch_code,
-                teaching_class_type=str(item.get("teaching_class_type") or "ALLKC"),
+                teaching_class_type=str(item["teaching_class_type"]),
                 class_id=str(item.get("class_id") or ""),
                 course_code=str(item.get("course_code") or ""),
                 weight=int(item.get("weight") or 0),

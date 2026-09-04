@@ -239,6 +239,12 @@ class JwxkCourseItem(StrictModel):
     capacity_updated_at: str = ""
     devoted_weight: int | None = None
     selection_source: str = ""
+    selection_record_type: str = ""
+    record_batch_code: str = ""
+    record_term_code: str = ""
+    current_batch_record: bool = True
+    operation_allowed: bool = True
+    operation_block_reason: str = ""
     conflict: bool = False
     conflict_description: str = ""
     restricted: bool = False
@@ -279,6 +285,12 @@ class JwxkCourseSelectRequest(JwxkBatchRequest):
     confirm_risk: bool = False
     preflight_verified: bool = False
 
+    @model_validator(mode="after")
+    def validate_mutation_scope(self):
+        if self.teaching_class_type in {"ALL", "ROUND", "ALLKC"}:
+            raise ValueError("catalog-only teaching class type cannot be submitted")
+        return self
+
 
 class JwxkCourseDeselectRequest(JwxkBatchRequest):
     class_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
@@ -292,6 +304,10 @@ class JwxkMutationResponse(StrictModel):
     requires_confirmation: bool
     code: str
     message: str
+    failure_class: Literal[
+        "", "FULL", "UNAVAILABLE", "RACE_LOST", "AUTH_REQUIRED",
+        "RATE_LIMITED", "UNKNOWN", "MUTATION_UNCERTAIN",
+    ] = ""
 
 
 class JwxkTimeSlot(StrictModel):
@@ -474,8 +490,14 @@ class JwxkAutomationCourseRef(StrictModel):
     class_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     course_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     course_name: str = Field(default="", max_length=120)
-    teaching_class_type: str = Field(default="ALLKC", min_length=1, max_length=24, pattern=r"^[A-Z0-9_]+$")
+    teaching_class_type: str = Field(min_length=1, max_length=24, pattern=r"^[A-Z0-9_]+$")
     teacher: str = Field(default="", max_length=120)
+
+    @model_validator(mode="after")
+    def validate_mutation_scope(self):
+        if self.teaching_class_type in {"ALL", "ROUND", "ALLKC"}:
+            raise ValueError("catalog-only teaching class type cannot be used by automation")
+        return self
 
 
 class JwxkVacancySwapGroup(StrictModel):

@@ -301,7 +301,7 @@ test('catalog preview toggles only the explicitly selected teaching class', () =
   expect(toggleCatalogPreviewCourse(one, first)).toEqual([]);
 });
 
-test('weight records with zero participants and zero capacity belong to another batch', () => {
+test('zero-participant zero-capacity records are non-operable in both round modes', () => {
   expect(isCurrentBatchSelectionRecord({
     weight_participant_count: 0, capacity: 0,
   }, '04')).toBe(false);
@@ -310,7 +310,33 @@ test('weight records with zero participants and zero capacity belong to another 
   }, '04')).toBe(true);
   expect(isCurrentBatchSelectionRecord({
     selected_count: 0, capacity: 0,
+  }, '02')).toBe(false);
+});
+
+test('current result feed must match the active round mode', () => {
+  expect(isCurrentBatchSelectionRecord({
+    selection_record_type: 'selected', selected_count: 2, capacity: 30,
   }, '02')).toBe(true);
+  expect(isCurrentBatchSelectionRecord({
+    selection_record_type: 'volunteered', selected_count: 2, capacity: 30,
+  }, '02')).toBe(false);
+  expect(isCurrentBatchSelectionRecord({
+    selection_record_type: 'volunteered', weight_participant_count: 2, capacity: 30,
+  }, '04')).toBe(true);
+  expect(isCurrentBatchSelectionRecord({
+    selection_record_type: 'selected', weight_participant_count: 2, capacity: 30,
+  }, '04')).toBe(false);
+});
+
+test('backend current-batch classification takes precedence over legacy inference', () => {
+  expect(isCurrentBatchSelectionRecord({
+    current_batch_record: false, selection_record_type: 'selected',
+    selected_count: 2, capacity: 30,
+  }, '02')).toBe(false);
+  expect(isCurrentBatchSelectionRecord({
+    current_batch_record: true, selection_record_type: 'selected',
+    selected_count: 0, capacity: 0,
+  }, '02')).toBe(false);
 });
 
 test('current manual weights are reconciled into the reserved ungrouped plan', () => {

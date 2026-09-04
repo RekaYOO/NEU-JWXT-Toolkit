@@ -4,7 +4,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from backend.core.auth.client import NEUAuthClient, WebVPNLoginError
+from backend.core.auth.client import (
+    LOGIN_ERR_WRONG_PWD,
+    NEUAuthClient,
+    NEULoginError,
+    WebVPNLoginError,
+    _public_login_error_message,
+)
 
 
 class WebVPNSMSLoginTests(unittest.TestCase):
@@ -84,6 +90,44 @@ class WebVPNSMSLoginTests(unittest.TestCase):
         captcha_headers = client.session.get.call_args_list[1].kwargs["headers"]
         self.assertEqual(captcha_headers["Referer"], login_url)
         self.assertIn("image/*", captcha_headers["Accept"])
+
+    def test_account_or_password_rejections_use_one_clear_public_message(self):
+        for official_message in (
+            "账号不存在",
+            "密码错误",
+            "用户名或密码错误",
+        ):
+            self.assertEqual(
+                _public_login_error_message(
+                    official_message,
+                    LOGIN_ERR_WRONG_PWD,
+                ),
+                "账号或密码错误",
+            )
+
+    def test_webvpn_password_rejection_does_not_expose_account_not_found(self):
+        login_url = "https://webvpn.neu.edu.cn/https/token/tpass/login?service=test"
+        login_page = self._response(
+            login_url,
+            '<form id="loginForm"><input name="lt" value="ticket"></form>',
+        )
+        rejected = self._response(login_url, '<div id="errormsg">账号不存在</div>')
+        client = NEUAuthClient("20250001", "wrong-password", network_mode="webvpn")
+
+        with (
+            patch.object(
+                client,
+                "_open_webvpn_password_page",
+                return_value=(login_page, False),
+            ),
+            patch.object(client, "_submit_login_form", return_value=rejected),
+            patch.object(client, "_extract_error_message", return_value="账号不存在"),
+        ):
+            with self.assertRaises(NEULoginError) as caught:
+                client.start_webvpn_password_login()
+
+        self.assertEqual(caught.exception.error_type, LOGIN_ERR_WRONG_PWD)
+        self.assertEqual(str(caught.exception), "账号或密码错误")
 
     def test_explicit_login_can_skip_stale_persisted_cookies(self):
         with tempfile.TemporaryDirectory() as directory:

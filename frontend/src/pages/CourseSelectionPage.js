@@ -13,6 +13,7 @@ import {
   getWebVPNErrorMessage, isWebVPNFlowInvalid, isWebVPNCampusNetworkBlocked,
 } from '../services/api';
 import { changedOfficialBatchTimes, courseCampusLabels, selectionParticipantCount } from '../utils/jwxkSchedule';
+import { jwxkSelectionMode } from '../utils/jwxkModes';
 import WebVPNAuthModal from '../components/WebVPNAuthModal';
 import './CourseSelectionPage.css';
 
@@ -118,21 +119,21 @@ const CourseSelectionPage = () => {
   const load = async ({ manual = false } = {}) => {
     setLoading(true);
     let timeChanges = [];
+    const archivesRequest = getJwxkCatalogArchives()
+      .then(payload => setArchives(payload.archives || []))
+      .catch(() => setArchives([]));
     try {
       const nextStatus = await getJwxkStatus();
       if (manual) {
         timeChanges = changedOfficialBatchTimes(status?.batches || [], nextStatus.batches || []);
       }
       setStatus(nextStatus);
-      if (nextStatus.primary_authenticated) {
-        try { setArchives((await getJwxkCatalogArchives()).archives || []); }
-        catch (_error) { setArchives([]); }
-      } else {
-        setArchives([]);
-      }
     }
     catch (error) { message.error(error.message || '读取选课批次失败'); }
-    finally { setLoading(false); }
+    finally {
+      setLoading(false);
+      await archivesRequest;
+    }
     if (timeChanges.length) promptTaskTimeSync(timeChanges);
   };
 
@@ -352,8 +353,6 @@ const CourseSelectionPage = () => {
     return [...grouped.entries()].sort(([left], [right]) => order(left) - order(right) || left.localeCompare(right, 'zh-CN'));
   };
 
-  if (loading && !status) return <div className="course-selection-loading"><Spin size="large" tip="读取官方选课批次…" /></div>;
-
   return (
     <main className="course-selection-page">
       <section className="course-selection-heading">
@@ -383,7 +382,10 @@ const CourseSelectionPage = () => {
           onClose={() => setWebvpnQrMessage('')}
         />
       )}
-      {!status?.service_authenticated && (
+      {loading && !status && (
+        <Alert showIcon type="info" message="正在后台读取官方选课批次，已保存的课程备份可继续查看" />
+      )}
+      {!loading && !status?.service_authenticated && (
         <Alert
           type={isWebVPNCampusNetworkBlocked(status) ? 'error' : 'warning'}
           showIcon
@@ -454,7 +456,7 @@ const CourseSelectionPage = () => {
               {batch.need_confirm && !batch.confirmed && <Paragraph className="course-selection-confirm">进入前需阅读并确认官方轮次须知</Paragraph>}
               <Space direction="vertical" style={{ width: '100%' }}>
                 <Button block type={batch.state === 'active' ? 'primary' : 'default'} loading={confirming === batch.code} disabled={!status?.service_authenticated || !batch.account_selectable} onClick={() => enter(batch)}>{batch.state === 'ended' ? '查看结果' : '进入选课工作台'}</Button>
-                {batch.selection_type_code === '04' && <Button block onClick={() => openAutomation(batch)}>本轮自动化与通知配置</Button>}
+                {['02', '04'].includes(batch.selection_type_code) && <Button block onClick={() => openAutomation(batch)}>本轮自动化与通知配置</Button>}
               </Space>
             </Card></Col>;
           })}</Row>
@@ -513,7 +515,7 @@ const CourseSelectionPage = () => {
           </section>}
           <Divider />
           <section className="course-selection-automation-section">
-            <div><Title level={5}>邮件通知</Title><Text type="secondary">所有邮件只包含“我的投权、方案组课程、自动任务课程”，不会发送全市场其他课程。通知失败也不会重复执行选课或投权。</Text></div>
+            <div><Title level={5}>邮件通知</Title><Text type="secondary">{automationBatch?.selection_type_code === '04' ? '邮件只包含当前轮次中你的投权、方案组课程和策略任务课程，不会发送全市场其他课程。' : '邮件只包含抢选任务绑定的方案组、目标课程和本任务产生的状态，不会发送其他任务课程。'}通知失败不会触发或重放远端写操作。</Text></div>
             <label className="course-selection-setting-row"><span><b>启用本轮邮件通知</b><small>关闭后下面选中的通知类型也不会发送。</small></span><Radio.Group className="course-selection-setting-toggle" optionType="button" buttonStyle="solid" value={automationSettings.mail_enabled ? 'on' : 'off'} onChange={event => setAutomationSettings(s => ({ ...s, mail_enabled: event.target.value === 'on' }))} options={[{ value: 'on', label: '开启' }, { value: 'off', label: '关闭' }]} /></label>
             <Checkbox.Group className="course-selection-notification-grid" disabled={!automationSettings.mail_enabled} value={Object.keys(automationSettings).filter(key => key.startsWith('notify_') && automationSettings[key])} onChange={keys => setAutomationSettings(s => Object.fromEntries(Object.entries(s).map(([key, value]) => [key, key.startsWith('notify_') ? keys.includes(key) : value])))} options={[
               ['notify_round_start', '轮次开始提醒'], ['notify_round_end', '轮次结束总结'], ['notify_final_rebalance', '临近结束与最终检查结果'], ['notify_capacity_transition', '关注课程从未满变为满员或超额'], ['notify_over_capacity', '关注课程超额达到阈值'], ['notify_underfilled_warning', '关注课程开课风险（结束前人数不足 10）'], ['notify_grab_result', '抢课任务成功或待核验'],
@@ -522,7 +524,8 @@ const CourseSelectionPage = () => {
               : !['notify_final_rebalance', 'notify_over_capacity', 'notify_underfilled_warning'].includes(value))
               .map(([value, label]) => ({ value, label }))} />
             {automationBatch?.selection_type_code === '04' && <label className="course-selection-setting-row"><span><b>临近结束的策略结果通知</b><small>默认结束前 5 分钟；若这个时刻晚于“最晚发送时间”，则提前到当天该时刻发送。</small></span><div className="course-selection-setting-control course-selection-inline-control"><Space><Text type="secondary">结束前</Text><InputNumber min={1} max={1440} value={automationSettings.final_notice_minutes ?? 5} onChange={value => setAutomationSettings(s => ({ ...s, final_notice_minutes: Number(value) || 5 }))} /><Text>分钟</Text></Space><Space><Text type="secondary">最晚</Text><Input className="course-selection-time-input" type="time" value={automationSettings.final_notice_latest_time || '23:00'} onChange={event => setAutomationSettings(s => ({ ...s, final_notice_latest_time: event.target.value || '23:00' }))} /></Space></div></label>}
-            <label className="course-selection-setting-row"><span><b>超额提醒阈值</b><small>例如 20% 表示容量 100、已投注人数达到 120 时提醒。</small></span><Space className="course-selection-setting-control"><InputNumber min={0} max={10} step={0.05} value={automationSettings.over_capacity_ratio} formatter={value => `${Number(value || 0) * 100}%`} parser={value => Number(String(value).replace('%', '')) / 100} onChange={value => setAutomationSettings(s => ({ ...s, over_capacity_ratio: value ?? 0.2 }))} /><Text type="secondary">超额人数 ÷ 容量</Text></Space></label>
+            {automationBatch?.selection_type_code === '04' && <label className="course-selection-setting-row"><span><b>超额提醒阈值</b><small>例如 20% 表示容量 100、已投注人数达到 120 时提醒。</small></span><Space className="course-selection-setting-control"><InputNumber min={0} max={10} step={0.05} value={automationSettings.over_capacity_ratio} formatter={value => `${Number(value || 0) * 100}%`} parser={value => Number(String(value).replace('%', '')) / 100} onChange={value => setAutomationSettings(s => ({ ...s, over_capacity_ratio: value ?? 0.2 }))} /><Text type="secondary">超额人数 ÷ 容量</Text></Space></label>}
+            {automationBatch?.selection_type_code === '02' && <Alert type="info" showIcon message={`${jwxkSelectionMode('02').label}任务通知`} description="轮次开始、容量变化、任务成功、最终失败或待核验会按已启用项目通知，并统一显示课程意愿值和已选人数。" />}
             <Alert type={automationSettings.smtp_configured ? 'success' : 'warning'} showIcon message={automationSettings.smtp_status} description={automationSettings.smtp_configured ? '复用系统设置中的 SMTP 通道，不会在这里保存密码。' : '请先前往系统设置配置 SMTP；未配置时不会发送邮件，也不会影响自动任务。'} />
           </section>
         </div>}

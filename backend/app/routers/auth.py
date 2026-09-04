@@ -47,6 +47,12 @@ def _error_code(error: Exception, fallback: str = WEBVPN_ERR_UNKNOWN) -> str:
     return str(getattr(error, "error_code", None) or fallback)
 
 
+def _login_error_message(error: NEULoginError) -> str:
+    if error.error_type == LOGIN_ERR_WRONG_PWD:
+        return "账号或密码错误"
+    return str(error)
+
+
 def _webvpn_suggestion(error_code: str) -> str:
     if error_code == WEBVPN_ERR_CAMPUS_NETWORK:
         return "请切换登录页的“校内直连”；校园网无法使用 WebVPN。"
@@ -218,7 +224,7 @@ def login(request: LoginRequest):
         )
         return LoginResponse(
             success=False,
-            message=str(e),
+            message=_login_error_message(e),
             error_code="WRONG_PASSWORD" if wrong_password else "REQUEST_ERROR",
             suggestion="请检查学号和密码。" if wrong_password else "请稍后重试；若持续失败请查看日志。",
         )
@@ -471,7 +477,7 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
             error_type=type(error).__name__,
         )
         return {
-            "success": False, "message": str(error),
+            "success": False, "message": _login_error_message(error),
             "error_code": error_code,
             "suggestion": _webvpn_suggestion(error_code),
         }

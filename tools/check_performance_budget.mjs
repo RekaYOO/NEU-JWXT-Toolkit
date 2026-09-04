@@ -27,7 +27,9 @@ const sizes = {
   brotli: fs.statSync(brotliFile).size,
 };
 const limits = {
-  gzip: Math.floor(588.7 * 1024),
+  // Rebased after the complete JWXK 02/04 dual-mode workflow was added.
+  // Keep little headroom so future growth still requires an explicit review.
+  gzip: 592 * 1024,
   brotli: 500 * 1024,
 };
 const failures = [];

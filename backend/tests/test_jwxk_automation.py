@@ -312,7 +312,7 @@ def test_task_course_refresh_ignores_fuzzy_rows_and_requires_exact_class(tmp_pat
     assert any("返回 2 条，精确命中 1/1" in item["message"] for item in task["execution"]["events"])
 
 
-def test_task_course_refresh_stops_when_exact_class_is_missing(tmp_path):
+def test_selection_task_course_refresh_marks_exact_class_missing_as_unknown(tmp_path):
     class Client:
         def search_courses(self, **_kwargs):
             return {"courses": [{"class_id": "wrong", "course_code": "A"}]}
@@ -326,8 +326,10 @@ def test_task_course_refresh_stops_when_exact_class_is_missing(tmp_path):
         }],
     })
 
-    with pytest.raises(JwxkError, match="未找到方案中的教学班"):
-        service._refresh_task_course_states(Client(), task)
+    live = service._refresh_task_course_states(Client(), task)
+
+    assert live == {}
+    assert task["course_state_errors"]["class-1"]
 
 
 def test_cancelled_automation_task_is_removed_immediately(tmp_path):
@@ -341,6 +343,71 @@ def test_cancelled_automation_task_is_removed_immediately(tmp_path):
 
     assert result["status"] == "cancelled"
     assert service.list("student") == []
+
+
+def test_cancelled_selection_task_sends_task_scoped_notification(tmp_path):
+    messages = []
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        client_builder=lambda _auth: None,
+        notification_provider=lambda subject, body, key, html_body: messages.append(
+            (subject, body, key, html_body)
+        ) or True,
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "待取消任务",
+        "groups": [{"group_id": "g", "name": "当前方案", "target_count": 1}],
+        "items": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "任务课程",
+            "plan_group_id": "g", "teaching_class_type": "TJKC",
+        }],
+    })
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True, "notify_grab_result": True,
+    })
+
+    service.action("student", task["task_id"], "cancel")
+
+    assert len(messages) == 1
+    assert "已取消" in messages[0][0]
+    assert "任务课程" in messages[0][1]
+    assert all(term not in messages[0][1] for term in ("投权", "权重", "已投注人数"))
+
+
+def test_selection_auth_notification_rearms_after_successful_check(tmp_path):
+    messages = []
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        client_builder=lambda _auth: None,
+        notification_provider=lambda subject, body, key, html_body: messages.append(
+            (subject, body, key, html_body)
+        ) or True,
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1",
+        "name": "认证恢复任务",
+        "groups": [{"group_id": "g", "name": "当前方案", "target_count": 1}],
+        "items": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "任务课程",
+            "plan_group_id": "g", "teaching_class_type": "TJKC",
+        }],
+    })
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True, "notify_grab_result": True,
+    })
+
+    service._wait_for_auth(task, "登录状态需要恢复")
+    service._wait_for_auth(task, "登录状态需要恢复")
+    service._finish_execution(task)
+    service._wait_for_auth(task, "登录状态再次失效")
+
+    assert len(messages) == 2
+    assert all("登录失效" in message[0] for message in messages)
+    assert all("任务课程" in message[1] for message in messages)
+    assert messages[0][2] != messages[1][2]
 
 
 def test_running_automation_task_resumes_with_reconciliation_after_restart(tmp_path):
@@ -1024,6 +1091,65 @@ def test_round_start_notification_is_scoped_and_html_formatted(tmp_path):
     assert "方案组课程" in messages[0][3]
 
 
+def test_grab_overdue_notification_is_task_scoped_and_has_no_weight_terms(tmp_path):
+    messages = []
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        client_builder=lambda _auth: None,
+        plan_provider=lambda *_args: {
+            "groups": [{"group_id": "other", "name": "其他方案"}],
+            "items": [{
+                "class_id": "other", "course_code": "OTHER",
+                "course_name": "其他课程", "plan_group_id": "other",
+            }],
+        },
+        notification_provider=lambda subject, body, key, html_body: messages.append(
+            (subject, body, key, html_body)
+        ) or True,
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "当前抢选任务",
+        "groups": [{"group_id": "g", "name": "当前方案", "target_count": 1}],
+        "items": [{
+            "class_id": "task", "course_code": "TASK", "course_name": "任务课程",
+            "plan_group_id": "g", "teaching_class_type": "TJKC",
+        }],
+    })
+    service.action("student", task["task_id"], "start")
+    begin = datetime.now().astimezone() - timedelta(minutes=4)
+    archive = service.merge_catalog_archive(
+        "student",
+        batch={
+            "code": "batch", "name": "抢选轮次", "selection_type_code": "02",
+            "begin_time": begin.isoformat(),
+            "end_time": (begin + timedelta(hours=1)).isoformat(),
+        },
+        scope="TJKC",
+        groups=[{"group_id": "all", "classes": [{
+            "class_id": "task", "course_code": "TASK", "course_name": "任务课程",
+            "selected_count": 5, "capacity": 30,
+        }, {
+            "class_id": "other", "course_code": "OTHER", "course_name": "其他课程",
+        }]}],
+    )
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True, "notify_grab_result": True,
+    })
+
+    service._notify_grab_overdue(
+        "student", archive, datetime.now().astimezone(),
+    )
+    service._notify_grab_overdue(
+        "student", archive, datetime.now().astimezone(),
+    )
+
+    assert len(messages) == 1
+    assert "任务课程" in messages[0][1]
+    assert "其他课程" not in messages[0][1]
+    assert all(term not in messages[0][1] for term in ("投权", "权重", "已投注人数"))
+
+
 def test_final_check_without_running_task_is_read_only_and_reports_proxy(tmp_path):
     messages = []
     auth = SimpleNamespace(is_logged_in=True, username="student")
@@ -1241,8 +1367,8 @@ def test_weight_strategy_recalculates_live_bidders_then_starts_safe_rebalance(tm
         "task_type": "weight_strategy", "grade_size": 126, "rebalance_seconds": 30,
         "groups": [{"group_id": "g", "name": "选修", "target_count": 1}],
         "items": [
-            {"plan_group_id": "g", "priority": 1, "utility": 8, "course_code": "A", "course_name": "课程A", "class_id": "class-a", "teaching_class_type": "ALLKC", "capacity": 30, "weight_participant_count": 30},
-            {"plan_group_id": "g", "priority": 2, "utility": 10, "course_code": "B", "course_name": "课程B", "class_id": "class-b", "teaching_class_type": "ALLKC", "capacity": 30, "weight_participant_count": 30},
+            {"plan_group_id": "g", "priority": 1, "utility": 8, "course_code": "A", "course_name": "课程A", "class_id": "class-a", "teaching_class_type": "TJKC", "capacity": 30, "weight_participant_count": 30},
+            {"plan_group_id": "g", "priority": 2, "utility": 10, "course_code": "B", "course_name": "课程B", "class_id": "class-b", "teaching_class_type": "TJKC", "capacity": 30, "weight_participant_count": 30},
         ],
     })
     task.update({"status": "running", "desired_state": "running", "last_attempt_at": None})
@@ -1349,10 +1475,10 @@ def test_group_quota_skips_full_candidates_and_keeps_filling_other_groups(tmp_pa
             {"group_id": "b", "name": "B 类", "target_count": 1},
         ],
         "items": [
-            {"plan_group_id": "a", "priority": 1, "course_code": "A1", "course_name": "A1", "class_id": "a1"},
-            {"plan_group_id": "a", "priority": 2, "course_code": "A2", "course_name": "A2", "class_id": "a2"},
-            {"plan_group_id": "a", "priority": 3, "course_code": "A3", "course_name": "A3", "class_id": "a3"},
-            {"plan_group_id": "b", "priority": 1, "course_code": "B1", "course_name": "B1", "class_id": "b1"},
+            {"plan_group_id": "a", "priority": 1, "course_code": "A1", "course_name": "A1", "class_id": "a1", "teaching_class_type": "TJKC"},
+            {"plan_group_id": "a", "priority": 2, "course_code": "A2", "course_name": "A2", "class_id": "a2", "teaching_class_type": "TJKC"},
+            {"plan_group_id": "a", "priority": 3, "course_code": "A3", "course_name": "A3", "class_id": "a3", "teaching_class_type": "TJKC"},
+            {"plan_group_id": "b", "priority": 1, "course_code": "B1", "course_name": "B1", "class_id": "b1", "teaching_class_type": "TJKC"},
         ],
         "poll_seconds": 5,
     })
@@ -1380,6 +1506,132 @@ def test_group_quota_skips_full_candidates_and_keeps_filling_other_groups(tmp_pa
     assert task["group_results"]["a"]["success_count"] == 2
     assert task["group_results"]["a"]["status"] == "success"
     assert task["status"] == "success"
+
+
+def test_missing_high_utility_candidate_never_falls_back(tmp_path):
+    class FakeClient:
+        submitted = []
+
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": []}
+
+        def search_courses(self, *, keyword, **_kwargs):
+            if keyword == "HIGH":
+                return {"courses": []}
+            return {"courses": [{"class_id": "low", "full": False}]}
+
+        def check_course_eligibility(self, **_kwargs):
+            raise AssertionError("unknown high-priority data must stop before eligibility")
+
+        def select_course(self, **kwargs):
+            self.submitted.append(kwargs["class_id"])
+            return {"success": True}
+
+    client = FakeClient()
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: client,
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "严格候选",
+        "groups": [{"group_id": "g", "name": "目标", "target_count": 1}],
+        "items": [
+            {
+                "plan_group_id": "g", "utility": 10, "course_code": "HIGH",
+                "course_name": "高意愿", "class_id": "high", "teaching_class_type": "TJKC",
+            },
+            {
+                "plan_group_id": "g", "utility": 5, "course_code": "LOW",
+                "course_name": "低意愿", "class_id": "low", "teaching_class_type": "TJKC",
+            },
+        ],
+    })
+    task.update({"status": "running", "desired_state": "running"})
+
+    service._tick(task)
+
+    assert client.submitted == []
+    assert task["group_results"]["g"]["candidate_status"] == "data_unknown"
+    assert task["group_results"]["g"]["current_class_id"] == "high"
+
+
+def test_unknown_submission_failure_stops_group_without_fallback(tmp_path):
+    class FakeClient:
+        submitted = []
+
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": []}
+
+        def search_courses(self, *, keyword, **_kwargs):
+            class_id = "high" if keyword == "HIGH" else "low"
+            return {"courses": [{"class_id": class_id, "full": False}]}
+
+        def check_course_eligibility(self, *, class_ids, **_kwargs):
+            return {"results": [{"class_id": class_ids[0], "status": "selectable"}]}
+
+        def select_course(self, *, class_id, **_kwargs):
+            self.submitted.append(class_id)
+            return {
+                "success": False, "code": "500", "message": "系统处理失败",
+                "failure_class": "UNKNOWN",
+            }
+
+    client = FakeClient()
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: client,
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "保守失败",
+        "groups": [{"group_id": "g", "name": "目标", "target_count": 1}],
+        "items": [
+            {
+                "plan_group_id": "g", "utility": 10, "course_code": "HIGH",
+                "course_name": "高意愿", "class_id": "high", "teaching_class_type": "TJKC",
+            },
+            {
+                "plan_group_id": "g", "utility": 5, "course_code": "LOW",
+                "course_name": "低意愿", "class_id": "low", "teaching_class_type": "TJKC",
+            },
+        ],
+    })
+    task.update({"status": "running", "desired_state": "running"})
+
+    service._tick(task)
+
+    assert client.submitted == ["high"]
+    assert task["status"] == "needs_review"
+    assert task["group_results"]["g"]["current_class_id"] == "high"
+
+
+@pytest.mark.parametrize(
+    "group_status,inflight,expected",
+    [
+        ("success", None, "success"),
+        ("monitoring", None, "failed"),
+        ("verifying", {"action": "select", "class_id": "c"}, "needs_review"),
+    ],
+)
+def test_round_end_closes_selection_task(group_status, inflight, expected, tmp_path):
+    service = _service(tmp_path)
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "终态",
+        "groups": [{"group_id": "g", "name": "目标", "target_count": 1}],
+        "items": [{
+            "plan_group_id": "g", "course_code": "C", "class_id": "c",
+            "teaching_class_type": "TJKC",
+        }],
+    })
+    task["group_results"]["g"].update({
+        "status": group_status,
+        "success_count": 1 if group_status == "success" else 0,
+    })
+    task["inflight_mutation"] = inflight
+
+    service._finish_after_round_end(task)
+
+    assert task["status"] == expected
+    assert task["desired_state"] == "paused"
 
 
 def test_vacancy_swap_waits_for_drop_confirmation_before_selecting_target(tmp_path):

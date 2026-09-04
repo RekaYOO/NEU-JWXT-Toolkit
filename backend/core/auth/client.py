@@ -321,6 +321,13 @@ def _classify_login_error(error_msg: str) -> str:
     return LOGIN_ERR_UNKNOWN
 
 
+def _public_login_error_message(error_msg: str, error_type: str) -> str:
+    """Return a useful login error without exposing misleading account detail."""
+    if error_type == LOGIN_ERR_WRONG_PWD:
+        return "账号或密码错误"
+    return f"登录失败: {error_msg}" if error_msg else "登录失败"
+
+
 # ── 主客户端 ──────────────────────────────────────────────────────────────────
 
 class NEULoginError(Exception):
@@ -535,7 +542,10 @@ class NEUAuthClient:
                 logger.warning("无法从服务器获取新公钥（网络问题）")
 
         # 所有重试均失败
-        raise NEULoginError(f"登录失败: {error_msg}", error_type=error_type)
+        raise NEULoginError(
+            _public_login_error_message(error_msg, error_type),
+            error_type=error_type,
+        )
 
     def _do_login_submit(
         self,
@@ -1051,7 +1061,11 @@ class NEUAuthClient:
 
             if self._is_webvpn_login_url(response.url):
                 error = self._extract_error_message(response.text)
-                raise NEULoginError(f"登录失败: {error}", _classify_login_error(error))
+                error_type = _classify_login_error(error)
+                raise NEULoginError(
+                    _public_login_error_message(error, error_type),
+                    error_type,
+                )
 
             self._sync_cas_cookie_to_webvpn({})
             if not self._webvpn_health_check():

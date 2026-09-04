@@ -58,6 +58,11 @@ import {
   upsertSelectionRecord,
 } from '../utils/jwxkSchedule';
 import {
+  isRealJwxkTeachingClassType,
+  jwxkScheduleOverlayMeta,
+  jwxkSelectionMode,
+} from '../utils/jwxkModes';
+import {
   collectAcademicPlanDeficits,
   getAcademicRuleDeficitText,
   overlayExternalSelectedCourses,
@@ -76,6 +81,37 @@ const preserveEqualSnapshot = (previous, next) => (
 const formatTaskTimestamp = value => value
   ? new Date(value).toLocaleString('zh-CN', { hour12: false })
   : '尚未执行';
+const taskStatusMeta = status => ({
+  running: { label: '运行中', color: 'processing' },
+  waiting: { label: '等待并自动重试', color: 'processing' },
+  success: { label: '已完成', color: 'success' },
+  failed: { label: '未达目标', color: 'error' },
+  needs_review: { label: '待人工核验', color: 'warning' },
+  paused: { label: '已暂停', color: 'default' },
+  cancelled: { label: '已取消', color: 'default' },
+  draft: { label: '草稿', color: 'default' },
+}[status] || { label: status || '草稿', color: 'default' });
+const candidateStatusMeta = status => ({
+  data_unknown: { label: '数据未确认', color: 'warning' },
+  eligibility_unknown: { label: '可选性待核验', color: 'warning' },
+  conflict_unknown: { label: '冲突待核验', color: 'warning' },
+  full: { label: '已确认满员', color: 'error' },
+  unavailable: { label: '官方不可选', color: 'error' },
+  race_lost: { label: '被他人抢先', color: 'error' },
+  submitting: { label: '正在提交', color: 'processing' },
+  verifying: { label: '等待官方确认', color: 'processing' },
+  mutation_uncertain: { label: '提交待核验', color: 'warning' },
+  auth_required: { label: '等待登录恢复', color: 'warning' },
+  rate_limited: { label: '请求退避中', color: 'warning' },
+  needs_review: { label: '需要人工核验', color: 'warning' },
+  complete: { label: '组目标已完成', color: 'success' },
+  exhausted: { label: '候选均已明确失败', color: 'default' },
+}[status] || { label: status || '等待检查', color: 'default' });
+const pollingModeLabel = mode => ({
+  opening_burst: '开放首轮（1 秒）',
+  vacancy_watch: '空位追踪（≥15 秒）',
+  weight_rebalance: '权重重算',
+}[mode] || mode || '等待启动');
 const modelForecastText = item => {
   if (item?.forecast_status === 'scope_mismatch') return '市场口径与年级人数不匹配，三种终局人数暂不可区分';
   if (item?.forecast_status === 'flat_current') return '当前数据下三种情景均回落为实时人数';
@@ -107,6 +143,18 @@ const courseCategoryLabel = course => (
   || '课程类别待定'
 );
 
+const realTeachingClassType = (course = {}, scope = '') => {
+  const candidates = [
+    course.teaching_class_type,
+    ...(course.source_scopes || []),
+    scope,
+  ];
+  return candidates.find(isRealJwxkTeachingClassType) || '';
+};
+const invalidAutomationCourses = items => (items || []).filter(
+  item => !isRealJwxkTeachingClassType(item.teaching_class_type),
+);
+
 const planItem = (group, course, scope, planGroup) => ({
   plan_group_id: planGroup.group_id,
   plan_group_name: planGroup.name,
@@ -116,7 +164,7 @@ const planItem = (group, course, scope, planGroup) => ({
   course_name: course.course_name,
   class_id: course.class_id,
   class_number: course.class_number,
-  teaching_class_type: course.teaching_class_type || scope,
+  teaching_class_type: realTeachingClassType(course, scope),
   teacher: course.teacher,
   location: course.location,
   campus: course.campus,
@@ -131,14 +179,7 @@ const planItem = (group, course, scope, planGroup) => ({
   schedules: course.schedules || [],
 });
 
-const scheduleOverlayMeta = layer => ({
-  preview: { label: '正在预览', tag: '正在预览', color: '#2563eb' },
-  candidate: { label: '待选方案', tag: '待选方案', color: '#2563eb' },
-  pending: { label: '已投权待结果', tag: '已投权', color: '#2563eb' },
-  selected: { label: '已选课程', tag: '已选', color: '#16a34a' },
-}[layer] || { label: '待选课程', tag: '待选', color: '#2563eb' });
-
-const scheduleOverlayForCourse = (item, layer, idPrefix) => (item.schedules || []).map((meeting, index) => ({
+const scheduleOverlayForCourse = (item, layer, idPrefix, selectionTypeCode = '') => (item.schedules || []).map((meeting, index) => ({
   ...meeting,
   id: `${idPrefix}-${item.class_id}-${index}`,
   meeting_id: `${idPrefix}-${item.class_id}-${index}`,
@@ -155,11 +196,12 @@ const scheduleOverlayForCourse = (item, layer, idPrefix) => (item.schedules || [
   campus: meeting.campus_name || item.campus_name || meeting.campus || item.campus || '',
   teachers: item.teacher ? [item.teacher] : [],
   classes: item.class_number ? [item.class_number] : [],
-  course_type: scheduleOverlayMeta(layer).label,
-  tags: [scheduleOverlayMeta(layer).tag],
+  course_type: jwxkScheduleOverlayMeta(layer, selectionTypeCode).label,
+  tags: [jwxkScheduleOverlayMeta(layer, selectionTypeCode).label],
   title_details: [meeting.raw_text, item.official_schedule].filter(Boolean),
-  color: scheduleOverlayMeta(layer).color,
+  color: jwxkScheduleOverlayMeta(layer, selectionTypeCode).color,
   layer,
+  selection_type_code: selectionTypeCode,
 }));
 
 const mergedFilterOptions = (loaded = [], values = []) => {
@@ -243,20 +285,25 @@ const mergeEligibilityResults = (groups, results = []) => {
   });
 };
 
-const selectionScheduleFromRecords = courses => ({
+const selectionScheduleFromRecords = (courses, selectionTypeCode) => {
+  const current = (courses || []).filter(
+    course => isCurrentBatchSelectionRecord(course, selectionTypeCode),
+  );
+  return {
   source: 'selected_records_fallback',
   source_label: '根据官方已选记录生成',
-  courses,
-  meetings: courses.flatMap(course => (course.schedules || []).map((meeting, index) => ({
+  courses: current,
+  meetings: current.flatMap(course => (course.schedules || []).map((meeting, index) => ({
     ...meeting,
     candidate_id: `${course.class_id || course.course_code}:${index}`,
     course_code: course.course_code || '',
     course_name: course.course_name || '',
     teaching_class_id: course.class_id || '',
   }))),
-});
+  };
+};
 
-const selectionRecordsFromResponse = result => {
+const selectionRecordsFromResponse = (result, selectionTypeCode = '') => {
   const confirmed = (result?.selected || []).map(item => ({
     ...item, selection_record_type: 'selected',
   }));
@@ -266,7 +313,11 @@ const selectionRecordsFromResponse = result => {
   const merged = [...new Map([...confirmed, ...volunteered].map(item => [
     item.class_id || `${item.course_code}:${item.course_name}`, item,
   ])).values()];
-  return { confirmed, volunteered, merged };
+  return {
+    confirmed: confirmed.filter(item => isCurrentBatchSelectionRecord(item, selectionTypeCode)),
+    volunteered: volunteered.filter(item => isCurrentBatchSelectionRecord(item, selectionTypeCode)),
+    merged,
+  };
 };
 
 const CourseSelectionWorkspacePage = () => {
@@ -342,6 +393,7 @@ const CourseSelectionWorkspacePage = () => {
   const [personalScheduleReady, setPersonalScheduleReady] = useState(false);
   const [timetableRefreshSignal, setTimetableRefreshSignal] = useState(0);
   const [weightPlan, setWeightPlan] = useState(null);
+  const [selectionSetupOpen, setSelectionSetupOpen] = useState(false);
   const [weightSetupOpen, setWeightSetupOpen] = useState(false);
   const [weightBuilding, setWeightBuilding] = useState(false);
   const [gradeSizeDraft, setGradeSizeDraft] = useState(5000);
@@ -416,11 +468,15 @@ const CourseSelectionWorkspacePage = () => {
     }));
   }, [plan, planGroupConfigs]);
   const selectedByCourseCode = useMemo(() => new Map(
-    selected.filter(item => item.course_code).map(item => [String(item.course_code).toUpperCase(), item]),
-  ), [selected]);
+    selected.filter(item => (
+      item.course_code && isCurrentBatchSelectionRecord(item, batch?.selection_type_code)
+    )).map(item => [String(item.course_code).toUpperCase(), item]),
+  ), [batch?.selection_type_code, selected]);
   const selectedByClassId = useMemo(() => new Map(
-    selected.filter(item => item.class_id).map(item => [String(item.class_id), item]),
-  ), [selected]);
+    selected.filter(item => (
+      item.class_id && isCurrentBatchSelectionRecord(item, batch?.selection_type_code)
+    )).map(item => [String(item.class_id), item]),
+  ), [batch?.selection_type_code, selected]);
   const volunteeredCourseCodes = useMemo(() => new Set(
     selected
       .filter(item => (
@@ -598,7 +654,7 @@ const CourseSelectionWorkspacePage = () => {
   const commitSelectedRecords = records => {
     selectedRef.current = records;
     setSelected(records);
-    setSchedule(selectionScheduleFromRecords(records));
+    setSchedule(selectionScheduleFromRecords(records, batch?.selection_type_code));
   };
 
   const removeSelectedCourseLocally = course => {
@@ -641,7 +697,9 @@ const CourseSelectionWorkspacePage = () => {
         batchCode,
         { ...(silent ? { skipAuthRedirect: true } : {}), includeMarket },
       );
-      const { confirmed, merged } = selectionRecordsFromResponse(result);
+      const { confirmed, merged } = selectionRecordsFromResponse(
+        result, batch?.selection_type_code,
+      );
       setConfirmedSelected(confirmed);
       commitSelectedRecords(merged);
       setSelectedLoaded(true);
@@ -670,7 +728,7 @@ const CourseSelectionWorkspacePage = () => {
           const result = await getJwxkSelected(batchCode, {
             includeMarket: false, skipAuthRedirect: true,
           });
-          const snapshot = selectionRecordsFromResponse(result);
+          const snapshot = selectionRecordsFromResponse(result, batch?.selection_type_code);
           if (generation !== workspaceGeneration.current) return;
           matched = findMatchingSelectionRecord(snapshot.merged, course);
           lastError = null;
@@ -744,7 +802,13 @@ const CourseSelectionWorkspacePage = () => {
         : previous.map(item => item.task_id === task.task_id ? { ...item, ...updated } : item));
       if (action === 'start') message.success('任务已启动，页面将实时显示后台执行进度');
       if (action === 'pause') message.success('任务已暂停');
-      if (action === 'check_now') message.success('已请求立即检查；如果当前一轮仍在执行，会在结束后立即再检查并按策略行动');
+      if (action === 'check_now') {
+        message.success(task.task_type === 'weight_strategy'
+          ? '已请求立即检查；满足学校端最小间隔后重新计算并按安全流程执行策略'
+          : task.task_type === 'vacancy_swap'
+            ? '已请求立即检查空位；不会绕过未核验退课或学校端最小请求间隔'
+            : '已请求立即检查；不会绕过待核验提交或学校端最小请求间隔');
+      }
       await loadTasks({ silent: true });
     } catch (error) {
       message.error(error.message || '更新自动任务失败');
@@ -815,6 +879,7 @@ const CourseSelectionWorkspacePage = () => {
     setCatalogDetail(null);
     setCatalogDetailTab('detail');
     setWeightPlan(null);
+    setSelectionSetupOpen(false);
     setWeightSetupOpen(false);
     setGradeSizeDraft(null);
     setFocusedGroupId('');
@@ -855,7 +920,9 @@ const CourseSelectionWorkspacePage = () => {
     }).catch(error => message.warning(error.message || '暂时无法刷新选课轮次状态，已继续显示本地数据'));
     getJwxkSelected(batchCode, { includeMarket: false }).then(result => {
       if (generation !== workspaceGeneration.current) return;
-      const { confirmed, merged } = selectionRecordsFromResponse(result);
+      const { confirmed, merged } = selectionRecordsFromResponse(
+        result, batch?.selection_type_code,
+      );
       setConfirmedSelected(confirmed);
       commitSelectedRecords(merged);
       setSelectedLoaded(true);
@@ -1218,6 +1285,11 @@ const CourseSelectionWorkspacePage = () => {
       message.warning(`已选课程中已有“${duplicate.course_name || course.course_name}”，不能重复选择`);
       return;
     }
+    const mutationClassType = realTeachingClassType(course, scope);
+    if (!mutationClassType) {
+      message.warning('该教学班目前只有“全校课程查询”来源，无法确认真实提交类型，请从本轮课程类别重新打开后再试');
+      return;
+    }
     let weight = 5;
     let minimumWeight = 5;
     let maximumWeight = 150;
@@ -1272,7 +1344,7 @@ const CourseSelectionWorkspacePage = () => {
         }
         const key = course.class_id; setActionLoading(key);
         try {
-          const result = await selectJwxkCourse({ batch_code: batchCode, teaching_class_type: course.teaching_class_type || scope, class_id: course.class_id, course_code: course.course_code, weight, confirm_risk: true, preflight_verified: course.eligibility_status === 'selectable' });
+          const result = await selectJwxkCourse({ batch_code: batchCode, teaching_class_type: mutationClassType, class_id: course.class_id, course_code: course.course_code, weight, confirm_risk: true, preflight_verified: course.eligibility_status === 'selectable' });
           if (!result.success) {
             message.warning(result.message || '官方没有受理本次提交');
             return;
@@ -1289,6 +1361,11 @@ const CourseSelectionWorkspacePage = () => {
               selected: true,
               selection_type_code: batch?.selection_type_code || '',
               selection_record_type: volunteered ? 'volunteered' : 'selected',
+              current_batch_record: true,
+              operation_allowed: true,
+              operation_block_reason: '',
+              record_batch_code: batchCode,
+              record_term_code: termCode,
               selection_source: volunteered
                 ? (course.teaching_class_type === 'XGKC' ? 'xgxkyx' : 'fakcyx')
                 : 'yxkcyx',
@@ -1444,6 +1521,13 @@ const CourseSelectionWorkspacePage = () => {
       message.warning('这不是当前轮次的投权记录，不能在本轮调整权重');
       return;
     }
+    const mutationType = realTeachingClassType(
+      course, realTeachingClassType(selectedRecord, scope),
+    );
+    if (!mutationType) {
+      message.error('该教学班缺少真实可提交课程类型，不能先退选再重新投权');
+      return;
+    }
     const oldWeight = Number(selectedRecord.devoted_weight || 0);
     let budget = null;
     let minimum = 5;
@@ -1517,7 +1601,7 @@ const CourseSelectionWorkspacePage = () => {
           removeSelectedCourseLocally(selectedRecord);
           const reapplied = await selectJwxkCourse({
             batch_code: batchCode,
-            teaching_class_type: course.teaching_class_type || selectedRecord.teaching_class_type || scope,
+            teaching_class_type: mutationType,
             class_id: course.class_id,
             course_code: course.course_code || group.course_code,
             weight: nextWeight,
@@ -1641,6 +1725,10 @@ const CourseSelectionWorkspacePage = () => {
     const selectedGroups = planGroupConfigs.filter(group => selectedGroupSet.has(group.group_id));
     const selectedItems = plan.filter(item => selectedGroupSet.has(item.plan_group_id));
     if (!selectedGroups.length || !selectedItems.length) return message.warning('请至少选择一个包含候选课程的方案组');
+    const invalid = invalidAutomationCourses(selectedItems);
+    if (invalid.length) {
+      return message.error(`以下课程缺少真实可提交类型：${invalid.map(item => item.course_name || item.course_code).join('、')}`);
+    }
     try {
       const created = await createJwxkAutomationTask({
         batch_code: batchCode,
@@ -1700,7 +1788,7 @@ const CourseSelectionWorkspacePage = () => {
     return submitWeightStrategyTask(false);
   };
 
-  const createTask = async () => {
+  const submitSelectionTask = async replaceExisting => {
     if (batch?.selection_type_code !== '02') return message.error('自动抢课只适用于抢选轮次');
     const selectedGroupSet = new Set(taskGroupIds);
     const selectedGroups = planGroupConfigs.filter(group => selectedGroupSet.has(group.group_id));
@@ -1713,10 +1801,48 @@ const CourseSelectionWorkspacePage = () => {
       message.error(`方案组“${invalidGroup.name}”的不同候选课程少于目标门数`);
       return;
     }
+    const invalid = invalidAutomationCourses(selectedItems);
+    if (invalid.length) {
+      message.error(`以下课程缺少真实可提交类型：${invalid.map(item => item.course_name || item.course_code).join('、')}`);
+      return;
+    }
     try {
-      await createJwxkAutomationTask({ batch_code: batchCode, term_code: termCode, name: `${selectedGroups.length} 个方案组自动抢课`, start_at: batch?.begin_time || '', end_at: batch?.end_time || '', poll_seconds: 15, groups: selectedGroups, items: selectedItems });
-      message.success('已创建方案组任务；启动后各组会同时监测，组内按意愿值从高到低尝试'); setView('tasks');
+      await createJwxkAutomationTask({
+        batch_code: batchCode, term_code: termCode,
+        name: `${selectedGroups.length} 个方案组自动抢课`,
+        task_type: 'selection',
+        start_at: batch?.begin_time || '', end_at: batch?.end_time || '',
+        poll_seconds: 15, replace_existing: Boolean(replaceExisting),
+        groups: selectedGroups, items: selectedItems,
+      });
+      setSelectionSetupOpen(false);
+      await loadTasks();
+      message.success('自动抢课任务已创建为草稿，请在任务页明确点击启动');
+      setView('tasks');
     } catch (error) { message.error(error.message || '创建自动任务失败'); }
+  };
+
+  const createTask = () => {
+    const existing = tasks.find(task => (
+      task.task_type === 'selection' && task.batch_code === batchCode
+      && task.status !== 'cancelled' && task.desired_state !== 'cancelled'
+    ));
+    if (!existing) return submitSelectionTask(false);
+    return Modal.confirm({
+      title: '本轮已有自动抢课任务',
+      content: '确认覆盖后，旧任务会停止，并使用当前勾选的方案组、目标门数和意愿值重新创建草稿。',
+      okText: '确认覆盖',
+      cancelText: '保留原任务',
+      okButtonProps: { danger: true },
+      onOk: () => submitSelectionTask(true),
+    });
+  };
+
+  const openSelectionTaskSetup = () => {
+    setTaskGroupIds(planGroupConfigs
+      .filter(group => group.group_id !== UNGROUPED_WEIGHT_GROUP_ID)
+      .map(group => group.group_id));
+    setSelectionSetupOpen(true);
   };
 
   const openVacancySwap = course => {
@@ -1737,9 +1863,15 @@ const CourseSelectionWorkspacePage = () => {
       class_id: item.class_id,
       course_code: item.course_code,
       course_name: item.course_name || '',
-      teaching_class_type: item.teaching_class_type || 'ALLKC',
+      teaching_class_type: realTeachingClassType(item),
       teacher: item.teacher || '',
     });
+    const refs = [courseRef(vacancySwapTarget), ...dropCourses.map(courseRef)];
+    const invalid = invalidAutomationCourses(refs);
+    if (invalid.length) {
+      message.error(`以下课程缺少真实可提交类型：${invalid.map(item => item.course_name || item.course_code).join('、')}`);
+      return;
+    }
     try {
       await createJwxkAutomationTask({
         batch_code: batchCode,
@@ -1773,17 +1905,19 @@ const CourseSelectionWorkspacePage = () => {
         && selectedCourse.selection_record_type === 'selected'
         && sameSelectionCourse(selectedCourse, item)
       )))
-      .flatMap(item => scheduleOverlayForCourse(item, 'candidate', 'jwxk-plan')),
+      .flatMap(item => scheduleOverlayForCourse(item, 'candidate', 'jwxk-plan', batch?.selection_type_code)),
     [batch?.selection_type_code, plan, selected],
   );
   const previewScheduleOverlay = useMemo(() => (
     catalogPreviewClasses
       .filter(preview => !plan.some(item => item.class_id === preview.class_id))
-      .flatMap(item => scheduleOverlayForCourse(item, 'preview', 'jwxk-preview'))
-  ), [catalogPreviewClasses, plan]);
+      .flatMap(item => scheduleOverlayForCourse(item, 'preview', 'jwxk-preview', batch?.selection_type_code))
+  ), [batch?.selection_type_code, catalogPreviewClasses, plan]);
   const selectedScheduleOverlay = useMemo(() => (
     (schedule?.courses || [])
       .filter(item => (
+        isCurrentBatchSelectionRecord(item, batch?.selection_type_code)
+        &&
         !(item.selection_record_type === 'volunteered'
           && plan.some(planItem => sameSelectionCourse(planItem, item)))
         && (
@@ -1792,11 +1926,12 @@ const CourseSelectionWorkspacePage = () => {
         )
       ))
       .flatMap(item => scheduleOverlayForCourse(
-        item,
-        item.selection_record_type === 'volunteered' ? 'pending' : 'selected',
-        'jwxk-selected',
-      ))
-  ), [personalCourses, plan, schedule]);
+         item,
+         item.selection_record_type === 'volunteered' ? 'pending' : 'selected',
+         'jwxk-selected',
+         batch?.selection_type_code,
+       ))
+  ), [batch?.selection_type_code, personalCourses, plan, schedule]);
   const candidateScheduleOverlay = useMemo(
     () => [...planScheduleOverlay, ...previewScheduleOverlay],
     [planScheduleOverlay, previewScheduleOverlay],
@@ -1809,8 +1944,8 @@ const CourseSelectionWorkspacePage = () => {
     }))
   )), [groups]);
   const catalogScheduleOverlay = useMemo(
-    () => catalogCourses.flatMap(item => scheduleOverlayForCourse(item, 'preview', 'jwxk-catalog')),
-    [catalogCourses],
+    () => catalogCourses.flatMap(item => scheduleOverlayForCourse(item, 'preview', 'jwxk-catalog', batch?.selection_type_code)),
+    [batch?.selection_type_code, catalogCourses],
   );
   const catalogMeetingConflictMap = useMemo(
     () => immediateSelectionConflictMap(
@@ -2304,7 +2439,7 @@ const CourseSelectionWorkspacePage = () => {
             {academicReportResource.data?.program_name && <small className="jwxk-plan-gap-program">{academicReportResource.data.program_name}</small>}
             {academicReportResource.data && academicPlanSelected.length > 0 && (
               <small className="jwxk-plan-gap-program">
-                已实时计入本轮已选或已投权的 {academicPlanProjection.matched.length} 门课程
+                已实时计入本轮{batch?.selection_type_code === '04' ? '已投权' : '已选'}的 {academicPlanProjection.matched.length} 门课程
                 {academicPlanProjection.unmatched.length > 0 ? `；${academicPlanProjection.unmatched.length} 门因缺少可靠类别未计入` : ''}
               </small>
             )}
@@ -2321,7 +2456,7 @@ const CourseSelectionWorkspacePage = () => {
                 >
                   <span><strong>{gap.name}</strong><Tag color={gap.requirement_type === 'elective' ? 'blue' : 'default'}>{gap.requirement_type === 'elective' ? '选修' : gap.requirement_type === 'required' ? '必修' : '综合'}</Tag></span>
                   <b>{getAcademicRuleDeficitText(gap)}</b>
-                  {gap.external_selected_credits > 0 && <small>本轮实时已选已抵扣 {gap.external_selected_credits} 学分</small>}
+                  {gap.external_selected_credits > 0 && <small>本轮实时{batch?.selection_type_code === '04' ? '投权课程' : '已选课程'}已抵扣 {gap.external_selected_credits} 学分</small>}
                   {unfinished.length > 0 && <small>待修：{unfinished.join('、')}{gap.unfinished_courses.length > unfinished.length ? ' 等' : ''}</small>}
                   <small>{gap.path || '点击按课程类别与性质查找'}</small>
                 </button>
@@ -2348,13 +2483,12 @@ const CourseSelectionWorkspacePage = () => {
   );
 
   const planView = <div className="jwxk-plan-page">
-    <Alert type="info" showIcon message="意愿值就是重视程度" description="每门课程使用 1–10 分意愿值；分数越高表示越重视，自动抢课会优先尝试高意愿课程，策略投权也会把它作为课程效用参考。" />
+    <Alert type="info" showIcon message="意愿值就是重视程度" description={batch?.selection_type_code === '04' ? '每门课程使用 1–10 分意愿值；分数越高表示越重视，策略模型会把它作为课程效用参考。' : '每门课程使用 1–10 分意愿值；分数越高表示越重视，自动抢课会优先尝试高意愿课程。'} />
     <div className="jwxk-section-actions jwxk-plan-page-actions">
       <Button onClick={() => setGroupEditor({ group_id: '', name: '', target_count: 1 })}>新建方案组</Button>
       {batch?.selection_type_code === '04' && <Button icon={<ImportOutlined />} loading={weightImportLoading} onClick={openWeightImport}>整理未分组课程</Button>}
       <Button icon={<CalendarOutlined />} onClick={previewConflicts}>实时检查冲突</Button>
-      {batch?.selection_type_code !== '04' && planGroups.length > 0 && <Checkbox.Group className="jwxk-task-group-picker" value={taskGroupIds} onChange={setTaskGroupIds} options={planGroups.map(group => ({ value: group.group_id, label: `自动抢课：${group.name}` }))} />}
-      {batch?.selection_type_code !== '04' && <Button type="primary" icon={<RobotOutlined />} disabled={!plan.length || !planGroups.length} onClick={createTask}>创建所选方案组自动任务</Button>}
+      {batch?.selection_type_code !== '04' && <Button type="primary" icon={<RobotOutlined />} disabled={!plan.length || !planGroups.length} onClick={openSelectionTaskSetup}>创建自动抢课任务</Button>}
       {batch?.selection_type_code === '04' && <Button type="primary" icon={<RobotOutlined />} onClick={openWeightPlanner}>策略投权</Button>}
     </div>
     {planGroups.map(group => {
@@ -2391,8 +2525,11 @@ const CourseSelectionWorkspacePage = () => {
       : batch?.selection_type_code === '04'
         ? (delta > 0 ? `超过容量 ${delta} 人` : '当前在容量范围内')
         : (delta >= 0 ? '已满' : `剩余 ${Math.abs(delta)} 个名额`);
-    return <Card key={course.class_id}><Title level={5}>{course.course_name}</Title><Paragraph>{course.teacher || '教师待定'} · {course.location || '地点待定'}</Paragraph><Text type="secondary">{classScheduleText(course)}</Text><div className="jwxk-selected-market"><b>{participantLabel} {participantCount ?? '-'} / 容量 {capacity ?? '-'}</b><div className="jwxk-selected-badges">{course.selection_record_type === 'volunteered' && currentBatchRecord && <Tag color="purple">当前投权 {course.devoted_weight ?? 0} 点</Tag>}<Tag color={!currentBatchRecord || participantCount == null || capacity == null ? 'default' : delta > 0 || (batch?.selection_type_code !== '04' && delta >= 0) ? 'warning' : 'success'}>{statusText}</Tag></div></div>{!currentBatchRecord && <Paragraph type="secondary">该记录不属于当前轮次，仅供查看。</Paragraph>}{currentBatchRecord && <Space direction="vertical" style={{ width: '100%' }}>{batch?.selection_type_code === '04' && course.selection_record_type === 'volunteered' && <Button block onClick={() => adjustCourseWeight(course, course, course)}>调整权重</Button>}<Button danger block loading={actionLoading === course.class_id} onClick={() => confirmDeselect(course)}>退选</Button></Space>}</Card>;
-  })}</div>{!selected.length && !loading && <Empty description="当前轮次暂无已选课程" />}</Spin>;
+    const operationAllowed = course.operation_allowed ?? currentBatchRecord;
+    const operationReason = course.operation_block_reason
+      || (!currentBatchRecord ? '该记录不属于当前轮次，仅供查看。' : '');
+    return <Card key={course.class_id}><Title level={5}>{course.course_name}</Title><Paragraph>{course.teacher || '教师待定'} · {course.location || '地点待定'}</Paragraph><Text type="secondary">{classScheduleText(course)}</Text><div className="jwxk-selected-market"><b>{participantLabel} {participantCount ?? '-'} / 容量 {capacity ?? '-'}</b><div className="jwxk-selected-badges">{batch?.selection_type_code === '04' && course.selection_record_type === 'volunteered' && currentBatchRecord && <Tag color="purple">当前投权 {course.devoted_weight ?? 0} 点</Tag>}<Tag color={!currentBatchRecord || participantCount == null || capacity == null ? 'default' : delta > 0 || (batch?.selection_type_code !== '04' && delta >= 0) ? 'warning' : 'success'}>{statusText}</Tag></div></div>{!operationAllowed && <Paragraph type="secondary">{operationReason || '该记录当前不可操作。'}</Paragraph>}{operationAllowed && <Space direction="vertical" style={{ width: '100%' }}>{batch?.selection_type_code === '04' && course.selection_record_type === 'volunteered' && <Button block onClick={() => adjustCourseWeight(course, course, course)}>调整权重</Button>}<Button danger block loading={actionLoading === course.class_id} onClick={() => confirmDeselect(course)}>退选</Button></Space>}</Card>;
+  })}</div>{!selected.length && !loading && <Empty description={batch?.selection_type_code === '04' ? '当前轮次暂无投权记录' : '当前轮次暂无已选课程'} />}</Spin>;
 
   const taskView = <div className="jwxk-task-list">
     <Alert
@@ -2427,13 +2564,16 @@ const CourseSelectionWorkspacePage = () => {
       ? Math.max(0, Math.round((Date.now() - new Date(execution.check_started_at).getTime()) / 1000))
       : execution.last_duration_ms != null ? Math.round(Number(execution.last_duration_ms) / 100) / 10 : null;
     const executionEvents = [...(execution.events || [])].slice(-5).reverse();
+    const statusMeta = taskStatusMeta(task.status);
       return <Card key={task.task_id} className={active ? 'jwxk-task-card is-live' : 'jwxk-task-card'}>
-        <div className="jwxk-task-head"><div><Title level={5}>{task.name}</Title><div className="jwxk-task-live-log"><Text type={execution.state === 'error' ? 'danger' : 'secondary'}>{task.message}</Text>{execution.state === 'running' && <small>当前阶段已执行 {executionElapsedSeconds ?? 0} 秒</small>}{executionEvents.length > 0 && <div className="jwxk-task-live-log__events">{executionEvents.map((event, index) => <span className={event.level === 'error' ? 'is-error' : ''} key={`${event.at || index}:${event.stage_code || ''}`}><time>{event.at ? new Date(event.at).toLocaleTimeString('zh-CN', { hour12: false }) : '--:--:--'}</time>{event.message}</span>)}</div>}</div></div><Tag color={active ? 'processing' : task.status === 'success' ? 'success' : task.status === 'needs_review' ? 'warning' : 'default'}>{task.status === 'running' ? '运行中' : task.status === 'waiting' ? '等待并自动重试' : task.status === 'success' ? '已完成' : task.status === 'needs_review' ? '待人工核验' : task.status === 'paused' ? '已暂停' : '草稿'}</Tag></div>
+        <div className="jwxk-task-head"><div><Title level={5}>{task.name}</Title><div className="jwxk-task-live-log"><Text type={execution.state === 'error' ? 'danger' : 'secondary'}>{task.message}</Text>{execution.state === 'running' && <small>当前阶段已执行 {executionElapsedSeconds ?? 0} 秒</small>}{executionEvents.length > 0 && <div className="jwxk-task-live-log__events">{executionEvents.map((event, index) => <span className={event.level === 'error' ? 'is-error' : ''} key={`${event.at || index}:${event.stage_code || ''}`}><time>{event.at ? new Date(event.at).toLocaleTimeString('zh-CN', { hour12: false }) : '--:--:--'}</time>{event.message}</span>)}</div>}</div></div><Tag color={statusMeta.color}>{statusMeta.label}</Tag></div>
         <div className="jwxk-task-runtime">
           <span><b>{task.attempt_count || 0}</b><small>检查次数</small></span>
+          <span><b>{pollingModeLabel(task.polling_mode)}</b><small>当前轮询模式</small></span>
           <span><b>{task.poll_interval_seconds || task.poll_seconds || 15}s</b><small>学校端轮询</small></span>
           <span><b>{formatTaskTimestamp(task.last_attempt_at)}</b><small>最近检查</small></span>
           <span><b>{active && nextAttemptSeconds != null ? `${nextAttemptSeconds}s` : '-'}</b><small>预计下次检查</small></span>
+          <span title={execution.last_error_message || ''}><b>{execution.stage || '尚未执行'}</b><small>{execution.last_error_message ? `最近错误：${execution.last_error_message}` : '当前执行阶段'}</small></span>
         </div>
         <div className="jwxk-task-groups">{entries.map(([groupId, result]) => {
       const group = isSwap
@@ -2442,8 +2582,17 @@ const CourseSelectionWorkspacePage = () => {
       const groupItems = isSwap ? [group?.target].filter(Boolean) : (task.items || []).filter(item => (
         (item.plan_group_id || item.course_code || item.class_id) === groupId
       ));
+      const currentCandidate = !isSwap && !isWeight
+        ? groupItems.find(item => String(item.class_id || '') === String(result.current_class_id || ''))
+        : null;
+      const currentCandidateStatus = candidateStatusMeta(result.candidate_status);
       return <section className="jwxk-task-group" key={groupId}>
         <div className="jwxk-task-group-summary"><span>{group?.name || group?.plan_group_name || group?.course_name || groupId}{isSwap && group?.drop_courses?.length ? `（空位后退 ${group.drop_courses.map(item => item.course_name).join('、')}）` : ''}</span><Tag color={result.status === 'success' ? 'success' : result.status === 'needs_review' ? 'warning' : ['verifying', 'verifying_drop'].includes(result.status) ? 'processing' : 'default'}>{result.status === 'success' ? '已完成' : result.status === 'needs_review' ? '待核验' : result.status === 'verifying_drop' ? '确认退选中' : result.status === 'verifying' ? '确认选课中' : isSwap ? '追踪空位中' : '监测中'}</Tag>{!isSwap && <b>{result.success_count || 0}/{result.target_count || group?.target_count || 1} 门</b>}<small>{result.message}</small></div>
+        {currentCandidate && <div className="jwxk-task-current-candidate">
+          <span><b>{currentCandidate.course_name || currentCandidate.course_code}</b><small>{currentCandidate.course_code || '课程代码待定'} · {currentCandidate.class_number || currentCandidate.class_id} · 意愿值 {result.current_utility ?? currentCandidate.utility ?? 5}</small></span>
+          <span><Tag color={currentCandidateStatus.color}>{currentCandidateStatus.label}</Tag><small>{result.last_participant_snapshot ? `已选人数 ${result.last_participant_snapshot.selected_count ?? '-'} / 容量 ${result.last_participant_snapshot.capacity ?? '-'}` : '人数与容量待检查'}</small></span>
+          {(result.fallback_reason || result.pending_since || result.confirmation_deadline || result.data_updated_at) && <small>{result.fallback_reason ? `原因：${result.fallback_reason}` : '当前候选不会降级'}{result.pending_since ? ` · 等待始于 ${formatTaskTimestamp(result.pending_since)}` : ''}{result.confirmation_deadline ? ` · 核验截止 ${formatTaskTimestamp(result.confirmation_deadline)}` : ''}{result.data_updated_at ? ` · 数据更新 ${formatTaskTimestamp(result.data_updated_at)}` : ''}</small>}
+        </div>}
         <div className="jwxk-task-courses">{groupItems.map(item => {
           const state = task.course_states?.[item.class_id] || {};
           const recommendation = recommendationByClass.get(String(item.class_id)) || {};
@@ -2520,9 +2669,9 @@ const CourseSelectionWorkspacePage = () => {
     })}</div>
         {isWeight && <Text type="secondary">最近计算 {formatTaskTimestamp(task.weight_status?.last_calculated_at)} · 最近调整 {task.weight_status?.last_adjusted_at ? formatTaskTimestamp(task.weight_status.last_adjusted_at) : '暂无'}</Text>}
         {(task.results || []).length > 0 && <div className="jwxk-task-history"><Text strong>最近操作</Text>{[...(task.results || [])].slice(-5).reverse().map((result, index) => <div key={`${result.at || index}:${result.class_id || ''}`}><span>{result.action === 'weight_drop' ? '撤回权重' : result.action === 'weight_add' ? `投放 ${result.weight || ''} 点权重` : result.action === 'drop' ? '自动退选' : '提交选课'} · {historyCourseLabel(result)}</span><small>{result.message || `官方代码 ${result.code || '-'}`} · {formatTaskTimestamp(result.at)}</small></div>)}</div>}
-        <Space wrap className="jwxk-task-actions"><Button type={isWeight && attentionTaskId === task.task_id ? 'primary' : 'default'} className={isWeight && attentionTaskId === task.task_id ? 'jwxk-start-strategy-attention' : ''} icon={<PlayCircleOutlined />} loading={taskActionLoading === `${task.task_id}:start`} disabled={active || task.status === 'success'} onClick={() => runTaskAction(task, 'start')}>{isWeight ? '启动实时策略' : isSwap ? '开始追踪空位' : '同时启动全部方案组'}</Button>{isWeight && <Button type="primary" ghost icon={<ReloadOutlined />} loading={taskActionLoading === `${task.task_id}:check_now`} disabled={!active || task.status === 'success'} onClick={() => runTaskAction(task, 'check_now')}>立即检查并执行策略</Button>}<Button icon={<PauseCircleOutlined />} loading={taskActionLoading === `${task.task_id}:pause`} disabled={!active} onClick={() => runTaskAction(task, 'pause')}>暂停</Button><Button danger loading={taskActionLoading === `${task.task_id}:cancel`} onClick={() => Modal.confirm({ title: '取消并删除这个任务？', content: '任务会立即停止，并从任务列表中移除。', okText: '取消任务', okButtonProps: { danger: true }, onOk: () => runTaskAction(task, 'cancel') })}>取消任务</Button></Space>
+        <Space wrap className="jwxk-task-actions"><Button type={isWeight && attentionTaskId === task.task_id ? 'primary' : 'default'} className={isWeight && attentionTaskId === task.task_id ? 'jwxk-start-strategy-attention' : ''} icon={<PlayCircleOutlined />} loading={taskActionLoading === `${task.task_id}:start`} disabled={active || ['success', 'failed', 'needs_review', 'cancelled'].includes(task.status)} onClick={() => runTaskAction(task, 'start')}>{isWeight ? '启动实时策略' : isSwap ? '开始追踪空位' : '同时启动全部方案组'}</Button><Button type="primary" ghost icon={<ReloadOutlined />} loading={taskActionLoading === `${task.task_id}:check_now`} disabled={!active} onClick={() => runTaskAction(task, 'check_now')}>{isWeight ? '立即检查并执行策略' : isSwap ? '立即检查空位' : '立即检查'}</Button><Button icon={<PauseCircleOutlined />} loading={taskActionLoading === `${task.task_id}:pause`} disabled={!active} onClick={() => runTaskAction(task, 'pause')}>暂停</Button><Button danger loading={taskActionLoading === `${task.task_id}:cancel`} onClick={() => Modal.confirm({ title: '取消并删除这个任务？', content: '任务会立即停止，并从任务列表中移除。', okText: '取消任务', okButtonProps: { danger: true }, onOk: () => runTaskAction(task, 'cancel') })}>取消任务</Button></Space>
       </Card>;
-  })}{!tasks.length && <Empty description="尚未创建自动抢课或空位追踪任务" />}</div>;
+  })}{!tasks.length && <Empty description={jwxkSelectionMode(batch?.selection_type_code).taskEmptyText} />}</div>;
 
   const detailGroup = catalogDetail?.group || {};
   const detailCourse = catalogDetail?.courseDetail || detailGroup;
@@ -2574,7 +2723,7 @@ const CourseSelectionWorkspacePage = () => {
     <Alert type="info" showIcon message="提交后请在“已选结果”中确认最终状态。" />
     <section className="jwxk-live-schedule" ref={scheduleRef}>
       <div className="jwxk-live-schedule__head">
-        <div><Title level={4}>选课课表</Title><Text type="secondary">紧凑显示当前课表与待选方案；空闲节次可直接反查可选课程，也可切换班级、教师和教室课表比较。</Text></div>
+        <div><Title level={4}>选课课表</Title><Text type="secondary">紧凑显示当前课表与方案候选；空闲节次可直接反查可选课程，也可切换班级、教师和教室课表比较。</Text></div>
         {catalogPreviewClasses.length > 0 && <Space wrap>{catalogPreviewClasses.map(course => (
           <Button key={course.class_id} size="small" onClick={() => cancelCatalogPreviewFromSchedule(course)}>
             取消“{course.course_name}”的课表预览
@@ -2688,7 +2837,7 @@ const CourseSelectionWorkspacePage = () => {
       <div className="jwxk-group-form">
         <label><span>方案组名称</span><Input value={groupEditor?.name || ''} onChange={event => setGroupEditor(previous => ({ ...previous, name: event.target.value }))} placeholder="例如：A 类课程" maxLength={60} /></label>
         <label><span>需要选中</span><InputNumber min={1} max={20} value={groupEditor?.target_count || 1} onChange={value => setGroupEditor(previous => ({ ...previous, target_count: value || 1 }))} addonAfter="门" /></label>
-        <Text type="secondary">组内候选按意愿值从高到低尝试；高意愿课程满员、受限或冲突时自动顺延，达到目标门数后该组停止。</Text>
+        <Text type="secondary">组内候选按意愿值从高到低尝试；只有官方明确满员、不可选或抢先失败才会降级。数据未知、冲突待核验、登录恢复和提交待确认时始终停留在当前候选。</Text>
       </div>
     </Modal>
     <Modal
@@ -2729,8 +2878,76 @@ const CourseSelectionWorkspacePage = () => {
       <div className="jwxk-group-form">
         <Alert type="warning" showIcon message="检测到意向教学班出现空位后，系统会先提交所选课程的退选，再等待官方确认；确认退选后才提交意向课程。期间名额仍可能被其他人抢走，任何结果不明确都会停止并要求人工核验。" />
         <label><span>意向教学班</span><Input value={`${vacancySwapTarget?.course_name || ''} · ${vacancySwapTarget?.teacher || '教师待定'} · ${vacancySwapTarget?.class_number || vacancySwapTarget?.class_id || ''}`} disabled /></label>
-        <label><span>出现空位后自动退选</span><Select mode="multiple" value={vacancyDropIds} onChange={setVacancyDropIds} placeholder="选择需要先退掉的已选课程" options={selected.filter(item => item.course_code !== vacancySwapTarget?.course_code).map(item => ({ value: item.class_id, label: `${item.course_name} · ${item.teacher || '教师待定'}` }))} /></label>
+        <label><span>出现空位后自动退选</span><Select mode="multiple" value={vacancyDropIds} onChange={setVacancyDropIds} placeholder="选择需要先退掉的已选课程" options={selected.filter(item => (
+          item.course_code !== vacancySwapTarget?.course_code
+          && (item.operation_allowed ?? isCurrentBatchSelectionRecord(item, '02'))
+        )).map(item => ({ value: item.class_id, label: `${item.course_name} · ${item.teacher || '教师待定'}` }))} /></label>
         <Text type="secondary">可以为不同意向课程分别创建多个空位追踪组，它们会作为独立任务同时运行。</Text>
+      </div>
+    </Modal>
+    <Modal
+      title="创建自动抢课任务"
+      open={selectionSetupOpen}
+      onCancel={() => setSelectionSetupOpen(false)}
+      footer={<>
+        <Button onClick={() => setSelectionSetupOpen(false)}>取消</Button>
+        <Button type="primary" icon={<RobotOutlined />} disabled={!taskGroupIds.length} onClick={createTask}>创建任务草稿</Button>
+      </>}
+      width={760}
+    >
+      <div className="jwxk-group-form">
+        <Alert
+          type="info"
+          showIcon
+          message="选择本次自动抢课管理的方案组"
+          description={`默认选择全部普通方案组。任务创建后不会访问学校系统，必须在“自动任务”中明确启动。${batch?.begin_time && Date.now() < new Date(batch.begin_time).getTime() ? '在轮次开放前启动会进入 1 秒开场模式；首轮未完成后切换为不少于 15 秒的空位追踪。' : '本轮已经开始，启动后直接使用不少于 15 秒的空位追踪模式。'}`}
+        />
+        <label>
+          <span>参与自动抢课的方案组</span>
+          <Checkbox.Group
+            className="jwxk-weight-group-picker"
+            value={taskGroupIds}
+            onChange={setTaskGroupIds}
+            options={planGroupConfigs
+              .filter(group => group.group_id !== UNGROUPED_WEIGHT_GROUP_ID)
+              .map(group => ({
+                value: group.group_id,
+                label: `${group.name}（目标 ${group.target_count} 门，${plan.filter(item => item.plan_group_id === group.group_id).length} 个候选）`,
+              }))}
+          />
+        </label>
+        <div className="jwxk-weight-import-list">
+          {planGroups.filter(group => taskGroupIds.includes(group.group_id)).map(group => (
+            <section className="jwxk-selection-task-group-preview" key={group.group_id}>
+              <div className="jwxk-task-group-summary">
+                <span>{group.name}</span>
+                <Tag>目标 {group.target_count} 门</Tag>
+                <small>组内严格按意愿值从高到低处理；数据未知、登录恢复、限流或提交待核验时不会降级。</small>
+              </div>
+              {group.items.map(item => {
+                const conflict = selectionTimeConflictStatus(conflicts[item.class_id]);
+                const typeValid = isRealJwxkTeachingClassType(item.teaching_class_type);
+                const participants = selectionParticipantCount(item, batch?.selection_type_code);
+                return <div className="jwxk-weight-import-row" key={item.class_id}>
+                  <span>
+                    <strong>{item.course_name || item.course_code}</strong>
+                    <small>意愿值 {item.utility || 5} · {item.class_number || item.class_id} · {courseCategoryLabel(item)}</small>
+                    <small>已选人数 {participants ?? '-'} / 容量 {item.capacity ?? '-'}</small>
+                  </span>
+                  <Space wrap>
+                    <Tag color={typeValid ? 'success' : 'error'}>{typeValid ? item.teaching_class_type : '缺少真实提交类型'}</Tag>
+                    {item.full && <Tag>已满员</Tag>}
+                    {item.eligibility_status === 'unavailable' && <Tag color="error">官方不可选</Tag>}
+                    {item.eligibility_status === 'unknown' && <Tag color="warning">可选性待核验</Tag>}
+                    {conflict === 'conflict' && <Tag color="error">时间冲突</Tag>}
+                    {conflict === 'unknown' && <Tag color="warning">时间待核验</Tag>}
+                    {courseIsCrossCampus(item) && <Tag color="orange">跨校区</Tag>}
+                  </Space>
+                </div>;
+              })}
+            </section>
+          ))}
+        </div>
       </div>
     </Modal>
     <Modal title="为所选方案组配置策略投权" open={weightSetupOpen} onCancel={() => setWeightSetupOpen(false)} footer={<><Button onClick={() => setWeightSetupOpen(false)}>取消</Button><Button loading={weightBuilding} disabled={!taskGroupIds.length} onClick={buildWeightPlan}>生成所选组建议</Button><Button type="primary" icon={<RobotOutlined />} disabled={!taskGroupIds.length} onClick={createWeightStrategyTask}>为所选方案组创建策略投权</Button></>} width={620}>
