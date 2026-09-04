@@ -436,6 +436,29 @@
   font-size: 10px;
 }
 
+.timetable-section-label .timetable-section-time-variants {
+  display: grid;
+  gap: 2px;
+}
+
+.timetable-section-time-variants > span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.timetable-section-time-variants b {
+  color: var(--color-ink-soft, #475569);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.timetable-section-time-variants time {
+  color: var(--color-muted);
+  font-size: inherit;
+}
+
 .timetable-day-column {
   position: relative;
   border-inline-end: 1px solid var(--color-line-soft);
@@ -1293,7 +1316,14 @@
     font-weight: 600;
   }
 
+  .timetable-mobile-summary-preferences {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
   .timetable-mobile-summary-default,
+  .timetable-mobile-summary-compact,
   .timetable-mobile-summary-view {
     display: flex;
     align-items: center;
@@ -1303,6 +1333,28 @@
     color: var(--color-ink);
     font-size: 13px;
     font-weight: 600;
+  }
+
+  .timetable-mobile-summary-default,
+  .timetable-mobile-summary-compact {
+    min-width: 0;
+    min-height: 46px;
+    padding: 7px 9px;
+    background: color-mix(in srgb, var(--color-brand) 4%, var(--color-surface));
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    line-height: 1.3;
+  }
+
+  .timetable-mobile-summary-default > span:first-child,
+  .timetable-mobile-summary-compact > span:first-child {
+    min-width: 0;
+  }
+
+  .timetable-mobile-summary-default .ant-switch,
+  .timetable-mobile-summary-compact .ant-switch {
+    flex: 0 0 auto;
   }
 
   .timetable-mobile-summary-view .ant-segmented {
@@ -1484,6 +1536,7 @@
     scroll-snap-type: x mandatory;
     scrollbar-width: none;
     touch-action: pan-x;
+    scroll-margin-top: 8px;
   }
 
   .timetable-week-timeline::-webkit-scrollbar {
@@ -1540,7 +1593,7 @@
     border-radius: var(--radius-sm);
   }
 
-  .timetable-desktop {
+  .timetable-desktop:not(.is-mobile-compact) {
     display: none;
   }
 
@@ -1585,6 +1638,158 @@
     margin-top: var(--space-3);
   }
 
+  .timetable-mobile.is-compact-week {
+    touch-action: pan-y;
+  }
+
+  .timetable-grid.is-mobile-compact {
+    --timetable-mobile-axis-width: 52px;
+    display: block;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-grid-header {
+    position: static;
+    min-height: 36px;
+    background: color-mix(in srgb, var(--color-brand) 5%, var(--color-surface));
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-grid-header > div {
+    min-width: 0;
+    padding: 4px 1px;
+    color: var(--color-muted);
+    font-size: 10px;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-grid-header > div.is-today {
+    color: var(--color-brand-strong);
+    background: color-mix(in srgb, var(--color-brand) 10%, transparent);
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-axis-heading {
+    font-size: 9px;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-section-label {
+    justify-content: flex-start;
+    gap: 1px;
+    padding: 4px 1px 1px;
+    line-height: 1;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-section-label > time {
+    color: var(--color-ink-soft, #475569);
+    font-size: 9px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-section-label > small {
+    color: var(--color-subtle);
+    font-size: 8px;
+    white-space: nowrap;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-section-time-variants {
+    width: 100%;
+    gap: 0;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-section-time-variants > span {
+    gap: 1px;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-section-time-variants b,
+  .timetable-grid.is-mobile-compact .timetable-section-time-variants time {
+    font-size: 7px;
+    line-height: 1.05;
+    white-space: nowrap;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-day-column {
+    background-color: var(--color-surface);
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-day-column.is-today {
+    background-color: color-mix(in srgb, var(--color-brand) 2.5%, var(--color-surface));
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-course-block,
+  .timetable-grid.is-mobile-compact .timetable-cluster-stack-card {
+    gap: 2px;
+    padding: 4px 2px;
+    border-radius: 5px;
+    box-shadow: none;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-course-block {
+    background: color-mix(in srgb, var(--course-color, var(--color-brand)) 24%, var(--color-surface));
+    border-color: color-mix(in srgb, var(--course-color, var(--color-brand)) 58%, var(--color-line));
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-course-block .course-title,
+  .timetable-grid.is-mobile-compact .timetable-cluster-stack-card > strong {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--color-ink);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-course-block .course-location,
+  .timetable-grid.is-mobile-compact .timetable-cluster-stack-detail {
+    display: block;
+    overflow: visible;
+    color: #475569;
+    font-size: 8px;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    -webkit-line-clamp: unset;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-cluster-stack-card {
+    justify-content: flex-start;
+    pointer-events: auto;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-cluster-stack-card.is-expanded {
+    gap: 2px;
+    padding: 4px 2px calc(4px + var(--cluster-lower-reserve, 0px));
+    box-shadow: none;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-cluster-stack-card.is-expanded > strong {
+    font-size: 10px;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-cluster-stack-card.is-expanded .timetable-cluster-stack-detail {
+    display: -webkit-box;
+    animation: none;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-cluster-more {
+    padding: 3px 2px;
+    border-radius: 5px;
+    font-size: 8px;
+    line-height: 1.15;
+  }
+
+  .timetable-grid.is-mobile-compact.is-selection-compact .timetable-slot-search > span {
+    top: 2px;
+    right: 2px;
+    padding: 0 2px;
+    opacity: .55;
+    font-size: 7px;
+    line-height: 14px;
+  }
   .timetable-mobile-card {
     position: relative;
     background: color-mix(in srgb, var(--course-color, var(--color-brand)) 28%, var(--color-surface));

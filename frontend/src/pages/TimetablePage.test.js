@@ -12,6 +12,7 @@ import {
   clusterStackLayout,
   clusterDisplayCapacity,
   adaptiveSectionHeights,
+  mobileCompactSectionHeights,
   selectionSectionHeights,
   selectionCompactCourseHeight,
   selectionClusterRequiredHeight,
@@ -32,6 +33,8 @@ import {
   isCourseHappeningNow,
   mobileCourseSummary,
   adjacentMobileTimetableDay,
+  adjacentMobileTimetableWeek,
+  mobileInitialFocusAnchor,
   timetableCacheIndicator,
   timetableRecoveryNoticeClassName,
   courseTeacherText,
@@ -57,6 +60,7 @@ import {
   TIMETABLE_DAY_ORDER,
   TIMETABLE_MODES,
   MobileTimetable,
+  MobileCompactWeekTimetable,
   MobileTimetableSummary,
   mobileWeekRailScrollLeft,
 } from './TimetablePage';
@@ -140,32 +144,11 @@ describe('TimetablePage helpers', () => {
     expect(automaticTimetableNotice({ hasCurrentCourses: true })).toBe('');
   });
 
-  test('uses the weekday selector as the mobile initial focus target only once', async () => {
-    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
-    global.IS_REACT_ACT_ENVIRONMENT = true;
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const root = createRoot(container);
-    try {
-      await act(async () => {
-        root.render(<MobileTimetable
-          coursesByDay={Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]))}
-          sections={[]}
-          selectedDay={1}
-          viewMode="week"
-          currentTerm
-          currentWeekNumber={3}
-          onDayChange={() => {}}
-          onCourseClick={() => {}}
-          personalConflictMap={{}}
-        />);
-      });
-      expect(container.querySelector('.timetable-mobile-day-selector')).not.toBeNull();
-    } finally {
-      await act(async () => root.unmount());
-      container.remove();
-      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
-    }
+  test('focuses the week rail for weekly browsing and the weekday selector for term browsing', () => {
+    const weekAnchor = document.createElement('div');
+    const dayAnchor = document.createElement('div');
+    expect(mobileInitialFocusAnchor('week', weekAnchor, dayAnchor)).toBe(weekAnchor);
+    expect(mobileInitialFocusAnchor('term', weekAnchor, dayAnchor)).toBe(dayAnchor);
   });
 
   test('conflict details fall back from an empty weeks array to known baseline weeks', () => {
@@ -282,6 +265,8 @@ describe('TimetablePage helpers', () => {
           }}
           defaultTimetableOnOpen={false}
           onToggleDefault={() => {}}
+          compactWeekView={false}
+          onToggleCompactWeekView={() => {}}
           viewMode="week"
           onViewModeChange={() => {}}
         />);
@@ -294,6 +279,10 @@ describe('TimetablePage helpers', () => {
       expect(detail.compareDocumentPosition(
         container.querySelector('.timetable-mobile-summary-default'),
       ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const preferences = container.querySelector('.timetable-mobile-summary-preferences');
+      expect(preferences.querySelectorAll('label')).toHaveLength(2);
+      expect(preferences.textContent).toContain('打开时默认课表');
+      expect(preferences.textContent).toContain('使用缩略视图');
     } finally {
       await act(async () => root.unmount());
       container.remove();
@@ -584,6 +573,33 @@ describe('TimetablePage helpers', () => {
     expect(heights[0] + heights[1]).toBeGreaterThanOrEqual(estimatedCourseCardHeight(shortTwoSection, 'term', 'personal'));
   });
 
+  test('grows compact mobile rows until long locations fit in parallel lanes', () => {
+    const heights = mobileCompactSectionHeights(
+      [{ number: 1 }, { number: 2 }],
+      {
+        1: [
+          {
+            id: 'left',
+            start_section: 1,
+            end_section: 2,
+            course_name: '课程甲',
+            location: '浑南校区信息学馆A区第一公共实验室',
+          },
+          {
+            id: 'right',
+            start_section: 1,
+            end_section: 2,
+            course_name: '课程乙',
+            location: '浑南校区建筑学馆东侧第二阶梯教室',
+          },
+        ],
+      },
+    );
+
+    expect(heights[0]).toBeGreaterThan(52);
+    expect(heights[1]).toBeGreaterThan(52);
+  });
+
   test('selection timetable sizes concurrent courses as one expanded card plus folded cards', () => {
     const concurrentCourses = [
       { id: 'a', start_section: 1, end_section: 1, weeks: [1] },
@@ -794,6 +810,280 @@ describe('TimetablePage helpers', () => {
     expect(adjacentMobileTimetableDay({ day: 7, week: 3, direction: -1, weeks }))
       .toEqual({ day: 6, week: 2 });
     expect(adjacentMobileTimetableDay({ day: 6, week: 4, direction: 1, weeks })).toBeNull();
+  });
+
+  test('moves the compact mobile timetable one teaching week at a time', () => {
+    const weeks = [{ number: 2 }, { number: 3 }, { number: 4 }];
+    expect(adjacentMobileTimetableWeek({ week: 3, direction: 1, weeks })).toBe(4);
+    expect(adjacentMobileTimetableWeek({ week: 3, direction: -1, weeks })).toBe(2);
+    expect(adjacentMobileTimetableWeek({ week: 4, direction: 1, weeks })).toBeNull();
+  });
+
+  test('compact mobile week view shows all weekdays and only course name and location', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onCourseClick = jest.fn();
+    const coursesByDay = Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]));
+    coursesByDay[1] = [{
+      id: 'monday-course',
+      course_name: '周一课程',
+      location: '信息楼101',
+      teachers: ['教师甲'],
+      course_nature: '必修',
+      assessment_type: '考试',
+      start_section: 1,
+      end_section: 2,
+      start_time: '08:30',
+      end_time: '10:05',
+    }];
+    coursesByDay[3] = [{
+      id: 'wednesday-course',
+      course_name: '周三课程',
+      location: '知行楼202',
+      teachers: ['教师乙'],
+      course_nature: '选修',
+      start_section: 3,
+      end_section: 4,
+      start_time: '10:25',
+      end_time: '12:00',
+    }];
+    try {
+      await act(async () => {
+        root.render(<MobileCompactWeekTimetable
+          coursesByDay={coursesByDay}
+          sections={[
+            { number: 1, start_time: '08:30' },
+            { number: 2, start_time: '09:25' },
+            { number: 3, start_time: '10:30' },
+            { number: 4, start_time: '11:25' },
+          ]}
+          selectedDay={1}
+          onCourseClick={onCourseClick}
+        />);
+      });
+      expect(container.querySelector('.timetable-grid.is-mobile-compact')).not.toBeNull();
+      expect(container.querySelectorAll('.timetable-grid-header > div:not(.timetable-axis-heading)')).toHaveLength(7);
+      expect(container.textContent).toContain('周一课程');
+      expect(container.textContent).toContain('信息楼101');
+      expect(container.textContent).toContain('周三课程');
+      expect(container.textContent).toContain('知行楼202');
+      expect(container.textContent).not.toContain('教师甲');
+      expect(container.textContent).not.toContain('必修');
+      expect(container.textContent).not.toContain('考试');
+      await act(async () => container.querySelector('.timetable-course-block').click());
+      expect(onCourseClick).toHaveBeenCalledWith(expect.objectContaining(coursesByDay[1][0]));
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
+  test('compact mobile week view places overlapping courses in parallel lanes', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const coursesByDay = Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]));
+    coursesByDay[1] = [
+      {
+        id: 'parallel-left',
+        course_name: '并排课程甲',
+        location: 'A101',
+        start_section: 1,
+        end_section: 2,
+      },
+      {
+        id: 'parallel-right',
+        course_name: '并排课程乙',
+        location: 'B202',
+        start_section: 1,
+        end_section: 2,
+      },
+    ];
+    try {
+      await act(async () => {
+        root.render(<MobileCompactWeekTimetable
+          coursesByDay={coursesByDay}
+          sections={[
+            { number: 1, start_time: '08:00' },
+            { number: 2, start_time: '08:55' },
+          ]}
+          selectedDay={1}
+          onCourseClick={() => {}}
+        />);
+      });
+      const courseBlocks = [...container.querySelectorAll('.timetable-course-block.is-mobile-parallel')];
+      expect(courseBlocks).toHaveLength(2);
+      expect(courseBlocks.map(block => block.textContent)).toEqual(expect.arrayContaining([
+        expect.stringContaining('并排课程甲'),
+        expect.stringContaining('并排课程乙'),
+      ]));
+      expect(courseBlocks[0].style.left).not.toBe(courseBlocks[1].style.left);
+      expect(courseBlocks.every(block => block.style.width.includes('50%'))).toBe(true);
+      expect(container.querySelector('.timetable-course-cluster')).toBeNull();
+      expect(container.querySelector('.timetable-cluster-stack-card')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
+  test('swiping the compact mobile week view changes weeks instead of days', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onSwipeWeek = jest.fn();
+    const onSwipeDay = jest.fn();
+    try {
+      await act(async () => {
+        root.render(<MobileTimetable
+          coursesByDay={Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]))}
+          sections={[]}
+          selectedDay={1}
+          viewMode="week"
+          currentTerm
+          currentWeekNumber={3}
+          onDayChange={() => {}}
+          onSwipeDay={onSwipeDay}
+          onSwipeWeek={onSwipeWeek}
+          onCourseClick={() => {}}
+          personalConflictMap={{}}
+          compactWeekView
+        />);
+      });
+      const timetable = container.querySelector('.timetable-mobile');
+      await act(async () => {
+        timetable.dispatchEvent(new MouseEvent('pointerdown', {
+          bubbles: true, clientX: 240, clientY: 100,
+        }));
+        timetable.dispatchEvent(new MouseEvent('pointerup', {
+          bubbles: true, clientX: 100, clientY: 104,
+        }));
+      });
+      expect(onSwipeWeek).toHaveBeenCalledWith(1);
+      expect(onSwipeDay).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
+  test('supports the compact seven-day grid in mobile term view without hidden week navigation', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onSwipeWeek = jest.fn();
+    const onSwipeDay = jest.fn();
+    const coursesByDay = Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]));
+    coursesByDay[2] = [{
+      id: 'term-course',
+      course_name: '全学期课程',
+      location: '信息楼A101',
+      weeks: [1, 3, 5],
+      start_section: 1,
+      end_section: 2,
+      start_time: '08:30',
+      end_time: '10:10',
+    }];
+    try {
+      await act(async () => {
+        root.render(<MobileTimetable
+          coursesByDay={coursesByDay}
+          sections={[]}
+          selectedDay={2}
+          viewMode="term"
+          currentTerm
+          currentWeekNumber={3}
+          onDayChange={() => {}}
+          onSwipeDay={onSwipeDay}
+          onSwipeWeek={onSwipeWeek}
+          onCourseClick={() => {}}
+          personalConflictMap={{}}
+          compactWeekView
+        />);
+      });
+      expect(container.querySelector('[aria-label="本学期缩略课表"]')).not.toBeNull();
+      expect(container.querySelector('.timetable-mobile-day-selector')).toBeNull();
+      expect(container.textContent).toContain('全学期课程');
+      const timetable = container.querySelector('.timetable-mobile');
+      await act(async () => {
+        timetable.dispatchEvent(new MouseEvent('pointerdown', {
+          bubbles: true, clientX: 240, clientY: 100,
+        }));
+        timetable.dispatchEvent(new MouseEvent('pointerup', {
+          bubbles: true, clientX: 100, clientY: 104,
+        }));
+      });
+      expect(onSwipeWeek).not.toHaveBeenCalled();
+      expect(onSwipeDay).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
+  test('uses the shared seven-day grid for the mobile selection timetable', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onCourseClick = jest.fn();
+    const onSlotSelect = jest.fn();
+    const coursesByDay = Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]));
+    coursesByDay[1] = [{
+      id: 'candidate',
+      course_name: '方案课程',
+      location: '不应出现在紧凑选课网格',
+      teachers: ['不应显示教师'],
+      start_section: 1,
+      end_section: 2,
+      layer: 'candidate',
+    }];
+    try {
+      await act(async () => {
+        root.render(<MobileTimetable
+          coursesByDay={coursesByDay}
+          sections={[]}
+          selectedDay={1}
+          viewMode="week"
+          currentTerm
+          currentWeekNumber={1}
+          onDayChange={() => {}}
+          onSwipeDay={() => {}}
+          onCourseClick={onCourseClick}
+          personalConflictMap={{}}
+          presentation="selection"
+          onSlotSelect={onSlotSelect}
+        />);
+      });
+      expect(container.querySelector('.timetable-grid.is-mobile-compact.is-selection-compact')).not.toBeNull();
+      expect(container.querySelector('.timetable-mobile-day-selector')).toBeNull();
+      expect(container.textContent).toContain('方案课程');
+      expect(container.textContent).toContain('方案候选');
+      expect(container.textContent).not.toContain('不应出现在紧凑选课网格');
+      expect(container.textContent).not.toContain('不应显示教师');
+      await act(async () => container.querySelector('.timetable-course-block').click());
+      expect(onCourseClick).toHaveBeenCalledWith(expect.objectContaining({ id: 'candidate' }));
+      await act(async () => container.querySelector('.timetable-slot-search').click());
+      expect(onSlotSelect).toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
   });
 
   test('keeps simultaneous current courses countable and normalizes teacher names', () => {
