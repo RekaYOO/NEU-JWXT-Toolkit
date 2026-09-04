@@ -27,9 +27,10 @@ const sizes = {
   brotli: fs.statSync(brotliFile).size,
 };
 const limits = {
-  // Rebased after the complete JWXK 02/04 dual-mode workflow was added.
-  // Keep little headroom so future growth still requires an explicit review.
-  gzip: 592 * 1024,
+  // Rebased after the shared timetable grid and built-in multi-campus schedule
+  // shipped. Keep a bounded ~1.6 KiB headroom above the current CI artifact;
+  // future growth still requires an explicit review.
+  gzip: 612 * 1024,
   brotli: 500 * 1024,
 };
 const failures = [];
