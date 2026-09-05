@@ -688,10 +688,6 @@
   border-block-color: color-mix(in srgb, var(--color-warning) 55%, var(--color-line));
 }
 
-.timetable-course-block.has-overlap {
-  padding-inline: 5px;
-}
-
 .timetable-course-block .course-title,
 .timetable-course-block span {
   overflow: hidden;
@@ -1642,6 +1638,18 @@
     touch-action: pan-y;
   }
 
+  /*
+   * The weekly view already receives a temporary scroll tail when its week
+   * rail is focused. Term views can be entered later (when initial focus must
+   * not run again), and compact term mode has no separate weekday anchor at
+   * all. Keep one row of permanent bottom clearance so the last course or
+   * section 12 can move above mobile browser chrome without changing the
+   * existing focus target or scroll position.
+   */
+  .timetable-mobile.is-term-view {
+    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  }
+
   .timetable-grid.is-mobile-compact {
     --timetable-mobile-axis-width: 52px;
     display: block;
@@ -1771,8 +1779,30 @@
   }
 
   .timetable-grid.is-mobile-compact .timetable-cluster-stack-card.is-expanded .timetable-cluster-stack-detail {
-    display: -webkit-box;
+    display: block;
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    text-overflow: clip;
+    -webkit-line-clamp: unset;
     animation: none;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-course-block.is-course-now,
+  .timetable-grid.is-mobile-compact .timetable-cluster-stack-card.is-course-now,
+  .timetable-grid.is-mobile-compact .timetable-cluster-stack-card.is-expanded.is-course-now {
+    border-color: var(--color-brand-strong);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-brand) 34%, transparent);
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-course-block.is-course-now::after,
+  .timetable-grid.is-mobile-compact .timetable-cluster-stack-card.is-course-now::after {
+    top: 3px;
+    right: 3px;
+    width: 5px;
+    height: 5px;
+    border-width: 1px;
   }
 
   .timetable-grid.is-mobile-compact .timetable-cluster-more {

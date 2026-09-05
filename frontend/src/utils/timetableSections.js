@@ -131,7 +131,31 @@ const selectedCampusKeys = ({ campusCode, campusName, campuses, courses }) => {
     .filter(campus => !['all', '__all__'].includes(String(campus?.code || '')))
     .map(campus => timetableCampusScheduleKey(campus))
     .filter(Boolean);
-  return [...new Set(courseKeys.length ? courseKeys : catalogKeys)];
+  return [...new Set([...catalogKeys, ...courseKeys])];
+};
+
+const officialSectionsByCampusKey = (sectionsByCampus, campuses) => {
+  const campusByCode = new Map((campuses || []).map(campus => [String(campus?.code || ''), campus]));
+  const result = new Map();
+  Object.entries(sectionsByCampus || {}).forEach(([campusCode, rows]) => {
+    if (['all', '__all__'].includes(String(campusCode)) || !Array.isArray(rows)) return;
+    const key = timetableCampusScheduleKey(campusByCode.get(String(campusCode)) || campusCode);
+    if (!key) return;
+    if (!result.has(key)) result.set(key, new Map());
+    const byNumber = result.get(key);
+    rows.forEach(section => {
+      const number = Number(section?.number);
+      if (!Number.isFinite(number)) return;
+      const previous = byNumber.get(number) || {};
+      byNumber.set(number, {
+        ...previous,
+        ...section,
+        start_time: String(section?.start_time || previous.start_time || '').trim(),
+        end_time: String(section?.end_time || previous.end_time || '').trim(),
+      });
+    });
+  });
+  return result;
 };
 
 const courseOverridesByCampus = courses => {
@@ -164,6 +188,7 @@ const courseOverridesByCampus = courses => {
  */
 export const resolveTimetableSections = ({
   sections = [],
+  sectionsByCampus = {},
   courses = [],
   campusCode = '',
   campusName = '',
@@ -171,6 +196,8 @@ export const resolveTimetableSections = ({
 } = {}) => {
   const officialByNumber = new Map((sections || []).map(section => [Number(section.number), section]));
   const keys = selectedCampusKeys({ campusCode, campusName, campuses, courses });
+  const allCampuses = !campusCode || campusCode === 'all' || campusCode === '__all__';
+  const officialByCampusKey = officialSectionsByCampusKey(sectionsByCampus, campuses);
   const courseOverrides = courseOverridesByCampus(courses);
   const sectionNumbers = [...new Set([
     ...Array.from({ length: 12 }, (_, index) => index + 1),
@@ -185,13 +212,19 @@ export const resolveTimetableSections = ({
       const profile = TIMETABLE_CAMPUS_SCHEDULES[key];
       const builtin = profile?.sections.find(section => section.number === number) || {};
       const courseOverride = courseOverrides.get(`${key}:${number}`) || {};
+      const campusOfficial = officialByCampusKey.get(key)?.get(number) || {};
+      const resolvedOfficial = allCampuses
+        ? (Object.keys(campusOfficial).length ? campusOfficial : (keys.length === 1 ? official : {}))
+        : official;
+      const resolvedOfficialStart = String(resolvedOfficial.start_time || '').trim();
+      const resolvedOfficialEnd = String(resolvedOfficial.end_time || '').trim();
       return {
         key,
         label: profile?.name || '',
         short_label: profile?.short_name || '',
-        start_time: officialStart || courseOverride.start_time || builtin.start_time || '',
-        end_time: officialEnd || courseOverride.end_time || builtin.end_time || '',
-        source: officialStart || officialEnd
+        start_time: resolvedOfficialStart || courseOverride.start_time || builtin.start_time || '',
+        end_time: resolvedOfficialEnd || courseOverride.end_time || builtin.end_time || '',
+        source: resolvedOfficialStart || resolvedOfficialEnd
           ? 'official'
           : (courseOverride.start_time || courseOverride.end_time ? 'course' : (builtin.start_time ? 'builtin' : 'unknown')),
       };
@@ -225,12 +258,15 @@ export const resolveTimetableSections = ({
     }
 
     const primary = collapsed.length === 1 ? collapsed[0] : null;
+    const campusSectionName = [...officialByCampusKey.values()]
+      .map(items => items.get(number)?.name)
+      .find(Boolean);
     return {
       ...official,
       number,
-      name: official.name || `第${number}节`,
-      start_time: primary?.start_time || officialStart,
-      end_time: primary?.end_time || officialEnd,
+      name: official.name || campusSectionName || `第${number}节`,
+      start_time: primary?.start_time || (!collapsed.length ? officialStart : ''),
+      end_time: primary?.end_time || (!collapsed.length ? officialEnd : ''),
       time_source: primary?.source || (collapsed.length ? 'multiple' : 'unknown'),
       time_variants: collapsed,
     };
