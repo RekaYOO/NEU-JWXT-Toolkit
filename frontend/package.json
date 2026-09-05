@@ -16,7 +16,11 @@
     "start:unix": "NODE_OPTIONS=--openssl-legacy-provider react-scripts start",
     "build": "react-scripts build && node ../tools/prepare_frontend_assets.mjs",
     "test:performance": "node ../tools/check_performance_budget.mjs build",
-    "test": "react-scripts test --watchAll=false --runInBand",
+    "test": "react-scripts test --watchAll=false --maxWorkers=2",
+    "test:serial": "react-scripts test --watchAll=false --runInBand",
+    "test:changed": "node ../tools/test_frontend_changed.mjs",
+    "test:related": "react-scripts test --watchAll=false --runInBand --findRelatedTests",
+    "test:tooling": "node --test ../tools/test_frontend_changed.test.mjs",
     "test:term-sort": "react-scripts test --watchAll=false --runTestsByPath src/utils/termSort.test.js",
     "test:festival-activities": "react-scripts test --watchAll=false --runTestsByPath src/export/festivalActivityUtils.test.js src/export/festivalDataMode.test.js src/export/exportTools.test.js src/resources/ResourceStore.test.js src/pages/FestivalActivitiesPage.test.js"
   },

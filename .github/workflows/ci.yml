@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Superseded PR checks can stop; main/manual runs retain independent gates.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-22.04
@@ -47,6 +52,9 @@ jobs:
         env:
           CI: "true"
         run: npm test
+      - name: Verify incremental test selection
+        working-directory: frontend
+        run: npm run test:tooling
       - name: Build frontend
         working-directory: frontend
         env:

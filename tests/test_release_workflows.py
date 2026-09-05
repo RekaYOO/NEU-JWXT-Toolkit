@@ -19,10 +19,18 @@ def test_ci_owns_the_complete_source_quality_gate():
         "python -m pytest backend/tests",
         "python -m compileall -q backend launchers",
         "npm test",
+        "npm run test:tooling",
+        "npm run test:performance",
         "npm run build",
         "python -m pytest tests",
     )
     assert all(command in CI for command in expected_commands)
+    assert "run: npm run test:changed" not in CI
+
+
+def test_only_superseded_pr_checks_share_cancellation_group():
+    assert "github.event.pull_request.number || github.run_id" in CI
+    assert "cancel-in-progress: true" in CI
 
 
 def test_release_builds_web_once_without_repeating_source_tests():
