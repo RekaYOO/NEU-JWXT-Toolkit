@@ -43,6 +43,22 @@ def is_remote_read_context() -> bool:
 
 
 @contextmanager
+def remote_read_context() -> Iterator[None]:
+    """Mark calls in the current execution context as isolated remote reads.
+
+    FastAPI may enter and exit a synchronous generator dependency in different
+    worker-thread contexts.  A ContextVar token cannot cross that boundary, so
+    route dependencies acquire the shared slot in the thread pool and apply
+    this marker in their stable async task context instead.
+    """
+    token = _REMOTE_READ_CONTEXT.set(True)
+    try:
+        yield
+    finally:
+        _REMOTE_READ_CONTEXT.reset(token)
+
+
+@contextmanager
 def remote_read_bypass() -> Iterator[None]:
     """Temporarily use the primary Session for authentication/mutations.
 
@@ -87,6 +103,7 @@ class AuthSessionManager:
         label: str = "remote-operation",
         on_queued: Callable[[], None] | None = None,
         shared: bool = False,
+        mark_read_context: bool = True,
     ) -> Iterator[dict[str, float | str]]:
         """Coordinate exclusive operations and bounded shared remote reads.
 
@@ -143,12 +160,9 @@ class AuthSessionManager:
             )
         acquired_at = time.monotonic()
         try:
-            if shared:
-                token = _REMOTE_READ_CONTEXT.set(True)
-                try:
+            if shared and mark_read_context:
+                with remote_read_context():
                     yield {"priority": priority, "label": label, "queue_wait_ms": wait_ms}
-                finally:
-                    _REMOTE_READ_CONTEXT.reset(token)
             else:
                 yield {"priority": priority, "label": label, "queue_wait_ms": wait_ms}
         finally:
@@ -169,9 +183,15 @@ class AuthSessionManager:
         *,
         priority: str = "foreground",
         label: str = "remote-read",
+        mark_read_context: bool = True,
     ) -> Iterator[dict[str, float | str]]:
         """Allow a bounded number of authenticated reads to share the Session."""
-        with self.remote_guard(priority=priority, label=label, shared=True) as timing:
+        with self.remote_guard(
+            priority=priority,
+            label=label,
+            shared=True,
+            mark_read_context=mark_read_context,
+        ) as timing:
             yield timing
 
     def _remote_capacity_available(self, shared: bool) -> bool:

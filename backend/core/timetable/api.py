@@ -134,6 +134,14 @@ class TimetableAPI:
     def _text(value: Any) -> str:
         return str(value or "").strip()
 
+    @classmethod
+    def _floor_label(cls, value: Any) -> str:
+        """Keep the official filter value while presenting integer floors cleanly."""
+        text = cls._text(value)
+        if re.fullmatch(r"[+-]?\d+\.0+", text):
+            return text.split(".", 1)[0]
+        return text
+
     @staticmethod
     def _boolean(value: Any) -> bool:
         if isinstance(value, bool):
@@ -693,7 +701,7 @@ class TimetableAPI:
             details = {
                 "campus": cls._text(row.get("XXXQDM_DISPLAY") or row.get("XXXQMC")),
                 "building": cls._text(row.get("JXLDM_DISPLAY") or row.get("JXLMC")),
-                "floor": cls._text(row.get("LC")),
+                "floor": cls._floor_label(row.get("LC")),
                 "type": cls._text(row.get("JASLXDM_DISPLAY") or row.get("JASLXMC")),
                 "department": cls._text(row.get("GLDWDM_DISPLAY") or row.get("GLDWMC")),
                 "use_scope": cls._text(row.get("SYFWDM_DISPLAY") or row.get("SYFW")),

@@ -13,8 +13,11 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Optional
 
+from fastapi.concurrency import contextmanager_in_threadpool
+
 from backend.core.auth import AuthSessionManager, NEUAuthClient
 from backend.core.auth.client import NEULoginError, WEBVPN_ERR_CAMPUS_NETWORK
+from backend.core.auth.session_manager import remote_read_context
 from backend.core.storage import (
     AcademicReportStorage,
     AutoLoginManager,
@@ -102,9 +105,14 @@ def remote_read_session_guard(
     *,
     priority: str = "foreground",
     label: str = "remote-read-route",
+    mark_read_context: bool = True,
 ):
     """Allow bounded parallel reads while authentication and writes stay exclusive."""
-    with _auth_sessions.remote_read_guard(priority=priority, label=label) as timing:
+    with _auth_sessions.remote_read_guard(
+        priority=priority,
+        label=label,
+        mark_read_context=mark_read_context,
+    ) as timing:
         yield timing
 
 
@@ -1349,19 +1357,28 @@ def require_auth() -> NEUAuthClient:
     return client
 
 
-def require_serialized_auth():
-    """Use a bounded read slot without serializing unrelated remote reads."""
+async def require_serialized_auth():
+    """Use a bounded read slot without serializing unrelated remote reads.
+
+    The slot can block while an authentication or mutation owns the shared
+    Session, so acquisition and release run in FastAPI's worker pool.  The
+    isolated-read ContextVar remains in this async dependency's task, where it
+    is safely inherited by synchronous route handlers and can be reset in the
+    same context even when the request fails.
+    """
     client = peek_auth_client()
     if client is None or not getattr(client, "is_logged_in", False):
         client = get_auth_client()
     if client is None:
         from fastapi import HTTPException
         raise HTTPException(status_code=401, detail="未登录或登录已过期")
-    with remote_read_session_guard():
-        if peek_auth_client() is not client or not getattr(client, "is_logged_in", False):
-            from fastapi import HTTPException
-            raise HTTPException(status_code=401, detail="未登录或登录已过期")
-        yield client
+    guard = remote_read_session_guard(mark_read_context=False)
+    async with contextmanager_in_threadpool(guard):
+        with remote_read_context():
+            if peek_auth_client() is not client or not getattr(client, "is_logged_in", False):
+                from fastapi import HTTPException
+                raise HTTPException(status_code=401, detail="未登录或登录已过期")
+            yield client
 
 
 def require_exclusive_remote_auth():

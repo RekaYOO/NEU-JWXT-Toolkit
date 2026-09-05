@@ -488,7 +488,23 @@ def test_room_filter_catalog_includes_floor_values():
 
     options = TimetableAPI(client).get_target_filter_options("room", "2025-2026-2")
 
-    assert options["options"]["floor"] == [{"value": "3.0", "label": "3.0"}]
+    assert options["options"]["floor"] == [{"value": "3.0", "label": "3"}]
+
+
+def test_room_floor_display_drops_only_a_trailing_zero_decimal():
+    integer_floor = TimetableAPI._target_from_row(
+        "room",
+        {"CODE": "ROOM-1", "JASMC": "示例教室", "LC": "3.0", "LCDM": "3.0"},
+    )
+    special_floor = TimetableAPI._target_from_row(
+        "room",
+        {"CODE": "ROOM-B1", "JASMC": "地下教室", "LC": "B1", "LCDM": "B1"},
+    )
+
+    assert integer_floor["details"]["floor"] == "3"
+    assert integer_floor["filter_values"]["floor"] == "3.0"
+    assert special_floor["details"]["floor"] == "B1"
+    assert special_floor["filter_values"]["floor"] == "B1"
 
 
 def test_target_filter_catalog_honors_the_page_size_returned_by_emap():

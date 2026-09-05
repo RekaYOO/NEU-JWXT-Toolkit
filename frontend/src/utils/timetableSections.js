@@ -127,11 +127,16 @@ const selectedCampusKeys = ({ campusCode, campusName, campuses, courses }) => {
   const courseKeys = flattenCourses(courses)
     .map(course => timetableCampusScheduleKey(course))
     .filter(Boolean);
+  // In all-campus mode the rendered courses are the narrowest reliable
+  // description of the clocks that actually need to be shown.  Using the
+  // complete campus catalog first adds unused Nanhu/Hunnan variants and makes
+  // the section axis needlessly crowded for a one-campus result.
+  if (courseKeys.length) return [...new Set(courseKeys)];
   const catalogKeys = (campuses || [])
     .filter(campus => !['all', '__all__'].includes(String(campus?.code || '')))
     .map(campus => timetableCampusScheduleKey(campus))
     .filter(Boolean);
-  return [...new Set([...catalogKeys, ...courseKeys])];
+  return [...new Set(catalogKeys)];
 };
 
 const officialSectionsByCampusKey = (sectionsByCampus, campuses) => {

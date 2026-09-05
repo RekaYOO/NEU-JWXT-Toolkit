@@ -159,6 +159,30 @@
   gap: var(--space-3);
 }
 
+.timetable-target-filter-modal .ant-modal {
+  max-width: calc(100vw - 24px);
+}
+
+.timetable-target-filter-modal .ant-modal-content {
+  max-height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.timetable-target-filter-modal .ant-modal-header,
+.timetable-target-filter-modal .ant-modal-footer {
+  flex: 0 0 auto;
+}
+
+.timetable-target-filter-modal .ant-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .timetable-control-actions {
   justify-self: end;
   display: flex;
@@ -364,6 +388,22 @@
   border-radius: var(--radius-lg);
 }
 
+.timetable-query-pending-copy {
+  display: grid;
+  gap: 4px;
+  margin-bottom: var(--space-4);
+}
+
+.timetable-query-pending-copy strong {
+  color: var(--color-ink);
+  font-size: 15px;
+}
+
+.timetable-query-pending-copy span {
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
 .timetable-desktop {
   overflow: clip;
   background: var(--color-surface);
@@ -438,25 +478,32 @@
 
 .timetable-section-label .timetable-section-time-variants {
   display: grid;
+  width: 100%;
   gap: 2px;
+  justify-items: center;
 }
 
 .timetable-section-time-variants > span {
-  display: flex;
+  display: grid;
+  grid-template-columns: max-content max-content;
   align-items: center;
   justify-content: center;
   gap: 3px;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .timetable-section-time-variants b {
   color: var(--color-ink-soft, #475569);
   font-size: 9px;
   font-weight: 600;
+  text-align: right;
 }
 
 .timetable-section-time-variants time {
   color: var(--color-muted);
   font-size: inherit;
+  text-align: left;
 }
 
 .timetable-day-column {
@@ -1007,10 +1054,17 @@
 }
 
 .timetable-other-courses {
+  min-width: 0;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: var(--space-3);
   margin-top: var(--space-4);
+}
+
+.timetable-other-courses .ant-card,
+.timetable-other-courses .ant-card-body,
+.timetable-other-row {
+  min-width: 0;
 }
 
 .timetable-other-courses .ant-card-extra {
@@ -1042,6 +1096,16 @@
 .timetable-other-row span {
   color: var(--color-muted);
   font-size: 12px;
+}
+
+.timetable-other-row strong,
+.timetable-other-row span {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.timetable-mobile-scroll-tail {
+  display: none;
 }
 
 .timetable-detail-lead {
@@ -1217,6 +1281,7 @@
 
   .timetable-mobile-summary-status.is-next { color: var(--color-warning); }
   .timetable-mobile-summary-status.is-none { color: var(--color-muted); }
+  .timetable-mobile-summary-status.is-query { color: var(--color-brand-strong); }
 
   .timetable-mobile-summary-name {
     min-width: 0;
@@ -1227,6 +1292,10 @@
     color: var(--color-ink);
     font-size: 13px;
     font-weight: 700;
+  }
+
+  .timetable-mobile-summary.is-query-summary .timetable-mobile-summary-name {
+    max-width: min(46vw, 230px);
   }
 
   .timetable-mobile-summary-trigger small {
@@ -1280,7 +1349,8 @@
     gap: var(--space-3);
   }
 
-  .timetable-mobile-summary-course {
+  .timetable-mobile-summary-course,
+  .timetable-mobile-summary-target {
     display: grid;
     gap: 8px;
     padding: 12px;
@@ -1289,7 +1359,8 @@
     border-radius: var(--radius-md);
   }
 
-  .timetable-mobile-summary-course > span {
+  .timetable-mobile-summary-course > span,
+  .timetable-mobile-summary-target > span {
     min-width: 0;
     display: grid;
     grid-template-columns: 38px minmax(0, 1fr);
@@ -1298,13 +1369,15 @@
     line-height: 1.45;
   }
 
-  .timetable-mobile-summary-course small {
+  .timetable-mobile-summary-course small,
+  .timetable-mobile-summary-target small {
     color: var(--color-subtle);
     font-size: 11px;
     font-weight: 600;
   }
 
-  .timetable-mobile-summary-course b {
+  .timetable-mobile-summary-course b,
+  .timetable-mobile-summary-target b {
     min-width: 0;
     overflow-wrap: anywhere;
     color: var(--color-ink);
@@ -1320,6 +1393,7 @@
 
   .timetable-mobile-summary-default,
   .timetable-mobile-summary-compact,
+  .timetable-mobile-summary-conflict,
   .timetable-mobile-summary-view {
     display: flex;
     align-items: center;
@@ -1332,7 +1406,8 @@
   }
 
   .timetable-mobile-summary-default,
-  .timetable-mobile-summary-compact {
+  .timetable-mobile-summary-compact,
+  .timetable-mobile-summary-conflict {
     min-width: 0;
     min-height: 46px;
     padding: 7px 9px;
@@ -1344,12 +1419,14 @@
   }
 
   .timetable-mobile-summary-default > span:first-child,
-  .timetable-mobile-summary-compact > span:first-child {
+  .timetable-mobile-summary-compact > span:first-child,
+  .timetable-mobile-summary-conflict > span:first-child {
     min-width: 0;
   }
 
   .timetable-mobile-summary-default .ant-switch,
-  .timetable-mobile-summary-compact .ant-switch {
+  .timetable-mobile-summary-compact .ant-switch,
+  .timetable-mobile-summary-conflict .ant-switch {
     flex: 0 0 auto;
   }
 
@@ -1638,18 +1715,6 @@
     touch-action: pan-y;
   }
 
-  /*
-   * The weekly view already receives a temporary scroll tail when its week
-   * rail is focused. Term views can be entered later (when initial focus must
-   * not run again), and compact term mode has no separate weekday anchor at
-   * all. Keep one row of permanent bottom clearance so the last course or
-   * section 12 can move above mobile browser chrome without changing the
-   * existing focus target or scroll position.
-   */
-  .timetable-mobile.is-term-view {
-    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-  }
-
   .timetable-grid.is-mobile-compact {
     --timetable-mobile-axis-width: 52px;
     display: block;
@@ -1682,9 +1747,9 @@
   }
 
   .timetable-grid.is-mobile-compact .timetable-section-label {
-    justify-content: flex-start;
-    gap: 1px;
-    padding: 4px 1px 1px;
+    justify-content: center;
+    gap: 3px;
+    padding: 3px 2px;
     line-height: 1;
   }
 
@@ -1702,19 +1767,29 @@
   }
 
   .timetable-grid.is-mobile-compact .timetable-section-time-variants {
-    width: 100%;
-    gap: 0;
+    gap: 2px;
   }
 
   .timetable-grid.is-mobile-compact .timetable-section-time-variants > span {
-    gap: 1px;
+    grid-template-columns: 10px 28px;
+    justify-content: center;
+    gap: 3px;
+    padding: 0;
   }
 
   .timetable-grid.is-mobile-compact .timetable-section-time-variants b,
   .timetable-grid.is-mobile-compact .timetable-section-time-variants time {
-    font-size: 7px;
-    line-height: 1.05;
+    font-size: 8px;
+    line-height: 1.15;
     white-space: nowrap;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-section-time-variants b {
+    text-align: right;
+  }
+
+  .timetable-grid.is-mobile-compact .timetable-section-time-variants time {
+    text-align: left;
   }
 
   .timetable-grid.is-mobile-compact .timetable-day-column {
@@ -1854,6 +1929,7 @@
   .mobile-course-weeks,
   .mobile-course-location,
   .mobile-course-teacher,
+  .mobile-course-classes,
   .mobile-course-type {
     min-width: 0;
     grid-column: 1;
@@ -1872,7 +1948,8 @@
     font-size: 13px;
   }
 
-  .mobile-course-teacher {
+  .mobile-course-teacher,
+  .mobile-course-classes {
     display: -webkit-box;
     overflow: hidden;
     color: #475569;
@@ -1898,12 +1975,41 @@
     grid-template-columns: 1fr;
   }
 
+  /*
+   * Term views need enough content after the final row to clear mobile browser
+   * chrome. Keep that reserve after auxiliary courses so it cannot become a
+   * large visual gap between the main timetable and "未安排节次".
+   */
+  .timetable-mobile-scroll-tail {
+    display: block;
+    height: calc(72px + env(safe-area-inset-bottom, 0px));
+    pointer-events: none;
+  }
+
   .timetable-filter-field > span {
     color: var(--color-ink);
   }
 }
 
 @media (max-width: 575.98px) {
+  .timetable-target-filter-modal .ant-modal {
+    top: 12px;
+    margin: 0 auto;
+    padding-bottom: 12px;
+  }
+
+  .timetable-target-filter-modal .ant-modal-content {
+    max-height: calc(100dvh - 24px);
+  }
+
+  .timetable-target-filter-modal .ant-modal-body {
+    padding-inline: 16px;
+  }
+
+  .timetable-target-filter-modal .ant-modal-footer {
+    padding-inline: 16px;
+  }
+
   .timetable-target-result-grid {
     grid-template-columns: minmax(0, 1fr);
   }

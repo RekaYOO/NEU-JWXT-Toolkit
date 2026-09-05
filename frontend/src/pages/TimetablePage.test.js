@@ -37,6 +37,14 @@ import {
   timetableCacheIndicator,
   timetableRecoveryNoticeClassName,
   courseTeacherText,
+  courseClassText,
+  mobileCourseContext,
+  formatTimetableFloor,
+  shouldRefreshTimetableTargets,
+  timetableMobileContextText,
+  queryTimetableScheduleMatches,
+  shouldShowQueryTimetablePending,
+  timetableSectionAxisMinimumHeight,
   shouldHighlightToday,
   selectDefaultTerm,
   selectEffectiveCurrentTerm,
@@ -61,6 +69,7 @@ import {
   MobileTimetable,
   MobileCompactWeekTimetable,
   MobileTimetableSummary,
+  TimetableGrid,
   mobileWeekRailScrollLeft,
 } from './TimetablePage';
 import React, { act } from 'react';
@@ -137,6 +146,26 @@ describe('TimetablePage helpers', () => {
   test('places the recovery notice above the desktop timetable and below the mobile timetable', () => {
     expect(timetableRecoveryNoticeClassName(false)).toContain('notice-top');
     expect(timetableRecoveryNoticeClassName(true)).toContain('notice-below');
+  });
+
+  test('uses an honest preselection state and refreshes the query target list', () => {
+    expect(shouldRefreshTimetableTargets({ mode: 'teacher', target: null })).toBe(true);
+    expect(shouldRefreshTimetableTargets({ mode: 'room', target: { id: 'R1' } })).toBe(false);
+    expect(shouldRefreshTimetableTargets({ mode: 'personal', target: null })).toBe(false);
+    expect(timetableMobileContextText({
+      mode: 'teacher', target: null, viewMode: 'week',
+    })).toBe('选择教师后读取教学周和校区');
+    expect(timetableMobileContextText({
+      mode: 'teacher', target: { id: 'T1' }, viewMode: 'week',
+      selectedWeekName: '第3周', selectedCampusName: '浑南校区',
+    })).toBe('第3周 · 浑南校区');
+  });
+
+  test('formats integer classroom floors without changing special floor labels', () => {
+    expect(formatTimetableFloor('3.0')).toBe('3');
+    expect(formatTimetableFloor('12.000')).toBe('12');
+    expect(formatTimetableFloor('B1')).toBe('B1');
+    expect(formatTimetableFloor('3.5')).toBe('3.5');
   });
 
   test('keeps normal current-week auto detection silent', () => {
@@ -239,6 +268,78 @@ describe('TimetablePage helpers', () => {
     }
   });
 
+  test('uses mode-aware context rows for queried mobile course cards', async () => {
+    expect(courseClassText({ classes: ['工业工程2401', '工业工程2401'] }))
+      .toBe('工业工程2401');
+    expect(mobileCourseContext({ teachers: ['教师甲'], classes: ['班级甲'] }, 'class'))
+      .toEqual({ teacher: '教师甲', classes: '' });
+    expect(mobileCourseContext({ teachers: ['教师甲'], classes: ['班级甲'] }, 'teacher'))
+      .toEqual({ teacher: '', classes: '班级甲' });
+    expect(mobileCourseContext({ teachers: ['教师甲'], classes: ['班级甲'] }, 'room'))
+      .toEqual({ teacher: '教师甲', classes: '班级甲' });
+
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const coursesByDay = Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, day === 1 ? [{
+      id: 'teacher-query-course', course_name: '示例课程', teachers: ['当前教师'],
+      classes: ['工业工程2401'], weekday: 1, weeks: [3], start_section: 1,
+      end_section: 2, location: '信息楼101',
+    }] : []]));
+    try {
+      await act(async () => {
+        root.render(<MobileTimetable
+          coursesByDay={coursesByDay}
+          sections={[]}
+          selectedDay={1}
+          viewMode="week"
+          mode="teacher"
+          currentTerm
+          currentWeekNumber={3}
+          onDayChange={() => {}}
+          onCourseClick={() => {}}
+          personalConflictMap={{}}
+        />);
+      });
+      expect(container.querySelector('.mobile-course-classes').textContent).toBe('工业工程2401');
+      expect(container.querySelector('.mobile-course-teacher')).toBeNull();
+      expect(container.textContent).not.toContain('当前教师');
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
+  test('distinguishes an unloaded queried timetable from a confirmed empty response', () => {
+    const target = { id: 'T001', name: '教师甲' };
+    const selection = {
+      mode: 'teacher', targetId: target.id, termCode: '2026-2027-1',
+      campusCode: '01', viewMode: 'week', weekNumber: 3,
+    };
+    const confirmedEmpty = {
+      mode: 'teacher', target_id: target.id, term_code: '2026-2027-1',
+      campus_code: '01', week: 3, courses: [], unscheduled: [], practices: [],
+    };
+    expect(queryTimetableScheduleMatches({ ...selection, schedule: confirmedEmpty }))
+      .toBe(true);
+    expect(queryTimetableScheduleMatches({
+      ...selection, schedule: { ...confirmedEmpty, week: 2 },
+    })).toBe(false);
+    expect(shouldShowQueryTimetablePending({ mode: 'teacher', target, scheduleMatches: false }))
+      .toBe(true);
+    expect(shouldShowQueryTimetablePending({
+      mode: 'teacher', target, scheduleMatches: true,
+    })).toBe(false);
+    expect(shouldShowQueryTimetablePending({
+      mode: 'teacher', target, scheduleMatches: false, error: { message: '读取失败' },
+    })).toBe(false);
+    expect(shouldShowQueryTimetablePending({ mode: 'personal', target, scheduleMatches: false }))
+      .toBe(false);
+  });
+
   test('shows current course details above timetable settings when the summary expands', async () => {
     const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
     global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -282,6 +383,60 @@ describe('TimetablePage helpers', () => {
       expect(preferences.querySelectorAll('label')).toHaveLength(2);
       expect(preferences.textContent).toContain('打开时默认课表');
       expect(preferences.textContent).toContain('使用缩略视图');
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
+  test('shows a query target first and exposes shared view and conflict controls', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<MobileTimetableSummary
+          mode="teacher"
+          target={{ id: 'T001', name: '教师甲' }}
+          targetDescription="计算机学院 · 教授"
+          summary={{
+            kind: 'next',
+            course: {
+              course_name: '数据结构', start_section: 3, end_section: 4,
+              start_time: '10:30', end_time: '12:10', location: '信息楼A112',
+              teachers: ['教师甲'], classes: ['计算机类2401'],
+            },
+          }}
+          compactWeekView
+          onToggleCompactWeekView={() => {}}
+          viewMode="week"
+          onViewModeChange={() => {}}
+          conflictDetectionEnabled
+          onToggleConflictDetection={() => {}}
+        />);
+      });
+      const trigger = container.querySelector('.timetable-mobile-summary-trigger');
+      expect(trigger.textContent).toContain('教师');
+      expect(trigger.textContent).toContain('教师甲');
+      expect(trigger.textContent).not.toContain('数据结构');
+      await act(async () => trigger.click());
+      expect(container.querySelector('.timetable-mobile-summary-target').textContent)
+        .toContain('T001');
+      expect(container.querySelector('.timetable-mobile-summary-target').textContent)
+        .toContain('计算机学院 · 教授');
+      expect(container.querySelector('.timetable-mobile-summary-course').textContent)
+        .toContain('数据结构');
+      expect(container.querySelector('.timetable-mobile-summary-course').textContent)
+        .toContain('计算机类2401');
+      expect(container.querySelector('.timetable-mobile-summary-course').textContent)
+        .not.toContain('教师甲');
+      const preferences = container.querySelector('.timetable-mobile-summary-preferences');
+      expect(preferences.textContent).toContain('使用缩略视图');
+      expect(preferences.textContent).toContain('与我的课表冲突');
+      expect(preferences.textContent).not.toContain('打开时默认课表');
     } finally {
       await act(async () => root.unmount());
       container.remove();
@@ -846,6 +1001,52 @@ describe('TimetablePage helpers', () => {
     }
   });
 
+  test('widens and vertically fits a multi-campus section axis without changing the day grid', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const sections = [{
+      number: 1,
+      name: '第1节',
+      time_variants: [
+        { key: 'nanhu', labels: ['南湖校区'], short_labels: ['南'], start_time: '08:00', end_time: '08:45' },
+        { key: 'hunnan', labels: ['浑南校区'], short_labels: ['浑'], start_time: '08:30', end_time: '09:15' },
+      ],
+    }];
+    expect(timetableSectionAxisMinimumHeight(sections[0], true)).toBeGreaterThanOrEqual(44);
+    expect(timetableSectionAxisMinimumHeight(sections[0], false)).toBeGreaterThanOrEqual(58);
+    try {
+      await act(async () => {
+        root.render(<TimetableGrid
+          coursesByDay={Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]))}
+          sections={sections}
+          viewMode="week"
+          mode="personal"
+          currentTerm
+          currentWeekNumber={1}
+          showToday={false}
+          onCourseClick={() => {}}
+          presentation="mobile-compact"
+        />);
+      });
+      const header = container.querySelector('.timetable-grid-header');
+      expect(header.style.getPropertyValue('--timetable-mobile-axis-width')).toBe('68px');
+      expect(Number.parseFloat(container.querySelector('.timetable-section-label').style.height))
+        .toBeGreaterThanOrEqual(44);
+      expect(container.querySelector('.timetable-section-time-variants').textContent)
+        .toContain('南08:00');
+      expect(container.querySelector('.timetable-section-time-variants').textContent)
+        .toContain('浑08:30');
+      expect(container.querySelectorAll('.timetable-day-column')).toHaveLength(7);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
   test('compact mobile timetable marks the course that is happening now', async () => {
     const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
     global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -1070,7 +1271,7 @@ describe('TimetablePage helpers', () => {
     }
   });
 
-  test('adds term-only mobile bottom clearance without changing the focus anchor policy', async () => {
+  test('keeps term view identifiable while preserving the focus anchor policy', async () => {
     const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
     global.IS_REACT_ACT_ENVIRONMENT = true;
     const container = document.createElement('div');

@@ -1,7 +1,17 @@
+import asyncio
 import threading
 import time
+from types import SimpleNamespace
 
-from backend.core.auth.session_manager import AuthSessionManager
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.testclient import TestClient
+
+import backend.app.dependencies as dependencies
+from backend.core.auth.session_manager import (
+    AuthSessionManager,
+    is_remote_read_context,
+    remote_read_context,
+)
 
 
 def test_pending_login_candidate_does_not_replace_active_identity():
@@ -105,6 +115,74 @@ def test_remote_read_guard_allows_bounded_parallel_reads():
     for thread in threads:
         thread.join(timeout=2)
         assert not thread.is_alive()
+
+
+def test_remote_read_slot_can_be_released_from_a_different_worker_context():
+    manager = AuthSessionManager()
+    guard = manager.remote_read_guard(mark_read_context=False)
+    entered = threading.Event()
+    errors: list[Exception] = []
+
+    def enter():
+        try:
+            guard.__enter__()
+            entered.set()
+        except Exception as exc:  # pragma: no cover - diagnostic capture
+            errors.append(exc)
+
+    def exit_guard():
+        try:
+            guard.__exit__(None, None, None)
+        except Exception as exc:  # pragma: no cover - diagnostic capture
+            errors.append(exc)
+
+    enter_thread = threading.Thread(target=enter)
+    enter_thread.start()
+    enter_thread.join(timeout=2)
+    assert entered.is_set()
+
+    exit_thread = threading.Thread(target=exit_guard)
+    exit_thread.start()
+    exit_thread.join(timeout=2)
+    assert not errors
+
+    with manager.remote_guard(priority="mutation"):
+        pass
+
+
+def test_remote_read_context_propagates_to_worker_and_resets_in_async_task():
+    async def exercise():
+        assert not is_remote_read_context()
+        with remote_read_context():
+            assert is_remote_read_context()
+            assert await asyncio.to_thread(is_remote_read_context)
+        assert not is_remote_read_context()
+
+    asyncio.run(exercise())
+
+
+def test_fastapi_read_dependency_preserves_route_error_and_releases_slot(monkeypatch):
+    manager = AuthSessionManager()
+    client = SimpleNamespace(is_logged_in=True)
+    monkeypatch.setattr(dependencies, "_auth_sessions", manager)
+    monkeypatch.setattr(dependencies, "peek_auth_client", lambda: client)
+    monkeypatch.setattr(dependencies, "get_auth_client", lambda: client)
+    app = FastAPI()
+
+    @app.get("/probe")
+    def probe(_client=Depends(dependencies.require_serialized_auth)):
+        assert is_remote_read_context()
+        raise HTTPException(status_code=502, detail="original remote failure")
+
+    response = TestClient(app).get("/probe")
+    assert response.status_code == 502
+    assert response.json() == {"detail": "original remote failure"}
+    assert not is_remote_read_context()
+
+    # A cleanup failure would leave the read counter occupied and block this
+    # exclusive operation. Reaching the body proves the lease was released.
+    with manager.remote_guard(priority="mutation"):
+        pass
 
 
 def test_exclusive_remote_guard_waits_for_parallel_reads_to_finish():

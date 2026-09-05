@@ -104,6 +104,56 @@ describe('timetable campus schedules', () => {
     expect(resolved[4]).toMatchObject({ start_time: '14:00', end_time: '14:45' });
   });
 
+  test('uses only campuses represented by rendered courses in all-campus mode', () => {
+    const resolved = resolveTimetableSections({
+      sections: emptySections,
+      campusCode: 'all',
+      campuses: [
+        { code: 'all', name: '全部校区' },
+        { code: '00', name: '南湖校区' },
+        { code: '01', name: '浑南校区' },
+      ],
+      courses: [{
+        campus: '南湖校区', weekday: 1, start_section: 1, end_section: 2,
+      }],
+    });
+
+    expect(resolved[0].time_variants).toHaveLength(1);
+    expect(resolved[0].time_variants[0]).toMatchObject({
+      keys: ['nanhu'], short_labels: ['南'], start_time: '08:00', end_time: '08:45',
+    });
+    expect(resolved[0]).toMatchObject({
+      start_time: '08:00', end_time: '08:45', time_source: 'builtin',
+    });
+  });
+
+  test('keeps two morning clocks but one shared afternoon clock for campuses in rendered courses', () => {
+    const resolved = resolveTimetableSections({
+      sections: emptySections,
+      campusCode: 'all',
+      campuses: [
+        { code: 'all', name: '全部校区' },
+        { code: '00', name: '南湖校区' },
+        { code: '01', name: '浑南校区' },
+        { code: '02', name: '东校区' },
+      ],
+      courses: [
+        { campus: '南湖校区', weekday: 1, start_section: 1, end_section: 2 },
+        { campus: '浑南校区', weekday: 2, start_section: 1, end_section: 2 },
+      ],
+    });
+
+    expect(resolved[0].time_variants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ keys: ['nanhu'], start_time: '08:00', end_time: '08:45' }),
+      expect.objectContaining({ keys: ['hunnan'], start_time: '08:30', end_time: '09:15' }),
+    ]));
+    expect(resolved[0].time_source).toBe('multiple');
+    expect(resolved[4].time_variants).toHaveLength(1);
+    expect(resolved[4].time_variants[0]).toMatchObject({
+      keys: ['nanhu', 'hunnan'], start_time: '14:00', end_time: '14:45',
+    });
+  });
+
   test('uses each campus official clock instead of applying the all-campus header to every variant', () => {
     const resolved = resolveTimetableSections({
       sections: [{ number: 1, name: '第1节', start_time: '08:00', end_time: '08:45' }],
