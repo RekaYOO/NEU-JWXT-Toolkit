@@ -159,28 +159,31 @@
   gap: var(--space-3);
 }
 
+.timetable-target-filter-actions > button:first-child {
+  margin-inline-end: auto;
+}
+
 .timetable-target-filter-modal .ant-modal {
   max-width: calc(100vw - 24px);
 }
 
 .timetable-target-filter-modal .ant-modal-content {
-  max-height: calc(100dvh - 32px);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  padding: 0;
 }
 
-.timetable-target-filter-modal .ant-modal-header,
-.timetable-target-filter-modal .ant-modal-footer {
-  flex: 0 0 auto;
+.timetable-target-filter-modal .ant-modal-header {
+  padding: 16px 48px 12px 16px;
+  margin: 0;
 }
 
 .timetable-target-filter-modal .ant-modal-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  padding: 0 16px 16px;
+}
+
+.timetable-target-filter-modal .ant-modal-footer {
+  margin: 0;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--color-line);
 }
 
 .timetable-control-actions {
@@ -1993,21 +1996,19 @@
 
 @media (max-width: 575.98px) {
   .timetable-target-filter-modal .ant-modal {
-    top: 12px;
     margin: 0 auto;
-    padding-bottom: 12px;
   }
 
-  .timetable-target-filter-modal .ant-modal-content {
-    max-height: calc(100dvh - 24px);
+  .timetable-target-filter-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
   }
 
-  .timetable-target-filter-modal .ant-modal-body {
-    padding-inline: 16px;
-  }
-
-  .timetable-target-filter-modal .ant-modal-footer {
-    padding-inline: 16px;
+  .timetable-target-filter-actions > button {
+    width: 100%;
+    min-height: 40px;
+    padding-inline: 4px;
   }
 
   .timetable-target-result-grid {

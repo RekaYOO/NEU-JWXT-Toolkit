@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { Badge, Button, Drawer, Grid, Modal, Space, Tag } from 'antd';
 import { FilterOutlined } from '@ant-design/icons';
 import './MobileUX.css';
@@ -15,58 +15,73 @@ const getVisualViewportHeight = () => {
 
 const useAdaptiveViewport = (open) => {
   const [viewportHeight, setViewportHeight] = useState(getVisualViewportHeight);
+  const [viewportTop, setViewportTop] = useState(() => (
+    typeof window === 'undefined' ? 0 : (window.visualViewport?.offsetTop || 0)
+  ));
+  const bodyRef = useRef(null);
+  const focusTimer = useRef();
+  const handleFocusCapture = useCallback((event) => {
+    const input = event.target;
+    window.clearTimeout(focusTimer.current);
+    focusTimer.current = window.setTimeout(() => {
+      if (bodyRef.current?.contains(input) && document.activeElement === input) {
+        input.scrollIntoView?.({ block: 'nearest', behavior: 'auto' });
+      }
+    }, 180);
+  }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open || typeof window === 'undefined') return undefined;
     const viewport = window.visualViewport;
+    let frame;
+    const revealInput = () => {
+      const activeElement = document.activeElement;
+      if (bodyRef.current?.contains(activeElement)
+          && /^(INPUT|TEXTAREA|SELECT)$/.test(activeElement.tagName)) {
+        activeElement.scrollIntoView?.({ block: 'nearest', behavior: 'auto' });
+      }
+    };
     const update = () => {
       setViewportHeight(getVisualViewportHeight());
-      window.requestAnimationFrame(() => {
-        const activeElement = document.activeElement;
-        if (
-          activeElement
-          && /^(INPUT|TEXTAREA|SELECT)$/.test(activeElement.tagName)
-        ) {
-          activeElement.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        }
-      });
+      setViewportTop(viewport?.offsetTop || 0);
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(revealInput);
     };
-
     update();
     viewport?.addEventListener('resize', update);
     viewport?.addEventListener('scroll', update);
     window.addEventListener('resize', update);
     return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(focusTimer.current);
       viewport?.removeEventListener('resize', update);
       viewport?.removeEventListener('scroll', update);
       window.removeEventListener('resize', update);
     };
   }, [open]);
 
-  const handleFocusCapture = useCallback((event) => {
-    window.setTimeout(() => {
-      event.target?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
-    }, 180);
-  }, []);
-
-  return { viewportHeight, handleFocusCapture };
+  return { viewportHeight, viewportTop, bodyRef, handleFocusCapture };
 };
 
 export const AdaptiveModal = ({
   open,
   rootClassName = '',
+  style,
   styles,
   children,
   ...props
 }) => {
-  const { viewportHeight, handleFocusCapture } = useAdaptiveViewport(open);
-  const maxHeight = Math.max(96, viewportHeight - 16);
+  const { viewportHeight, viewportTop, bodyRef, handleFocusCapture } = useAdaptiveViewport(open);
+  const maxHeight = Math.max(0, viewportHeight - 16);
 
   return (
     <Modal
       {...props}
       open={open}
       rootClassName={`adaptive-modal ${rootClassName}`.trim()}
+      // The height budget and top offset must use the same visible viewport.
+      // Ant's default top:100px otherwise pushes a full-height form below it.
+      style={{ ...style, top: viewportTop + 8, paddingBottom: 0 }}
       styles={{
         ...styles,
         content: {
@@ -75,7 +90,7 @@ export const AdaptiveModal = ({
         },
       }}
     >
-      <div className="adaptive-modal__body" onFocusCapture={handleFocusCapture}>
+      <div className="adaptive-modal__body" ref={bodyRef} onFocusCapture={handleFocusCapture}>
         {children}
       </div>
     </Modal>
@@ -120,7 +135,7 @@ export const MobileFilterDrawer = ({
   title = '筛选与排序',
   children,
 }) => {
-  const { viewportHeight, handleFocusCapture } = useAdaptiveViewport(open);
+  const { viewportHeight, bodyRef, handleFocusCapture } = useAdaptiveViewport(open);
   const maxHeight = Math.max(96, Math.min(720, viewportHeight - 8));
 
   return (
@@ -144,7 +159,7 @@ export const MobileFilterDrawer = ({
         </div>
       )}
     >
-      <div className="mobile-sheet__body" onFocusCapture={handleFocusCapture}>
+      <div className="mobile-sheet__body" ref={bodyRef} onFocusCapture={handleFocusCapture}>
         {children}
       </div>
     </Drawer>

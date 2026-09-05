@@ -47,6 +47,7 @@
 }
 
 .adaptive-modal .ant-modal-content {
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -58,7 +59,10 @@
 }
 
 .adaptive-modal .ant-modal-body {
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   scroll-padding-block: 16px;

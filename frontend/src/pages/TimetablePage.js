@@ -28,6 +28,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 
 import {
+  AdaptiveModal,
   MobileDetailDrawer,
   MobileFilterDrawer,
 } from '../components/mobile/MobileUX';
@@ -3300,7 +3301,7 @@ function TimetablePage({
 
       <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} conflictMap={effectiveConflictMap} courseScheduleMap={conflictCourseScheduleMap} />
 
-      <Modal
+      <AdaptiveModal
         rootClassName="timetable-target-filter-modal"
         open={targetFilterOpen}
         onCancel={closeTargetFilters}
@@ -3317,7 +3318,7 @@ function TimetablePage({
         footer={(_, { OkBtn, CancelBtn }) => (
           <div className="timetable-target-filter-actions">
             <Button onClick={resetTargetFilters}>清空筛选</Button>
-            <Space><CancelBtn /><OkBtn /></Space>
+            <CancelBtn /><OkBtn />
           </div>
         )}
       >
@@ -3466,7 +3467,7 @@ function TimetablePage({
               .filter(([, value]) => value !== '' && value != null)),
           })}
         />
-      </Modal>
+      </AdaptiveModal>
 
       <MobileFilterDrawer
         open={mobileFilterOpen}
