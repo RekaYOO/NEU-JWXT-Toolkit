@@ -75,6 +75,74 @@ def test_remote_guard_prioritizes_mutation_over_queued_background_work():
     assert max_active == 1
 
 
+def test_remote_read_guard_allows_bounded_parallel_reads():
+    manager = AuthSessionManager()
+    release = threading.Event()
+    all_started = threading.Event()
+    state_lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def read():
+        nonlocal active, max_active
+        with manager.remote_read_guard():
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+                if active == 4:
+                    all_started.set()
+            assert release.wait(timeout=2)
+            with state_lock:
+                active -= 1
+
+    threads = [threading.Thread(target=read) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    assert all_started.wait(timeout=2)
+    time.sleep(0.03)
+    assert max_active == 4
+    release.set()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+
+def test_exclusive_remote_guard_waits_for_parallel_reads_to_finish():
+    manager = AuthSessionManager()
+    readers_started = threading.Event()
+    release_readers = threading.Event()
+    writer_started = threading.Event()
+    state_lock = threading.Lock()
+    active_readers = 0
+
+    def read():
+        nonlocal active_readers
+        with manager.remote_read_guard():
+            with state_lock:
+                active_readers += 1
+                if active_readers == 2:
+                    readers_started.set()
+            assert release_readers.wait(timeout=2)
+
+    def write():
+        with manager.remote_guard(priority="mutation"):
+            writer_started.set()
+
+    readers = [threading.Thread(target=read) for _ in range(2)]
+    for thread in readers:
+        thread.start()
+    assert readers_started.wait(timeout=2)
+    writer = threading.Thread(target=write)
+    writer.start()
+    time.sleep(0.03)
+    assert not writer_started.is_set()
+    release_readers.set()
+    assert writer_started.wait(timeout=2)
+    for thread in (*readers, writer):
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+
 def test_logout_queue_callback_fences_before_new_login_can_enter():
     manager = AuthSessionManager()
     blocker_started = threading.Event()

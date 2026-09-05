@@ -1,21 +1,23 @@
 .auth-recovery-page {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
-  padding: 24px;
-  background: #f4f6f8;
+  padding: var(--space-6);
+  background: var(--color-canvas);
 }
 
 .auth-recovery-card {
-  width: min(540px, 100%);
-  border-color: #dbe3ec;
-  box-shadow: 0 18px 45px rgba(30, 41, 59, 0.1);
+  width: min(520px, 100%);
+  border-color: var(--color-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
 }
 
 .auth-recovery-card h1 {
-  margin: 18px 0 24px;
-  color: #1e293b;
-  font-size: 23px;
+  margin: var(--space-3) 0 var(--space-4);
+  color: var(--color-ink);
+  font-size: 20px;
+  line-height: 1.4;
   text-align: center;
 }
 
@@ -23,9 +25,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  color: #2563eb;
-  font-size: 20px;
-  font-weight: 800;
+  color: var(--color-brand);
+  font-size: 18px;
+  font-weight: 700;
 }
 
 .auth-recovery-state,
@@ -51,34 +53,34 @@
   justify-content: center;
   gap: 6px;
   margin-bottom: 16px;
-  color: #64748b;
+  color: var(--color-muted);
   font-size: 13px;
 }
 
 .auth-recovery-countdown strong {
-  color: #1e293b;
+  color: var(--color-ink);
   font-variant-numeric: tabular-nums;
 }
 
 .auth-recovery-countdown.is-sms {
-  margin: -4px 0 12px;
+  margin: 0 0 var(--space-2);
 }
 
 .auth-recovery-sms-actions {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  margin-top: 18px;
+  margin-top: var(--space-4);
 }
 
 .auth-recovery-sms-actions .ant-btn {
-  min-height: 42px;
-  border-radius: 10px;
-  font-weight: 650;
+  min-height: 40px;
+  border-radius: var(--radius-md);
+  font-weight: 600;
 }
 
 .auth-recovery-result.is-success > .anticon {
-  color: #16a34a;
+  color: var(--color-success);
   font-size: 48px;
 }
 
@@ -89,7 +91,7 @@
 
 .auth-recovery-result small,
 .auth-recovery-footnote {
-  color: #64748b;
+  color: var(--color-muted);
   font-size: 12px;
   line-height: 1.65;
 }
@@ -102,18 +104,25 @@
 @media (max-width: 480px) {
   .auth-recovery-page {
     align-items: stretch;
-    padding: 0;
-    background: #ffffff;
+    min-height: 100dvh;
+    padding: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom));
+    background: var(--color-surface);
   }
 
   .auth-recovery-card {
     width: 100%;
     border: 0;
+    border-radius: 0;
     box-shadow: none;
   }
 
   .auth-recovery-card .ant-card-body {
-    padding: 24px 20px;
+    padding: var(--space-4) var(--space-3);
+  }
+
+  .auth-recovery-card h1 {
+    margin-bottom: var(--space-3);
+    font-size: 18px;
   }
 
   .auth-recovery-sms-actions {
@@ -124,5 +133,11 @@
   .auth-recovery-sms-actions .ant-btn {
     width: 100%;
     padding-inline: 10px;
+  }
+}
+
+@media (max-width: 340px) {
+  .auth-recovery-sms-actions {
+    grid-template-columns: 1fr;
   }
 }

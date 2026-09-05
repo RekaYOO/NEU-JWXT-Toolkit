@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useCallback, useRef, useState, useEffect } from 'react';
 import { Layout, Menu, Button, Avatar, Drawer, Dropdown, Grid, Tooltip, message, Modal } from 'antd';
 import { Outlet, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import {
@@ -44,23 +44,39 @@ const MainLayout = ({
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [serviceStopped, setServiceStopped] = useState(false);
   const avatarGeneration = useRef(0);
+  const avatarSnapshot = useRef({ identity: '', revision: '', token: '' });
   const navigate = useNavigate();
   const location = useLocation();
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
   const menuItems = visibleMenuItems({ offlineMode, offlineCapabilities });
 
+  const showAvatar = useCallback((identity, candidate) => {
+    const blob = candidate?.blob;
+    if (!blob || blob.size <= 0) return false;
+    const next = {
+      identity: String(identity || ''),
+      revision: String(candidate?.revision || ''),
+      token: String(candidate?.token || ''),
+    };
+    const previous = avatarSnapshot.current;
+    const sameStableSnapshot = next.identity === previous.identity && (
+      (next.revision && next.revision === previous.revision)
+      || (!next.revision && next.token && next.token === previous.token)
+    );
+    if (sameStableSnapshot) return false;
+    avatarSnapshot.current = next;
+    setAvatarUrl(previousUrl => {
+      if (previousUrl?.startsWith('blob:')) URL.revokeObjectURL(previousUrl);
+      return URL.createObjectURL(blob);
+    });
+    return true;
+  }, []);
+
   // 首屏先读浏览器头像，再读取服务器 cache-only 快照；过期刷新由统一协调器处理。
   useEffect(() => {
     const generation = ++avatarGeneration.current;
     let active = true;
-    const show = blob => {
-      if (!blob || blob.size <= 0) return;
-      setAvatarUrl(previous => {
-        if (previous && previous.startsWith('blob:')) URL.revokeObjectURL(previous);
-        return URL.createObjectURL(blob);
-      });
-    };
     const reloadAfterRefresh = async refresh => {
       const jobId = refresh?.job_id || refresh?.id;
       if (refresh?.status === 'fresh') return getUserAvatarCache();
@@ -82,7 +98,9 @@ const MainLayout = ({
       const identity = String(userInfo || '');
       try {
         const browser = await readBrowserAvatarCache(identity);
-        if (active && generation === avatarGeneration.current && browser?.blob) show(browser.blob);
+        if (active && generation === avatarGeneration.current && browser?.blob) {
+          showAvatar(identity, browser);
+        }
       } catch (_error) {
         // IndexedDB is optional; continue to the server cache.
       }
@@ -96,7 +114,7 @@ const MainLayout = ({
       }
       if (!active || generation !== avatarGeneration.current) return;
       if (cached?.blob) {
-        show(cached.blob);
+        showAvatar(identity, cached);
         await writeBrowserAvatarCache(identity, cached);
       }
 
@@ -109,7 +127,7 @@ const MainLayout = ({
             && generation === avatarGeneration.current
             && refreshed?.blob
           ) {
-            show(refreshed.blob);
+            showAvatar(identity, refreshed);
             await writeBrowserAvatarCache(identity, refreshed);
           }
         } catch (_error) {
@@ -121,10 +139,9 @@ const MainLayout = ({
     const unsubscribe = userInfo && !offlineMode
       ? subscribeBrowserAvatarCache(String(userInfo), async () => {
         try {
-          const cached = await getUserAvatarCache();
+          const cached = await readBrowserAvatarCache(String(userInfo));
           if (active && generation === avatarGeneration.current && cached?.blob) {
-            show(cached.blob);
-            await writeBrowserAvatarCache(String(userInfo), cached);
+            showAvatar(String(userInfo), cached);
           }
         } catch (_error) { /* retain the last good avatar */ }
       })
@@ -133,7 +150,7 @@ const MainLayout = ({
       active = false;
       unsubscribe();
     };
-  }, [userInfo, offlineMode]);
+  }, [userInfo, offlineMode, showAvatar]);
 
   useEffect(() => () => {
     if (avatarUrl && avatarUrl.startsWith('blob:')) {
@@ -146,14 +163,18 @@ const MainLayout = ({
     const onCacheEvent = async (event) => {
       const update = event.detail || {};
       if (update.resource !== 'avatar' || update.changed !== true) return;
+      const identity = String(userInfo || '');
+      const revision = String(update.revision || '');
+      if (
+        revision
+        && avatarSnapshot.current.identity === identity
+        && avatarSnapshot.current.revision === revision
+      ) return;
       try {
         const cached = await getUserAvatarCache();
         if (cached?.blob) {
-          setAvatarUrl(previous => {
-            if (previous && previous.startsWith('blob:')) URL.revokeObjectURL(previous);
-            return URL.createObjectURL(cached.blob);
-          });
-          await writeBrowserAvatarCache(String(userInfo || ''), cached);
+          showAvatar(identity, cached);
+          await writeBrowserAvatarCache(identity, cached);
         }
       } catch (error) {
         // SWR keeps the previous avatar when a background refresh fails.
@@ -161,7 +182,7 @@ const MainLayout = ({
     };
     window.addEventListener('neu-cache-event', onCacheEvent);
     return () => window.removeEventListener('neu-cache-event', onCacheEvent);
-  }, [offlineMode, userInfo]);
+  }, [offlineMode, userInfo, showAvatar]);
 
   // 刷新头像（点击头像时调用）
   const refreshAvatar = async () => {
@@ -171,12 +192,10 @@ const MainLayout = ({
     try {
       const avatarBlob = await getUserAvatar(true);
       if (avatarBlob && avatarBlob.size > 0) {
-        // 释放旧的 blob URL
-        if (avatarUrl && avatarUrl.startsWith('blob:')) {
-          URL.revokeObjectURL(avatarUrl);
-        }
-        const url = URL.createObjectURL(avatarBlob);
-        setAvatarUrl(url);
+        showAvatar(String(userInfo || ''), {
+          blob: avatarBlob,
+          revision: `manual:${Date.now()}`,
+        });
         try {
           const cached = await getUserAvatarCache();
           if (cached?.blob) await writeBrowserAvatarCache(String(userInfo || ''), cached);

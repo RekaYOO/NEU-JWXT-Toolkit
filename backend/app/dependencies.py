@@ -98,6 +98,24 @@ def remote_session_guard(
 
 
 @contextmanager
+def remote_read_session_guard(
+    *,
+    priority: str = "foreground",
+    label: str = "remote-read-route",
+):
+    """Allow bounded parallel reads while authentication and writes stay exclusive."""
+    with _auth_sessions.remote_read_guard(priority=priority, label=label) as timing:
+        yield timing
+
+
+@contextmanager
+def cache_remote_session_guard():
+    """Serialize cache refreshes while visible reads use bounded concurrency."""
+    with remote_session_guard(priority="background", label="cache-refresh") as timing:
+        yield timing
+
+
+@contextmanager
 def background_remote_session_guard():
     """Give scheduled/cache work lower priority than visible user actions."""
     with remote_session_guard(priority="background", label="background-service") as timing:
@@ -1332,8 +1350,28 @@ def require_auth() -> NEUAuthClient:
 
 
 def require_serialized_auth():
-    """Hold exclusive access to the shared requests.Session for a remote route."""
-    with remote_session_guard():
+    """Use a bounded read slot without serializing unrelated remote reads."""
+    client = peek_auth_client()
+    if client is None or not getattr(client, "is_logged_in", False):
+        client = get_auth_client()
+    if client is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="未登录或登录已过期")
+    with remote_read_session_guard():
+        if peek_auth_client() is not client or not getattr(client, "is_logged_in", False):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=401, detail="未登录或登录已过期")
+        yield client
+
+
+def require_exclusive_remote_auth():
+    """Acquire the exclusive remote slot for service-session operations.
+
+    Some otherwise read-like endpoints establish or refresh a child service
+    session (for example JWXK).  They must not nest an exclusive guard inside
+    the shared read dependency, which would wait on itself indefinitely.
+    """
+    with remote_session_guard(priority="foreground", label="remote-service-route"):
         client = _get_auth_client_unlocked()
         if client is None:
             from fastapi import HTTPException

@@ -15,6 +15,7 @@ from backend.app.cache_support import read_cache
 from backend.app.dependencies import (
     _cache_coordinator,
     get_auth_generation,
+    require_exclusive_remote_auth,
     require_cached_auth_identity,
     require_serialized_auth,
 )
@@ -200,7 +201,7 @@ def _archive_scope_label(start_date, end_date) -> str:
 @router.post("/export/festival-activities/certificates/archive")
 def download_certificate_archive(
     request: CertificateArchiveRequest,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_exclusive_remote_auth),
 ):
     _username(auth)
     try:

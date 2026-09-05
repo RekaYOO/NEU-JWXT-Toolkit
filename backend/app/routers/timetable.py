@@ -9,6 +9,7 @@ from backend.app.dependencies import (
     get_auth_generation,
     get_cache_coordinator,
     remote_session_guard,
+    remote_read_session_guard,
     require_cached_auth_identity,
     require_serialized_auth,
 )
@@ -167,7 +168,7 @@ def _terms_for_auth(auth: NEUAuthClient):
         return terms
     generation = get_auth_generation()
     account = str(auth.username)
-    with remote_session_guard():
+    with remote_read_session_guard(priority="foreground", label="timetable-terms"):
         if not auth_generation_is_current(generation, account):
             raise _authentication_failure()
         terms = auth.timetable.get_cached_terms()

@@ -47,7 +47,7 @@ from backend.app.schemas.course_selection import (
 )
 from backend.app.dependencies import (
     attach_saved_auth_credentials, get_primary_network_mode_hint, get_storage, peek_auth_client, remote_session_guard, require_cached_auth_identity,
-    require_mutation_auth, require_serialized_auth,
+    require_exclusive_remote_auth, require_mutation_auth, require_serialized_auth,
     get_cache_coordinator,
     get_course_selection_automation_service,
     get_system_mail_service,
@@ -1079,7 +1079,7 @@ def save_jwxk_plan(
 @router.post("/jwxk/automation/tasks")
 def create_jwxk_automation_task(
     request: JwxkAutomationTaskRequest,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_exclusive_remote_auth),
     storage: Storage = Depends(get_storage),
 ):
     archive = next((item for item in (
@@ -1171,7 +1171,7 @@ def action_jwxk_automation_task(
 def get_jwxk_weight_budget(
     request: JwxkBatchRequest,
     response: Response,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_exclusive_remote_auth),
     storage: Storage = Depends(get_storage),
 ):
     response.headers["Cache-Control"] = "no-store"
@@ -1292,7 +1292,7 @@ def _weight_conflicts(targets: list[dict], term_code: str) -> list[tuple[str, st
 def plan_jwxk_weights(
     request: JwxkWeightPlanRequest,
     response: Response,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_exclusive_remote_auth),
     storage: Storage = Depends(get_storage),
 ):
     response.headers["Cache-Control"] = "no-store"

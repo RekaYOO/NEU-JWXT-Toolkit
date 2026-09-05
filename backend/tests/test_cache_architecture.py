@@ -212,6 +212,10 @@ def test_remote_routes_use_the_shared_session_dependency():
     assert research.count("Depends(require_serialized_auth)") >= 5
     auth = (routers / "auth.py").read_text(encoding="utf-8")
     assert "with remote_session_guard():" in auth
+    course_selection = (routers / "course_selection.py").read_text(encoding="utf-8")
+    # JWXK service-session endpoints must not nest an exclusive guard inside
+    # the shared-read dependency, otherwise a request waits on itself.
+    assert "Depends(require_exclusive_remote_auth)" in course_selection
 
 
 def test_remote_mutations_declare_no_retry_and_consistency_action():

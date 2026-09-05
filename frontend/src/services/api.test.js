@@ -150,6 +150,24 @@ describe('client bootstrap and request coalescing', () => {
     await expect(second).resolves.toEqual({ tasks: [] });
     expect(client.get).toHaveBeenCalledTimes(1);
   });
+
+  test('coalesces simultaneous reads of the server avatar cache', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    let resolve;
+    client.get.mockReturnValue(new Promise(done => { resolve = done; }));
+
+    const first = apiModule.getUserAvatarCache();
+    const second = apiModule.getUserAvatarCache();
+    resolve({
+      status: 200,
+      data: new Blob(['avatar'], { type: 'image/png' }),
+      headers: { etag: '"avatar-revision"' },
+    });
+
+    await expect(first).resolves.toMatchObject({ revision: 'avatar-revision' });
+    await expect(second).resolves.toMatchObject({ revision: 'avatar-revision' });
+    expect(client.get).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('Evaluation API term discovery', () => {

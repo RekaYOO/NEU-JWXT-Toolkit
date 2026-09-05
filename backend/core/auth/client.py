@@ -17,6 +17,7 @@ import json
 import os
 import random
 import re
+import threading
 import time
 import logging
 import uuid
@@ -31,6 +32,7 @@ from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
 
 from backend.core.network import WEBVPN_ENTRY_URL, WEBVPN_ORIGIN, WebVPNUrlCodec
+from backend.core.auth.session_manager import is_remote_read_context, remote_read_bypass
 
 logger = logging.getLogger(__name__)
 
@@ -426,6 +428,13 @@ class NEUAuthClient:
 
         self._session = requests.Session()
         self._session.headers.update(DEFAULT_HEADERS)
+        # Protect the primary cookie jar while isolated shared-read sessions
+        # snapshot/merge state and while auth/mutation code updates cookies.
+        self._session_state_lock = threading.RLock()
+        # Read requests may run concurrently, but an expired session must only
+        # start one CAS/WebVPN recovery chain at a time.
+        self._auth_operation_lock = threading.RLock()
+        self._auth_recovery_generation = 0
         self._logged_in = False
         self._academic = None
         self._academic_report = None  # 学业监测报告 API
@@ -1650,7 +1659,10 @@ class NEUAuthClient:
         """
         # 确保已登录
         if not self._logged_in:
-            if not self.ensure_login():
+            with self._auth_operation_lock:
+                with remote_read_bypass():
+                    recovered = self._logged_in or self.ensure_login()
+            if not recovered:
                 if self.active_mode == "webvpn":
                     raise WebVPNRequiredError("WebVPN 会话无效，请重新扫码登录")
                 raise NEULoginError("未登录或登录已过期")
@@ -1659,6 +1671,7 @@ class NEUAuthClient:
         if "timeout" not in kwargs:
             kwargs["timeout"] = self.timeout
         
+        recovery_generation = self._auth_recovery_generation
         # 发送请求（含协议回退）
         resp = self._session_request(method, url, **kwargs)
         
@@ -1684,8 +1697,21 @@ class NEUAuthClient:
         
         if _redirected_to_cas:
             logger.info("检测到票据失效（重定向到认证页），重新登录...")
-            self._logged_in = False
-            if not self.ensure_login():
+            with self._auth_operation_lock:
+                # Another concurrent read may already have repaired the same
+                # client while this response was in flight.
+                if (
+                    self._logged_in
+                    and self._auth_recovery_generation != recovery_generation
+                ):
+                    recovered = True
+                else:
+                    self._logged_in = False
+                    with remote_read_bypass():
+                        recovered = self.ensure_login()
+                    if recovered:
+                        self._auth_recovery_generation += 1
+            if not recovered:
                 if self.active_mode == "webvpn":
                     raise WebVPNRequiredError("WebVPN 会话已过期，请重新扫码登录")
                 raise NEULoginError("统一认证会话已过期")
@@ -1755,7 +1781,8 @@ class NEUAuthClient:
                 request_path=normalized_path,
             ))
         if not self._logged_in and not usable_service_token:
-            recovered = self.ensure_login()
+            with remote_read_bypass():
+                recovered = self.ensure_login()
             if (
                 not recovered
                 and network_mode == "direct"
@@ -2797,6 +2824,73 @@ class NEUAuthClient:
                     return key
         return None
 
+    @staticmethod
+    def _cookie_key(cookie) -> tuple[str, str, str]:
+        return (
+            str(getattr(cookie, "name", "") or ""),
+            str(getattr(cookie, "domain", "") or ""),
+            str(getattr(cookie, "path", "") or "/"),
+        )
+
+    def _isolated_read_session(self) -> tuple[requests.Session, dict[tuple[str, str, str], str | None]]:
+        """Create a per-request Session snapshot for shared read traffic.
+
+        ``requests.Session`` is not documented as thread-safe: its cookie jar,
+        headers and redirect state are mutable.  A shallow copy of the
+        connection adapters retains urllib3 pooling, while the cookie jar is
+        copied so concurrent reads cannot overwrite one another.  Response
+        cookies are merged back conditionally after the request.
+        """
+        source = self._session
+        isolated = requests.Session()
+        isolated.headers.update(dict(source.headers))
+        isolated.params = dict(source.params)
+        isolated.auth = source.auth
+        isolated.proxies = dict(source.proxies)
+        isolated.hooks = {name: list(values) for name, values in source.hooks.items()}
+        isolated.verify = source.verify
+        isolated.cert = source.cert
+        isolated.trust_env = source.trust_env
+        isolated.max_redirects = source.max_redirects
+        # HTTPAdapter/PoolManager are designed for concurrent sends; sharing
+        # the adapter preserves connection reuse without sharing Session state.
+        isolated.adapters = dict(source.adapters)
+        with self._session_state_lock:
+            isolated.cookies = source.cookies.copy()
+            snapshot = {
+                self._cookie_key(cookie): str(cookie.value)
+                for cookie in source.cookies
+            }
+        return isolated, snapshot
+
+    def _merge_isolated_read_cookies(
+        self,
+        isolated: requests.Session,
+        snapshot: dict[tuple[str, str, str], str | None],
+    ) -> None:
+        """Merge only cookie changes that are not stale relative to a snapshot."""
+        with self._session_state_lock:
+            current = {
+                self._cookie_key(cookie): str(cookie.value)
+                for cookie in self._session.cookies
+            }
+            for cookie in isolated.cookies:
+                key = self._cookie_key(cookie)
+                # A concurrent authentication/mutation may have replaced this
+                # cookie.  Never let an older read response roll it back.
+                if current.get(key) != snapshot.get(key):
+                    continue
+                self._session.cookies.set_cookie(cookie)
+
+    def _request_on_session(
+        self,
+        session: requests.Session,
+        method: str,
+        url: str,
+        **kwargs,
+    ) -> requests.Response:
+        return session.request(method, url, **kwargs)
+
     def _session_request(self, method: str, url: str, **kwargs) -> requests.Response:
         """
         发送 HTTP 请求，对 jwxt.neu.edu.cn 自动进行协议回退
@@ -2828,9 +2922,18 @@ class NEUAuthClient:
             if current_scheme != self._protocol_override:
                 url = self._protocol_override + url[len(current_scheme):]
         
+        isolated: requests.Session | None = None
+        cookie_snapshot: dict[tuple[str, str, str], str | None] = {}
+        request_session = self._session
+        if is_remote_read_context():
+            isolated, cookie_snapshot = self._isolated_read_session()
+            request_session = isolated
+
         try:
-            response = self._session.request(method, url, **kwargs)
+            response = self._request_on_session(request_session, method, url, **kwargs)
             self._raise_if_webvpn_campus_block(response)
+            if isolated is not None:
+                self._merge_isolated_read_cookies(isolated, cookie_snapshot)
             return response
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError,
                 requests.exceptions.Timeout, requests.exceptions.TooManyRedirects) as e:
@@ -2846,8 +2949,10 @@ class NEUAuthClient:
                 urlparse(url).scheme,
                 urlparse(alt_url).scheme,
             )
-            resp = self._session.request(method, alt_url, **kwargs)
+            resp = self._request_on_session(request_session, method, alt_url, **kwargs)
             self._raise_if_webvpn_campus_block(resp)
+            if isolated is not None:
+                self._merge_isolated_read_cookies(isolated, cookie_snapshot)
             # 记住可用协议，后续请求直接使用
             self._protocol_override = "https://" if alt_url.startswith("https://") else "http://"
             logger.info(f"协议回退成功，后续请求将使用 {self._protocol_override}")

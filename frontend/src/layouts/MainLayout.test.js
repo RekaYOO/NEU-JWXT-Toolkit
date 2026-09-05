@@ -10,6 +10,11 @@ import {
   waitForCacheRefreshJob,
   logout,
 } from '../services/api';
+import {
+  readBrowserAvatarCache,
+  subscribeBrowserAvatarCache,
+  writeBrowserAvatarCache,
+} from '../resources/BrowserTimetableStore';
 
 jest.mock('../services/api', () => ({
   getUserAvatar: jest.fn().mockResolvedValue(null),
@@ -18,6 +23,12 @@ jest.mock('../services/api', () => ({
   logout: jest.fn().mockResolvedValue({ success: true }),
   shutdownRuntime: jest.fn().mockResolvedValue({ success: true }),
   waitForCacheRefreshJob: jest.fn(),
+}));
+
+jest.mock('../resources/BrowserTimetableStore', () => ({
+  readBrowserAvatarCache: jest.fn().mockResolvedValue(null),
+  subscribeBrowserAvatarCache: jest.fn(() => () => {}),
+  writeBrowserAvatarCache: jest.fn().mockResolvedValue(true),
 }));
 
 const renderLayout = async (runtimeProfile) => {
@@ -78,6 +89,14 @@ describe('MainLayout desktop lifecycle controls', () => {
     requestCacheRefresh.mockReset();
     requestCacheRefresh.mockResolvedValue({});
     waitForCacheRefreshJob.mockReset();
+    readBrowserAvatarCache.mockReset();
+    readBrowserAvatarCache.mockResolvedValue(null);
+    subscribeBrowserAvatarCache.mockReset();
+    subscribeBrowserAvatarCache.mockImplementation(() => () => {});
+    writeBrowserAvatarCache.mockReset();
+    writeBrowserAvatarCache.mockResolvedValue(true);
+    URL.createObjectURL = jest.fn(() => 'blob:test-avatar');
+    URL.revokeObjectURL = jest.fn();
     window.matchMedia = jest.fn().mockImplementation((query) => ({
       matches: true,
       media: query,
@@ -133,6 +152,40 @@ describe('MainLayout desktop lifecycle controls', () => {
       timeoutMs: 30000,
     });
     expect(getUserAvatarCache).toHaveBeenCalledTimes(2);
+    await page.unmount();
+  });
+
+  test('does not reread the server for its own browser write or an already displayed revision', async () => {
+    const cached = {
+      blob: new Blob(['avatar'], { type: 'image/png' }),
+      revision: 'avatar-revision',
+      token: 'avatar-token',
+      stale: false,
+    };
+    let browserUpdate;
+    subscribeBrowserAvatarCache.mockImplementation((_identity, callback) => {
+      browserUpdate = callback;
+      return () => {};
+    });
+    getUserAvatarCache.mockResolvedValue(cached);
+
+    const page = await renderLayout('development');
+    await act(async () => {
+      for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    });
+    expect(getUserAvatarCache).toHaveBeenCalledTimes(1);
+
+    readBrowserAvatarCache.mockResolvedValue(cached);
+    await act(async () => browserUpdate());
+    expect(getUserAvatarCache).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('neu-cache-event', {
+        detail: { resource: 'avatar', changed: true, revision: 'avatar-revision' },
+      }));
+      await Promise.resolve();
+    });
+    expect(getUserAvatarCache).toHaveBeenCalledTimes(1);
     await page.unmount();
   });
 

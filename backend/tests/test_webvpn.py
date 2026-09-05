@@ -2,6 +2,7 @@ import unittest
 
 import requests
 from unittest.mock import Mock
+from requests.cookies import create_cookie
 
 from backend.core.auth.client import (
     NEUAuthClient,
@@ -9,6 +10,7 @@ from backend.core.auth.client import (
     WebVPNLoginError,
 )
 from backend.core.network.webvpn import WebVPNUrlCodec
+from backend.core.auth.session_manager import AuthSessionManager, is_remote_read_context
 
 
 class WebVPNUrlCodecTests(unittest.TestCase):
@@ -58,6 +60,28 @@ class WebVPNUrlCodecTests(unittest.TestCase):
             client._session_request("GET", "https://webvpn.neu.edu.cn/")
         self.assertEqual(caught.exception.error_code, WEBVPN_ERR_CAMPUS_NETWORK)
         session.request.assert_called_once()
+
+    def test_shared_read_uses_isolated_cookie_snapshot_and_does_not_roll_back_auth(self):
+        client = NEUAuthClient(restore_session=False)
+        client._session.cookies.set_cookie(
+            create_cookie(name="SESSION", value="new", domain="jwxt.neu.edu.cn", path="/")
+        )
+        isolated, snapshot = client._isolated_read_session()
+        self.assertEqual(isolated.cookies.get("SESSION"), "new")
+
+        # Authentication/mutation advances the primary cookie while the read
+        # is in flight.  The stale read response must not overwrite it.
+        client._session.cookies.set("SESSION", "newer", domain="jwxt.neu.edu.cn", path="/")
+        isolated.cookies.set("SESSION", "stale", domain="jwxt.neu.edu.cn", path="/")
+        client._merge_isolated_read_cookies(isolated, snapshot)
+        self.assertEqual(client._session.cookies.get("SESSION"), "newer")
+
+    def test_shared_read_context_is_reported_only_inside_read_guard(self):
+        manager = AuthSessionManager()
+        self.assertFalse(is_remote_read_context())
+        with manager.remote_read_guard():
+            self.assertTrue(is_remote_read_context())
+        self.assertFalse(is_remote_read_context())
     def test_converts_jwxt_url_like_browser_extension(self):
         self.assertEqual(
             WebVPNUrlCodec.convert_url(

@@ -1060,7 +1060,7 @@ export const getTimetableTerms = async () => {
 };
 
 /** Read the server avatar cache only; never waits for an official refresh. */
-export const getUserAvatarCache = async () => {
+export const getUserAvatarCache = async () => singleFlight('avatar-cache', async () => {
   const bootstrap = takeBootstrapResource('avatar');
   if (bootstrap?.image_base64) {
     const binary = window.atob(bootstrap.image_base64);
@@ -1101,7 +1101,7 @@ export const getUserAvatarCache = async () => {
     saved_at: header('x-cache-saved-at'),
     last_checked_at: header('x-cache-last-checked-at'),
   };
-};
+});
 
 export const getTimetableContext = async (data) => {
   const response = await api.post('/api/timetable/context', data);

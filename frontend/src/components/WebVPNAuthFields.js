@@ -29,18 +29,25 @@ const WebVPNAuthFields = ({
       </span>
       <div>
         <strong>完成短信二次认证</strong>
-        <p>先填写图片中的图形验证码，再获取短信验证码。</p>
+        <p>填写图片内容并获取短信，随后输入短信验证码。</p>
       </div>
     </div>
 
-    {error && <Alert type="warning" showIcon message={error} />}
+    {error && (
+      <div aria-live="polite">
+        <Alert type="warning" showIcon message={error} />
+      </div>
+    )}
 
     <section className="sms-auth-section">
       <div className="sms-auth-section-heading">
         <span>1</span>
-        <strong>图形验证码</strong>
+        <div>
+          <strong>填写图形验证码</strong>
+          <small>看不清时可以刷新图片</small>
+        </div>
       </div>
-      <div className="captcha-auth-row">
+      <div className="captcha-auth-grid">
         <div className="captcha-auth-image-shell">
           {flow?.captcha_image ? (
             <img src={flow.captcha_image} alt="图形验证码" className="captcha-auth-image" />
@@ -49,28 +56,37 @@ const WebVPNAuthFields = ({
           )}
         </div>
         <Button
+          className="captcha-auth-refresh"
           icon={<ReloadOutlined />}
           loading={captchaLoading}
           onClick={onRefreshCaptcha}
+          aria-label="刷新图形验证码"
         >
           刷新图片
         </Button>
+        <Input
+          className="captcha-auth-input"
+          size="large"
+          value={captchaCode}
+          onChange={(event) => setCaptchaCode(event.target.value.replace(/[^0-9A-Za-z]/g, ''))}
+          placeholder="请输入图片中的图形验证码"
+          aria-label="图形验证码"
+          inputMode="text"
+          autoComplete="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          maxLength={16}
+        />
       </div>
-      <Input
-        size="large"
-        value={captchaCode}
-        onChange={(event) => setCaptchaCode(event.target.value.replace(/[^0-9A-Za-z]/g, ''))}
-        placeholder="请输入图片中的图形验证码"
-        inputMode="text"
-        autoComplete="off"
-        maxLength={16}
-      />
     </section>
 
     <section className="sms-auth-section">
       <div className="sms-auth-section-heading">
         <span>2</span>
-        <strong>短信验证码</strong>
+        <div>
+          <strong>填写短信验证码</strong>
+          <small>{smsSent ? '短信已发送，可在未收到时重新发送' : '学校将在你确认后发送短信'}</small>
+        </div>
       </div>
       <div className="sms-auth-code-row">
         <Input
@@ -78,6 +94,7 @@ const WebVPNAuthFields = ({
           value={smsCode}
           onChange={(event) => setSmsCode(event.target.value.replace(/[^0-9]/g, ''))}
           placeholder="请输入短信验证码"
+          aria-label="短信验证码"
           inputMode="numeric"
           autoComplete="one-time-code"
           maxLength={8}
@@ -96,8 +113,7 @@ const WebVPNAuthFields = ({
     </section>
 
     <p className="sms-auth-note">
-      图形验证码需手动填写；只有点击“获取验证码”后，学校才会发送短信。
-      未收到短信时可再次点击“重新发送”，学校可能会限制短时间内的发送频率。
+      只有点击“获取验证码”后才会发送短信；短时间频繁发送可能受到学校限制。
     </p>
   </div>
 );

@@ -11,6 +11,7 @@ const DB_NAME = 'neu-toolbox-browser-cache';
 const DB_VERSION = 1;
 const STORE_NAME = 'timetable';
 const CHANNEL_NAME = 'neu-toolbox-timetable-cache';
+const CHANNEL_SOURCE_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const ENVELOPE_VERSION = 1;
 const RECOVERY_NAMESPACE_KEY = 'neu-toolbox-timetable-recovery-namespace';
 const RECOVERY_NAMESPACE_PREFIX = '__browser_namespace__:';
@@ -124,7 +125,13 @@ const postUpdate = (namespace, termCode = '', resource = 'timetable') => {
   if (typeof window === 'undefined' || typeof window.BroadcastChannel === 'undefined') return;
   try {
     const channel = new window.BroadcastChannel(CHANNEL_NAME);
-    channel.postMessage({ namespace, termCode, resource, at: Date.now() });
+    channel.postMessage({
+      namespace,
+      termCode,
+      resource,
+      source: CHANNEL_SOURCE_ID,
+      at: Date.now(),
+    });
     channel.close();
   } catch (_error) { /* BroadcastChannel is advisory */ }
 };
@@ -136,7 +143,11 @@ const browserChannel = (identity, resource, callback) => {
   try {
     channel = new window.BroadcastChannel(CHANNEL_NAME);
     channel.onmessage = event => {
-      if (event.data?.namespace === namespace && event.data?.resource === resource) callback(event.data);
+      if (
+        event.data?.source !== CHANNEL_SOURCE_ID
+        && event.data?.namespace === namespace
+        && event.data?.resource === resource
+      ) callback(event.data);
     };
   } catch (_error) {
     return () => {};

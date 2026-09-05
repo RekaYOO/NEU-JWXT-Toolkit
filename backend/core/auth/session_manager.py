@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from contextvars import ContextVar
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
@@ -23,6 +24,37 @@ _REMOTE_PRIORITIES = {
 
 _AUTH_RECOVERY_BASE_DELAY_SECONDS = 30.0
 _AUTH_RECOVERY_MAX_DELAY_SECONDS = 300.0
+_MAX_PARALLEL_REMOTE_READS = 4
+
+# A request that is inside a shared remote-read slot may use a private
+# requests.Session snapshot.  This keeps network I/O concurrent without
+# allowing requests' mutable cookie jar to be touched by multiple threads.
+_REMOTE_READ_CONTEXT: ContextVar[bool] = ContextVar(
+    "neu_remote_read_context", default=False,
+)
+_REMOTE_READ_BYPASS: ContextVar[bool] = ContextVar(
+    "neu_remote_read_bypass", default=False,
+)
+
+
+def is_remote_read_context() -> bool:
+    """Return whether the current call may use an isolated read session."""
+    return _REMOTE_READ_CONTEXT.get() and not _REMOTE_READ_BYPASS.get()
+
+
+@contextmanager
+def remote_read_bypass() -> Iterator[None]:
+    """Temporarily use the primary Session for authentication/mutations.
+
+    A shared read can discover an expired ticket.  The recovery chain must
+    use the primary Session and is protected by NEUAuthClient's auth lock;
+    only the original read request is isolated.
+    """
+    token = _REMOTE_READ_BYPASS.set(True)
+    try:
+        yield
+    finally:
+        _REMOTE_READ_BYPASS.reset(token)
 
 
 class AuthSessionManager:
@@ -35,6 +67,7 @@ class AuthSessionManager:
         self._state_lock = threading.RLock()
         self._remote_condition = threading.Condition(threading.Lock())
         self._remote_active = False
+        self._remote_readers = 0
         self._remote_ticket = 0
         self._remote_waiting: dict[str, list[int]] = {
             priority: [] for priority in _REMOTE_PRIORITIES
@@ -53,8 +86,9 @@ class AuthSessionManager:
         priority: str = "foreground",
         label: str = "remote-operation",
         on_queued: Callable[[], None] | None = None,
+        shared: bool = False,
     ) -> Iterator[dict[str, float | str]]:
-        """Serialize the shared Session while letting user writes skip queued reads.
+        """Coordinate exclusive operations and bounded shared remote reads.
 
         The active request is never interrupted.  Once it releases the Session,
         mutations win over foreground reads, which win over background scans.
@@ -83,10 +117,13 @@ class AuthSessionManager:
                 self._remote_condition.notify_all()
             raise
         with self._remote_condition:
-            while self._remote_active or not self._remote_turn(priority, ticket):
+            while not self._remote_capacity_available(shared) or not self._remote_turn(priority, ticket):
                 self._remote_condition.wait()
             self._remote_waiting[priority].pop(0)
-            self._remote_active = True
+            if shared:
+                self._remote_readers += 1
+            else:
+                self._remote_active = True
             if priority in {"foreground_auth", "foreground"}:
                 self._remote_foreground_streak += 1
             else:
@@ -95,6 +132,8 @@ class AuthSessionManager:
                 self._remote_background_streak += 1
             elif priority == "tracking":
                 self._remote_background_streak = 0
+            # Let the following queued readers fill the bounded read window.
+            self._remote_condition.notify_all()
         wait_ms = round((time.monotonic() - started) * 1000, 1)
         observe_performance(f"remote-queue:{priority}", wait_ms)
         if wait_ms >= 250:
@@ -104,15 +143,41 @@ class AuthSessionManager:
             )
         acquired_at = time.monotonic()
         try:
-            yield {"priority": priority, "label": label, "queue_wait_ms": wait_ms}
+            if shared:
+                token = _REMOTE_READ_CONTEXT.set(True)
+                try:
+                    yield {"priority": priority, "label": label, "queue_wait_ms": wait_ms}
+                finally:
+                    _REMOTE_READ_CONTEXT.reset(token)
+            else:
+                yield {"priority": priority, "label": label, "queue_wait_ms": wait_ms}
         finally:
             observe_performance(
                 f"remote-hold:{priority}",
                 (time.monotonic() - acquired_at) * 1000,
             )
             with self._remote_condition:
-                self._remote_active = False
+                if shared:
+                    self._remote_readers = max(0, self._remote_readers - 1)
+                else:
+                    self._remote_active = False
                 self._remote_condition.notify_all()
+
+    @contextmanager
+    def remote_read_guard(
+        self,
+        *,
+        priority: str = "foreground",
+        label: str = "remote-read",
+    ) -> Iterator[dict[str, float | str]]:
+        """Allow a bounded number of authenticated reads to share the Session."""
+        with self.remote_guard(priority=priority, label=label, shared=True) as timing:
+            yield timing
+
+    def _remote_capacity_available(self, shared: bool) -> bool:
+        if shared:
+            return not self._remote_active and self._remote_readers < _MAX_PARALLEL_REMOTE_READS
+        return not self._remote_active and self._remote_readers == 0
 
     def _remote_turn(self, priority: str, ticket: int) -> bool:
         queue = self._remote_waiting[priority]
