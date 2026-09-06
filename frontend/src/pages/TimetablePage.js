@@ -1084,7 +1084,7 @@ export const mobileCourseSummary = (
       startTime: upcoming.start_time,
     };
   }
-  const tomorrow = today === 6 ? 7 : today + 1;
+  const tomorrow = today === 7 ? 1 : today + 1;
   let tomorrowWeek = currentWeekNumber;
   if (today === 6) {
     const orderedWeeks = (weeks || [])

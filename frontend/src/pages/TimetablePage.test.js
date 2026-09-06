@@ -904,6 +904,62 @@ describe('TimetablePage helpers', () => {
     })).toEqual(expect.objectContaining({ kind: 'complete', label: '今明两天课程结束' }));
   });
 
+  test('shows Monday classes on a class-free Sunday without advancing the teaching week', () => {
+    const weeks = [
+      { number: 1, start_date: '2026-08-30', end_date: '2026-09-05' },
+      { number: 2, start_date: '2026-09-06', end_date: '2026-09-12' },
+    ];
+    const now = new Date('2026-09-06T20:00:00');
+    const courses = [
+      { course_name: '明日晚课', weekday: 1, weeks: [2], start_time: '16:30', end_time: '18:00' },
+      { course_name: '上周课程', weekday: 1, weeks: [1], start_time: '07:00', end_time: '08:00' },
+      { course_name: '明日早课', weekday: 1, weeks: [2], start_time: '08:30', end_time: '10:00' },
+    ];
+    expect(mobileCourseSummary(courses, {
+      now,
+      currentTerm: true,
+      currentWeekNumber: selectDefaultWeek(weeks, { now }),
+      weeks,
+    })).toEqual(expect.objectContaining({
+      kind: 'tomorrow',
+      label: '明日',
+      startTime: '08:30',
+      course: expect.objectContaining({ course_name: '明日早课' }),
+    }));
+  });
+
+  test.each([
+    ['2026-09-06', 1, 2],
+    ['2026-09-07', 2, 2],
+    ['2026-09-08', 3, 2],
+    ['2026-09-09', 4, 2],
+    ['2026-09-10', 5, 2],
+    ['2026-09-11', 6, 2],
+    ['2026-09-12', 7, 3],
+  ])('finds the next calendar day from %s with the correct teaching week', (date, weekday, week) => {
+    const course = {
+      course_name: '明日课程', weekday, weeks: [week], start_time: '08:30', end_time: '10:00',
+    };
+    expect(mobileCourseSummary([course], {
+      now: new Date(`${date}T20:00:00`),
+      currentTerm: true,
+      currentWeekNumber: 2,
+      weeks: [{ number: 2 }, { number: 3 }],
+    })).toEqual(expect.objectContaining({ kind: 'tomorrow', course }));
+  });
+
+  test('reports Sunday complete only when Monday has no courses in this teaching week', () => {
+    expect(mobileCourseSummary([
+      { course_name: '下周课程', weekday: 1, weeks: [3], start_time: '08:30', end_time: '10:00' },
+      { course_name: '今日已结束', weekday: 7, weeks: [2], start_time: '08:30', end_time: '10:00' },
+    ], {
+      now: new Date('2026-09-06T20:00:00'),
+      currentTerm: true,
+      currentWeekNumber: 2,
+      weeks: [{ number: 2 }, { number: 3 }],
+    })).toEqual(expect.objectContaining({ kind: 'complete' }));
+  });
+
   test('shows tomorrow first course and advances the teaching week from Saturday to Sunday', () => {
     const courses = [
       { course_name: '明日早课', weekday: 7, weeks: [4], start_time: '08:30', end_time: '10:00' },
