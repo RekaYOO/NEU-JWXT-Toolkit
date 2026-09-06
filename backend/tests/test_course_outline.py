@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi import Response
@@ -8,7 +9,11 @@ from backend.app.schemas.course_outline import (
     CourseOutlineMetadataReadRequest,
     CourseOutlineSearchRequest,
 )
-from backend.core.course_outline import CourseOutlineAPI, extract_rows
+from backend.core.course_outline import (
+    CourseOutlineAPI,
+    CourseOutlineMetadataSyncService,
+    extract_rows,
+)
 
 
 class FakeResponse:
@@ -149,21 +154,25 @@ def test_metadata_read_reuses_cached_plan_items_and_ignores_missing(monkeypatch)
         "status": "success",
     }
 
-    class Store:
-        def get(self, key):
-            return SimpleNamespace(payload=payload) if key.variant == "course:A100" else None
+    def read_many(*, account_id, resources):
+        assert account_id == "student"
+        return {
+            key: (SimpleNamespace(payload=payload), False)
+            if key[1] == "course:A100" else (None, True)
+            for key in resources
+        }
 
     monkeypatch.setattr(
         router,
         "get_cache_coordinator",
-        lambda: SimpleNamespace(store=Store()),
+        lambda: SimpleNamespace(read_many=read_many),
     )
     result = router.read_metadata(
         CourseOutlineMetadataReadRequest(course_codes=["A100", "B200"]),
         SimpleNamespace(username="student"),
     )
 
-    assert result == {"items": [payload]}
+    assert result == {"items": [{**payload, "needs_sync": False}]}
 
 
 def test_search_and_detail_routes_mark_responses_no_store(monkeypatch):
@@ -179,7 +188,7 @@ def test_metadata_fetch_has_strict_storage_whitelist(monkeypatch):
     from backend.core.cache import CacheKey, FetchContext
 
     monkeypatch.setattr(dependencies, "_cache_client", lambda _context: object())
-    monkeypatch.setattr(dependencies.CourseOutlineAPI, "overview", lambda self, code: {
+    monkeypatch.setattr(dependencies.CourseOutlineAPI, "metadata", lambda self, code: {
         "course_name": "课程", "assessment_method": "考试", "assessment_method_code": "01",
         "grading_scale": "百分制", "grading_scale_code": "01", "version": "v1",
         "introduction": "禁止落库的正文", "textbooks": [{"name": "禁止落库的教材"}],
@@ -194,3 +203,247 @@ def test_metadata_fetch_has_strict_storage_whitelist(monkeypatch):
         "grading_scale_code", "grading_scale", "outline_version", "plan_fingerprint", "status",
     }
     assert "正文" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_metadata_sync_course_failure_does_not_leave_batch_running():
+    class Store:
+        def get(self, _key):
+            raise RuntimeError("cache unavailable")
+
+    service = CourseOutlineMetadataSyncService(
+        cache_store=Store(),
+        cache_coordinator=SimpleNamespace(read=lambda **_kwargs: Store().get(None)),
+        auth_epoch=lambda: 1,
+    )
+    service._state.account = "student"
+    service._state.running = True
+
+    service._run("student", [{"course_code": "A100"}], False)
+
+    state = service.status("student")
+    assert state["running"] is False
+    assert state["current_course"] == ""
+    assert state["failed"] == 1
+    assert state["errors"] == ["A100"]
+
+
+def test_metadata_only_reads_initialization_and_basic_information():
+    client = FakeClient(
+        {"rows": []},
+        {"datas": {"cxkcxxx": {"rows": [{
+            "KCH": "A100", "KCM": "测试课程",
+            "KSLXDM_DISPLAY": "考试", "CJJLFS_DISPLAY": "百分制",
+            "KCJJ": "正文不得读取或存储",
+        }]}}},
+    )
+    result = CourseOutlineAPI(client).metadata("A100")
+    assert result["assessment_method"] == "考试"
+    assert result["grading_scale"] == "百分制"
+    assert "KCJJ" not in result
+    assert len(client.calls) == 2
+    assert client.calls[-1][0].endswith("/cxkcxxx.do")
+
+
+@pytest.mark.parametrize("payload", [
+    {"success": False, "msg": "unavailable"},
+    {"datas": {"cxkcxxx": {"error": "unavailable"}}},
+    {"rows": None},
+])
+def test_metadata_basic_errors_are_not_negative_cache_hits(payload):
+    from backend.core.course_outline.api import CourseOutlineError
+
+    with pytest.raises(CourseOutlineError):
+        CourseOutlineAPI(FakeClient({"rows": []}, payload)).metadata("A100")
+
+
+def test_metadata_empty_basic_rows_are_legitimate_missing_outlines():
+    result = CourseOutlineAPI(FakeClient({"rows": []}, {"rows": []})).metadata("A100")
+    assert result["course_code"] == "A100"
+    assert result["course_name"] == ""
+    assert result["grading_scale"] == ""
+
+
+def test_metadata_sync_keeps_all_failed_codes_for_retry():
+    from unittest.mock import Mock
+
+    store = Mock()
+    store.get.side_effect = RuntimeError("cache unavailable")
+    service = CourseOutlineMetadataSyncService(
+        cache_store=store, cache_coordinator=SimpleNamespace(read=store.get), auth_epoch=lambda: 1,
+    )
+    service._state.account = "student"
+    courses = [{"course_code": f"A{index:03}"} for index in range(15)]
+    service._run("student", courses, False)
+    assert service.status("student")["errors"] == [course["course_code"] for course in courses]
+
+
+def test_metadata_sync_identity_change_stops_waiting_and_remaining_courses(monkeypatch):
+    from unittest.mock import Mock
+    from backend.core.cache.models import JobStatus
+
+    epoch = [1]
+    coordinator = Mock()
+    coordinator.read.return_value = (None, True)
+    coordinator.submit.return_value = SimpleNamespace(job_id="job")
+    coordinator.get_job.return_value = SimpleNamespace(status=JobStatus.RUNNING)
+    service = CourseOutlineMetadataSyncService(
+        cache_store=SimpleNamespace(get=lambda _key: None),
+        cache_coordinator=coordinator, auth_epoch=lambda: epoch[0],
+    )
+    service._state.account = "student"
+    monkeypatch.setattr("backend.core.course_outline.service.time.sleep", lambda _seconds: epoch.__setitem__(0, 2))
+    service._run("student", [{"course_code": "A100"}, {"course_code": "B200"}], False)
+    assert coordinator.submit.call_count == 1
+    assert coordinator.submit.call_args.kwargs["identity_epoch"] == 1
+    assert service.status("student")["cancelled"] is True
+    assert service.status("student")["running"] is False
+
+
+def test_metadata_old_worker_cannot_finish_new_identity_batch():
+    from backend.core.course_outline.service import SyncState
+
+    service = CourseOutlineMetadataSyncService(
+        cache_store=SimpleNamespace(), cache_coordinator=SimpleNamespace(), auth_epoch=lambda: 2,
+    )
+    old = SyncState(account="old", running=True)
+    service._state = SyncState(account="new", running=True)
+    service._run("old", [{"course_code": "A100"}], False, old, 1)
+    assert old.running is False
+    assert old.cancelled is True
+    assert service.status("new")["running"] is True
+    assert service.cancel("old")["account"] == "old"
+    assert service.cancel("old")["errors"] == []
+    assert service.status("new")["cancelled"] is False
+
+
+def test_metadata_sync_distinguishes_reused_batch_and_new_identity(monkeypatch):
+    from unittest.mock import Mock
+
+    threads = []
+
+    def make_thread(**kwargs):
+        thread = Mock()
+        thread.is_alive.return_value = True
+        threads.append((thread, kwargs))
+        return thread
+
+    monkeypatch.setattr("backend.core.course_outline.service.threading.Thread", make_thread)
+    epoch = [1]
+    service = CourseOutlineMetadataSyncService(
+        cache_store=SimpleNamespace(), cache_coordinator=SimpleNamespace(), auth_epoch=lambda: epoch[0],
+    )
+    assert service.start("first", [{"course_code": "A100"}])["accepted"] is True
+    assert service.start("first", [{"course_code": "B200"}])["accepted"] is False
+    assert len(threads) == 1
+    old = service._state
+    epoch[0] = 2
+    next_state = service.start("second", [{"course_code": "B200"}])
+    assert next_state["accepted"] is True
+    assert next_state["account"] == "second"
+    assert old.cancelled is True
+    assert len(threads) == 2
+
+
+def test_metadata_sync_failed_thread_start_does_not_leave_running(monkeypatch):
+    from unittest.mock import Mock
+
+    thread = Mock()
+    thread.start.side_effect = RuntimeError("thread unavailable")
+    monkeypatch.setattr("backend.core.course_outline.service.threading.Thread", lambda **_kwargs: thread)
+    service = CourseOutlineMetadataSyncService(
+        cache_store=SimpleNamespace(), cache_coordinator=SimpleNamespace(), auth_epoch=lambda: 1,
+    )
+    with pytest.raises(RuntimeError):
+        service.start("student", [{"course_code": "A100"}])
+    assert service.status("student")["running"] is False
+
+
+@pytest.mark.parametrize("status,days,stale,expected", [
+    ("success", 1, False, False),
+    ("success", 31, True, True),
+    ("not_found", 6, False, False),
+    ("not_found", 8, False, True),
+    ("failed", 1, False, True),
+    ("success", 1, True, True),
+])
+def test_metadata_refresh_policy_uses_checked_time(status, days, stale, expected):
+    from datetime import timedelta
+    from backend.core.cache.models import utc_now
+    from backend.core.course_outline.service import metadata_needs_sync
+
+    entry = SimpleNamespace(
+        payload={"status": status}, last_checked_at=utc_now() - timedelta(days=days),
+        saved_at=utc_now() - timedelta(days=100),
+    )
+    assert metadata_needs_sync(entry, stale) is expected
+
+
+def test_metadata_persists_reopens_and_retains_previous_values_on_failure(tmp_path, monkeypatch):
+    from backend.app import dependencies
+    from backend.core.cache import CacheCoordinator, CacheKey, CacheStore
+
+    store = CacheStore(tmp_path / "cache.db")
+    coordinator = CacheCoordinator(store, dependencies._cache_registry)
+    service = CourseOutlineMetadataSyncService(
+        cache_store=store, cache_coordinator=coordinator, auth_epoch=lambda: 1,
+    )
+    monkeypatch.setattr(dependencies, "_cache_client", lambda _context: FakeClient(
+        {"rows": []},
+        {"rows": [{
+            "KCH": "A100", "KCM": "测试课程",
+            "KSLXDM_DISPLAY": "考试", "CJJLFS_DISPLAY": "百分制",
+        }]},
+    ))
+    courses = [{"course_code": "A100"}]
+    try:
+        service.start("student", courses)
+        service._thread.join(3)
+        assert service.status("student")["running"] is False
+        assert service.status("student")["completed"] == 1
+        key = CacheKey("student", "course-outline-metadata", "course:A100")
+        reopened = CacheStore(tmp_path / "cache.db")
+        entry = reopened.get(key)
+        assert entry.schema_version == 2
+        assert entry.payload["assessment_method"] == "考试"
+        assert entry.payload["grading_scale"] == "百分制"
+        assert reopened.get(CacheKey("other", key.resource, key.variant)) is None
+
+        def unavailable(_context):
+            raise RuntimeError("school unavailable")
+
+        monkeypatch.setattr(dependencies, "_cache_client", unavailable)
+        # A fresh successful entry is reused without contacting the school.
+        service.start("student", courses)
+        service._thread.join(3)
+        assert service.status("student")["completed"] == 1
+        assert service.status("student")["failed"] == 0
+        # Explicit refresh failure must not overwrite the saved values.
+        service.start("student", courses, force=True)
+        service._thread.join(3)
+        assert service.status("student")["running"] is False
+        assert service.status("student")["failed"] == 1
+        assert reopened.get(key).payload == entry.payload
+    finally:
+        service.cancel("student")
+        if service._thread:
+            service._thread.join(3)
+        coordinator.shutdown(timeout=3)
+
+
+def test_metadata_read_marks_old_schema_for_refresh_without_discarding_values(tmp_path, monkeypatch):
+    from backend.app import dependencies
+    from backend.core.cache import CacheCoordinator, CacheKey, CacheStore, PayloadType
+
+    store = CacheStore(tmp_path / "cache.db")
+    store.commit_success(
+        key=CacheKey("student", "course-outline-metadata", "course:A100"),
+        schema_version=1, revision_algorithm_version=1, payload_type=PayloadType.JSON,
+        payload={"course_code": "A100", "status": "not_found"}, revision="v1:old",
+        dependency_revisions={}, changes={}, reason="test",
+    )
+    coordinator = CacheCoordinator(store, dependencies._cache_registry, autostart=False)
+    monkeypatch.setattr(router, "get_cache_coordinator", lambda: coordinator)
+    result = router.read_metadata(
+        CourseOutlineMetadataReadRequest(course_codes=["A100"]), SimpleNamespace(username="student"),
+    )
+    assert result["items"] == [{"course_code": "A100", "status": "not_found", "needs_sync": True}]

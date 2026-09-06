@@ -23,7 +23,7 @@ from backend.app.schemas.course_outline import (
 from backend.core.auth import NEUAuthClient
 from backend.core.cache import CacheKey
 from backend.core.course_outline import CourseOutlineAPI
-from backend.core.course_outline.service import course_variant
+from backend.core.course_outline.service import course_variant, metadata_needs_sync
 from backend.core.log import log_application_error
 
 
@@ -138,12 +138,12 @@ def read_metadata(
     """
     coordinator = get_cache_coordinator()
     items = []
-    for code in request.course_codes:
-        entry = coordinator.store.get(
-            CacheKey(auth.username, "course-outline-metadata", course_variant(code))
-        )
+    resources = tuple(("course-outline-metadata", course_variant(code)) for code in request.course_codes)
+    entries = coordinator.read_many(account_id=auth.username, resources=resources)
+    for resource in resources:
+        entry, stale = entries[resource]
         if entry:
-            items.append(entry.payload)
+            items.append({**entry.payload, "needs_sync": metadata_needs_sync(entry, stale)})
     return {"items": items}
 
 

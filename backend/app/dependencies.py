@@ -396,7 +396,7 @@ def _fetch_course_outline_metadata_resource(context):
     if not context.key.variant.startswith(prefix):
         raise ValueError("invalid course-outline metadata variant")
     course_code = context.key.variant[len(prefix):]
-    overview = CourseOutlineAPI(_cache_client(context)).overview(course_code)
+    overview = CourseOutlineAPI(_cache_client(context)).metadata(course_code)
     fingerprint = ""
     if context.reason.startswith("metadata_sync:"):
         fingerprint = context.reason.split(":", 1)[1][:64]
@@ -520,7 +520,7 @@ _cache_registry = CacheRegistry(
         ),
         CacheResourceSpec(
             resource="course-outline-metadata",
-            schema_version=1,
+            schema_version=2,
             revision_algorithm_version=1,
             account_scope=AccountScope.ACCOUNT,
             payload_type=PayloadType.JSON,

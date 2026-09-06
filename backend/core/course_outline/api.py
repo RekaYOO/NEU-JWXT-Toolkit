@@ -174,6 +174,25 @@ class CourseOutlineAPI:
             "failures": failures,
         }
 
+    def metadata(self, course_code: str) -> dict[str, Any]:
+        """Read only basic fields; failures must not become negative cache hits."""
+        code = normalize_course_code(course_code)
+        self._post("api/kcdgwhgl/cshdgsj.do", {"KCH": code})
+        payload = self._post("modules/kcdgwhgl/cxkcxxx.do", {"KCH": code})
+        container = extract_container(payload, "cxkcxxx")
+        if not isinstance(container.get("rows"), (list, dict)):
+            raise CourseOutlineError("课程大纲基本信息响应格式异常")
+        basic = next(iter(extract_rows(payload, "cxkcxxx")), {})
+        return {
+            "course_code": code,
+            "course_name": display_value(basic, "KCM"),
+            "assessment_method_code": str(basic.get("KSLXDM") or ""),
+            "assessment_method": display_value(basic, "KSLXDM"),
+            "grading_scale_code": str(basic.get("CJJLFS") or ""),
+            "grading_scale": display_value(basic, "CJJLFS"),
+            "version": str(basic.get("BBWID") or basic.get("WID") or ""),
+        }
+
     def sections(self, course_code: str, group: str) -> dict[str, Any]:
         code = normalize_course_code(course_code)
         if group not in self.SECTION_ENDPOINTS:

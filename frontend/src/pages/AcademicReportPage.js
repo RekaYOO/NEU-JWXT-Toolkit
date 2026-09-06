@@ -796,6 +796,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
           column.render = (_text, record) => {
             const metadata = outlineMetadata[record.course_code];
             const value = metadata?.[col.key] || (col.key === 'assessment_method' ? record.exam_type : '');
+            if (value) return value;
             if (metadata?.status === 'not_found') return <Text type="secondary">无大纲</Text>;
             if (outlineSyncing && !metadata) return <Text type="secondary">加载中…</Text>;
             return value || <Text type="secondary">-</Text>;
@@ -955,12 +956,14 @@ const AcademicReportPage = ({ offlineMode = false }) => {
         <Text type="secondary">
           {outlineSyncing
             ? `大纲元数据 ${outlineSyncStatus?.completed || 0}/${outlineSyncStatus?.total || allCourses.length}`
-            : `大纲元数据已就绪${outlineSyncStatus?.failed ? `，${outlineSyncStatus.failed} 项失败` : ''}`}
+            : outlineSyncStatus?.error
+              ? '大纲元数据读取失败，可重试'
+              : `大纲元数据已就绪${outlineSyncStatus?.failed ? `，${outlineSyncStatus.failed} 项失败` : ''}`}
         </Text>
       ),
-    }, ...(outlineSyncStatus?.failed ? [{
+    }, ...((outlineSyncStatus?.failed || outlineSyncStatus?.error) ? [{
       key: 'outline-sync-retry',
-      label: <Button type="link" size="small" onClick={() => {
+      label: <Button type="link" size="small" disabled={outlineSyncing} onClick={() => {
         return retryOutlineMetadata();
       }}>重试失败项</Button>,
     }] : [])] : []),

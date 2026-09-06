@@ -10,12 +10,20 @@ from datetime import timedelta
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from backend.core.cache import CacheKey
 from backend.core.cache.models import utc_now
 
 
 def course_variant(course_code: str) -> str:
     return f"course:{course_code}"
+
+
+def metadata_needs_sync(entry, stale: bool) -> bool:
+    if entry is None or stale:
+        return True
+    status = entry.payload.get("status")
+    if status == "not_found":
+        return not entry.last_checked_at or entry.last_checked_at + timedelta(days=7) <= utc_now()
+    return status != "success"
 
 
 def plan_fingerprint(course: dict[str, Any]) -> str:
@@ -41,7 +49,7 @@ class SyncState:
     errors: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
-        return {**self.__dict__, "errors": list(self.errors[-10:])}
+        return {**self.__dict__, "errors": list(self.errors)}
 
 
 class CourseOutlineMetadataSyncService:
@@ -51,26 +59,35 @@ class CourseOutlineMetadataSyncService:
         self.auth_epoch = auth_epoch
         self._lock = threading.RLock()
         self._state = SyncState()
+        self._epoch: int | None = None
         self._thread: threading.Thread | None = None
 
     def start(self, account: str, courses: list[dict[str, Any]], *, force: bool = False) -> dict[str, Any]:
+        epoch = self.auth_epoch()
         with self._lock:
             if self._thread and self._thread.is_alive():
-                return self._state.as_dict()
+                if self._state.account == account and self._epoch == epoch:
+                    return {**self._state.as_dict(), "accepted": False}
+                self._state.cancelled = True
             ordered = sorted(courses, key=self._priority)
             self._state = SyncState(account=account, running=True, total=len(ordered))
+            self._epoch = epoch
             self._thread = threading.Thread(
-                target=self._run, args=(account, ordered, force), daemon=True,
+                target=self._run, args=(account, ordered, force, self._state, epoch), daemon=True,
                 name="course-outline-metadata-sync",
             )
-            self._thread.start()
-            return self._state.as_dict()
+            try:
+                self._thread.start()
+            except Exception:
+                self._state.running = False
+                raise
+            return {**self._state.as_dict(), "accepted": True}
 
     def cancel(self, account: str) -> dict[str, Any]:
         with self._lock:
             if self._state.account == account:
                 self._state.cancelled = True
-            return self._state.as_dict()
+            return self.status(account)
 
     def status(self, account: str) -> dict[str, Any]:
         with self._lock:
@@ -84,58 +101,77 @@ class CourseOutlineMetadataSyncService:
         bucket = 0 if not passed and not score else 1 if selected and not score else 2
         return bucket, str(course.get("course_code") or "")
 
-    def _run(self, account: str, courses: list[dict[str, Any]], force: bool) -> None:
-        for course in courses:
-            with self._lock:
-                if self._state.cancelled:
-                    break
-                code = str(course.get("course_code") or course.get("code") or "").strip()
-                self._state.current_course = code
-            if not code:
-                continue
-            current = self.store.get(CacheKey(account, "course-outline-metadata", course_variant(code)))
-            fingerprint = plan_fingerprint(course)
-            reusable_not_found = bool(
-                current
-                and current.payload.get("status") == "not_found"
-                and current.saved_at
-                and current.saved_at + timedelta(days=7) > utc_now()
-            )
-            if not force and current and current.payload.get("plan_fingerprint") == fingerprint and (
-                current.payload.get("status") == "success" or reusable_not_found
-            ):
-                with self._lock:
-                    self._state.completed += 1
-                continue
-            try:
-                submission = self.coordinator.submit(
-                    account_id=account,
-                    resource="course-outline-metadata",
-                    variant=course_variant(code),
-                    identity_epoch=self.auth_epoch(),
-                    force=True,
-                    reason=f"metadata_sync:{fingerprint}",
-                )
-                job = None
-                if submission.job_id:
-                    deadline = time.monotonic() + 60
-                    while time.monotonic() < deadline:
-                        job = self.coordinator.get_job(submission.job_id)
-                        if job is not None and getattr(job.status, "value", "") in {
-                            "completed", "failed", "cancelled"
-                        }:
-                            break
-                        time.sleep(0.1)
-                with self._lock:
-                    if job is not None and getattr(job.status, "value", "") == "completed":
-                        self._state.completed += 1
-                    else:
-                        self._state.failed += 1
-                        self._state.errors.append(code)
-            except Exception:
-                with self._lock:
-                    self._state.failed += 1
-                    self._state.errors.append(code)
+    def _interrupted(self, state: SyncState, epoch: int) -> bool:
+        changed = self.auth_epoch() != epoch
         with self._lock:
-            self._state.running = False
-            self._state.current_course = ""
+            state.cancelled = state.cancelled or changed
+            return state.cancelled
+
+    def _run(
+        self, account: str, courses: list[dict[str, Any]], force: bool,
+        state: SyncState | None = None, identity_epoch: int | None = None,
+    ) -> None:
+        # Each worker owns its state so an old identity cannot finish a new batch.
+        state = state or self._state
+        try:
+            epoch = self.auth_epoch() if identity_epoch is None else identity_epoch
+            for course in courses:
+                if self._interrupted(state, epoch):
+                    break
+                with self._lock:
+                    code = str(course.get("course_code") or course.get("code") or "").strip()
+                    state.current_course = code
+                if not code:
+                    with self._lock:
+                        state.completed += 1
+                    continue
+                try:
+                    current, stale = self.coordinator.read(
+                        account_id=account, resource="course-outline-metadata", variant=course_variant(code),
+                    )
+                    fingerprint = plan_fingerprint(course)
+                    if (
+                        not force and not metadata_needs_sync(current, stale)
+                        and current.payload.get("plan_fingerprint") == fingerprint
+                    ):
+                        with self._lock:
+                            state.completed += 1
+                        continue
+                    submission = self.coordinator.submit(
+                        account_id=account,
+                        resource="course-outline-metadata",
+                        variant=course_variant(code),
+                        identity_epoch=epoch,
+                        force=True,
+                        reason=f"metadata_sync:{fingerprint}",
+                    )
+                    job = None
+                    if submission.job_id:
+                        deadline = time.monotonic() + 60
+                        while time.monotonic() < deadline:
+                            if self._interrupted(state, epoch):
+                                break
+                            job = self.coordinator.get_job(submission.job_id)
+                            if job is None or getattr(job.status, "value", "") in {
+                                "completed", "failed", "cancelled"
+                            }:
+                                break
+                            time.sleep(0.1)
+                    if self._interrupted(state, epoch):
+                        break
+                    with self._lock:
+                        if job is not None and getattr(job.status, "value", "") == "completed":
+                            state.completed += 1
+                        else:
+                            state.failed += 1
+                            state.errors.append(code)
+                except Exception:
+                    # One unavailable outline must not abort the batch or leave
+                    # the public status permanently stuck in ``running``.
+                    with self._lock:
+                        state.failed += 1
+                        state.errors.append(code)
+        finally:
+            with self._lock:
+                state.running = False
+                state.current_course = ""
