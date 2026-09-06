@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import AuthRecoveryPage from './AuthRecoveryPage';
 import {
   getAuthRecoveryStatus,
+  pollAuthRecovery,
   sendAuthRecoverySMS,
   startAuthRecovery,
   verifyAuthRecoverySMS,
@@ -30,6 +31,44 @@ describe('AuthRecoveryPage', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  test('expired link shows the server expiry message without restarting login', async () => {
+    getAuthRecoveryStatus.mockRejectedValue({
+      response: { status: 404, data: { detail: '一次性登录链接已过期，请进入工具箱重新登录' } },
+    });
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    await act(async () => root.render(<AuthRecoveryPage token="expired-token" />));
+    expect(container.textContent).toContain('链接已失效');
+    expect(container.textContent).toContain('请进入工具箱重新登录');
+    expect(startAuthRecovery).not.toHaveBeenCalled();
+    expect(container.querySelector('button')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  test('expiry during QR polling keeps the expiry reason and stops polling', async () => {
+    jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    let tick;
+    jest.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {
+      if (delay === 3000) tick = callback;
+      return delay;
+    });
+    const clear = jest.spyOn(window, 'clearInterval').mockImplementation(() => {});
+    getAuthRecoveryStatus.mockResolvedValue({
+      status: 'qr_pending', qr_content: 'test-qr', expires_in: 300, poll_interval: 3,
+    });
+    pollAuthRecovery.mockRejectedValue({
+      response: { status: 404, data: { detail: '一次性登录链接已过期，请进入工具箱重新登录' } },
+    });
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    await act(async () => root.render(<AuthRecoveryPage token="expired-token" />));
+    await act(async () => tick());
+    expect(container.textContent).toContain('请进入工具箱重新登录');
+    expect(clear).toHaveBeenCalledWith(3000);
+    expect(startAuthRecovery).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
   });
 
   test('后台账密已进入短信挑战时直接显示验证码，不重复创建二维码', async () => {

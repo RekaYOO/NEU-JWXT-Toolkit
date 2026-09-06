@@ -20,7 +20,8 @@ from backend.core.auth.client import WebVPNLoginError, WEBVPN_ERR_FLOW_MISSING
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
-DEFAULT_RECOVERY_CONFIG = {"public_base_url": ""}
+DEFAULT_RECOVERY_CONFIG = {"public_base_url": "", "link_ttl_hours": 3}
+MAX_LINK_TTL_HOURS = 168
 MAX_STORED_CONTEXTS = 100
 TERMINAL_CONTEXT_RETENTION = timedelta(days=30)
 
@@ -93,7 +94,11 @@ class RemoteAuthRecoveryService:
             legacy = self._read_json(self.legacy_config_path, {})
             current = {"public_base_url": str(legacy.get("site_url") or "").strip()}
             self._write_json(self.config_path, current)
-        return {**DEFAULT_RECOVERY_CONFIG, **current}
+        result = {**DEFAULT_RECOVERY_CONFIG, **current}
+        hours = result["link_ttl_hours"]
+        if type(hours) is not int or not 1 <= hours <= MAX_LINK_TTL_HOURS:
+            result["link_ttl_hours"] = DEFAULT_RECOVERY_CONFIG["link_ttl_hours"]
+        return result
 
     def _load_secret(self) -> bytes:
         try:
@@ -112,14 +117,17 @@ class RemoteAuthRecoveryService:
             return dict(self._config)
 
     def update_config(self, values: dict[str, Any]) -> dict[str, Any]:
-        url = str(values.get("public_base_url") or "").strip()
-        if len(url) > 500:
-            raise ValueError("重新登录地址过长")
-        if url and not url.lower().startswith(("http://", "https://")):
-            raise ValueError("重新登录地址必须以 http:// 或 https:// 开头")
         with self._lock:
+            url = str(values.get("public_base_url", self._config["public_base_url"]) or "").strip()
+            if len(url) > 500:
+                raise ValueError("重新登录地址过长")
+            if url and not url.lower().startswith(("http://", "https://")):
+                raise ValueError("重新登录地址必须以 http:// 或 https:// 开头")
+            hours = values.get("link_ttl_hours", self._config["link_ttl_hours"])
+            if type(hours) is not int or not 1 <= hours <= MAX_LINK_TTL_HOURS:
+                raise ValueError(f"恢复链接有效期必须为 1 到 {MAX_LINK_TTL_HOURS} 小时的整数")
             changed = url != self._config.get("public_base_url")
-            self._config = {"public_base_url": url}
+            self._config = {"public_base_url": url, "link_ttl_hours": hours}
             self._write_json(self.config_path, self._config)
             if changed:
                 self._invalidate_locked()
@@ -197,11 +205,37 @@ class RemoteAuthRecoveryService:
                 )
             ):
                 raise ValueError("一次性登录链接不存在或已失效")
+            if self._expire_context_locked(context):
+                self._save_state_locked()
+                raise ValueError("一次性登录链接已过期，请进入工具箱重新登录")
             return context
+
+    def _expire_context_locked(self, context: dict[str, Any]) -> bool:
+        if context.get("status") != "active":
+            return False
+        now = datetime.now(CHINA_TZ)
+        try:
+            if "expires_at" not in context:
+                # Legacy links keep their original creation time, never restart
+                # their lifetime on upgrade or process restart.
+                created = datetime.fromisoformat(str(context["created_at"]))
+                if created.tzinfo is None:
+                    raise ValueError("missing creation timezone")
+                context["expires_at"] = (
+                    created + timedelta(hours=DEFAULT_RECOVERY_CONFIG["link_ttl_hours"])
+                ).isoformat()
+            deadline = datetime.fromisoformat(str(context["expires_at"]))
+            if deadline.tzinfo is not None and now < deadline:
+                return False
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass
+        self._cancel_flow_locked(str(context["context_id"]))
+        context.update(status="expired", expired_at=now.isoformat())
+        return True
 
     @staticmethod
     def _context_time(context: dict[str, Any]) -> datetime:
-        for key in ("completed_at", "cancelled_at", "invalidated_at", "created_at"):
+        for key in ("completed_at", "cancelled_at", "invalidated_at", "expired_at", "created_at"):
             try:
                 return datetime.fromisoformat(str(context.get(key) or ""))
             except (TypeError, ValueError):
@@ -209,8 +243,13 @@ class RemoteAuthRecoveryService:
         return datetime.min.replace(tzinfo=CHINA_TZ)
 
     def _prune_contexts_locked(self) -> bool:
-        """Bound terminal recovery history without touching active links."""
+        """Expire links and bound terminal history without pruning live links."""
         original_ids = set(self._contexts)
+        changed = False
+        for context in self._contexts.values():
+            missing_deadline = context.get("status") == "active" and "expires_at" not in context
+            expired = self._expire_context_locked(context)
+            changed = changed or missing_deadline or expired
         cutoff = datetime.now(CHINA_TZ) - TERMINAL_CONTEXT_RETENTION
         active = {
             context_id: context for context_id, context in self._contexts.items()
@@ -225,7 +264,7 @@ class RemoteAuthRecoveryService:
         terminal.sort(key=lambda item: self._context_time(item[1]), reverse=True)
         remaining = max(0, MAX_STORED_CONTEXTS - len(active))
         self._contexts = {**active, **dict(terminal[:remaining])}
-        return set(self._contexts) != original_ids
+        return changed or set(self._contexts) != original_ids
 
     def _save_state_locked(self, *, prune: bool = True) -> None:
         if prune:
@@ -256,6 +295,8 @@ class RemoteAuthRecoveryService:
         if not self.mail_service.is_configured():
             return False
         with self._lock:
+            if self._prune_contexts_locked():
+                self._save_state_locked(prune=False)
             base_url = str(self._config.get("public_base_url") or "").strip()
             context = next((
                 item for item in self._contexts.values()
@@ -269,12 +310,16 @@ class RemoteAuthRecoveryService:
                 return True
             if context is None:
                 context_id = uuid.uuid4().hex
+                created = datetime.now(CHINA_TZ)
                 context = {
                     "context_id": context_id,
                     "account_id": str(account_id),
                     "source": source,
                     "target_service": target,
-                    "created_at": _iso(),
+                    "created_at": created.isoformat(),
+                    "expires_at": (
+                        created + timedelta(hours=self._config["link_ttl_hours"])
+                    ).isoformat(),
                     "dedupe_key": str(dedupe_key),
                     "status": "active",
                 }
@@ -294,7 +339,7 @@ class RemoteAuthRecoveryService:
             source,
             subject,
             body,
-            f"auth-recovery:{source}:{dedupe_key}",
+            f"auth-recovery:{source}:{dedupe_key}:{context_id}",
             html_body,
             kind="auth_recovery",
             template_metadata={
@@ -319,7 +364,11 @@ class RemoteAuthRecoveryService:
             base_url = str(self._config.get("public_base_url") or "").strip()
             if not context or context.get("status") != "active":
                 return None
+            if self._expire_context_locked(context):
+                self._save_state_locked()
+                return None
             token = self._token(context) if base_url else ""
+            deadline = datetime.fromisoformat(context["expires_at"]).astimezone(CHINA_TZ)
         delivery_mode = str(metadata.get("delivery_mode") or "link")
         if delivery_mode == "campus_network":
             notice = "学校 WebVPN 当前拒绝校园网访问。请进入工具箱切换为“校内直连”并重新登录。"
@@ -342,14 +391,15 @@ class RemoteAuthRecoveryService:
             if continued else
             "请打开一次性页面恢复登录；页面会先提供微信扫码，如学校要求二次认证，可在同一页面继续完成图形验证码和短信验证码。"
         )
+        expiry_notice = f"链接有效至 {deadline:%Y-%m-%d %H:%M:%S}（北京时间），登录成功后立即失效。"
         suffix = (
-            f"\n\n{intro}\n{url}\n\n链接在成功建立会话后失效。"
-            "二维码或短信流程过期后可在同一链接重新开始；验证码不会由后台自动填写或发送，请勿转发。"
+            f"\n\n{intro}\n{url}\n\n{expiry_notice}"
+            "链接有效期内可重新开始二维码或短信流程；验证码不会由后台自动填写或发送，请勿转发。"
         )
         return {
             "subject": str(message.get("subject") or ""),
             "body": str(message.get("body") or "") + suffix,
-            "html_body": self._append_html_notice(str(message.get("html_body") or ""), intro, url=url),
+            "html_body": self._append_html_notice(str(message.get("html_body") or ""), intro + expiry_notice, url=url),
         }
 
     def _adopt_pending_sms(self, context_id: str, target: str) -> bool:
@@ -524,6 +574,8 @@ class RemoteAuthRecoveryService:
         return {"success": True, "status": "cancelled"}
 
     def _complete_locked(self, context: dict[str, Any], client: Any) -> dict[str, Any]:
+        # Remote QR/SMS verification may finish after the deadline.
+        self._context_for_token(self._token(context))
         target = str(context.get("target_service") or "primary")
         if self.auth_committer:
             self.auth_committer(client, target) if target == "jwxk" else self.auth_committer(client)

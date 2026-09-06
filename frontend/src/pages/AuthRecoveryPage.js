@@ -121,7 +121,7 @@ const AuthRecoveryPage = ({ token }) => {
       if (error.response?.status === 404) {
         stopPolling();
         setStage('invalid');
-        setMessage('一次性登录链接不存在或已经完成使用');
+        setMessage(recoveryErrorMessage(error, '一次性登录链接不存在、已过期或已经完成使用'));
       }
     }
   }, [enterSMSStage, finishAuthenticated, stopPolling, token]);

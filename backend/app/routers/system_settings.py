@@ -124,6 +124,6 @@ def get_auth_recovery_settings(service=Depends(get_auth_recovery_service)):
 @router.put("/auth-recovery")
 def update_auth_recovery_settings(payload: AuthRecoveryConfigUpdate, service=Depends(get_auth_recovery_service)):
     try:
-        return {"success": True, "config": service.update_config(payload.model_dump())}
+        return {"success": True, "config": service.update_config(payload.model_dump(exclude_unset=True))}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

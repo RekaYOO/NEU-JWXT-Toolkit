@@ -356,7 +356,7 @@ def test_terminal_recovery_context_history_is_bounded_without_pruning_active_lin
         "f" * 32: {
             "context_id": "f" * 32,
             "status": "active",
-            "created_at": old,
+            "created_at": current,
             "token_hash": "hash",
         },
     }
@@ -452,3 +452,157 @@ def test_clear_personal_data_preserves_shared_mail_and_recovery_configuration(tm
     assert all((tmp_path / filename).exists() for filename in preserved)
     assert not (tmp_path / "system_mail_outbox.json").exists()
     assert not (tmp_path / "auth_recovery_state.json").exists()
+
+
+@pytest.fixture
+def recovery_clock(monkeypatch):
+    from backend.core.auth import recovery as module
+
+    class Clock(datetime):
+        current = datetime(2026, 9, 6, 8, tzinfo=timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.astimezone(tz)
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    return Clock
+
+
+def queue_recovery(recovery):
+    assert recovery.request_notification(
+        source="grade_tracking", target_service="primary", account_id="student",
+        subject="登录失效", body="请恢复登录", dedupe_key="expiry-test",
+        html_body="<html><body>请恢复登录</body></html>",
+    )
+    token = active_token(recovery)
+    return token, recovery._contexts[token.split(".")[0]]
+
+
+def test_recovery_default_expiry_is_fixed_across_restart_and_config_changes(tmp_path, recovery_clock):
+    mail, recovery = build_recovery(tmp_path)
+    assert recovery.get_config()["link_ttl_hours"] == 3
+    token, context = queue_recovery(recovery)
+    deadline = recovery_clock.current + timedelta(hours=3)
+    assert datetime.fromisoformat(context["expires_at"]) == deadline
+    rendered = recovery.materialize_mail(mail._outbox[0])
+    assert "2026-09-06 19:00:00" in rendered["body"]
+    assert "2026-09-06 19:00:00" in rendered["html_body"]
+
+    recovery.update_config({"link_ttl_hours": 6})
+    assert recovery.get_config()["public_base_url"] == "https://toolkit.example.com"
+    restarted = RemoteAuthRecoveryService(tmp_path, mail_service=mail, logger=LOGGER)
+    assert restarted.get_config()["link_ttl_hours"] == 6
+    assert restarted._contexts[context["context_id"]]["expires_at"] == context["expires_at"]
+    recovery_clock.current = deadline - timedelta(microseconds=1)
+    assert restarted.get_status(token) == {"status": "ready"}
+    recovery_clock.current = deadline
+    with pytest.raises(ValueError, match="过期"):
+        restarted.get_status(token)
+    restarted.update_config({"link_ttl_hours": 168})
+    with pytest.raises(ValueError):
+        restarted.get_status(token)
+
+
+@pytest.mark.parametrize("operation,args", [
+    ("get_status", ()), ("start", ()), ("poll", ()), ("refresh_captcha", ()),
+    ("send_sms", ("1234",)), ("verify_sms", ("123456",)), ("cancel", ()),
+])
+def test_all_recovery_operations_reject_expired_links(tmp_path, recovery_clock, operation, args):
+    from unittest.mock import Mock
+    _, recovery = build_recovery(tmp_path)
+    token, context = queue_recovery(recovery)
+    client = Mock()
+    recovery._flows[context["context_id"]] = {
+        "client": client, "flow": {"kind": "qr", "flow_id": "qr"},
+    }
+    recovery_clock.current += timedelta(hours=3)
+    with pytest.raises(ValueError):
+        getattr(recovery, operation)(token, *args)
+    assert context["status"] == "expired"
+    assert recovery._flows == {}
+    client.cancel_webvpn_qr_login.assert_called_once_with("qr")
+    assert len(client.mock_calls) == 1
+    saved = json.loads(recovery.state_path.read_text(encoding="utf-8"))
+    assert saved["contexts"][0]["status"] == "expired"
+
+
+@pytest.mark.parametrize("kind", ["qr", "sms"])
+def test_recovery_cannot_commit_when_remote_verification_crosses_deadline(tmp_path, recovery_clock, kind):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    commit = Mock()
+    _, recovery = build_recovery(tmp_path, auth_committer=commit)
+    token, context = queue_recovery(recovery)
+
+    def authenticate(*args):
+        recovery_clock.current += timedelta(hours=3)
+        return {"status": "authenticated"}
+
+    client = SimpleNamespace(
+        username="student", poll_webvpn_qr_login=authenticate,
+        verify_webvpn_sms_code=authenticate,
+        cancel_webvpn_qr_login=Mock(), cancel_webvpn_sms_login=Mock(),
+    )
+    recovery._flows[context["context_id"]] = {
+        "client": client, "flow": {"kind": kind, "flow_id": kind},
+    }
+    with pytest.raises(ValueError):
+        recovery.poll(token) if kind == "qr" else recovery.verify_sms(token, "123456")
+    commit.assert_not_called()
+    assert context["status"] == "expired"
+
+
+def test_expired_mail_is_not_sent_and_new_notification_gets_fresh_link(tmp_path, recovery_clock):
+    from unittest.mock import Mock
+    mail, recovery = build_recovery(tmp_path)
+    token, context = queue_recovery(recovery)
+    old_message = dict(mail._outbox[0])
+    recovery_clock.current += timedelta(hours=3)
+    recovery.update_config({"link_ttl_hours": 5})
+    new_token, new_context = queue_recovery(recovery)
+    assert new_token != token
+    assert context["status"] == "expired"
+    assert datetime.fromisoformat(new_context["expires_at"]) == recovery_clock.current + timedelta(hours=5)
+    assert recovery.materialize_mail(old_message) is None
+    mail._send_email = Mock()
+    mail.flush_once()
+    mail._send_email.assert_not_called()
+    assert len(mail._outbox) == 1
+    mail.flush_once()
+    mail._send_email.assert_called_once()
+    assert new_token in mail._send_email.call_args.args[2]
+    assert token not in mail._send_email.call_args.args[2]
+
+
+@pytest.mark.parametrize("created_at,valid", [
+    ("2026-09-06T07:00:00+00:00", True),
+    ("2026-09-06T05:00:00+00:00", False),
+    ("invalid", False), (None, False), ("2026-09-06T07:00:00", False),
+])
+def test_legacy_links_get_three_hours_from_original_creation(tmp_path, recovery_clock, created_at, valid):
+    mail, recovery = build_recovery(tmp_path)
+    token, context = queue_recovery(recovery)
+    context.pop("expires_at")
+    context["created_at"] = created_at
+    recovery._write_json(recovery.state_path, {"contexts": [context]})
+    recovery.update_config({"link_ttl_hours": 168})
+    restarted = RemoteAuthRecoveryService(tmp_path, mail_service=mail, logger=LOGGER)
+    if valid:
+        assert restarted.get_status(token) == {"status": "ready"}
+        deadline = datetime.fromisoformat(restarted._contexts[context["context_id"]]["expires_at"])
+        assert deadline == datetime.fromisoformat(created_at) + timedelta(hours=3)
+    else:
+        with pytest.raises(ValueError):
+            restarted.get_status(token)
+
+
+@pytest.mark.parametrize("hours", [0, -1, 169, True, 1.5, None, "3"])
+def test_invalid_recovery_ttl_is_rejected_and_corrupt_config_uses_default(tmp_path, hours):
+    mail, recovery = build_recovery(tmp_path)
+    with pytest.raises(ValueError):
+        recovery.update_config({"link_ttl_hours": hours})
+    assert recovery.get_config()["link_ttl_hours"] == 3
+    recovery._write_json(recovery.config_path, {"public_base_url": "", "link_ttl_hours": hours})
+    restarted = RemoteAuthRecoveryService(tmp_path, mail_service=mail, logger=LOGGER)
+    assert restarted.get_config()["link_ttl_hours"] == 3

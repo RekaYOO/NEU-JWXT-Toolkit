@@ -99,7 +99,8 @@ const AuthRecoverySettings = () => {
     const values = await form.validateFields();
     setSaving(true);
     try {
-      await updateAuthRecoverySettings(values);
+      const result = await updateAuthRecoverySettings(values);
+      form.setFieldsValue(result.config);
       message.success('远程登录恢复配置已保存');
     } catch (error) {
       message.error(error.response?.data?.detail || '远程登录恢复配置保存失败');
@@ -108,9 +109,17 @@ const AuthRecoverySettings = () => {
     }
   };
   if (loading) return <Spin />;
-  return <Form form={form} layout="vertical" onFinish={save}>
+  return <Form form={form} layout="vertical" onFinish={save} initialValues={{ link_ttl_hours: 3 }}>
     <Form.Item name="public_base_url" label="重新登录地址（可选）" extra="填写从邮件可访问的站点根地址。认证失效时，成绩追踪和自动选课会发送独立的一次性恢复链接；留空则只通知你进入系统手动登录。">
       <Input type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" placeholder="https://jwxt.example.com" />
+    </Form.Item>
+    <Form.Item
+      name="link_ttl_hours"
+      label="恢复链接有效期（小时）"
+      tooltip="从链接创建时计时，仅影响新生成的链接。"
+      rules={[{ required: true, type: 'integer', min: 1, max: 168, message: '请输入 1 到 168 小时的整数' }]}
+    >
+      <InputNumber min={1} max={168} step={1} style={{ width: '100%', maxWidth: 240 }} />
     </Form.Item>
     <Button htmlType="submit" icon={<SaveOutlined />} loading={saving}>保存恢复配置</Button>
   </Form>;

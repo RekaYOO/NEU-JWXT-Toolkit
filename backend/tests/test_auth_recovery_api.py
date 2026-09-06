@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from backend.app.dependencies import (
     get_auth_recovery_service,
@@ -169,3 +170,35 @@ def test_tracking_config_rejects_removed_mail_and_recovery_fields():
             assert response.status_code == 422
     finally:
         app.dependency_overrides.clear()
+
+
+def test_recovery_ttl_settings_round_trip_and_old_clients_preserve_value(tmp_path):
+    from backend.core.auth.recovery import RemoteAuthRecoveryService
+    from unittest.mock import Mock
+
+    service = RemoteAuthRecoveryService(tmp_path, mail_service=Mock(), logger=Mock())
+    app.dependency_overrides[get_auth_recovery_service] = lambda: service
+    try:
+        client = TestClient(app)
+        path = "/api/system-settings/auth-recovery"
+        assert client.get(path).json()["link_ttl_hours"] == 3
+        assert client.put(path, json={
+            "public_base_url": "https://toolkit.example.com", "link_ttl_hours": 4,
+        }).json()["config"]["link_ttl_hours"] == 4
+        assert client.put(path, json={
+            "public_base_url": "https://new.example.com",
+        }).json()["config"]["link_ttl_hours"] == 4
+        assert client.put(path, json={
+            "link_ttl_hours": 6,
+        }).json()["config"]["public_base_url"] == "https://new.example.com"
+        assert client.get(path).json()["link_ttl_hours"] == 6
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("hours", [0, -1, 169, True, 1.5, None, "3"])
+def test_recovery_api_rejects_invalid_ttl(hours):
+    response = TestClient(app).put(
+        "/api/system-settings/auth-recovery", json={"link_ttl_hours": hours},
+    )
+    assert response.status_code == 422

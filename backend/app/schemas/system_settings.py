@@ -34,3 +34,4 @@ class SystemMailConfigUpdate(BaseModel):
 class AuthRecoveryConfigUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     public_base_url: str = Field(default="", max_length=500)
+    link_ttl_hours: int = Field(default=3, ge=1, le=168, strict=True)
