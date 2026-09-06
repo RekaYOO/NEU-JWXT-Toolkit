@@ -210,6 +210,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       if (!result.success && result.captcha_invalid) {
         setSmsFlow(prev => ({ ...prev, ...result }));
         setCaptchaCode('');
+        setSmsCode('');
         setSmsSent(false);
         message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
       } else if (!result.success) {
@@ -262,6 +263,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       if (!result.success && result.status === 'captcha_invalid') {
         setSmsFlow(prev => ({ ...prev, ...result }));
         setCaptchaCode('');
+        setSmsCode('');
         setSmsSent(false);
         message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
         return;

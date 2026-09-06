@@ -43,6 +43,7 @@ const AuthRecoveryPage = ({ token }) => {
   const [authError, setAuthError] = useState('');
   const pollTimer = useRef(null);
   const secondsLeftRef = useRef(300);
+  const authenticatedRef = useRef(false);
 
   const stopPolling = useCallback(() => {
     if (pollTimer.current) {
@@ -71,15 +72,35 @@ const AuthRecoveryPage = ({ token }) => {
   }, [setCountdown, stopPolling]);
 
   const finishAuthenticated = useCallback(() => {
+    authenticatedRef.current = true;
     stopPolling();
     setStage('authenticated');
     setMessage('登录已经恢复，相关后台任务将自动继续');
     setFlow(null);
   }, [stopPolling]);
 
+  const handleActionError = (error, fallback) => {
+    if (authenticatedRef.current) return;
+    const detail = error?.response?.data?.detail;
+    const errorCode = detail?.error_code || error?.response?.data?.error_code;
+    const text = recoveryErrorMessage(error, fallback);
+    if (error?.response?.status === 404) {
+      stopPolling();
+      setStage('invalid');
+      setMessage(text);
+      setFlow(null);
+    } else if (['WEBVPN_FLOW_MISSING', 'WEBVPN_FLOW_REPLACED', 'WEBVPN_FLOW_EXPIRED'].includes(errorCode)) {
+      stopPolling();
+      setFlow(null);
+      setStage('error');
+      setMessage(text);
+    } else setAuthError(text);
+  };
+
   const poll = useCallback(async () => {
     try {
       const result = await pollAuthRecovery(token);
+      if (authenticatedRef.current) return;
       if (result.status === 'authenticated') {
         finishAuthenticated();
       } else if (result.status === 'sms_required') {
@@ -96,6 +117,7 @@ const AuthRecoveryPage = ({ token }) => {
         setMessage(result.message);
       }
     } catch (error) {
+      if (authenticatedRef.current) return;
       if (error.response?.status === 404) {
         stopPolling();
         setStage('invalid');
@@ -123,7 +145,11 @@ const AuthRecoveryPage = ({ token }) => {
     setSmsSent(false);
     try {
       const result = await startAuthRecovery(token);
-      if (result.status === 'sms_required') {
+      if (authenticatedRef.current) return;
+      if (result.status === 'authenticated') {
+        finishAuthenticated();
+        return;
+      } else if (result.status === 'sms_required') {
         enterSMSStage(result);
         return;
       }
@@ -133,14 +159,16 @@ const AuthRecoveryPage = ({ token }) => {
       setMessage('请使用微信扫码并确认登录');
       beginPolling(result.poll_interval);
     } catch (error) {
+      if (authenticatedRef.current) return;
       setStage(error.response?.status === 404 ? 'invalid' : 'error');
       setMessage(recoveryErrorMessage(error, '暂时无法创建二维码，请稍后重试'));
     }
-  }, [beginPolling, enterSMSStage, setCountdown, stopPolling, token]);
+  }, [beginPolling, enterSMSStage, finishAuthenticated, setCountdown, stopPolling, token]);
 
   const restore = useCallback(async () => {
     try {
       const result = await getAuthRecoveryStatus(token);
+      if (authenticatedRef.current) return;
       if (result.status === 'ready' || result.status === 'not_started') {
         await start();
       } else if (['qr_pending', 'pending'].includes(result.status)) {
@@ -155,6 +183,7 @@ const AuthRecoveryPage = ({ token }) => {
         await start();
       }
     } catch (error) {
+      if (authenticatedRef.current) return;
       setStage(error.response?.status === 404 ? 'invalid' : 'error');
       setMessage(recoveryErrorMessage(error, '暂时无法读取登录恢复状态'));
     }
@@ -199,7 +228,7 @@ const AuthRecoveryPage = ({ token }) => {
       setSmsCode('');
       setSmsSent(false);
     } catch (error) {
-      setAuthError(recoveryErrorMessage(error, '刷新图形验证码失败，请重试'));
+      handleActionError(error, '刷新图形验证码失败，请重试');
     } finally {
       setCaptchaLoading(false);
     }
@@ -222,6 +251,10 @@ const AuthRecoveryPage = ({ token }) => {
         setAuthError(result.message || '图形验证码不正确，请重新填写');
         return;
       }
+      if (result.success === false || result.status !== 'sent') {
+        setAuthError(result.message || '短信验证码发送失败，请重试');
+        return;
+      }
       setSmsSent(true);
       setSmsCode('');
       setCountdown(result.expires_in, 300);
@@ -231,7 +264,7 @@ const AuthRecoveryPage = ({ token }) => {
           : '短信验证码已发送，请查收并填写'
       );
     } catch (error) {
-      setAuthError(recoveryErrorMessage(error, '短信验证码发送失败，请重试'));
+      handleActionError(error, '短信验证码发送失败，请重试');
     } finally {
       setActionLoading(false);
     }
@@ -258,7 +291,7 @@ const AuthRecoveryPage = ({ token }) => {
       }
       setAuthError(result.message || '短信验证码验证失败，请核对后重试');
     } catch (error) {
-      setAuthError(recoveryErrorMessage(error, '短信验证码验证失败，请重试'));
+      handleActionError(error, '短信验证码验证失败，请重试');
     } finally {
       setActionLoading(false);
     }
@@ -323,7 +356,7 @@ const AuthRecoveryPage = ({ token }) => {
               onVerify={verifySMS}
             />
             <div className="auth-recovery-sms-actions">
-              <Button onClick={restart}>重新开始登录</Button>
+              <Button onClick={restart} disabled={actionLoading || captchaLoading}>重新开始登录</Button>
               <Button
                 type="primary"
                 loading={actionLoading}

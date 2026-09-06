@@ -104,7 +104,7 @@ const WebVPNAuthFields = ({
           size="large"
           icon={<MessageOutlined />}
           loading={loading}
-          disabled={!captchaCode.trim()}
+          disabled={!flow?.captcha_image || !captchaCode.trim()}
           onClick={onSendSMS}
         >
           {smsSent ? '重新发送' : '获取验证码'}

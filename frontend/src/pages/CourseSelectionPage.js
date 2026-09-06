@@ -325,6 +325,7 @@ const CourseSelectionPage = () => {
       if (!result.success && result.captcha_invalid) {
         setWebvpnSmsFlow(prev => ({ ...prev, ...result }));
         setWebvpnCaptchaCode('');
+        setWebvpnSmsCode('');
         setWebvpnSmsSent(false);
         message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
       } else if (!result.success) {
@@ -350,6 +351,7 @@ const CourseSelectionPage = () => {
       if (!result.success && result.status === 'captcha_invalid') {
         setWebvpnSmsFlow(prev => ({ ...prev, ...result }));
         setWebvpnCaptchaCode('');
+        setWebvpnSmsCode('');
         setWebvpnSmsSent(false);
         message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
         return;

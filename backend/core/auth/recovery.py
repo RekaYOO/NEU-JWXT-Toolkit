@@ -10,12 +10,13 @@ import secrets
 import threading
 import time
 import uuid
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from backend.core.runtime.config import secure_file
+from backend.core.auth.client import WebVPNLoginError, WEBVPN_ERR_FLOW_MISSING
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -129,6 +130,14 @@ class RemoteAuthRecoveryService:
     def register_recovered_callback(self, source: str, callback: Callable[[str], None]) -> None:
         with self._lock:
             self._callbacks.setdefault(str(source), []).append(callback)
+
+    @contextmanager
+    def _operation_guard(self):
+        # Login commits already hold the remote guard when invalidating recovery
+        # contexts. Never hold the recovery lock while waiting for that guard.
+        with self.remote_guard():
+            with self._lock:
+                yield
 
     def stop(self) -> None:
         with self._lock:
@@ -393,6 +402,9 @@ class RemoteAuthRecoveryService:
             record = self._flows.get(str(context["context_id"]))
             if not record:
                 return {"status": "ready"}
+            if not self._sms_record_is_live(record):
+                self._flows.pop(str(context["context_id"]), None)
+                return {"status": "ready"}
             flow = record["flow"]
             status = "sms_required" if flow.get("kind") == "sms" else "qr_pending"
             expires_in = max(0, int(float(flow.get("expires_at", 0)) - time.time()))
@@ -405,7 +417,13 @@ class RemoteAuthRecoveryService:
         context = self._context_for_token(token)
         context_id = str(context["context_id"])
         target = str(context.get("target_service") or "primary")
-        with self._lock:
+        with self._operation_guard():
+            self._context_for_token(token)
+            record = self._flows.get(context_id)
+            # Opening the same link twice must not cancel a pending SMS on the
+            # very client from which the email adopted it.
+            if record and record["flow"].get("kind") == "sms" and self._sms_record_is_live(record):
+                return self.get_status(token)
             self._cancel_flow_locked(context_id)
             if self._adopt_pending_sms(context_id, target):
                 flow = self._flows[context_id]["flow"]
@@ -415,8 +433,7 @@ class RemoteAuthRecoveryService:
                 }}
             if not self.qr_login_starter:
                 raise RuntimeError("当前运行环境不支持二维码恢复")
-            with self.remote_guard():
-                client, flow = self._call_target(self.qr_login_starter, target)
+            client, flow = self._call_target(self.qr_login_starter, target)
             self._flows[context_id] = {
                 "client": client,
                 "flow": self._flow_payload("qr", {**flow, "target_service": target}),
@@ -426,7 +443,8 @@ class RemoteAuthRecoveryService:
     def poll(self, token: str) -> dict[str, Any]:
         context = self._context_for_token(token)
         context_id = str(context["context_id"])
-        with self._lock:
+        with self._operation_guard():
+            self._context_for_token(token)
             record = self._flows.get(context_id)
             if not record:
                 return {"status": "not_started"}
@@ -437,8 +455,7 @@ class RemoteAuthRecoveryService:
                     if key in {"flow_id", "captcha_image", "expires_in"}
                 }}
             try:
-                with self.remote_guard():
-                    result = record["client"].poll_webvpn_qr_login(flow["flow_id"])
+                result = record["client"].poll_webvpn_qr_login(flow["flow_id"])
             except Exception:
                 self.logger.warning("[远程认证恢复] 二维码轮询失败", exc_info=True)
                 return {"status": "pending", "message": "状态查询暂时失败，正在重试"}
@@ -451,34 +468,47 @@ class RemoteAuthRecoveryService:
                 self._flows.pop(context_id, None)
             return result
 
+    @staticmethod
+    def _sms_record_is_live(record: dict[str, Any]) -> bool:
+        if record["flow"].get("kind") != "sms":
+            return True
+        getter = getattr(record["client"], "get_webvpn_sms_challenge", None)
+        if not callable(getter):
+            return True
+        try:
+            challenge = getter()
+        except WebVPNLoginError:
+            return False
+        return bool(challenge and challenge.get("flow_id") == record["flow"].get("flow_id"))
+
     def _require_sms(self, token: str) -> tuple[dict[str, Any], Any, dict[str, Any]]:
         context = self._context_for_token(token)
         record = self._flows.get(str(context["context_id"]))
-        if not record or record["flow"].get("kind") != "sms":
-            raise ValueError("短信验证流程不存在，请重新开始登录")
+        if not record or record["flow"].get("kind") != "sms" or not self._sms_record_is_live(record):
+            self._flows.pop(str(context["context_id"]), None)
+            # The link remains valid; distinguish a stale process-local Flow
+            # from a revoked recovery token (404).
+            raise WebVPNLoginError("短信验证流程已失效，请在本页重新开始登录", error_code=WEBVPN_ERR_FLOW_MISSING)
         return context, record["client"], record["flow"]
 
     def refresh_captcha(self, token: str) -> dict[str, Any]:
-        with self._lock:
+        with self._operation_guard():
             _context, client, flow = self._require_sms(token)
-            with self.remote_guard():
-                result = client.refresh_webvpn_captcha(flow["flow_id"])
+            result = client.refresh_webvpn_captcha(flow["flow_id"])
             self._update_flow(flow, result)
             return {"success": True, **result}
 
     def send_sms(self, token: str, captcha_code: str) -> dict[str, Any]:
-        with self._lock:
+        with self._operation_guard():
             _context, client, flow = self._require_sms(token)
-            with self.remote_guard():
-                result = client.send_webvpn_sms_code(flow["flow_id"], captcha_code)
+            result = client.send_webvpn_sms_code(flow["flow_id"], captcha_code)
             self._update_flow(flow, result)
             return {"success": result.get("status") == "sent", **result}
 
     def verify_sms(self, token: str, code: str, trust_device: bool = False) -> dict[str, Any]:
-        with self._lock:
+        with self._operation_guard():
             context, client, flow = self._require_sms(token)
-            with self.remote_guard():
-                result = client.verify_webvpn_sms_code(flow["flow_id"], code, trust_device)
+            result = client.verify_webvpn_sms_code(flow["flow_id"], code, trust_device)
             if result.get("status") == "authenticated":
                 return self._complete_locked(context, client)
             self._update_flow(flow, result)
@@ -515,12 +545,14 @@ class RemoteAuthRecoveryService:
         if not record:
             return
         try:
-            with self.remote_guard():
-                flow = record["flow"]
-                if flow.get("kind") == "sms":
-                    record["client"].cancel_webvpn_sms_login(flow.get("flow_id"))
-                else:
-                    record["client"].cancel_webvpn_qr_login(flow.get("flow_id"))
+            # These client methods only clear the matching in-memory Flow.
+            # Reacquiring the non-reentrant remote guard here deadlocks a
+            # successful foreground login during set_auth_client/invalidate_all.
+            flow = record["flow"]
+            if flow.get("kind") == "sms":
+                record["client"].cancel_webvpn_sms_login(flow.get("flow_id"))
+            else:
+                record["client"].cancel_webvpn_qr_login(flow.get("flow_id"))
         except Exception:
             self.logger.debug("[远程认证恢复] 取消旧流程失败", exc_info=True)
 

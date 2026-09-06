@@ -40,6 +40,145 @@ def active_token(recovery):
     return recovery._token(context)
 
 
+def test_successful_sms_commit_can_invalidate_mail_flows_without_reentering_remote_guard(tmp_path):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    held = False
+
+    @contextmanager
+    def exclusive():
+        nonlocal held
+        assert not held, "non-reentrant remote guard entered during successful login"
+        held = True
+        try:
+            yield
+        finally:
+            held = False
+
+    client = SimpleNamespace(
+        username="student",
+        verify_webvpn_sms_code=Mock(return_value={"status": "authenticated"}),
+        cancel_webvpn_sms_login=Mock(),
+    )
+    _, recovery = build_recovery(tmp_path, remote_guard=exclusive)
+    recovery.request_notification(
+        source="grade_tracking", target_service="primary", account_id="student",
+        subject="登录失效", body="请恢复", dedupe_key="episode",
+    )
+    token = active_token(recovery)
+    context_id = token.split(".")[0]
+    recovery._flows[context_id] = {"client": client, "flow": {"kind": "sms", "flow_id": "sms"}}
+
+    def commit(_client):
+        assert held, "identity commit must remain inside the exclusive boundary"
+        recovery.invalidate_all()
+
+    recovery.auth_committer = commit
+    result = recovery.verify_sms(token, "654321")
+    assert result["status"] == "authenticated"
+    assert recovery._contexts[context_id]["status"] == "completed"
+    assert not held
+    # A subsequent timetable request can acquire the same boundary.
+    with exclusive():
+        pass
+
+
+def test_foreground_login_cleanup_does_not_take_remote_guard_again(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    def forbidden():
+        raise AssertionError("login already holds the remote guard")
+
+    _, recovery = build_recovery(tmp_path, remote_guard=forbidden)
+    recovery.request_notification(
+        source="grade_tracking", target_service="primary", account_id="student",
+        subject="登录失效", body="请恢复", dedupe_key="episode",
+    )
+    token = active_token(recovery)
+    client = SimpleNamespace(cancel_webvpn_sms_login=Mock())
+    recovery._flows[token.split(".")[0]] = {
+        "client": client, "flow": {"kind": "sms", "flow_id": "sms"},
+    }
+    recovery.invalidate_all()
+    client.cancel_webvpn_sms_login.assert_called_once_with("sms")
+
+
+def test_recovery_waits_for_remote_slot_without_holding_local_context_lock(tmp_path):
+    from contextlib import contextmanager
+    from threading import Event, Thread
+
+    queued, release, finished = Event(), Event(), Event()
+    errors = []
+
+    @contextmanager
+    def guard():
+        queued.set()
+        assert release.wait(2)
+        yield
+
+    _, recovery = build_recovery(
+        tmp_path, remote_guard=guard,
+        qr_login_starter=lambda: (object(), {"flow_id": "qr"}),
+    )
+    recovery.request_notification(
+        source="grade_tracking", target_service="primary", account_id="student",
+        subject="登录失效", body="请恢复", dedupe_key="episode",
+    )
+    token = active_token(recovery)
+
+    def worker():
+        try:
+            recovery.start(token)
+        except Exception as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    thread = Thread(target=worker, daemon=True)
+    thread.start()
+    try:
+        assert queued.wait(1)
+        acquired = recovery._lock.acquire(timeout=0.5)
+        assert acquired, "recovery lock must remain available to a foreground login commit"
+        recovery._lock.release()
+    finally:
+        release.set()
+        thread.join(3)
+    assert finished.is_set()
+    assert not errors
+
+
+def test_reopening_adopted_sms_keeps_live_flow_but_stale_flow_keeps_token_valid(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from backend.core.auth.client import WebVPNLoginError, WEBVPN_ERR_FLOW_MISSING
+
+    challenge = {"status": "sms_required", "flow_id": "sms", "expires_in": 300}
+    client = SimpleNamespace(
+        get_webvpn_sms_challenge=Mock(return_value=challenge),
+        cancel_webvpn_sms_login=Mock(),
+    )
+    _, recovery = build_recovery(
+        tmp_path, pending_sms_provider=lambda: (client, challenge),
+    )
+    recovery.request_notification(
+        source="grade_tracking", target_service="primary", account_id="student",
+        subject="登录失效", body="请恢复", dedupe_key="episode",
+    )
+    token = active_token(recovery)
+    assert recovery.start(token)["flow_id"] == "sms"
+    assert recovery.start(token)["flow_id"] == "sms"
+    client.cancel_webvpn_sms_login.assert_not_called()
+    client.get_webvpn_sms_challenge.return_value = None
+    with pytest.raises(WebVPNLoginError) as error:
+        recovery.send_sms(token, "1234")
+    assert error.value.error_code == WEBVPN_ERR_FLOW_MISSING
+    assert recovery.get_status(token) == {"status": "ready"}
+
+
 def test_tracking_service_contains_no_mail_or_recovery_api(tmp_path):
     mail, recovery = build_recovery(tmp_path)
     tracker = GradeTrackingService(

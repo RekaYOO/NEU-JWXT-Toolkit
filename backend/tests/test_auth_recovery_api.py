@@ -81,6 +81,18 @@ class FakeTracker:
         return values
 
 
+def test_missing_sms_flow_is_restartable_conflict_not_an_invalid_link():
+    from backend.app.routers.auth_recovery import _recovery_error
+    from backend.core.auth.client import WebVPNLoginError, WEBVPN_ERR_FLOW_MISSING
+
+    error = _recovery_error(WebVPNLoginError(
+        "短信验证流程已失效，请在本页重新开始登录", error_code=WEBVPN_ERR_FLOW_MISSING,
+    ))
+    assert error.status_code == 409
+    assert error.detail["error_code"] == WEBVPN_ERR_FLOW_MISSING
+    assert _recovery_error(ValueError("一次性登录链接不存在或已失效")).status_code == 404
+
+
 def test_new_auth_recovery_api_and_system_settings_are_wired():
     recovery = FakeRecoveryService()
     mail = FakeMailService()

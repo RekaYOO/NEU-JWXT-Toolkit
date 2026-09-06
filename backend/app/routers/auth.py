@@ -561,8 +561,9 @@ def send_webvpn_sms_code(request: WebVPNSMSSendRequest):
                 "error_code": WEBVPN_ERR_CAPTCHA_INVALID,
                 **result,
             }
-        log_security_event("webvpn_sms_send", "success", auth_method="sms")
-        return {"success": True, **result}
+        sent = result.get("status") == "sent"
+        log_security_event("webvpn_sms_send", "success" if sent else "failure", auth_method="sms")
+        return {**result, "success": sent}
     except WebVPNLoginError as error:
         log_security_event(
             "webvpn_sms_send",

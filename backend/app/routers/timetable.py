@@ -168,6 +168,20 @@ def _terms_for_auth(auth: NEUAuthClient):
         return terms
     generation = get_auth_generation()
     account = str(auth.username)
+    # The durable term index is already populated by bootstrap/sync. Do not
+    # queue behind remote work merely because this client's short memory cache
+    # expired or the service restarted.
+    coordinator = get_cache_coordinator()
+    entry, stale = coordinator.read(account_id=account, resource="timetable-index")
+    if not stale and _cache_entry_is_compatible(entry, coordinator.registry.get("timetable-index")):
+        payload = entry.payload
+        if isinstance(payload, dict):
+            try:
+                snapshot = TimetableTermsResponse(**payload)
+                if snapshot.terms:
+                    return [item.model_dump() for item in snapshot.terms]
+            except (TypeError, ValueError):
+                pass
     with remote_read_session_guard(priority="foreground", label="timetable-terms"):
         if not auth_generation_is_current(generation, account):
             raise _authentication_failure()

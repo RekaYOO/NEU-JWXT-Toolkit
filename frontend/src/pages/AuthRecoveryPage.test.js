@@ -6,6 +6,7 @@ import {
   getAuthRecoveryStatus,
   sendAuthRecoverySMS,
   startAuthRecovery,
+  verifyAuthRecoverySMS,
 } from '../services/api';
 
 jest.mock('../services/api', () => ({
@@ -171,4 +172,68 @@ describe('AuthRecoveryPage', () => {
     await act(async () => root.unmount());
     container.remove();
   });
+
+  test.each(['success', 'flow_missing', 'send_failed', 'captcha_invalid'])(
+    '短信操作显示实际结果而不是停留或误报：%s', async (scenario) => {
+      getAuthRecoveryStatus.mockResolvedValue({
+        status: 'sms_required', flow_id: 'sms',
+        captcha_image: 'data:image/jpeg;base64,YWJj', expires_in: 300,
+      });
+      verifyAuthRecoverySMS.mockResolvedValue({ status: 'authenticated' });
+      sendAuthRecoverySMS.mockResolvedValue({
+        success: false, status: 'error', message: '发送频率受限，请稍后重试',
+      });
+      if (scenario === 'flow_missing') verifyAuthRecoverySMS.mockRejectedValue({
+        response: { status: 409, data: { detail: {
+          error_code: 'WEBVPN_FLOW_MISSING',
+          message: '短信验证流程已失效，请在本页重新开始登录',
+        } } },
+      });
+      if (scenario === 'captcha_invalid') sendAuthRecoverySMS.mockResolvedValue({
+        success: false, status: 'captcha_invalid', captcha_invalid: true,
+        captcha_image: 'data:image/jpeg;base64,bmV3', message: '图形验证码不正确',
+      });
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      try {
+        await act(async () => root.render(<AuthRecoveryPage token="recovery-token" />));
+        const isSend = ['send_failed', 'captcha_invalid'].includes(scenario);
+        const input = container.querySelector(isSend
+          ? 'input[placeholder="请输入图片中的图形验证码"]'
+          : 'input[placeholder="请输入短信验证码"]');
+        await act(async () => {
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+            .set.call(input, '123456');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        const button = [...container.querySelectorAll('button')].find(element => (
+          element.textContent.includes(isSend ? '获取验证码' : '验证并恢复登录')
+        ));
+        await act(async () => button.click());
+        if (scenario === 'success') {
+          expect(container.textContent).toContain('登录已恢复');
+          expect(container.querySelector('input[placeholder="请输入短信验证码"]')).toBeNull();
+          expect(verifyAuthRecoverySMS).toHaveBeenCalledTimes(1);
+        } else if (scenario === 'flow_missing') {
+          expect(container.textContent).toContain('请在本页重新开始登录');
+          expect(container.textContent).toContain('重新开始登录');
+          expect(container.textContent).not.toContain('链接已失效');
+        } else if (scenario === 'captcha_invalid') {
+          expect(container.textContent).toContain('图形验证码不正确');
+          expect(input.value).toBe('');
+          expect(container.querySelector('img[alt="图形验证码"]').src).toBe('data:image/jpeg;base64,bmV3');
+          expect(container.querySelector('input[placeholder="请输入短信验证码"]')).not.toBeNull();
+          expect(button.disabled).toBe(true);
+          expect(sendAuthRecoverySMS).toHaveBeenCalledTimes(1);
+        } else {
+          expect(container.textContent).toContain('发送频率受限');
+          expect(container.textContent).not.toContain('短信验证码已发送');
+        }
+      } finally {
+        await act(async () => root.unmount());
+        container.remove();
+      }
+    },
+  );
 });

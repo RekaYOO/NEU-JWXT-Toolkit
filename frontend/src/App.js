@@ -602,6 +602,7 @@ function App() {
       if (!result.success && result.captcha_invalid) {
         setPendingAuthFlow(previous => ({ ...previous, ...result }));
         setPendingCaptchaCode('');
+        setPendingSmsCode('');
         setPendingSmsSent(false);
         message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
       } else if (!result.success) {
@@ -639,6 +640,7 @@ function App() {
       if (!result.success && result.status === 'captcha_invalid') {
         setPendingAuthFlow(previous => ({ ...previous, ...result }));
         setPendingCaptchaCode('');
+        setPendingSmsCode('');
         setPendingSmsSent(false);
         message.warning(getWebVPNErrorMessage(result, '图形验证码不正确，请核对新图片'));
         return;

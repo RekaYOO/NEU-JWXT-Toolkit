@@ -1209,6 +1209,39 @@ class NEUAuthClient:
             ),
         }
 
+    @staticmethod
+    def _is_graphic_captcha_error(code: Any, message: str) -> bool:
+        if str(code).lower() in {"codeerr", "captcha_error", "captcha_invalid"}:
+            return True
+        # Explicit SMS errors must not discard the image or require a new SMS.
+        return "短信" not in message and any(
+            marker in message for marker in ("图形验证码", "图片验证码", "验证码错误", "验证码不正确", "校验码")
+        ) and any(
+            marker in message for marker in ("错误", "不正确", "失败", "失效", "过期", "不匹配", "为空")
+        )
+
+    def _webvpn_captcha_rejected(self, flow_id: str, message: str = "") -> Dict[str, Any]:
+        flow = self._get_webvpn_sms_flow(flow_id)
+        flow["captcha_code"] = ""
+        try:
+            refreshed = self.refresh_webvpn_captcha(flow_id)
+        except WebVPNLoginError as error:
+            if error.error_code not in {WEBVPN_ERR_CAPTCHA_FETCH, WEBVPN_ERR_UPSTREAM_TIMEOUT}:
+                raise
+            flow["captcha_image"] = ""
+            refreshed = {"captcha_image": "", "captcha_refresh_failed": True}
+            message = "图形验证码不正确，且新图片加载失败，请点击刷新图片后重新填写"
+        return {
+            **refreshed,
+            # Refresh reports captcha_refreshed, but the operation still failed.
+            # Put the error envelope last so it cannot be overwritten.
+            "success": False,
+            "status": "captcha_invalid",
+            "captcha_invalid": True,
+            "error_code": WEBVPN_ERR_CAPTCHA_INVALID,
+            "message": message or "图形验证码不正确，请填写新图片后重新获取短信验证码",
+        }
+
     def send_webvpn_sms_code(self, flow_id: str, captcha_code: str) -> Dict[str, Any]:
         """Ask the official second-auth endpoint to send the SMS code."""
         flow = self._get_webvpn_sms_flow(flow_id)
@@ -1273,6 +1306,8 @@ class NEUAuthClient:
                 "短信接口返回了无法解析的响应，请重新开始登录",
                 error_code=WEBVPN_ERR_UPSTREAM_NON_JSON,
             )
+        if self._is_graphic_captcha_error(info, message):
+            return self._webvpn_captcha_rejected(flow_id, message)
         if info in {"send", "success", "ok", 0, "0"} or result.get("success") is True:
             return {
                 "status": "sent",
@@ -1287,16 +1322,6 @@ class NEUAuthClient:
                 message or "短信验证码发送失败",
                 error_code=WEBVPN_ERR_SMS_INVALID,
             )
-        if str(info).lower() in {"codeerr", "captcha_error", "captcha_invalid"} or any(
-            marker in message for marker in ("图形验证码", "验证码错误", "校验码")
-        ):
-            refreshed = self.refresh_webvpn_captcha(flow_id)
-            return {
-                "status": "captcha_invalid",
-                "error_code": WEBVPN_ERR_CAPTCHA_INVALID,
-                "message": message or "图形验证码不正确，请重试",
-                **refreshed,
-            }
         raise WebVPNLoginError(message or "短信验证码发送失败", error_code=WEBVPN_ERR_UNKNOWN)
 
     def verify_webvpn_sms_code(self, flow_id: str, code: str, trust_device: bool = False) -> Dict[str, Any]:
@@ -1338,24 +1363,15 @@ class NEUAuthClient:
             )).lower()
             if isinstance(response_json, dict) else ""
         )
-        if response_code in {"codeerr", "captcha_error", "captcha_invalid"}:
-            refreshed = self.refresh_webvpn_captcha(flow_id)
-            return {
-                "status": "captcha_invalid",
-                "error_code": WEBVPN_ERR_CAPTCHA_INVALID,
-                "message": str(response_json.get("message") or response_json.get("msg") or "图形验证码不正确，请重试"),
-                **refreshed,
-            }
+        response_message = str(response_json.get("message") or response_json.get("msg") or "") if isinstance(response_json, dict) else ""
+        if self._is_graphic_captcha_error(response_code, response_message):
+            return self._webvpn_captcha_rejected(flow_id, response_message)
+        if response_code in {"timeout", "codeerror", "sms_error", "invalid"}:
+            raise WebVPNLoginError(response_message or "短信验证码不正确或已过期，请核对后重试", error_code=WEBVPN_ERR_SMS_INVALID)
         if self._is_webvpn_login_url(response.url) or self._extract_second_auth_form(response.text, response.url):
             error = self._extract_error_message(response.text)
-            if "验证码" in error:
-                refreshed = self.refresh_webvpn_captcha(flow_id)
-                return {
-                    "status": "captcha_invalid",
-                    "error_code": WEBVPN_ERR_CAPTCHA_INVALID,
-                    **refreshed,
-                    "message": error,
-                }
+            if self._is_graphic_captcha_error("", error):
+                return self._webvpn_captcha_rejected(flow_id, error)
             raise WebVPNLoginError(error or "短信验证码验证失败", error_code=WEBVPN_ERR_SMS_INVALID)
 
         try:

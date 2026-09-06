@@ -145,6 +145,36 @@ def test_terms_route_fences_identity_before_remote_refresh(monkeypatch):
     assert error.value.status_code == 401
 
 
+@pytest.mark.parametrize("stale,compatible,remote_expected", [
+    (False, True, False), (True, True, True), (False, False, True),
+])
+def test_terms_route_reuses_only_fresh_compatible_account_index(monkeypatch, stale, compatible, remote_expected):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from contextlib import nullcontext
+
+    terms = [{"code": "2026-2027-1", "name": "秋季", "current": True}]
+    spec = SimpleNamespace(schema_version=1, revision_algorithm_version=1, payload_type="json")
+    entry = SimpleNamespace(
+        schema_version=1 if compatible else 0, revision_algorithm_version=1,
+        payload_type="json", payload={"terms": terms, "current": terms[0]["code"]},
+    )
+    coordinator = SimpleNamespace(
+        read=Mock(return_value=(entry, stale)),
+        registry=SimpleNamespace(get=Mock(return_value=spec)),
+    )
+    api = SimpleNamespace(get_cached_terms=Mock(return_value=None), get_terms=Mock(return_value=terms))
+    guard = Mock(side_effect=lambda **_: nullcontext())
+    monkeypatch.setattr(timetable_router, "get_cache_coordinator", lambda: coordinator)
+    monkeypatch.setattr(timetable_router, "remote_read_session_guard", guard)
+    monkeypatch.setattr(timetable_router, "auth_generation_is_current", lambda *_: True)
+    response = timetable_router.get_timetable_terms(auth=SimpleNamespace(username="student", timetable=api))
+    assert response.current == "2026-2027-1"
+    assert guard.called == remote_expected
+    assert api.get_terms.called == remote_expected
+    coordinator.read.assert_called_once_with(account_id="student", resource="timetable-index")
+
+
 def test_week_current_flag_does_not_treat_false_text_as_true():
     client = Client({
         "code": "0",
