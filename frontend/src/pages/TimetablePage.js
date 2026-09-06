@@ -989,31 +989,51 @@ export const mobileCourseContext = (course, mode = 'personal') => {
   return { teacher, classes: '' };
 };
 
-export const queryTimetableScheduleMatches = ({
+export const queryTimetableSubjectMatches = ({
   mode = 'personal',
   schedule = null,
   targetId = '',
   termCode = '',
   campusCode = '',
-  viewMode = 'week',
-  weekNumber = null,
 } = {}) => Boolean(
   schedule
   && schedule.mode === mode
   && String(schedule.target_id || '') === String(targetId || '')
   && String(schedule.term_code || '') === String(termCode || '')
   && String(schedule.campus_code || '') === String(campusCode || '')
-  && (viewMode === 'term'
-    ? schedule.week == null
-    : Number(schedule.week) === Number(weekNumber)),
+);
+
+export const queryTimetableScheduleMatches = (selection = {}) => (
+  queryTimetableSubjectMatches(selection)
+  && (selection.viewMode === 'term'
+    ? selection.schedule.week == null
+    : selection.schedule.week != null
+      && selection.weekNumber != null
+      && Number(selection.schedule.week) === Number(selection.weekNumber))
 );
 
 export const shouldShowQueryTimetablePending = ({
   mode = 'personal',
   target = null,
   scheduleMatches = false,
+  loading = false,
   error = null,
-} = {}) => mode !== 'personal' && Boolean(target) && !scheduleMatches && !error;
+} = {}) => mode !== 'personal' && Boolean(target) && loading && !scheduleMatches && !error;
+
+function QueryTimetablePending({ mode, viewMode, weekNumber, isMobile, includeRange = false }) {
+  const range = includeRange
+    ? (viewMode === 'week' ? `第 ${weekNumber} 周` : '全学期')
+    : '';
+  return (
+    <>
+      <div className="timetable-query-pending-copy">
+        <strong>等待拉取课表</strong>
+        <span>正在从教务系统读取{range}{MODE_LABELS[mode]}，返回后会自动显示。</span>
+      </div>
+      <Skeleton active title={false} paragraph={{ rows: isMobile ? 4 : 7 }} />
+    </>
+  );
+}
 
 /**
  * Derive the compact mobile summary from the account's complete timetable.
@@ -1442,6 +1462,10 @@ function TimetablePage({
     : new URLSearchParams(window.location.search).get('term') || '');
   const restored = restorePersonalTimetableMemory(timetableMemory.data, requestedTerm);
   const [mode, setMode] = useState('personal');
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const pageRef = useRef(null);
+  const queryViewportHeld = useRef(false);
   const [headerPortalTarget, setHeaderPortalTarget] = useState(null);
   const [terms, setTerms] = useState(() => restored?.terms || []);
   const [currentTermCode, setCurrentTermCode] = useState(() => restored?.currentTermCode || '');
@@ -1490,6 +1514,8 @@ function TimetablePage({
   personalPayloadRef.current = personalPayload;
   termCodeRef.current = termCode;
   const [error, setError] = useState(null);
+  const queryContextEmpty = mode !== 'personal' && Boolean(target)
+    && Array.isArray(context?.campuses) && context.campuses.length === 0;
   const [autoNotice, setAutoNotice] = useState('');
   const [detailCourse, setDetailCourse] = useState(null);
   const [conflictDetectionEnabled, setConflictDetectionEnabled] = useState(false);
@@ -1566,6 +1592,44 @@ function TimetablePage({
     setHeaderPortalTarget(document.getElementById('workspace-header-center'));
   }, []);
 
+  const holdQueryViewport = useCallback(() => {
+    if (embedded || modeRef.current === 'personal' || !pageRef.current) return;
+    const page = pageRef.current;
+    const height = page.getBoundingClientRect().height;
+    queryViewportHeld.current = true;
+    page.style.minHeight = `${height}px`;
+    setMobileStableMinHeight(height);
+  }, [embedded]);
+
+  useLayoutEffect(() => {
+    if (embedded || mode === 'personal' || loading || !queryViewportHeld.current) return undefined;
+    const trimReservation = () => {
+      const page = pageRef.current;
+      if (!page) return;
+      const rect = page.getBoundingClientRect();
+      const naturalBottom = [...page.children].reduce((bottom, child) => (
+        Math.max(bottom, child.getBoundingClientRect().bottom)
+      ), rect.top);
+      const required = Math.max(0, window.innerHeight - rect.top);
+      const reserved = Number.parseFloat(page.style.minHeight) || 0;
+      // Outer workspace padding also contributes scrolling space. A release
+      // must never enlarge the reservation just to cover that outer padding.
+      const minimum = window.scrollY > 0 && naturalBottom - rect.top < required
+        ? Math.min(reserved, required) : 0;
+      page.style.minHeight = minimum ? `${minimum}px` : '';
+      setMobileStableMinHeight(minimum);
+    };
+    // Shrinking to an empty week must not clamp scrollY. Keep only the space
+    // needed by the current viewport, and release it as the user scrolls up.
+    trimReservation();
+    window.addEventListener('scroll', trimReservation, { passive: true });
+    window.addEventListener('resize', trimReservation);
+    return () => {
+      window.removeEventListener('scroll', trimReservation);
+      window.removeEventListener('resize', trimReservation);
+    };
+  }, [embedded, error, loading, mode, schedule]);
+
   const loadTerms = useCallback(() => {
     if (recoveryMode) return Promise.resolve();
     if (termsRequestRef.current) return termsRequestRef.current;
@@ -1615,6 +1679,7 @@ function TimetablePage({
   useEffect(() => { loadTerms(); }, [loadTerms]);
 
   const setPersonalContext = useCallback((payload, nextCampusCode, nextWeek) => {
+    if (modeRef.current !== 'personal') return;
     const sectionsByCampus = payload.sections_by_campus || {};
     const sections = sectionsByCampus[nextCampusCode]
       || Object.values(sectionsByCampus).find(rows => Array.isArray(rows) && rows.length)
@@ -1627,7 +1692,7 @@ function TimetablePage({
 
   const browserSyncStarted = useRef(false);
   const applyCachedSnapshot = useCallback((payload, source = 'server') => {
-    if (!payload?.term_code) return false;
+    if (!payload?.term_code || modeRef.current !== 'personal') return false;
     const firstCampus = payload.campuses?.[0]?.code || '';
     const nextWeek = selectDefaultWeek(payload.weeks || [], {
       currentTerm: payload.term_code === currentTermCodeRef.current,
@@ -1650,6 +1715,7 @@ function TimetablePage({
   }, [setPersonalContext]);
 
   const applyPersonalPayloadForView = useCallback((payload) => {
+    if (modeRef.current !== 'personal') return;
     const viewState = timetableViewState.current;
     const nextCampus = (payload.campuses || []).some(item => item.code === viewState.campusCode)
       ? viewState.campusCode
@@ -1663,7 +1729,7 @@ function TimetablePage({
   }, [setPersonalContext]);
 
   const offerPersonalPayloadUpdate = useCallback((payload, source = 'server') => {
-    if (!payload?.term_code) return false;
+    if (!payload?.term_code || modeRef.current !== 'personal') return false;
     const current = personalPayloadRef.current;
     if (!current) {
       applyCachedSnapshot(payload, source);
@@ -1723,7 +1789,7 @@ function TimetablePage({
       }
       const desiredTerm = requestedTerm || browser.current || browser.personal?.[0]?.term_code || '';
       const candidate = browser.personal?.find(item => item.term_code === desiredTerm) || browser.personal?.[0];
-      if (candidate && !personalPayload) {
+      if (candidate && !personalPayload && modeRef.current === 'personal') {
         const saved = browser.viewState || {};
         browserPreferredTerm.current = saved.termCode || candidate.term_code || '';
         if (!embedded && (saved.termCode || candidate.term_code)) {
@@ -1793,7 +1859,8 @@ function TimetablePage({
     let active = true;
     const onCacheEvent = event => {
       const detail = event.detail || {};
-      if (!active || !['timetable-index', 'personal-timetable'].includes(detail.resource)) return;
+      if (!active || modeRef.current !== 'personal'
+        || !['timetable-index', 'personal-timetable'].includes(detail.resource)) return;
       getTimetableBootstrap().then(bootstrap => {
         if (!active) return;
         const selected = requestedTerm || bootstrap.current || termCode;
@@ -2195,7 +2262,11 @@ function TimetablePage({
         setCampusCode(firstCampus);
         setWeekNumber(defaultWeek);
         if (!firstCampus) {
-          setError({ stage: 'context', message: '该学期没有可查询的开课校区' });
+          setError(mode !== 'personal' && Array.isArray(payload.campuses) && payload.campuses.length === 0
+            ? null : { stage: 'context', message: '该学期没有可查询的开课校区' });
+          setLoading(false);
+        } else if (!defaultWeek && viewModeRef.current === 'week') {
+          setError({ stage: 'context', message: '该学期未返回教学周，请重试或切换全学期查询' });
           setLoading(false);
         }
       })
@@ -2215,8 +2286,21 @@ function TimetablePage({
       await loadPersonalTimetable(termCode, { refresh: true });
       return;
     }
-    if (!context || !campusCode || !termCode) return;
+    if (!context || !termCode) return;
     const generation = ++scheduleGeneration.current;
+    // An empty target campus list confirms no courses for the entire term.
+    if (!campusCode) {
+      setError(queryContextEmpty ? null : { stage: 'context', message: '该学期没有可查询的开课校区' });
+      if (queryContextEmpty) setSchedule(null);
+      setLoading(false);
+      return;
+    }
+    if (viewMode === 'week' && !weekNumber) {
+      setError({ stage: 'context', message: '该学期未返回教学周，请重试或切换全学期查询' });
+      setLoading(false);
+      return;
+    }
+    holdQueryViewport();
     setLoading(true);
     setError(null);
     setDetailCourse(null);
@@ -2229,6 +2313,17 @@ function TimetablePage({
         week: viewMode === 'week' ? weekNumber : null,
       });
       if (generation !== scheduleGeneration.current) return;
+      if (
+        !queryTimetableScheduleMatches({
+          mode, schedule: payload, targetId: target?.id || '',
+          termCode, campusCode, viewMode, weekNumber,
+        })
+        || !['courses', 'unscheduled', 'practices'].every(key => Array.isArray(payload?.[key]))
+      ) {
+        setError({ stage: 'schedule', message: '返回的课表范围或数据格式不匹配，请重试' });
+        return;
+      }
+      holdQueryViewport();
       setSchedule(payload);
     } catch (requestError) {
       if (generation !== scheduleGeneration.current) return;
@@ -2236,18 +2331,21 @@ function TimetablePage({
     } finally {
       if (generation === scheduleGeneration.current) setLoading(false);
     }
-  }, [campusCode, context, loadPersonalTimetable, mode, recoveryMode, target, termCode, usesPersonalTimetableEndpoint, viewMode, weekNumber]);
+  }, [campusCode, context, holdQueryViewport, loadPersonalTimetable, mode, queryContextEmpty, recoveryMode, target, termCode, usesPersonalTimetableEndpoint, viewMode, weekNumber]);
 
   useEffect(() => {
     if (usesPersonalTimetableEndpoint || recoveryMode) return;
-    if (context && campusCode && (viewMode === 'term' || weekNumber)) loadSchedule();
+    if (context) loadSchedule();
   }, [campusCode, context, loadSchedule, recoveryMode, usesPersonalTimetableEndpoint, viewMode, weekNumber]);
 
   useEffect(() => {
     conflictGeneration.current += 1;
     setPersonalConflictMap({});
     setConflictDetectionError('');
-    if (!conflictDetectionEnabled || mode === 'personal' || !schedule?.courses?.length || !termCode) {
+    if (!conflictDetectionEnabled || mode === 'personal' || !schedule?.courses?.length || !termCode
+      || !queryTimetableScheduleMatches({
+        mode, schedule, targetId: target?.id || '', termCode, campusCode, viewMode, weekNumber,
+      })) {
       setConflictDetectionLoading(false);
       return;
     }
@@ -2273,7 +2371,7 @@ function TimetablePage({
     }).finally(() => {
       if (generation === conflictGeneration.current) setConflictDetectionLoading(false);
     });
-  }, [conflictDetectionEnabled, mode, schedule, termCode, viewMode, weekNumber]);
+  }, [campusCode, conflictDetectionEnabled, mode, schedule, target, termCode, viewMode, weekNumber]);
 
   useEffect(() => {
     if (
@@ -2348,6 +2446,7 @@ function TimetablePage({
   }, [campusCode, currentTermCode, mode, nextTermCode, offlineMode, personalPayload, resourceIdentity, termCode, terms, viewMode, weekNumber]);
 
   const resetRemoteState = () => {
+    queryViewportHeld.current = false;
     contextGeneration.current += 1;
     scheduleGeneration.current += 1;
     personalGeneration.current += 1;
@@ -2382,6 +2481,7 @@ function TimetablePage({
     clearTimeout(targetTimer.current);
     clearTimeout(targetFilterTimer.current);
     saveModeSession();
+    modeRef.current = nextMode;
     targetGeneration.current += 1;
     targetFilterGeneration.current += 1;
     targetPreviewGeneration.current += 1;
@@ -2570,6 +2670,7 @@ function TimetablePage({
     const targetId = target?.id || '';
     const generation = ++contextGeneration.current;
     scheduleGeneration.current += 1;
+    holdQueryViewport();
     setLoading(true);
     setError(null);
     setDetailCourse(null);
@@ -2597,7 +2698,11 @@ function TimetablePage({
   const switchViewMode = nextViewMode => {
     if (nextViewMode === viewMode) return;
     scheduleGeneration.current += 1;
-    setSchedule(null);
+    if (mode === 'personal') setSchedule(null);
+    else {
+      holdQueryViewport();
+      setLoading(!queryContextEmpty);
+    }
     setDetailCourse(null);
     setError(null);
     setMobileFocusPadding(0);
@@ -2607,6 +2712,10 @@ function TimetablePage({
   const switchWeek = nextWeek => {
     if (!nextWeek || nextWeek === weekNumber) return;
     scheduleGeneration.current += 1;
+    if (mode !== 'personal') {
+      holdQueryViewport();
+      setLoading(!queryContextEmpty);
+    }
     // Keep the previous timetable mounted while the new week is loading.
     // Clearing it first collapses the page and makes the browser reset the
     // user's vertical position; only the timetable data should change.
@@ -2817,6 +2926,9 @@ function TimetablePage({
     viewMode,
     weekNumber,
   });
+  const querySubjectMatches = mode !== 'personal' && queryTimetableSubjectMatches({
+    mode, schedule, targetId: target?.id || '', termCode, campusCode,
+  });
   const mobileQuerySummary = useMemo(() => {
     if (
       mode === 'personal'
@@ -3019,9 +3131,13 @@ function TimetablePage({
       });
       return;
     }
+    if (queryContextEmpty) {
+      setContextRetry(value => value + 1);
+      return;
+    }
     loadSchedule();
   };
-  const refreshDisabled = refreshesTargetList ? !termCode : (!context || !campusCode);
+  const refreshDisabled = refreshesTargetList ? !termCode : (!context || (!campusCode && !queryContextEmpty));
   const refreshLoading = refreshesTargetList ? targetLoading : loading;
 
   const desktopControls = (
@@ -3067,7 +3183,7 @@ function TimetablePage({
             className={conflictDetectionEnabled ? 'is-active timetable-conflict-toggle' : 'timetable-conflict-toggle'}
             onClick={toggleConflictDetection}
             loading={conflictDetectionLoading}
-            disabled={!schedule?.courses?.length}
+            disabled={!queryScheduleMatches || !schedule?.courses?.length}
           >冲突检测</Button>
         </Tooltip>}
         <Tooltip title={refreshTooltip}>
@@ -3084,6 +3200,7 @@ function TimetablePage({
     mode,
     target,
     scheduleMatches: queryScheduleMatches,
+    loading,
     error,
   });
   const recoveryAlert = (recoveryNotice || cacheAuthFailure) ? (
@@ -3100,6 +3217,7 @@ function TimetablePage({
 
   return (
     <div
+      ref={pageRef}
       className={`timetable-page${embedded ? ' is-embedded' : ''}${presentation === 'selection' ? ' is-selection-presentation' : ''}`}
       style={(mobileFocusPadding || mobileStableMinHeight) ? {
         ...(mobileFocusPadding ? { paddingBottom: `${mobileFocusPadding}px` } : {}),
@@ -3107,7 +3225,7 @@ function TimetablePage({
       } : undefined}
     >
       {headerPortalTarget && isMobile && !embedded && presentation === 'default' && (
-        mode === 'personal' || (target && queryScheduleMatches)
+        mode === 'personal' || (target && context)
       ) && createPortal(
         <MobileTimetableSummary
           mode={mode}
@@ -3205,15 +3323,34 @@ function TimetablePage({
         />
       )}
 
-      {queryTimetablePending ? (
-        <div className="timetable-loading timetable-query-pending" role="status" aria-live="polite">
-          <div className="timetable-query-pending-copy">
-            <strong>等待拉取课表</strong>
-            <span>正在从教务系统读取{MODE_LABELS[mode]}，返回后会自动显示。</span>
-          </div>
-          <Skeleton active title={false} paragraph={{ rows: isMobile ? 4 : 7 }} />
+      <div className="timetable-query-results" aria-busy={queryTimetablePending}>
+      {querySubjectMatches && !queryScheduleMatches && (
+        <div
+          className={`timetable-query-transition${loading && !error ? ' timetable-loading' : ''}`}
+          role="status"
+          aria-live="polite"
+        >
+          {loading && !error ? (
+            <QueryTimetablePending
+              mode={mode}
+              viewMode={viewMode}
+              weekNumber={weekNumber}
+              isMobile={isMobile}
+              includeRange
+            />
+          ) : error ? '当前范围读取失败，请重试' : '当前范围尚未读取，请刷新课表'}
         </div>
-      ) : loading && !schedule ? (
+      )}
+      <div
+        className={querySubjectMatches && !queryScheduleMatches ? 'timetable-query-stale' : undefined}
+        aria-hidden={querySubjectMatches && !queryScheduleMatches ? true : undefined}
+        inert={querySubjectMatches && !queryScheduleMatches ? '' : undefined}
+      >
+      {queryTimetablePending && !querySubjectMatches ? (
+        <div className="timetable-loading timetable-query-pending" role="status" aria-live="polite">
+          <QueryTimetablePending mode={mode} isMobile={isMobile} />
+        </div>
+      ) : loading && !schedule && !error ? (
         <div className="timetable-loading" aria-live="polite"><Skeleton active paragraph={{ rows: isMobile ? 5 : 8 }} /></div>
       ) : mode !== 'personal' && !target ? (
         <TargetResultPanel
@@ -3227,7 +3364,9 @@ function TimetablePage({
             append: true,
           })}
         />
-      ) : schedule && (mode === 'personal' || queryScheduleMatches) ? (
+      ) : queryContextEmpty && !loading && !error ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该学期暂无课程安排" />
+      ) : schedule && (mode === 'personal' || querySubjectMatches) ? (
         <>
           {hasArrangedCourses ? (
             <>
@@ -3292,6 +3431,8 @@ function TimetablePage({
           <OtherCourses schedule={schedule} />
         </>
       ) : null}
+      </div>
+      </div>
 
       {isMobile && recoveryAlert}
 

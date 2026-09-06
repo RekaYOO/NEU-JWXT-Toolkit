@@ -391,6 +391,29 @@
   border-radius: var(--radius-lg);
 }
 
+.timetable-query-results {
+  position: relative;
+}
+
+.timetable-query-transition {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  padding: var(--space-5);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  font-size: 14px;
+}
+
+.timetable-query-transition.timetable-loading {
+  overflow: hidden;
+}
+
+.timetable-query-stale {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .timetable-query-pending-copy {
   display: grid;
   gap: 4px;

@@ -15,6 +15,29 @@ from backend.core.timetable import TimetableAPI, TimetableError
 from backend.app.routers import timetable as timetable_router
 
 
+@pytest.mark.parametrize("mode", ["room", "teacher", "class"])
+@pytest.mark.parametrize("week", [1, 2, None])
+def test_empty_query_timetable_preserves_request_scope(mode, week):
+    from types import SimpleNamespace
+
+    requested = {
+        "mode": mode, "term_code": "2026-2027-1",
+        "campus_code": "00", "target_id": "query-fixture", "week": week,
+    }
+
+    def get_schedule(**kwargs):
+        assert kwargs == requested
+        return {"courses": [], "unscheduled": [], "practices": []}
+
+    response = timetable_router.get_timetable_schedule(
+        TimetableScheduleRequest(**requested),
+        SimpleNamespace(timetable=SimpleNamespace(get_schedule=get_schedule)),
+    )
+    assert response.model_dump() == {
+        **requested, "courses": [], "unscheduled": [], "practices": [],
+    }
+
+
 class Response:
     status_code = 200
 
@@ -258,6 +281,26 @@ def test_future_personal_term_without_campus_catalog_still_offers_all_view():
     campuses = TimetableAPI(client).get_campuses("2026-2027-1", mode="personal")
 
     assert campuses == [{"code": "all", "name": "全部校区"}]
+
+
+@pytest.mark.parametrize("mode", ["room", "teacher", "class"])
+def test_empty_target_campus_catalog_is_a_successful_empty_context(mode):
+    from types import SimpleNamespace
+
+    client = Client(
+        {"code": "0", "datas": []},
+        {"code": "0", "datas": [{"week": 2, "name": "第2周", "curWeek": True}]},
+    )
+    auth = SimpleNamespace(timetable=TimetableAPI(client))
+    context = timetable_router.get_timetable_context(
+        TimetableContextRequest(mode=mode, term_code="2026-2027-1", target_id="query-fixture"), auth,
+    )
+    assert context.campuses == []
+    assert context.sections == []
+    assert context.weeks
+    assert [url for url, _options in client.calls] == [
+        TimetableAPI.TARGET_CAMPUS_URL, TimetableAPI.WEEKS_URL,
+    ]
 
 
 def test_target_search_uses_bounded_emap_query_and_maps_public_metadata():

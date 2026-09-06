@@ -328,13 +328,15 @@ describe('TimetablePage helpers', () => {
     expect(queryTimetableScheduleMatches({
       ...selection, schedule: { ...confirmedEmpty, week: 2 },
     })).toBe(false);
-    expect(shouldShowQueryTimetablePending({ mode: 'teacher', target, scheduleMatches: false }))
+    expect(shouldShowQueryTimetablePending({ mode: 'teacher', target, scheduleMatches: false, loading: true }))
       .toBe(true);
+    expect(shouldShowQueryTimetablePending({ mode: 'teacher', target, scheduleMatches: false, loading: false }))
+      .toBe(false);
     expect(shouldShowQueryTimetablePending({
       mode: 'teacher', target, scheduleMatches: true,
     })).toBe(false);
     expect(shouldShowQueryTimetablePending({
-      mode: 'teacher', target, scheduleMatches: false, error: { message: '读取失败' },
+      mode: 'teacher', target, scheduleMatches: false, loading: true, error: { message: '读取失败' },
     })).toBe(false);
     expect(shouldShowQueryTimetablePending({ mode: 'personal', target, scheduleMatches: false }))
       .toBe(false);
