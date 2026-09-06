@@ -1445,3 +1445,10 @@ export const batchEvaluation = async (
   const response = await api.post('/api/evaluation/batch', data);
   return response.data;
 };
+export const getGpaPolicy = async (offline = false) => (
+  await api.get(offline ? '/api/offline/gpa-policy' : '/api/gpa-policy')
+).data;
+
+export const saveGpaPolicy = async mode => (
+  await api.put('/api/gpa-policy', { mode })
+).data;

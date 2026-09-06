@@ -10,6 +10,7 @@ from backend.app.dependencies import (
     _cache_store,
     _report_storage,
     _storage,
+    get_gpa_policy,
 )
 from backend.app.schemas import (
     AcademicReportResponse,
@@ -141,14 +142,12 @@ def offline_scores():
     if entry:
         scores = entry.payload.get("scores") or []
         models = [score_model(score) for score in scores]
-        credits = sum(model.credit for model in models)
+        summary = get_gpa_policy().summarize(entry.key.account_id, scores)
         return ScoresResponse(
             total_courses=len(models),
             overall_gpa=entry.payload.get("overall_gpa"),
-            calculated_gpa=(
-                sum(model.gpa * model.credit for model in models) / credits
-                if credits else 0
-            ),
+            calculated_gpa=summary["average"] or 0,
+            gpa_policy=summary["policy"],
             source="offline",
             is_fresh=False,
             last_update=entry.saved_at,
@@ -180,21 +179,27 @@ def offline_scores():
         )
         for score in scores
     ]
-    total_credits = sum(score.credit for score in scores)
-    calculated_gpa = (
-        sum(score.gpa * score.credit for score in scores) / total_credits
-        if total_credits > 0
-        else 0.0
+    summary = get_gpa_policy().summarize(
+        str((local.get("meta") or {}).get("username") or ""), [vars(score) for score in scores],
     )
     return ScoresResponse(
         total_courses=len(scores),
         overall_gpa=(local.get("meta") or {}).get("overall_gpa"),
-        calculated_gpa=calculated_gpa,
+        calculated_gpa=summary["average"] or 0,
+        gpa_policy=summary["policy"],
         source="offline",
         is_fresh=False,
         last_update=_storage.get_last_update_time(),
         scores=score_models,
     )
+
+
+@router.get("/gpa-policy")
+def offline_gpa_policy():
+    account = _offline_account()
+    if not account:
+        raise HTTPException(status_code=404, detail="本地没有账号数据")
+    return get_gpa_policy().context(account)
 
 
 @router.get("/scores/details", response_model=CourseScoreDetailResponse)

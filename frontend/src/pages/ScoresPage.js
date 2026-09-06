@@ -13,12 +13,12 @@ import GPACalculator from '../components/GPACalculator';
 import ResourceUpdateSummary from '../components/ResourceUpdateSummary';
 import { useCachedResource } from '../resources/ResourceStore';
 import {
-  getCacheRefreshJob,
   getOfflineScoreDetail,
   getScoreDetailCache,
-  queryScoreDetail,
 } from '../services/api';
 import useCourseOutlineMetadata from '../hooks/useCourseOutlineMetadata';
+import useGpaPolicy from '../hooks/useGpaPolicy';
+import { GPA_MODE_OPTIONS, MODERN_GPA_MODE, calculateGpaImpacts, summarizeGpa } from '../utils/gpaPolicy';
 import { columnSettings } from '../utils/settings';
 import {
   compareAcademicTermsNewestFirst,
@@ -46,13 +46,6 @@ const NUMERIC_COLUMN_KEYS = ['score', 'gpa', 'credit'];
 const IMPACT_COLUMN_KEYS = ['mean_adjust_delta', 'exclude_delta'];
 const IMPACT_EPSILON = 0.00005;
 const { useBreakpoint } = Grid;
-const SCORE_DETAIL_JOB_POLL_MS = 600;
-const SCORE_DETAIL_TERMINAL_STATES = new Set([
-  'completed', 'failed', 'cancelled', 'fresh', 'throttled',
-]);
-
-const wait = (milliseconds) => new Promise(resolve => setTimeout(resolve, milliseconds));
-
 const normalizeScoreDetail = (payload) => {
   if (!payload) return null;
   const detail = payload.detail
@@ -90,18 +83,6 @@ const normalizeScoreDetail = (payload) => {
       || payload.cache?.saved_at
       || null,
   };
-};
-
-const jobStoredScoreDetail = (job) => {
-  const result = job?.result || job?.data || {};
-  if (typeof result.stored === 'boolean') return result.stored;
-  if (typeof result.cache_updated === 'boolean') return result.cache_updated;
-  if (typeof result.has_details === 'boolean') return result.has_details;
-  if (job?.diff?.skipped === true) return false;
-  if (Number.isFinite(Number(job?.diff?.item_count))) {
-    return Number(job.diff.item_count) > 0;
-  }
-  return null;
 };
 
 const scoreDetailErrorText = (error, fallback) => (
@@ -190,32 +171,7 @@ const matchesNumericRange = (filterValue, recordValue) => {
   return true;
 };
 
-const calculateImpactScores = (scores) => {
-  const totalCredits = scores.reduce((sum, score) => sum + getNumericValue(score.credit), 0);
-  const totalPoints = scores.reduce(
-    (sum, score) => sum + getNumericValue(score.gpa) * getNumericValue(score.credit),
-    0
-  );
-  const currentGpa = totalCredits > 0 ? totalPoints / totalCredits : 0;
-
-  return scores.map(score => {
-    const credit = getNumericValue(score.credit);
-    const gpa = getNumericValue(score.gpa);
-    const meanAdjustDelta = totalCredits > 0
-      ? (credit * (gpa - currentGpa)) / totalCredits
-      : 0;
-    const remainingCredits = totalCredits - credit;
-    const excludeDelta = remainingCredits > 0
-      ? currentGpa - ((totalPoints - gpa * credit) / remainingCredits)
-      : null;
-
-    return {
-      ...score,
-      mean_adjust_delta: meanAdjustDelta,
-      exclude_delta: excludeDelta,
-    };
-  });
-};
+export const calculateImpactScores = calculateGpaImpacts;
 
 const formatSignedDelta = (value) => {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
@@ -308,6 +264,17 @@ const ScoresPage = ({ offlineMode = false }) => {
   const gpaCalculatorRef = useRef(null);
   const dismissedRevisionRef = useRef('');
   const scoreResource = useCachedResource('scores');
+  const gpaSettings = useGpaPolicy(offlineMode);
+  const gpaPolicy = gpaSettings.policy || scoreResource.data?.gpa_policy;
+  const [gpaPolicyOpen, setGpaPolicyOpen] = useState(false);
+  const changeGpaPolicy = async mode => {
+    try {
+      await gpaSettings.save(mode);
+      message.success('绩点计算策略已保存，成绩追踪通知同步生效');
+    } catch {
+      message.error('保存失败，仍使用原绩点计算策略');
+    }
+  };
   const pendingUpdateSummary = useMemo(() => (
     pendingUpdateData
       ? summarizeScoreUpdate(scoreResource.data, pendingUpdateData)
@@ -336,87 +303,28 @@ const ScoresPage = ({ offlineMode = false }) => {
     });
 
     const isCurrent = () => scoreDetailRequestRef.current === requestId;
-    let cached = null;
     const readCache = offlineMode ? getOfflineScoreDetail : getScoreDetailCache;
 
     try {
       const payload = await readCache(course.code, course.term);
-      cached = normalizeScoreDetail(payload);
+      const cached = normalizeScoreDetail(payload);
       if (isCurrent()) {
         setScoreDetailState({
           cached,
-          loading: !offlineMode,
+          loading: false,
           error: '',
-          outcome: offlineMode ? (cached?.itemScores.length ? 'cached' : 'missing') : 'querying',
+          outcome: cached?.itemScores.length ? 'cached' : 'missing',
         });
       }
     } catch (error) {
-      if (error?.response?.status !== 404 && isCurrent()) {
-        setScoreDetailState(current => ({
-          ...current,
-          error: scoreDetailErrorText(error, '读取分项成绩缓存失败'),
-        }));
-      }
-      if (isCurrent()) {
-        setScoreDetailState(current => ({
-          ...current,
-          loading: !offlineMode,
-          outcome: offlineMode ? 'missing' : 'querying',
-        }));
-      }
-    }
-
-    if (offlineMode || !isCurrent()) {
-      if (offlineMode && isCurrent()) {
-        setScoreDetailState(current => ({ ...current, loading: false }));
-      }
-      return;
-    }
-
-    try {
-      let job = await queryScoreDetail(course.code, course.term);
-      const jobId = job?.job_id || job?.id;
-      while (job?.status && !SCORE_DETAIL_TERMINAL_STATES.has(job.status)) {
-        if (!jobId) throw new Error('后台任务未返回任务编号');
-        await wait(SCORE_DETAIL_JOB_POLL_MS);
-        job = await getCacheRefreshJob(jobId);
-      }
-      if (job?.status === 'throttled') {
-        throw new Error('分项成绩查询过于频繁，请稍后重试');
-      }
-      if (job?.status === 'failed' || job?.status === 'cancelled') {
-        throw new Error(job.error || job.error_kind || (
-          job.status === 'cancelled' ? '分项成绩查询已取消' : '分项成绩查询失败'
-        ));
-      }
-
-      let refreshed = null;
-      try {
-        refreshed = normalizeScoreDetail(await getScoreDetailCache(course.code, course.term));
-      } catch (error) {
-        if (error?.response?.status !== 404) throw error;
-      }
       if (!isCurrent()) return;
-
-      const nextCached = refreshed?.itemScores.length ? refreshed : cached;
-      const stored = jobStoredScoreDetail(job);
       setScoreDetailState({
-        cached: nextCached,
+        cached: null,
         loading: false,
-        error: '',
-        outcome: stored === false || !refreshed?.itemScores.length
-          ? 'empty-refresh'
-          : 'updated',
+        error: error?.response?.status === 404
+          ? '' : scoreDetailErrorText(error, '读取分项成绩缓存失败'),
+        outcome: error?.response?.status === 404 ? 'missing' : 'error',
       });
-    } catch (error) {
-      if (!isCurrent()) return;
-      setScoreDetailState(current => ({
-        ...current,
-        cached: current.cached || cached,
-        loading: false,
-        error: scoreDetailErrorText(error, '暂时无法获取分项成绩'),
-        outcome: 'error',
-      }));
     }
   }, [offlineMode]);
 
@@ -456,18 +364,21 @@ const ScoresPage = ({ offlineMode = false }) => {
   const { metadata: outlineMetadata, syncing: outlineSyncing } = useCourseOutlineMetadata({
     courses: allScores, enabled: gradingScaleRequested, offlineMode,
   });
-  const scoresWithOutlineMetadata = useMemo(() => allScores.map(score => ({
+  const scoresWithOutlineMetadata = useMemo(() => calculateImpactScores(allScores.map(score => ({
     ...score,
-    grading_scale: outlineMetadata[score.code]?.grading_scale || '',
+    grading_scale: outlineMetadata[score.code]?.grading_scale
+      || gpaPolicy?.grading_scales?.[score.code] || score.grading_scale || '',
     outline_metadata_status: outlineMetadata[score.code]?.status || '',
-  })), [allScores, outlineMetadata]);
+  })), gpaPolicy), [allScores, outlineMetadata, gpaPolicy]);
   const displayScoresWithOutlineMetadata = useMemo(() => displayScores.map(score => ({
     ...score,
-    grading_scale: outlineMetadata[score.code]?.grading_scale || score.grading_scale || '',
+    ...scoresWithOutlineMetadata.find(item => item._id === score._id),
+    grading_scale: outlineMetadata[score.code]?.grading_scale
+      || gpaPolicy?.grading_scales?.[score.code] || score.grading_scale || '',
     outline_metadata_status: outlineMetadata[score.code]?.status
       || score.outline_metadata_status
       || '',
-  })), [displayScores, outlineMetadata]);
+  })), [displayScores, outlineMetadata, gpaPolicy, scoresWithOutlineMetadata]);
 
   useEffect(() => {
     const nextOptions = buildScoreFilterOptions(scoresWithOutlineMetadata);
@@ -911,30 +822,9 @@ const ScoresPage = ({ offlineMode = false }) => {
     };
   }, [displayScores]);
 
-  const filteredGpaSummary = useMemo(() => {
-    const gpaCourses = displayScores
-      .map(score => {
-        const gpa = Number.parseFloat(score.gpa);
-        const credit = Number.parseFloat(score.credit);
-        if (!Number.isFinite(gpa) || !Number.isFinite(credit) || credit <= 0) return null;
-        return {
-          gpa,
-          credit,
-        };
-      })
-      .filter(Boolean);
-
-    const totalCredits = gpaCourses.reduce((sum, course) => sum + course.credit, 0);
-    const weightedTotal = gpaCourses.reduce(
-      (sum, course) => sum + course.gpa * course.credit,
-      0
-    );
-
-    return {
-      average: totalCredits > 0 ? weightedTotal / totalCredits : null,
-      count: gpaCourses.length,
-    };
-  }, [displayScores]);
+  const filteredGpaSummary = useMemo(() => (
+    gpaPolicy ? summarizeGpa(displayScoresWithOutlineMetadata, gpaPolicy) : { average: null, count: 0 }
+  ), [displayScoresWithOutlineMetadata, gpaPolicy]);
 
   const latestTerm = useMemo(() => {
     const terms = [...new Set(displayScores.map(score => score.term_display || score.term).filter(Boolean))];
@@ -1189,6 +1079,16 @@ const ScoresPage = ({ offlineMode = false }) => {
 
   return (
     <div className="scores-page">
+      {gpaSettings.error && <Alert type="warning" message={gpaSettings.error} />}
+      {gpaPolicy?.mode === MODERN_GPA_MODE
+        && (!gpaPolicy.report_available || gpaPolicy.missing_grading_scales > 0) && (
+          <Alert
+            className="gpa-policy-warning"
+            type="warning"
+            showIcon
+            message="分类或分制缓存待补全，当前平均绩点暂供参考"
+          />
+        )}
       {/* 统计卡片 */}
       {!isSimulating && <Row gutter={16} className="stats-row">
           <Col xs={12} sm={12} md={6}>
@@ -1263,7 +1163,8 @@ const ScoresPage = ({ offlineMode = false }) => {
       {/* GPA模拟计算器 */}
       <GPACalculator
         ref={gpaCalculatorRef}
-        realScores={allScores}
+        realScores={scoresWithOutlineMetadata}
+        gpaPolicy={gpaPolicy}
         scoresRevision={scoreResource.displayedRevision}
         onSimulatingChange={handleSimulatingChange}
         offlineMode={offlineMode}
@@ -1277,6 +1178,9 @@ const ScoresPage = ({ offlineMode = false }) => {
           title={
             <Space className="scores-card-title">
               <span>成绩明细</span>
+              <Button icon={<CalculatorOutlined />} size="small" onClick={() => setGpaPolicyOpen(true)}>
+                绩点计算
+              </Button>
               {!isMobile && (
                 <Dropdown
                   menu={{ items: columnMenuItems }}
@@ -1295,7 +1199,7 @@ const ScoresPage = ({ offlineMode = false }) => {
           }
           extra={
             <Space>
-              <Tooltip title="进入GPA模拟模式：编辑成绩、预估GPA、导入培养计划课程">
+              <Tooltip title="编辑学分和绩点、导入培养计划课程">
                 <Button type="primary" icon={<CalculatorOutlined />} onClick={startSimulation}>
                   GPA模拟
                 </Button>
@@ -1605,16 +1509,6 @@ const ScoresPage = ({ offlineMode = false }) => {
               {scoreDetailState.loading && scoreDetailState.outcome === 'loading-cache' && (
                 <div className="score-detail-placeholder">正在读取本地分项成绩…</div>
               )}
-              {scoreDetailState.loading && scoreDetailState.outcome === 'querying' && (
-                <Alert
-                  type="info"
-                  showIcon
-                  message="正在获取最新分项成绩"
-                  description={scoreDetailState.cached?.itemScores.length
-                    ? '先显示已缓存数据，查询完成后会自动更新。'
-                    : '总成绩不受影响，你可以关闭此页继续使用。'}
-                />
-              )}
               {scoreDetailState.error && (
                 <Alert
                   type="warning"
@@ -1627,24 +1521,19 @@ const ScoresPage = ({ offlineMode = false }) => {
               )}
               {!scoreDetailState.loading
                 && !scoreDetailState.error
-                && scoreDetailState.outcome === 'empty-refresh' && (
-                  <Alert
-                    type="info"
-                    showIcon
-                    message="本次未返回新的分项成绩"
-                    description={scoreDetailState.cached?.itemScores.length
-                      ? '已保留并继续显示上次成功保存的数据。'
-                      : '教务系统暂未提供这门课程的分项成绩。'}
-                  />
-                )}
-              {!scoreDetailState.loading
-                && !scoreDetailState.error
                 && scoreDetailState.outcome === 'missing' && (
                   <Alert
                     type="info"
                     showIcon
                     message="没有已缓存的分项成绩"
-                    description="离线模式不会连接教务系统，请在线登录后点击成绩查询。"
+                    description={offlineMode
+                      ? '离线模式不会连接教务系统。'
+                      : '后端会在刷新总成绩后自动补全并缓存；刷新完成后可稍候重新查看。'}
+                    action={!offlineMode && (
+                      <Button size="small" onClick={handleRefresh} loading={refreshing}>
+                        刷新成绩
+                      </Button>
+                    )}
                   />
                 )}
 
@@ -1685,6 +1574,37 @@ const ScoresPage = ({ offlineMode = false }) => {
           </div>
         )}
       </MobileDetailDrawer>
+
+      <Modal
+        title="绩点计算"
+        open={gpaPolicyOpen}
+        onCancel={() => setGpaPolicyOpen(false)}
+        footer={<Button onClick={() => setGpaPolicyOpen(false)}>完成</Button>}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Segmented
+            block
+            options={GPA_MODE_OPTIONS}
+            value={gpaPolicy?.mode}
+            disabled={offlineMode || gpaSettings.saving || !gpaPolicy}
+            onChange={changeGpaPolicy}
+          />
+          <p>
+            {gpaPolicy?.mode === MODERN_GPA_MODE
+              ? '不计入通识类下通识选修类及其全部子类别课程，不计入两级制课程。'
+              : '按全部有效课程的绩点与学分计算。'}
+            平均绩点 = Σ(绩点 × 学分) / Σ学分。
+          </p>
+          <span>当前来源：{gpaPolicy?.override ? '手动设置' : '按学号入学年份默认选择'}</span>
+          <Button
+            icon={<ReloadOutlined />}
+            disabled={offlineMode || gpaSettings.saving || !gpaPolicy?.override}
+            onClick={() => changeGpaPolicy(null)}
+          >恢复年级默认</Button>
+          {gpaSettings.error && <Alert type="warning" message={gpaSettings.error} />}
+          {offlineMode && <Alert type="info" message="离线模式使用已保存策略，不修改配置" />}
+        </Space>
+      </Modal>
 
       {/* 更新提示弹窗 */}
       <Modal

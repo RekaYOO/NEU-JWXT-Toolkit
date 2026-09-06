@@ -20,6 +20,7 @@ class CourseScoreModel(BaseModel):
     exam_status: str = Field(default="", description="考试状态，如'初修/重修'")
     course_nature: str = Field(default="", description="课程性质代码")
     is_passed: bool
+    grading_scale: str = ""
 
 
 class TermScoresModel(BaseModel):
@@ -34,6 +35,7 @@ class ScoresResponse(BaseModel):
     total_courses: int
     overall_gpa: Optional[float]
     calculated_gpa: float
+    gpa_policy: Optional[Dict[str, Any]] = None
     source: str = Field(..., description="数据来源: local/remote")
     is_fresh: bool = Field(..., description="是否最新数据")
     last_update: Optional[datetime] = None

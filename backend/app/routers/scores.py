@@ -16,11 +16,13 @@ from backend.app.dependencies import (
     _cache_store,
     get_auth_generation,
     require_cached_auth_identity,
+    get_gpa_policy,
 )
 from backend.app.cache_support import read_cache, submit_refresh, wait_for_job
 from backend.core.log import log_application_error
 from backend.core.cache import CacheKey
 from backend.core.cache.resources import score_detail_variant
+from backend.core.academic.gpa_policy import calculate_gpa
 from backend.app.presenters import score_model
 
 router = APIRouter()
@@ -82,19 +84,12 @@ def _scores_response(entry, is_stale: bool, source: str = "local") -> ScoresResp
         score_model(score)
         for score in scores
     ]
-    total_credits = sum(float(score.get("credit") or 0) for score in scores)
-    calculated_gpa = (
-        sum(
-            float(score.get("gpa") or 0) * float(score.get("credit") or 0)
-            for score in scores
-        ) / total_credits
-        if total_credits > 0
-        else 0.0
-    )
+    summary = get_gpa_policy().summarize(entry.key.account_id, scores)
     return ScoresResponse(
         total_courses=len(scores),
         overall_gpa=payload.get("overall_gpa"),
-        calculated_gpa=calculated_gpa,
+        calculated_gpa=summary["average"] or 0,
+        gpa_policy=summary["policy"],
         source=source,
         is_fresh=not is_stale,
         last_update=entry.saved_at,
@@ -163,6 +158,7 @@ def get_scores_by_term(auth: NEUAuthClient = Depends(require_cached_auth_identit
                 {"name": str(score.get("term_display") or ""), "scores": []},
             )["scores"].append(score)
         result = []
+        policy = get_gpa_policy().context(str(auth.username))
         for term_code, term in sorted(grouped.items(), reverse=True):
             courses = [score_model(score) for score in term["scores"]]
             credits = sum(course.credit for course in courses)
@@ -171,10 +167,7 @@ def get_scores_by_term(auth: NEUAuthClient = Depends(require_cached_auth_identit
                 term_name=term["name"],
                 courses=courses,
                 total_credits=credits,
-                gpa=(
-                    sum(course.gpa * course.credit for course in courses) / credits
-                    if credits else 0
-                ),
+                gpa=calculate_gpa(term["scores"], policy)["average"] or 0,
             ))
 
         return result

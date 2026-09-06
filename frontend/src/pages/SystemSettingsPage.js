@@ -20,7 +20,7 @@ const { Title, Text } = Typography;
 
 const CACHE_RESOURCE_META = {
   scores: { name: '成绩数据', summary: '成绩列表、绩点和课程成绩变化所使用的本地数据。' },
-  'score-details': { name: '成绩详情', summary: '单门课程的分项成绩详情，通常仅在需要时更新。' },
+  'score-details': { name: '成绩详情', summary: '总成绩刷新后自动补齐缺失课程，并保留已有分项供离线读取。' },
   'academic-report': { name: '培养计划', summary: '培养方案、课程要求和完成情况，用于培养计划与 GPA 模拟。' },
   'research-training': { name: '科研训练', summary: '科研训练项目和报名记录。' },
   'festival-activities': { name: '四节活动', summary: '四节活动、报名状态和可导出活动数据。' },

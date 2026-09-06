@@ -497,3 +497,24 @@
     width: fit-content;
   }
 }
+.gpa-policy-warning {
+  margin-bottom: 12px;
+}
+
+.scores-card-title {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 767px) {
+  .scores-table-card .ant-card-head-wrapper {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+    padding-block: 12px;
+  }
+
+  .scores-table-card .ant-card-extra {
+    width: 100%;
+    margin-inline-start: 0;
+  }
+}

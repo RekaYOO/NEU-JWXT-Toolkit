@@ -56,6 +56,7 @@ class GradeTrackingService:
         login_flow_pending: Callable[[], bool] | None = None,
         score_refresher: Callable[[str, bool], dict[str, Any]] | None = None,
         score_detail_lookup: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+        gpa_summary_provider: Callable[[str, list[dict]], dict] | None = None,
     ) -> None:
         root = Path(data_dir)
         root.mkdir(parents=True, exist_ok=True)
@@ -71,6 +72,7 @@ class GradeTrackingService:
         self.login_flow_pending = login_flow_pending
         self.score_refresher = score_refresher
         self.score_detail_lookup = score_detail_lookup
+        self.gpa_summary_provider = gpa_summary_provider
         self._lock = threading.RLock()
         self._check_lock = threading.Lock()
         self._revision_lock = threading.RLock()
@@ -91,6 +93,8 @@ class GradeTrackingService:
             interval = int(DEFAULT_CONFIG["interval_minutes"])
         self._config["interval_minutes"] = min(1440, max(5, interval))
         self._state = {**DEFAULT_STATE, **self._read_json(self.state_path, {})}
+        if self._state.get("message") == "tracking check completed":
+            self._state["message"] = "成绩检查已完成"
         recovery_state_keys = {
             "recovery_token_hash", "recovery_token_issued_at",
             "recovery_target_service", "recovery_owner",
@@ -435,7 +439,7 @@ class GradeTrackingService:
                     )
                 self._state.update(
                     stage="monitoring",
-                    message="tracking check completed",
+                    message="成绩检查已完成",
                     last_success_at=_iso(),
                     next_check_at=(
                         _now() + timedelta(minutes=int(config["interval_minutes"]))
@@ -746,6 +750,22 @@ class GradeTrackingService:
     def _format_course_with_detail(cls, item: dict[str, Any]) -> str:
         return f"{cls._format_course(item)}\n  分项成绩：{cls._format_score_detail(item)}"
 
+    def _calculated_gpa_text(self, snapshot: dict, label: str = "本地平均绩点") -> str:
+        if not self.gpa_summary_provider:
+            return ""
+        summary = self.gpa_summary_provider(
+            str(self._state.get("account_id") or ""), snapshot.get("courses") or [],
+        )
+        policy = summary["policy"]
+        mode = "2025级及以后" if policy["mode"] == "from_2025" else "2024级及以前"
+        average = summary["average"]
+        value = f"{average:.4f}" if average is not None else "无计入课程"
+        incomplete = policy["mode"] == "from_2025" and (
+            not policy.get("report_available") or policy.get("missing_grading_scales")
+        )
+        note = "；分类/分制缓存待补全，结果暂供参考" if incomplete else ""
+        return f"{label}（{mode}）：{value}{note}\n"
+
     def _initial_email(
         self,
         snapshot: dict[str, Any],
@@ -757,6 +777,7 @@ class GradeTrackingService:
             f"{opening}\n\n"
             f"课程数：{len(snapshot['courses'])}\n"
             f"总 GPA：{snapshot.get('overall_gpa') if snapshot.get('overall_gpa') is not None else '未知'}\n\n"
+            f"{self._calculated_gpa_text(snapshot)}"
             f"{rows}\n\n检查时间：{snapshot['updated_at']}"
         )
 
@@ -813,6 +834,8 @@ class GradeTrackingService:
             "检测到成绩变化。\n\n"
             f"原总 GPA：{previous.get('overall_gpa', '未知')}\n"
             f"新总 GPA：{current.get('overall_gpa', '未知')}\n\n"
+            f"{self._calculated_gpa_text(previous, '原本地平均绩点')}"
+            f"{self._calculated_gpa_text(current, '新本地平均绩点')}\n"
             f"总 GPA 是否变化：{'是' if overall_gpa_changed else '否'}\n\n"
             f"新增课程：\n{new_rows}\n\n"
             f"成绩修正：\n{changed_rows}\n\n"

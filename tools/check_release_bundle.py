@@ -27,7 +27,7 @@ FORBIDDEN_FILE_PATTERNS = (
     re.compile(r".*\.log$", re.IGNORECASE),
 )
 FORBIDDEN_TOP_LEVEL_DIRECTORIES = {"data", "logs", "成绩"}
-FORBIDDEN_ANYWHERE_DIRECTORIES = {"gpa_simulations"}
+FORBIDDEN_ANYWHERE_DIRECTORIES = {"gpa_simulations", "gpa_preferences"}
 SCRIPT_SUFFIXES = {".bat", ".cmd", ".ps1", ".vbs", ".wsf"}
 
 

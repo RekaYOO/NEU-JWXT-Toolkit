@@ -19,8 +19,9 @@ import {
   listGPASimulationFiles,
   getGPASimulationFile,
   deleteGPASimulationFile,
-  getCourseOutlinePlanMetadata,
 } from '../services/api';
+import useCourseOutlineMetadata from '../hooks/useCourseOutlineMetadata';
+import { calculateGpaImpacts, gpaExclusionReason, summarizeGpa } from '../utils/gpaPolicy';
 import {
   compareAcademicTermsNewestFirst,
   compareAcademicTermsOldestFirst,
@@ -106,10 +107,17 @@ const getCourseSource = (record) => {
   return '模拟';
 };
 
+export const gpaCourseGradingScale = (course, metadata = {}) => (
+  course?.gradingScale
+  || course?.grading_scale
+  || metadata?.[course?.code]?.grading_scale
+  || '分制待定'
+);
+
 export const selectGpaBusinessColumnKeys = (scoreColumnConfig, availableKeys) => {
   const supported = new Set(availableKeys);
   return (scoreColumnConfig || [])
-    .filter(column => column.visible && supported.has(column.key))
+    .filter(column => column.key !== 'score' && column.visible && supported.has(column.key))
     .map(column => column.key);
 };
 
@@ -132,6 +140,7 @@ const simulationCourseFromScore = (score) => ({
   generalCategory: score.general_category,
   assessmentMethod: score.exam_type,
   gradingScale: score.grading_scale,
+  gpa_general_elective: score.gpa_general_elective,
   examStatus: score.exam_status,
   isPassed: score.is_passed,
   meanAdjustDelta: score.mean_adjust_delta,
@@ -145,7 +154,6 @@ const comparableCourse = (course) => ({
   name: course?.name || '',
   code: course?.code || '',
   credit: Number(course?.credit || 0),
-  score: String(course?.score ?? ''),
   gpa: Number(course?.gpa || 0),
   term: course?.term_code || course?.originalData?.term || course?.term || '',
 });
@@ -159,7 +167,7 @@ const sameCourseContent = (left, right) => (
  * 
  * 规则：
  * 1. 绩点直接使用系统返回的原始数据
- * 2. 成绩直接使用系统返回的原始数据（数字或文字等级）
+ * 2. 只编辑学分和绩点，旧方案成绩字段保留但不参与计算
  * 3. 总GPA = Σ(绩点×学分)/Σ学分（加权平均）
  * 4. 数据导出到本地文件，从本地文件导入
  */
@@ -171,6 +179,7 @@ const GPACalculator = forwardRef(({
   onSimulatingChange = null,
   offlineMode = false,
   scoreColumnConfig = SCORE_DEFAULT_COLUMNS,
+  gpaPolicy,
 }, ref) => {
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
@@ -201,15 +210,12 @@ const GPACalculator = forwardRef(({
   const [showOnlyDeficit, setShowOnlyDeficit] = useState(false); // 只看差学分
   const [quickFilters, setQuickFilters] = useState([]); // 快速筛选：必修/选修/已选课/未修读
   const [expandedKeys, setExpandedKeys] = useState([]); // 树展开状态
-  const [outlineMetadata, setOutlineMetadata] = useState({});
   const [outlineCourse, setOutlineCourse] = useState(null);
-
-  useEffect(() => {
-    if (offlineMode) return;
-    getCourseOutlinePlanMetadata()
-      .then(data => setOutlineMetadata(Object.fromEntries((data.items || []).map(item => [item.course_code, item]))))
-      .catch(() => null);
-  }, [importDrawerVisible, offlineMode]);
+  const { metadata: outlineMetadata } = useCourseOutlineMetadata({
+    courses: academicPlan,
+    enabled: importDrawerVisible,
+    offlineMode,
+  });
   
   // 冲突检测
   const [conflictModalVisible, setConflictModalVisible] = useState(false);
@@ -401,6 +407,12 @@ const GPACalculator = forwardRef(({
   };
 
   // ===== GPA计算 =====
+  const calculationCourses = useMemo(() => calculateGpaImpacts(courses.map(course => ({
+    ...course,
+    gradingScale: gpaPolicy?.grading_scales?.[course.code] || gpaCourseGradingScale(course, outlineMetadata),
+  })), gpaPolicy).map(course => ({
+    ...course, meanAdjustDelta: course.mean_adjust_delta, excludeDelta: course.exclude_delta,
+  })), [courses, gpaPolicy, outlineMetadata]);
   const stats = useMemo(() => {
     if (!courses.length) return {
       totalCourses: 0,
@@ -413,9 +425,9 @@ const GPACalculator = forwardRef(({
 
     const validCourses = courses.filter(c => c.gpa > 0);
     const totalCredits = validCourses.reduce((sum, c) => sum + (c.credit || 0), 0);
-    const weightedGPA = totalCredits > 0
-      ? validCourses.reduce((sum, c) => sum + (c.gpa || 0) * (c.credit || 0), 0) / totalCredits
-      : 0;
+    const weightedGPA = gpaPolicy ? summarizeGpa(courses.map(course => ({
+      ...course, gradingScale: gpaCourseGradingScale(course, outlineMetadata),
+    })), gpaPolicy).average || 0 : null;
 
     return {
       totalCourses: courses.length,
@@ -425,32 +437,15 @@ const GPACalculator = forwardRef(({
       realCount: courses.filter(c => c.isReal).length,
       customCount: courses.filter(c => !c.isReal).length,
     };
-  }, [courses]);
+  }, [courses, gpaPolicy, outlineMetadata]);
 
   // ===== 课程操作 =====
   // 使用 ref 暂存编辑中的值，避免频繁更新状态
   const editingValuesRef = useRef({});
   
-  const handleScoreChange = (key, newScore) => {
-    const newCourses = courses.map(c => {
-      if (c.key !== key) return c;
-      // 如果真实课程被修改，变为模拟状态
-      const isModified = c.isReal && c.originalData && c.originalData.score !== newScore;
-      return { 
-        ...c, 
-        score: newScore,
-        isReal: isModified ? false : c.isReal 
-      };
-    });
-    setCourses(newCourses);
-    saveToHistory(newCourses);
-  };
-  
   // 处理输入框失焦或按回车时才保存
   const handleInputBlur = (key, field, value) => {
-    if (field === 'score') {
-      handleScoreChange(key, value);
-    } else if (field === 'gpa') {
+    if (field === 'gpa') {
       handleGPAChange(key, value);
     } else if (field === 'credit') {
       handleCreditChange(key, value);
@@ -463,9 +458,13 @@ const GPACalculator = forwardRef(({
     // 只暂存，不更新状态
     editingValuesRef.current[key + field] = value;
   };
+  const pendingInput = (key, field, fallback) => (
+    Object.prototype.hasOwnProperty.call(editingValuesRef.current, key + field)
+      ? editingValuesRef.current[key + field] : fallback
+  );
 
   const handleGPAChange = (key, newGPA) => {
-    const gpa = parseFloat(newGPA) || 0;
+    const gpa = newGPA === null || newGPA === '' ? null : parseFloat(newGPA) || 0;
     const newCourses = courses.map(c => {
       if (c.key !== key) return c;
       // 如果真实课程的GPA被修改，变为模拟状态
@@ -512,7 +511,7 @@ const GPACalculator = forwardRef(({
       code: '',
       credit: 2.0,
       score: '',
-      gpa: 0,
+      gpa: null,
       term: '自定义',
       // “来源”由 isCustom 单独表达；不能把“自定义”冒充课程性质。
       courseType: '',
@@ -537,7 +536,7 @@ const GPACalculator = forwardRef(({
     const newCourses = courses.map(c => {
       if (c.key === key) {
         const newCredit = parseFloat(editForm.credit) || 0;
-        const newGPA = parseFloat(editForm.gpa) || 0;
+        const newGPA = editForm.gpa === null || editForm.gpa === '' ? null : parseFloat(editForm.gpa) || 0;
         
         // 检查真实课程是否被修改
         let isModified = false;
@@ -547,7 +546,6 @@ const GPACalculator = forwardRef(({
           if (c.originalData.name !== (editForm.name || c.name) ||
               c.originalData.code !== editForm.code ||
               Math.abs(origCredit - newCredit) > 0.01 ||
-              c.originalData.score !== editForm.score ||
               Math.abs(origGPA - newGPA) > 0.01) {
             isModified = true;
           }
@@ -558,7 +556,6 @@ const GPACalculator = forwardRef(({
           name: editForm.name || c.name,
           code: editForm.code,
           credit: newCredit,
-          score: editForm.score,
           gpa: newGPA,
           isReal: isModified ? false : c.isReal,
         };
@@ -634,19 +631,21 @@ const GPACalculator = forwardRef(({
   // 递归收集所有课程
   const collectAllCourses = (categories) => {
     const courses = [];
-    const traverse = (nodes) => {
+    const traverse = (nodes, excluded = false) => {
       nodes.forEach(node => {
+        const generalElective = excluded || String(node.name || '').includes('通识选修');
         if (node.courses && node.courses.length > 0) {
           courses.push(...node.courses.map(c => ({
             ...c,
             category_name: node.name,
             category_path: node.path,
+            gpa_general_elective: generalElective,
             category_wid: node.wid,
             _id: `${c.course_code}-${c.term_code || 'none'}-${Math.random().toString(36).substr(2, 9)}`
           })));
         }
         if (node.children && node.children.length > 0) {
-          traverse(node.children);
+          traverse(node.children, generalElective);
         }
       });
     };
@@ -914,16 +913,19 @@ const GPACalculator = forwardRef(({
       code: plan.course_code,
       credit: parseFloat(plan.credit) || 0,
       score: '',
-      gpa: 0,
+      gpa: null,
       term: formatTermCode(plan.plan_term || plan.suggest_term || plan.select_term || plan.term_code),
       courseType: plan.course_nature,
       category: plan.category_name || plan.course_category,
+      categoryPath: plan.category_path,
+      gpa_general_elective: plan.gpa_general_elective,
       status: plan.status,
       isReal: false,
       isCustom: false,
       fromPlan: true,
-      assessmentMethod: outlineMetadata[plan.course_code]?.assessment_method || plan.exam_type || '',
-      gradingScale: outlineMetadata[plan.course_code]?.grading_scale || '',
+      assessmentMethod: outlineMetadata[plan.course_code]?.assessment_method
+        || plan.assessment_method || plan.exam_type || '',
+      gradingScale: outlineMetadata[plan.course_code]?.grading_scale || plan.grading_scale || '',
       _original: plan,
     })).sort((left, right) => compareAcademicTermsNewestFirst(left.term, right.term));
   }, [academicPlan, realScores, courses, planSearchText, selectedCategoryKey, quickFilters, planCategories, outlineMetadata]);
@@ -990,6 +992,9 @@ const GPACalculator = forwardRef(({
         isCustom: c.isCustom,
         isReal: c.isReal,
         fromPlan: c.fromPlan,
+        categoryPath: c.categoryPath,
+        category: c.category,
+        gpa_general_elective: c.gpa_general_elective,
         assessmentMethod: c.assessmentMethod || outlineMetadata[c.code]?.assessment_method || '',
         gradingScale: c.gradingScale || outlineMetadata[c.code]?.grading_scale || '',
         originalData: c.originalData,
@@ -1103,7 +1108,6 @@ const GPACalculator = forwardRef(({
         sameNameCourses.forEach(existing => {
           // 数据不同才视为冲突
           const isDifferent = Math.abs((imp.gpa || 0) - (existing.gpa || 0)) > 0.01 ||
-                              imp.score !== existing.score ||
                               Math.abs((imp.credit || 0) - (existing.credit || 0)) > 0.01;
           if (isDifferent) {
             conflicts.push({
@@ -1377,60 +1381,6 @@ const GPACalculator = forwardRef(({
       },
     },
     {
-      title: '成绩',
-      dataIndex: 'score',
-      key: 'score',
-      width: 90,
-      align: 'center',
-      sorter: (a, b) => {
-        const aNum = parseFloat(a.score) || 0;
-        const bNum = parseFloat(b.score) || 0;
-        return aNum - bNum;
-      },
-      filterDropdown: numericRangeFilterDropdown('最低成绩', '最高成绩'),
-      onFilter: (value, record) => matchesNumericRange(value, record.score),
-      render: (text, record) => {
-        if (editingKey === record.key && record.isCustom) {
-          return (
-            <Input
-              value={editForm.score}
-              onChange={(e) => setEditForm({ ...editForm, score: e.target.value })}
-              size="small"
-              style={{ width: 75 }}
-              placeholder="成绩"
-            />
-          );
-        }
-        
-        const numScore = parseFloat(text);
-        const isNum = !isNaN(numScore) && text !== '';
-        
-        let color = 'default';
-        if (isNum) {
-          if (numScore >= 90) color = 'success';
-          else if (numScore >= 60) color = 'processing';
-          else color = 'error';
-        }
-        
-        return isSimulating ? (
-          <Input
-            defaultValue={text}
-            onChange={(e) => handleInputChange(record.key, 'score', e.target.value)}
-            onBlur={(e) => handleInputBlur(record.key, 'score', e.target.value)}
-            onPressEnter={(e) => handleInputBlur(record.key, 'score', e.target.value)}
-            size="small"
-            style={{ width: 75 }}
-            variant="borderless"
-            placeholder="成绩"
-          />
-        ) : (
-          <Tag color={isNum ? color : 'blue'} style={{ minWidth: 50 }}>
-            {text || '-'}
-          </Tag>
-        );
-      },
-    },
-    {
       title: '成绩分制',
       key: 'grading_scale',
       width: 110,
@@ -1464,13 +1414,14 @@ const GPACalculator = forwardRef(({
             />
           );
         }
-        const gpa = parseFloat(text) || 0;
+        const gpa = text === null || text === '' || text === undefined ? null : parseFloat(text) || 0;
         return isSimulating ? (
           <InputNumber
-            defaultValue={gpa || null}
+            key={`${record.key}-gpa-${gpa}`}
+            defaultValue={gpa}
             onChange={(v) => handleInputChange(record.key, 'gpa', v)}
-            onBlur={(e) => handleInputBlur(record.key, 'gpa', editingValuesRef.current[record.key + 'gpa'] ?? gpa)}
-            onPressEnter={(e) => handleInputBlur(record.key, 'gpa', editingValuesRef.current[record.key + 'gpa'] ?? gpa)}
+            onBlur={() => handleInputBlur(record.key, 'gpa', pendingInput(record.key, 'gpa', gpa))}
+            onPressEnter={() => handleInputBlur(record.key, 'gpa', pendingInput(record.key, 'gpa', gpa))}
             size="small"
             min={0}
             max={5}
@@ -1643,16 +1594,16 @@ const GPACalculator = forwardRef(({
   const filteredCourses = useMemo(() => {
     let result;
     switch (activeTab) {
-      case 'real': result = courses.filter(c => c.isReal); break;
-      case 'custom': result = courses.filter(c => !c.isReal); break;
-      case 'passed': result = courses.filter(c => c.gpa > 0); break;
-      case 'pending': result = courses.filter(c => !c.gpa && !c.score); break;
-      default: result = courses;
+      case 'real': result = calculationCourses.filter(c => c.isReal); break;
+      case 'custom': result = calculationCourses.filter(c => !c.isReal); break;
+      case 'passed': result = calculationCourses.filter(c => c.gpa > 0); break;
+      case 'pending': result = calculationCourses.filter(c => c.gpa === null || c.gpa === undefined || c.gpa === ''); break;
+      default: result = calculationCourses;
     }
     return [...result].sort((left, right) => (
       compareAcademicTermsNewestFirst(left.term, right.term)
     ));
-  }, [courses, activeTab]);
+  }, [calculationCourses, activeTab]);
   const mobilePageCourses = useMemo(() => {
     const start = (courseTablePagination.current - 1) * courseTablePagination.pageSize;
     return filteredCourses.slice(start, start + courseTablePagination.pageSize);
@@ -1667,7 +1618,7 @@ const GPACalculator = forwardRef(({
         <section className="gpa-mobile-summary" aria-label="GPA 模拟统计">
           <div className="gpa-mobile-summary__primary">
             <span>模拟加权平均绩点</span>
-            <strong>{stats.weightedGPA.toFixed(4)}</strong>
+            <strong>{stats.weightedGPA === null ? '--' : stats.weightedGPA.toFixed(4)}</strong>
           </div>
           <dl>
             <div><dt>课程</dt><dd>{stats.totalCourses} 门</dd></div>
@@ -1685,7 +1636,7 @@ const GPACalculator = forwardRef(({
         </Col>
         <Col xs={12} sm={8} md={6}>
           <Card size="small" className="stat-card highlight">
-            <Statistic title="加权平均绩点" value={stats.weightedGPA} precision={4} prefix={<TrophyOutlined />} valueStyle={{ color: '#1890ff', fontWeight: 'bold' }} />
+            <Statistic title="加权平均绩点" value={stats.weightedGPA ?? '--'} precision={4} prefix={<TrophyOutlined />} valueStyle={{ color: '#1890ff', fontWeight: 'bold' }} />
           </Card>
         </Col>
         <Col xs={12} sm={8} md={5}>
@@ -1800,7 +1751,7 @@ const GPACalculator = forwardRef(({
           { label: `真实 ${stats.realCount}`, key: 'real' },
           { label: `模拟 ${stats.customCount}`, key: 'custom' },
           { label: `有绩点 ${stats.passedCount}`, key: 'passed' },
-          { label: `待输入 ${courses.filter(c => !c.gpa && !c.score).length}`, key: 'pending' },
+          { label: `待输入 ${courses.filter(c => c.gpa === null || c.gpa === undefined || c.gpa === '').length}`, key: 'pending' },
         ]}
       />
 
@@ -1843,11 +1794,6 @@ const GPACalculator = forwardRef(({
                   step={0.5}
                   addonAfter="学分"
                 />
-                <Input
-                  value={editForm.score}
-                  onChange={event => setEditForm({ ...editForm, score: event.target.value })}
-                  placeholder="成绩"
-                />
                 <InputNumber
                   value={editForm.gpa}
                   onChange={gpa => setEditForm({ ...editForm, gpa })}
@@ -1882,10 +1828,13 @@ const GPACalculator = forwardRef(({
                     {getCourseSource(course)}
                   </Tag>
                 </div>
+                {course.fromPlan && <Tag color="geekblue">{gpaCourseGradingScale(course, outlineMetadata)}</Tag>}
+                {gpaExclusionReason(course, gpaPolicy) && <Tag>{gpaExclusionReason(course, gpaPolicy)}</Tag>}
                 <div className="gpa-mobile-course__inputs">
                   <label>
                     <span>学分</span>
                     <InputNumber
+                      key={`${course.key}-credit-${course.credit}`}
                       defaultValue={course.credit}
                       onChange={value => handleInputChange(course.key, 'credit', value)}
                       onBlur={() => handleInputBlur(
@@ -1899,22 +1848,15 @@ const GPACalculator = forwardRef(({
                     />
                   </label>
                   <label>
-                    <span>成绩</span>
-                    <Input
-                      defaultValue={course.score}
-                      onChange={event => handleInputChange(course.key, 'score', event.target.value)}
-                      onBlur={event => handleInputBlur(course.key, 'score', event.target.value)}
-                    />
-                  </label>
-                  <label>
                     <span>绩点</span>
                     <InputNumber
-                      defaultValue={course.gpa || null}
+                      key={`${course.key}-gpa-${course.gpa}`}
+                      defaultValue={course.gpa}
                       onChange={value => handleInputChange(course.key, 'gpa', value)}
                       onBlur={() => handleInputBlur(
                         course.key,
                         'gpa',
-                        editingValuesRef.current[course.key + 'gpa'] ?? course.gpa,
+                        pendingInput(course.key, 'gpa', course.gpa),
                       )}
                       min={0}
                       max={5}
@@ -1962,7 +1904,7 @@ const GPACalculator = forwardRef(({
       {/* 提示信息 */}
       <Alert
         message="GPA模拟说明"
-        description={<ul className="gpa-tips"><li>成绩和绩点直接使用教务系统返回的原始数据</li><li>总GPA = Σ(绩点×学分)/Σ学分（加权平均）</li><li>可直接点击成绩、绩点、学分进行编辑</li><li>数据导出为JSON文件保存在本地</li></ul>}
+        description={<ul className="gpa-tips"><li>绩点直接使用教务系统返回的原始数据</li><li>总GPA = Σ(绩点×学分)/Σ学分（加权平均），计入课程遵循账号的绩点计算策略</li><li>可编辑绩点和学分</li><li>数据导出为JSON文件保存在本地</li></ul>}
         type="info"
         showIcon
         style={{ marginTop: 16 }}
@@ -2320,6 +2262,9 @@ const GPACalculator = forwardRef(({
                             {course.courseType || '性质未知'}
                           </Tag>
                           <Tag>{status}</Tag>
+                          <Tag color="geekblue">
+                            {gpaCourseGradingScale(course, outlineMetadata)}
+                          </Tag>
                           <span>{course.credit} 学分</span>
                           <span>{course.term || '未安排学期'}</span>
                         </span>
@@ -2466,7 +2411,6 @@ const GPACalculator = forwardRef(({
                   background: r.choice === 'imported' ? '#e6f7ff' : '#f5f5f5',
                   border: r.choice === 'imported' ? '1px solid #1890ff' : '1px solid #d9d9d9',
                 }}>
-                  <div>成绩: {r.imported.score || '-'}</div>
                   <div>绩点: {r.imported.gpa}</div>
                   <div>学分: {r.imported.credit}</div>
                   {r.choice === 'imported' && <Tag color="blue" size="small">将使用</Tag>}
@@ -2484,7 +2428,6 @@ const GPACalculator = forwardRef(({
                   background: r.choice === 'existing' ? '#f6ffed' : '#f5f5f5',
                   border: r.choice === 'existing' ? '1px solid #52c41a' : '1px solid #d9d9d9',
                 }}>
-                  <div>成绩: {r.existing.score || '-'}</div>
                   <div>绩点: {r.existing.gpa}</div>
                   <div>学分: {r.existing.credit}</div>
                   {r.choice === 'existing' && <Tag color="green" size="small">保留</Tag>}
@@ -2528,7 +2471,7 @@ const GPACalculator = forwardRef(({
                   onClick={() => handleConflictChoiceChange(item.key, 'imported')}
                 >
                   <b>使用导入数据</b>
-                  <span>成绩 {item.imported.score || '-'} · 绩点 {item.imported.gpa} · {item.imported.credit} 学分</span>
+                  <span>绩点 {item.imported.gpa} · {item.imported.credit} 学分</span>
                 </button>
                 <button
                   type="button"
@@ -2536,7 +2479,7 @@ const GPACalculator = forwardRef(({
                   onClick={() => handleConflictChoiceChange(item.key, 'existing')}
                 >
                   <b>保留现有数据</b>
-                  <span>成绩 {item.existing.score || '-'} · 绩点 {item.existing.gpa} · {item.existing.credit} 学分</span>
+                  <span>绩点 {item.existing.gpa} · {item.existing.credit} 学分</span>
                 </button>
               </div>
             </Card>
@@ -2571,8 +2514,8 @@ const GPACalculator = forwardRef(({
           pagination={false}
           columns={[
             { title: '课程', dataIndex: 'name', key: 'name' },
-            { title: '模拟成绩', key: 'imported', render: (_, r) => r.imported ? `${r.imported.score} / ${r.imported.gpa}绩点` : '新增课程' },
-            { title: '真实成绩', key: 'real', render: (_, r) => <span style={{ color: '#52c41a', fontWeight: 'bold' }}>{r.real.score} / {r.real.gpa}绩点</span> },
+            { title: '模拟绩点', key: 'imported', render: (_, r) => r.imported ? `${r.imported.gpa}绩点` : '新增课程' },
+            { title: '真实绩点', key: 'real', render: (_, r) => <span style={{ color: '#52c41a', fontWeight: 'bold' }}>{r.real.gpa}绩点</span> },
             {
               title: '采用',
               key: 'choice',
@@ -2616,7 +2559,7 @@ const GPACalculator = forwardRef(({
                   )))}
                 >
                   <b>采用最新真实成绩</b>
-                  <span>{item.real.score} · {item.real.gpa} 绩点</span>
+                  <span>{item.real.gpa} 绩点</span>
                 </button>
                 <button
                   type="button"
@@ -2629,7 +2572,7 @@ const GPACalculator = forwardRef(({
                 >
                   <b>{item.isNew ? '暂不加入' : '保留模拟成绩'}</b>
                   <span>{item.imported
-                    ? `${item.imported.score} · ${item.imported.gpa} 绩点`
+                    ? `${item.imported.gpa} 绩点`
                     : '不加入当前模拟'}</span>
                 </button>
               </div>

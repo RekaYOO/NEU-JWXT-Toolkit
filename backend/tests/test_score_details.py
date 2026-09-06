@@ -6,7 +6,15 @@ import pytest
 
 from backend.app.schemas.scores import CourseScoreDetailResponse, CourseScoreModel
 from backend.app.schemas.scores import ScoreDetailQueryRequest
-from backend.core.cache import CacheKey, CacheStore, PayloadType, RefreshStatus
+from backend.core.cache import (
+    CacheEntry,
+    CacheEvent,
+    CacheKey,
+    CacheStore,
+    PayloadType,
+    RefreshStatus,
+)
+from backend.core.cache.models import utc_now
 from backend.core.cache.resources import score_detail_variant
 from backend.core.academic import api as academic_module
 from backend.core.academic.api import (
@@ -318,6 +326,115 @@ def test_online_detail_routes_use_typed_course_key_and_hide_wid(tmp_path, monkey
         "force": True,
         "reason": "manual",
     }]
+
+
+def test_scores_backfill_keeps_current_details_and_queues_missing_or_outdated(tmp_path, monkeypatch):
+    from backend.app import dependencies
+
+    store = CacheStore(tmp_path / "cache.db")
+
+    def save_detail(code, score, gpa):
+        key = CacheKey("account", "score-details", score_detail_variant(code, "2025-2026-2"))
+        store.commit_success(
+            key=key,
+            schema_version=1,
+            revision_algorithm_version=1,
+            payload_type=PayloadType.JSON,
+            payload={
+                "course_code": code,
+                "term": "2025-2026-2",
+                "source_score": score,
+                "source_gpa": gpa,
+                "score": score,
+                "grade_point": str(gpa),
+                "pass": True,
+                "item_scores": [{"code": "FINAL", "name": "期末", "value": score}],
+            },
+            revision=f"v1:{code}",
+            dependency_revisions={},
+            changes={},
+            reason="test",
+        )
+        return key
+
+    current_key = save_detail("CURRENT", "90", 4.0)
+    outdated_key = save_detail("OUTDATED", "70", 2.0)
+    submissions = []
+
+    class Coordinator:
+        def submit(self, **kwargs):
+            submissions.append(kwargs)
+            return SimpleNamespace(job_id=f"job-{len(submissions)}")
+
+    monkeypatch.setattr(dependencies, "_cache_store", store)
+    monkeypatch.setattr(dependencies, "_cache_coordinator", Coordinator())
+    monkeypatch.setattr(dependencies, "peek_auth_client", lambda: SimpleNamespace(
+        username="account", is_logged_in=True,
+    ))
+    monkeypatch.setattr(dependencies, "get_auth_generation", lambda: 9)
+
+    submitted = dependencies._schedule_missing_score_details("account", {"scores": [
+        {"code": "CURRENT", "term": "2025-2026-2", "score": "90", "gpa": 4.0,
+         "detail_ref": "current-ref"},
+        {"code": "OUTDATED", "term": "2025-2026-2", "score": "85", "gpa": 3.5,
+         "detail_ref": "outdated-ref"},
+        {"code": "MISSING", "term": "2025-2026-1", "score": "78", "gpa": 2.8,
+         "detail_ref": "missing-ref"},
+        {"code": "NO-REF", "term": "2025-2026-1", "score": "80", "gpa": 3.0,
+         "detail_ref": ""},
+    ]})
+
+    assert submitted == 2
+    assert {item["variant"] for item in submissions} == {
+        score_detail_variant("OUTDATED", "2025-2026-2"),
+        score_detail_variant("MISSING", "2025-2026-1"),
+    }
+    assert all(item["force"] is False for item in submissions)
+    assert all(item["reason"] == "score_detail_backfill" for item in submissions)
+    assert store.get(current_key).last_checked_at is not None
+    assert store.get(outdated_key).last_checked_at is None
+
+
+def test_unchanged_scores_event_still_checks_detail_backfill(monkeypatch):
+    from backend.app import dependencies
+
+    now = utc_now()
+    key = CacheKey("account", "scores")
+    entry = CacheEntry(
+        key=key,
+        schema_version=1,
+        revision_algorithm_version=1,
+        payload_type=PayloadType.JSON,
+        payload={"scores": []},
+        revision="v1:scores",
+        saved_at=now,
+        last_checked_at=now,
+        last_attempt_at=now,
+    )
+    checked = []
+    monkeypatch.setattr(
+        dependencies._cache_store,
+        "get",
+        lambda requested: entry if requested == key else None,
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "_schedule_missing_score_details",
+        lambda account, payload: checked.append((account, payload)) or 0,
+    )
+
+    dependencies._handle_cache_event(CacheEvent(
+        cursor=1,
+        key=key,
+        previous_revision="v1:scores",
+        revision="v1:scores",
+        changed=False,
+        changes={},
+        reason="page_swr",
+        created_at=now,
+    ))
+
+    assert checked == [("account", {"scores": []})]
 
 
 def test_offline_detail_route_only_reads_cache(tmp_path, monkeypatch):

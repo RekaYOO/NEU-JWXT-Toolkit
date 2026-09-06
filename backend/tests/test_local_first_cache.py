@@ -6,6 +6,7 @@ from backend.app.routers import report as report_router
 from backend.app.routers import research as research_router
 from backend.app.routers import scores as scores_router
 from backend.core.academic.api import CourseScore
+from backend.core.cache import CacheKey
 from backend.core.storage import AcademicReportStorage, AcademicStorage, Storage
 from backend.core.storage.storage import StorageConfig
 
@@ -75,6 +76,7 @@ def test_cache_routes_do_not_need_a_remote_auth_check(monkeypatch, tmp_path):
         "20250001",
     )
     class Entry:
+        key = CacheKey("20250001", "scores")
         saved_at = datetime.now()
         payload = {
             "scores": [{

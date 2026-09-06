@@ -112,6 +112,11 @@ def test_server_access_gateway_and_static_frontend(tmp_path):
         offline = requests.get(f"{base_url}/api/offline/status")
         assert offline.status_code == 401
         assert offline.json()["code"] == "ACCESS_REQUIRED"
+        for endpoint in ("/api/gpa-policy", "/api/offline/gpa-policy"):
+            assert requests.get(f"{base_url}{endpoint}", timeout=3).status_code == 401
+        assert requests.put(
+            f"{base_url}/api/gpa-policy", json={"mode": "from_2025"}, timeout=3,
+        ).status_code == 401
 
         session = requests.Session()
         login = session.post(

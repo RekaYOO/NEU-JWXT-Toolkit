@@ -44,6 +44,13 @@ def test_release_bundle_guard_allows_program_and_examples(tmp_path):
     assert find_forbidden(root) == []
 
 
+def test_release_bundle_guard_rejects_gpa_preferences(tmp_path):
+    directory = tmp_path / "app" / "gpa_preferences"
+    directory.mkdir(parents=True)
+    (directory / "account-hash.json").write_text('{"mode":"from_2025"}', encoding="utf-8")
+    assert Path("app/gpa_preferences/account-hash.json") in find_forbidden(tmp_path)
+
+
 def test_release_bundle_guard_rejects_new_private_artifact_types(tmp_path):
     root = tmp_path / "bundle"
     root.mkdir()

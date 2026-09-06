@@ -36,9 +36,11 @@ from backend.core.log.manager import LogManager
 from backend.core.tracking import GradeTrackingService
 from backend.core.notifications import SystemMailService
 from backend.core.auth.recovery import RemoteAuthRecoveryService
+from backend.core.academic.gpa_policy import GpaPolicyService
 from backend.core.cache import (
     AccountScope,
     CacheCoordinator,
+    CacheKey,
     CacheRegistry,
     CacheResourceSpec,
     CacheStore,
@@ -611,6 +613,10 @@ def schedule_login_bootstrap(client: NEUAuthClient) -> None:
     except RuntimeError:
         # Normal during bounded application shutdown.
         pass
+    scores_entry = _cache_store.get(CacheKey(username, "scores"))
+    if scores_entry is not None and isinstance(scores_entry.payload, dict):
+        _schedule_missing_score_details(username, scores_entry.payload)
+        schedule_gpa_context(username)
 
 
 # ── 全局状态修改接口 ──────────────────────────────────────────────────────────
@@ -1107,6 +1113,8 @@ _auth_recovery = RemoteAuthRecoveryService(
     auth_error_code_provider=lambda: _last_auth_recovery_error_code,
 )
 
+_gpa_policy = GpaPolicyService(_storage.config.data_dir, _cache_store, _cache_registry)
+
 _grade_tracker = GradeTrackingService(
     data_dir=_storage.config.data_dir,
     auth_provider=_get_tracking_auth_client,
@@ -1118,6 +1126,7 @@ _grade_tracker = GradeTrackingService(
     login_flow_pending=_interactive_login_pending,
     score_refresher=_tracking_score_refresh,
     score_detail_lookup=_tracking_score_detail_lookup,
+    gpa_summary_provider=_gpa_policy.summarize,
 )
 
 _course_selection_automation = CourseSelectionAutomationService(
@@ -1147,6 +1156,116 @@ _auth_recovery.register_recovered_callback(
 )
 
 
+def _score_detail_cache_matches(score: dict, entry, spec) -> bool:
+    if (
+        entry is None
+        or entry.schema_version != spec.schema_version
+        or entry.revision_algorithm_version != spec.revision_algorithm_version
+        or not isinstance(entry.payload, dict)
+    ):
+        return False
+    payload = entry.payload
+    if (
+        str(payload.get("source_score") or "") != str(score.get("score") or "")
+        or payload.get("source_gpa") != score.get("gpa")
+    ):
+        return False
+    return any(
+        isinstance(item, dict)
+        and (
+            item.get("code")
+            or item.get("name")
+            or item.get("value") not in (None, "")
+        )
+        for item in payload.get("item_scores") or []
+    )
+
+
+def _schedule_missing_score_details(account: str, scores_payload: dict) -> int:
+    """Queue missing per-course details without delaying the scores response."""
+    client = peek_auth_client()
+    if (
+        client is None
+        or not getattr(client, "is_logged_in", False)
+        or str(getattr(client, "username", "") or "") != account
+    ):
+        return 0
+    spec = _cache_registry.get("score-details")
+    epoch = get_auth_generation()
+    submitted = 0
+    seen: set[str] = set()
+    for score in scores_payload.get("scores") or []:
+        if not isinstance(score, dict) or not str(score.get("detail_ref") or ""):
+            continue
+        code = str(score.get("code") or "").strip()
+        term = str(score.get("term") or "").strip()
+        if not code or not term:
+            continue
+        variant = score_detail_variant(code, term)
+        if variant in seen:
+            continue
+        seen.add(variant)
+        key = CacheKey(account, "score-details", variant)
+        entry = _cache_store.get(key)
+        if _score_detail_cache_matches(score, entry, spec):
+            continue
+        if entry is not None:
+            # Keep the old payload readable while marking it for refresh.
+            _cache_store.invalidate(key)
+        try:
+            submission = _cache_coordinator.submit(
+                account_id=account,
+                resource="score-details",
+                variant=variant,
+                identity_epoch=epoch,
+                force=False,
+                reason="score_detail_backfill",
+            )
+            if submission.job_id:
+                submitted += 1
+        except RuntimeError:
+            # Shutdown, identity replacement, and failure backoff must not
+            # prevent the already cached scores from remaining usable.
+            continue
+    return submitted
+
+
+def schedule_gpa_context(account: str) -> None:
+    """Warm calculation inputs through existing background resource jobs."""
+    client = peek_auth_client()
+    if not client or not getattr(client, "is_logged_in", False) or str(client.username) != account:
+        return
+    if _gpa_policy.preference(account)["mode"] != "from_2025":
+        return
+    context = _gpa_policy.context(account)
+    epoch = get_auth_generation()
+    try:
+        _cache_coordinator.submit(
+            account_id=account, resource="academic-report", identity_epoch=epoch,
+            force=False, reason="gpa_context",
+        )
+        entry = _cache_store.get(CacheKey(account, "scores"))
+        scores = (
+            entry.payload.get("scores") or []
+            if entry and isinstance(entry.payload, dict) else []
+        )
+        missing = {
+            str(score.get("code") or "") for score in scores
+            if score.get("code")
+            and str(score["code"]) not in context["general_elective_codes"]
+            and not (context["grading_scales"].get(str(score["code"])) or score.get("grading_scale"))
+        }
+        for code in sorted(missing):
+            _cache_coordinator.submit(
+                account_id=account, resource="course-outline-metadata",
+                variant=f"course:{code}", identity_epoch=epoch,
+                force=False, reason="gpa_context",
+            )
+    except RuntimeError:
+        # Shutdown must not block a local preference write or cached scores.
+        pass
+
+
 def _handle_cache_event(event) -> None:
     account = event.key.account_id
     if event.key.resource == "research-training" and event.changed:
@@ -1154,10 +1273,15 @@ def _handle_cache_event(event) -> None:
         if entry and isinstance(entry.payload, dict):
             _research_storage.sync_favorite_archives(account, entry.payload)
         return
-    if event.key.resource != "scores" or not event.changed:
+    if event.key.resource != "scores":
         return
     entry = _cache_store.get(event.key)
     if entry is None or not isinstance(entry.payload, dict):
+        return
+    if event.reason != "legacy_migration":
+        _schedule_missing_score_details(account, entry.payload)
+        schedule_gpa_context(account)
+    if not event.changed:
         return
     _grade_tracker.handle_scores_revision(
         account,
@@ -1214,6 +1338,7 @@ class ApplicationServices:
     grade_tracker: GradeTrackingService
     report_storage: AcademicReportStorage
     research_storage: ResearchTrainingStorage
+    gpa_policy: GpaPolicyService | None = None
     course_outline_sync: CourseOutlineMetadataSyncService | None = None
     course_selection_automation: CourseSelectionAutomationService | None = None
 
@@ -1293,6 +1418,7 @@ _application_services = ApplicationServices(
     grade_tracker=_grade_tracker,
     report_storage=_report_storage,
     research_storage=_research_storage,
+    gpa_policy=_gpa_policy,
     course_outline_sync=_course_outline_sync,
     course_selection_automation=_course_selection_automation,
 )
@@ -1304,6 +1430,10 @@ def get_application_services() -> ApplicationServices:
 
 def get_storage() -> Storage:
     return _application_services.storage
+
+
+def get_gpa_policy() -> GpaPolicyService:
+    return _application_services.gpa_policy
 
 
 def get_log_config() -> LogConfig:

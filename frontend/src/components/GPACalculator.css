@@ -562,16 +562,22 @@
 
   .gpa-mobile-course__inputs {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
     margin: 14px 0;
   }
 
   .gpa-mobile-course__inputs label > span {
     display: block;
+    height: 22px;
+    line-height: 22px;
     margin-bottom: 4px;
     color: var(--color-muted);
     font-size: 11px;
+  }
+
+  .gpa-mobile-course__inputs label {
+    min-width: 0;
   }
 
   .gpa-mobile-course__inputs .ant-input,
@@ -838,7 +844,7 @@
   }
 
   .gpa-mobile-course__inputs {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .gpa-mobile-course__footer {

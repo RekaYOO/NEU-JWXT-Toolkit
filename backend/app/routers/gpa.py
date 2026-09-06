@@ -4,11 +4,12 @@ import tempfile
 import hashlib
 import shutil
 from pathlib import Path
-from typing import List
+from typing import List, Literal
+from pydantic import BaseModel
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends
 
-from backend.app.dependencies import get_api_logger, get_gpa_simulation_dir
+from backend.app.dependencies import get_api_logger, get_gpa_simulation_dir, get_gpa_policy, schedule_gpa_context
 from backend.app.schemas import GPASimulationExportRequest, GPASimulationFile
 from backend.core.auth import NEUAuthClient
 from backend.app.dependencies import require_cached_auth_identity
@@ -16,6 +17,23 @@ from backend.core.runtime.config import secure_file
 from backend.core.log import log_application_error
 
 router = APIRouter()
+
+
+class GpaPolicyRequest(BaseModel):
+    mode: Literal["through_2024", "from_2025"] | None
+    model_config = {"extra": "forbid"}
+
+
+@router.get("/gpa-policy")
+def get_policy(auth: NEUAuthClient = Depends(require_cached_auth_identity)):
+    return get_gpa_policy().context(str(auth.username))
+
+
+@router.put("/gpa-policy")
+def set_policy(request: GpaPolicyRequest, auth: NEUAuthClient = Depends(require_cached_auth_identity)):
+    result = get_gpa_policy().save(str(auth.username), request.mode)
+    schedule_gpa_context(str(auth.username))
+    return result
 
 
 def _account_directory(username: str) -> Path:

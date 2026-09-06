@@ -47,6 +47,7 @@ def score_model(score: dict) -> CourseScoreModel:
         exam_status=str(score.get("exam_status") or ""),
         course_nature=str(score.get("course_nature") or ""),
         is_passed=bool(score.get("is_passed")),
+        grading_scale=str(score.get("grading_scale") or ""),
     )
 
 

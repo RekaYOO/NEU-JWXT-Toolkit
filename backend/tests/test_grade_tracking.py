@@ -207,6 +207,26 @@ def build_service(tmp_path):
     return service, academic, storage
 
 
+def test_completed_check_uses_chinese_status_and_persists_it(tmp_path):
+    service, _, _ = build_service(tmp_path)
+    result = service._run_check(manual=True)
+    assert result["stage"] == "monitoring"
+    assert result["message"] == "成绩检查已完成"
+    saved = json.loads(service.state_path.read_text(encoding="utf-8"))
+    assert saved["message"] == "成绩检查已完成"
+
+
+def test_legacy_english_status_is_translated_without_remote_check(tmp_path):
+    (tmp_path / "grade_tracking_state.json").write_text(
+        json.dumps({"stage": "monitoring", "message": "tracking check completed"}),
+        encoding="utf-8",
+    )
+    service, _, storage = build_service(tmp_path)
+    assert service.get_status()["message"] == "成绩检查已完成"
+    assert service.get_status()["stage"] == "monitoring"
+    assert storage.saved == []
+
+
 def deliver_pending_email(service):
     service._send_email = lambda *_args, **_kwargs: None
     service._flush_outbox()
