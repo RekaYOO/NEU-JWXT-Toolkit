@@ -1020,6 +1020,39 @@ export const shouldShowQueryTimetablePending = ({
   error = null,
 } = {}) => mode !== 'personal' && Boolean(target) && loading && !scheduleMatches && !error;
 
+export function MobileTimetableNotices({
+  error, recoveryNotice, cacheAuthFailure, conflictError, onRetry, onLogin,
+}) {
+  const loginError = error?.message === TIMETABLE_LOGIN_ERROR_TEXT || error?.stage === 'recovery';
+  const recoveryText = (recoveryNotice || cacheAuthFailure)
+    ? (cacheAuthFailure ? '登录已失效，请重新登录' : '当前显示本机课表，正在后台恢复登录')
+    : '';
+  const messages = uniqueTexts([
+    error?.message,
+    !loginError ? recoveryText : '',
+    conflictError,
+  ]);
+  if (!messages.length) return null;
+  const needsLogin = Boolean(loginError || recoveryText);
+  return (
+    <div className="timetable-mobile-notices">
+      <Alert
+        type={error ? 'error' : 'warning'}
+        showIcon
+        message={messages[0]}
+        description={messages.length > 1
+          ? messages.slice(1).map(text => <div key={text}>{text}</div>)
+          : undefined}
+        className={error ? 'timetable-error' : undefined}
+        action={<Space wrap size={8}>
+          {error && !loginError && <Button size="small" onClick={onRetry}>重试</Button>}
+          {needsLogin && <Button size="small" onClick={onLogin}>重新登录</Button>}
+        </Space>}
+      />
+    </div>
+  );
+}
+
 function QueryTimetablePending({ mode, viewMode, weekNumber, isMobile, includeRange = false }) {
   const range = includeRange
     ? (viewMode === 'week' ? `第 ${weekNumber} 周` : '全学期')
@@ -3300,7 +3333,7 @@ function TimetablePage({
 
       {!isMobile && recoveryAlert}
 
-      {mode !== 'personal' && conflictDetectionEnabled && conflictDetectionError && (
+      {!isMobile && mode !== 'personal' && conflictDetectionEnabled && conflictDetectionError && (
         <Alert type="warning" showIcon message={conflictDetectionError} className="timetable-conflict-notice" />
       )}
 
@@ -3311,7 +3344,7 @@ function TimetablePage({
         </div>
       )}
 
-      {error && (
+      {!isMobile && error && (
         <Alert
           type="error"
           showIcon
@@ -3338,7 +3371,9 @@ function TimetablePage({
               isMobile={isMobile}
               includeRange
             />
-          ) : error ? '当前范围读取失败，请重试' : '当前范围尚未读取，请刷新课表'}
+          ) : error
+            ? (isMobile ? '下方保留的是上次查询结果，并非当前选择范围' : '当前范围读取失败，请重试')
+            : '当前范围尚未读取，请刷新课表'}
         </div>
       )}
       <div
@@ -3434,7 +3469,16 @@ function TimetablePage({
       </div>
       </div>
 
-      {isMobile && recoveryAlert}
+      {isMobile && (
+        <MobileTimetableNotices
+          error={error}
+          recoveryNotice={recoveryNotice}
+          cacheAuthFailure={cacheAuthFailure}
+          conflictError={mode !== 'personal' && conflictDetectionEnabled ? conflictDetectionError : ''}
+          onRetry={retryError}
+          onLogin={() => navigate('/login')}
+        />
+      )}
 
       {isMobile && viewMode === 'term' && schedule && (mode === 'personal' || queryScheduleMatches) && (
         <div className="timetable-mobile-scroll-tail" aria-hidden="true" />
