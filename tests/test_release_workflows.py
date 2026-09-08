@@ -60,14 +60,16 @@ def test_release_dag_stays_small_and_explicit():
 def test_android_release_gate_checks_actual_runtime_and_reuses_web_build():
     assert "workflow_call:" in ANDROID
     assert "if: ${{ !inputs.frontend_artifact }}" in ANDROID
-    assert "if: ${{ github.event_name != 'workflow_call' }}" in ANDROID
-    assert "if: ${{ always() && github.event_name != 'workflow_call' }}" in ANDROID
     assert "name: ${{ inputs.frontend_artifact }}" in ANDROID
+    assert "name: ${{ inputs.frontend_artifact || 'android-web-build' }}" in ANDROID
     assert 'python-version: "3.13"' in ANDROID
     assert ":client-app:connectedX86TestDebugAndroidTest" in ANDROID
     assert ":local-app:connectedX86TestDebugAndroidTest" in ANDROID
     assert "uiautomator dump" not in ANDROID
     assert "-x :local-app:install" not in ANDROID
+    assert "Collect emulator diagnostics" not in ANDROID
+    assert "android-test-reports-" not in ANDROID
+    assert "android-debug-" not in ANDROID
     for secret in ("ANDROID_SIGNING_KEYSTORE_BASE64", "ANDROID_SIGNING_STORE_PASSWORD",
                    "ANDROID_SIGNING_KEY_ALIAS", "ANDROID_SIGNING_KEY_PASSWORD"):
         assert f"secrets.{secret}" in RELEASE
