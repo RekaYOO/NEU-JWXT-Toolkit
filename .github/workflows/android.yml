@@ -232,7 +232,7 @@ jobs:
             cp "$RUNNER_TEMP/notification-permission-test.txt" packaging/android/diagnostics/
           fi
       - name: Upload Android test reports
-        if: always()
+        if: ${{ always() && github.event_name != 'workflow_call' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: android-test-reports-${{ matrix.abi }}
@@ -242,7 +242,7 @@ jobs:
             packaging/android/diagnostics/
           if-no-files-found: ignore
       - name: Upload debug APKs
-        if: always()
+        if: ${{ always() && github.event_name != 'workflow_call' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: android-debug-${{ matrix.abi }}

@@ -61,6 +61,7 @@ def test_android_release_gate_checks_actual_runtime_and_reuses_web_build():
     assert "workflow_call:" in ANDROID
     assert "if: ${{ !inputs.frontend_artifact }}" in ANDROID
     assert "if: ${{ github.event_name != 'workflow_call' }}" in ANDROID
+    assert "if: ${{ always() && github.event_name != 'workflow_call' }}" in ANDROID
     assert "name: ${{ inputs.frontend_artifact }}" in ANDROID
     assert 'python-version: "3.13"' in ANDROID
     assert ":client-app:connectedX86TestDebugAndroidTest" in ANDROID
