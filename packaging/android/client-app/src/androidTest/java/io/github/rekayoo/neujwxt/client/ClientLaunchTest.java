@@ -33,7 +33,21 @@ public class ClientLaunchTest {
                         value -> { rendered.set("true".equals(value)); done.countDown(); });
                 });
                 assertTrue(done.await(5, TimeUnit.SECONDS));
-                if (rendered.get()) return;
+                if (rendered.get()) {
+                    android.content.Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+                    java.io.File directory = new java.io.File(context.getExternalFilesDir(null), "test-screenshots");
+                    assertTrue(directory.isDirectory() || directory.mkdirs());
+                    android.graphics.Bitmap screenshot = InstrumentationRegistry.getInstrumentation()
+                        .getUiAutomation().takeScreenshot();
+                    assertNotNull(screenshot);
+                    try (java.io.FileOutputStream output = new java.io.FileOutputStream(
+                        new java.io.File(directory, "client-offline.png"))) {
+                        assertTrue(screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output));
+                    } finally {
+                        screenshot.recycle();
+                    }
+                    return;
+                }
                 Thread.sleep(500);
             }
             fail("Bundled React application never rendered without a reachable server");

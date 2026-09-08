@@ -197,12 +197,29 @@ jobs:
           cd packaging/android
           bash gradlew --no-daemon :client-app:connectedX86TestDebugAndroidTest \
             :local-app:connectedX86TestDebugAndroidTest
+      - name: Collect emulator diagnostics
+        if: always() && matrix.abi == 'x86_64'
+        shell: bash
+        run: |
+          mkdir -p packaging/android/diagnostics
+          if adb get-state 2>/dev/null | grep -qx device; then
+            adb logcat -d > packaging/android/diagnostics/logcat.txt
+            adb exec-out screencap -p > packaging/android/diagnostics/final-screen.png
+            adb pull /sdcard/Android/data/io.github.rekayoo.neujwxt.client.test.debug/files/test-screenshots packaging/android/diagnostics/client || true
+            adb pull /sdcard/Android/data/io.github.rekayoo.neujwxt.local.test.debug/files/test-screenshots packaging/android/diagnostics/local || true
+          fi
+          if [[ -f "$RUNNER_TEMP/emulator.log" ]]; then
+            cp "$RUNNER_TEMP/emulator.log" packaging/android/diagnostics/
+          fi
       - name: Upload Android test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: android-test-reports-${{ matrix.abi }}
-          path: packaging/android/*/build/reports/
+          path: |
+            packaging/android/*/build/reports/
+            packaging/android/*/build/outputs/androidTest-results/
+            packaging/android/diagnostics/
           if-no-files-found: ignore
       - name: Upload debug APKs
         if: always()

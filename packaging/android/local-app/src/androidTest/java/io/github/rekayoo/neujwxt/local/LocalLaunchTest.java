@@ -21,6 +21,9 @@ public class LocalLaunchTest {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             String endpoint = null;
             for (int attempt = 0; attempt < 240; attempt++) {
+                if (LocalBackendService.startupFailure() != null) {
+                    throw new AssertionError("Embedded Python startup failed", LocalBackendService.startupFailure());
+                }
                 endpoint = LocalBackendService.endpoint();
                 if (endpoint != null) break;
                 Thread.sleep(500);
@@ -54,6 +57,19 @@ public class LocalLaunchTest {
                 });
                 assertTrue(done.await(5, TimeUnit.SECONDS));
                 if (rendered.get()) {
+                    android.app.Instrumentation instrumentation =
+                        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation();
+                    java.io.File directory = new java.io.File(
+                        instrumentation.getTargetContext().getExternalFilesDir(null), "test-screenshots");
+                    assertTrue(directory.isDirectory() || directory.mkdirs());
+                    android.graphics.Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot();
+                    assertNotNull(screenshot);
+                    try (java.io.FileOutputStream output = new java.io.FileOutputStream(
+                        new java.io.File(directory, "local-startup.png"))) {
+                        assertTrue(screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output));
+                    } finally {
+                        screenshot.recycle();
+                    }
                     String originalToken = LocalBackendService.sessionToken();
                     String originalEndpoint = LocalBackendService.endpoint();
                     scenario.onActivity(activity -> activity.stopService(

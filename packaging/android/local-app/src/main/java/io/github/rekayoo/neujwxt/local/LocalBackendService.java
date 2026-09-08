@@ -56,6 +56,7 @@ public final class LocalBackendService extends Service {
     private static volatile String token;
     private static volatile String startupEndpoint;
     private static volatile LocalBackendService instance;
+    private static volatile Exception startupFailure;
     private static final Object PYTHON_LOCK = new Object();
     private static final List<Runnable> FOREGROUND_CALLBACKS = new ArrayList<>();
     private static final AtomicInteger MUTATIONS = new AtomicInteger();
@@ -119,10 +120,15 @@ public final class LocalBackendService extends Service {
         return token;
     }
 
+    static Exception startupFailure() {
+        return startupFailure;
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
         instance = this;
+        startupFailure = null;
         createChannels();
         promote("正在启动本地服务");
         worker.execute(this::startPython);
@@ -173,6 +179,10 @@ public final class LocalBackendService extends Service {
             if (!destroyed) worker.scheduleWithFixedDelay(this::pollBackend, 0, 5, TimeUnit.SECONDS);
         } catch (Exception exception) {
             if (destroyed) return;
+            startupFailure = exception;
+            if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+                android.util.Log.e("NeuMobileRuntime", "Embedded backend startup failed", exception);
+            }
             endpoint = null;
             ready = false;
             notifyReady();
