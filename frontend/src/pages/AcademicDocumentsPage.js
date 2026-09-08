@@ -7,6 +7,7 @@ import {
 } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { generateAcademicDocument, getAcademicDocuments } from '../services/api';
+import { isNativeShell, saveNativeFile } from '../services/nativeBridge';
 import './AcademicDocumentsPage.css';
 
 const { Title, Text, Paragraph } = Typography;
@@ -15,6 +16,10 @@ const categoryIcon = category => (category.includes('成绩')
   ? <FileTextOutlined /> : <SafetyCertificateOutlined />);
 
 const saveOrOpen = ({ blob, filename, format }, previewWindow = null) => {
+  if (saveNativeFile(filename, blob.type, blob)) {
+    if (previewWindow && !previewWindow.closed) previewWindow.close();
+    return;
+  }
   const url = URL.createObjectURL(blob);
   if (format === 'html') {
     const opened = previewWindow || window.open(url, '_blank');
@@ -74,7 +79,7 @@ const AcademicDocumentsPage = () => {
       okText: '确认生成',
       cancelText: '取消',
       async onOk() {
-        const previewWindow = window.open('', '_blank');
+        const previewWindow = isNativeShell() ? null : window.open('', '_blank');
         if (previewWindow) {
           previewWindow.document.title = `正在生成${document.name}`;
           previewWindow.document.body.textContent = '正在从教务系统生成证明，请稍候…';

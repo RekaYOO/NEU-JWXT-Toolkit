@@ -14,9 +14,11 @@ import {
 } from '../services/api';
 import { clearBrowserAvatarCache, clearBrowserTimetableCache } from '../resources/BrowserTimetableStore';
 import { useResourceIdentity } from '../resources/ResourceStore';
+import { nativeShellInfo, openNativeServerSettings } from '../services/nativeBridge';
 import './SystemSettingsPage.css';
 
 const { Title, Text } = Typography;
+const shellInfo = nativeShellInfo();
 
 const CACHE_RESOURCE_META = {
   scores: { name: '成绩数据', summary: '成绩列表、绩点和课程成绩变化所使用的本地数据。' },
@@ -125,8 +127,17 @@ const AuthRecoverySettings = () => {
   </Form>;
 };
 
+const NativeServerSettings = () => shellInfo?.kind === 'client' ? (
+  <Card title="配套服务端" className="system-settings-card" extra={(
+    <Button icon={<SettingOutlined />} onClick={openNativeServerSettings}>更换服务端</Button>
+  )}>
+    <Text>{shellInfo.server_url || '尚未配置'}</Text>
+  </Card>
+) : null;
+
 export default function SystemSettingsPage() {
   const [params, setParams] = useSearchParams();
   const activeKey = params.get('tab') === 'logs' ? 'logs' : 'config';
-  return <main className="system-settings-page"><div className="system-settings-heading"><SettingOutlined /><div><Title level={2}>系统设置</Title><Text type="secondary">统一管理日志、缓存和系统通知配置</Text></div></div><Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={[{ key: 'config', label: <span><SettingOutlined /> 配置项</span>, children: <><CacheSettings /><BrowserTimetableCacheCard /><Card title="系统邮件" className="system-settings-card"><SystemMailForm /></Card><Card title="远程登录恢复" className="system-settings-card"><AuthRecoverySettings /></Card></> }, { key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded /> }]} /></main>;
+  const mobileLocal = shellInfo?.kind === 'local';
+  return <main className="system-settings-page"><div className="system-settings-heading"><SettingOutlined /><div><Title level={2}>系统设置</Title><Text type="secondary">统一管理日志、缓存和系统通知配置</Text></div></div><Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={[{ key: 'config', label: <span><SettingOutlined /> 配置项</span>, children: <><NativeServerSettings /><CacheSettings /><BrowserTimetableCacheCard />{!mobileLocal && <><Card title="系统邮件" className="system-settings-card"><SystemMailForm /></Card><Card title="远程登录恢复" className="system-settings-card"><AuthRecoverySettings /></Card></>}</> }, { key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded /> }]} /></main>;
 }

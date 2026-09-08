@@ -12,6 +12,7 @@ import {
 import './LoginPage.css';
 import { isManualLogoutActive } from '../utils/authSessionPolicy';
 import WebVPNAuthModal from '../components/WebVPNAuthModal';
+import NativeServerSettingsButton from '../components/NativeServerSettingsButton';
 
 const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   const [loading, setLoading] = useState(false);
@@ -367,6 +368,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
         <div className="login-status" role="status" aria-live="polite">
           <Spin size="large" />
           <span>正在检查登录状态</span>
+          <NativeServerSettingsButton />
         </div>
       </div>
     );
@@ -393,6 +395,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
                 ? '使用当前设备已保存的数据，不连接教务系统。'
                 : '校外网络可通过 WebVPN 安全访问。'}
             </p>
+            <NativeServerSettingsButton />
           </header>
 
           {networkNotice && (

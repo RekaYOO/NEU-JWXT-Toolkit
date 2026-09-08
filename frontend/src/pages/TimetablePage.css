@@ -49,6 +49,28 @@
   margin-bottom: var(--space-4);
 }
 
+.timetable-mobile-notices {
+  margin-top: var(--space-4);
+}
+
+.timetable-mobile-notices .ant-alert {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
+
+.timetable-mobile-notices .ant-alert-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.timetable-mobile-notices .ant-alert-action {
+  margin-left: auto;
+}
+
+.timetable-mobile-notices .timetable-error {
+  margin-bottom: 0;
+}
+
 .timetable-controls {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(160px, .72fr) auto minmax(170px, .9fr) auto;

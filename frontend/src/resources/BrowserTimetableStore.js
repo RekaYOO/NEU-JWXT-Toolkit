@@ -7,13 +7,17 @@
  * conflict results are never written here.
  */
 
-const DB_NAME = 'neu-toolbox-browser-cache';
+import { nativeShellInfo } from '../services/nativeBridge';
+
+const shell = nativeShellInfo();
+const serverScope = shell?.kind === 'client' ? `:${encodeURIComponent(shell.server_url || '')}` : '';
+const DB_NAME = `neu-toolbox-browser-cache${serverScope}`;
 const DB_VERSION = 1;
 const STORE_NAME = 'timetable';
-const CHANNEL_NAME = 'neu-toolbox-timetable-cache';
+const CHANNEL_NAME = `neu-toolbox-timetable-cache${serverScope}`;
 const CHANNEL_SOURCE_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const ENVELOPE_VERSION = 1;
-const RECOVERY_NAMESPACE_KEY = 'neu-toolbox-timetable-recovery-namespace';
+const RECOVERY_NAMESPACE_KEY = `neu-toolbox-timetable-recovery-namespace${serverScope}`;
 const RECOVERY_NAMESPACE_PREFIX = '__browser_namespace__:';
 
 const termOrder = code => {

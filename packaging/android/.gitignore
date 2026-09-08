@@ -1,0 +1,8 @@
+.gradle/
+**/build/
+local.properties
+wheelhouse/
+generated/
+diagnostics/
+*.jks
+*.keystore

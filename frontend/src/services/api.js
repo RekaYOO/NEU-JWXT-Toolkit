@@ -1,16 +1,26 @@
 import axios from 'axios';
 import { isManualLogoutActive } from '../utils/authSessionPolicy';
+import { isNativeShell, nativeAxiosAdapter } from './nativeBridge';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';  // 默认使用相对路径，支持同源部署
 const OFFLINE_SESSION_KEY = 'neu_offline_mode';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
+  ...(isNativeShell() ? { adapter: nativeAxiosAdapter } : {}),
   timeout: 30000,  // 30秒超时，避免快速切换页面时请求超时
   headers: {
     'Content-Type': 'application/json',
   },
 });
+
+export const downloadLog = async (category, date) => {
+  const response = await api.get(`/api/logs/download/${encodeURIComponent(category)}/${encodeURIComponent(date)}`, {
+    responseType: 'blob',
+    nativeDownload: true,
+  });
+  return response.data;
+};
 
 const authRecoveryPromises = new Map();
 const singleFlightRequests = new Map();
@@ -516,7 +526,7 @@ export const downloadFestivalCertificates = async ({ startDate, endDate }) => {
     const response = await api.post(
       '/api/export/festival-activities/certificates/archive',
       { start_date: startDate, end_date: endDate },
-      { responseType: 'blob', timeout: 180000 },
+      { responseType: 'blob', nativeDownload: true, timeout: 180000 },
     );
     return {
       blob: response.data,
@@ -541,7 +551,7 @@ export const generateAcademicDocument = async (documentId) => {
     const response = await api.post(
       '/api/export/academic-documents/generate',
       { document_id: documentId },
-      { responseType: 'blob', timeout: 180000 },
+      { responseType: 'blob', nativeDownload: true, timeout: 180000 },
     );
     const format = response.headers['x-academic-document-format']
       || (response.data?.type?.includes('pdf') ? 'pdf' : 'html');
@@ -1048,6 +1058,7 @@ export const exportExamsICS = async (termCode = '') => {
   const response = await api.get('/api/exams/export-ics', {
     params: { term_code: termCode },
     responseType: 'blob',
+    nativeDownload: true,
   });
   return response.data;
 };

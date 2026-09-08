@@ -1,0 +1,19 @@
+plugins {
+    id "com.android.application" version "8.9.1" apply false
+    id "com.android.library" version "8.9.1" apply false
+    id "com.chaquo.python" version "17.0.0" apply false
+}
+
+ext {
+    repoRoot = file("../..").canonicalFile
+    toolkitVersion = new File(repoRoot, "VERSION").text.trim()
+    androidVersionCode = Integer.parseInt(new File(repoRoot, "ANDROID_VERSION_CODE").text.trim())
+    compileSdkVersion = 35
+    minSdkVersion = 24
+    targetSdkVersion = 35
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.layout.buildDirectory
+    subprojects.each { delete it.layout.buildDirectory }
+}

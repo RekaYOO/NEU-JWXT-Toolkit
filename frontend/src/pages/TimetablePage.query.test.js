@@ -1,7 +1,7 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
-import TimetablePage from './TimetablePage';
+import TimetablePage, { MobileTimetableNotices, TIMETABLE_LOGIN_ERROR_TEXT } from './TimetablePage';
 import {
   getTimetableTerms, getPersonalTimetable, getTimetableContext,
   getTimetableSchedule, searchTimetableTargets, getTimetableBootstrap, syncTimetable,
@@ -118,6 +118,99 @@ describe('query timetable request lifecycle', () => {
     await click(container.querySelector('.timetable-target-result-card'));
   };
   const week = number => container.querySelector(`[data-week="${number}"]`);
+
+  test.each(['教室课表', '教师课表', '班级课表'])(
+    '%s places a service error only below the mobile results and retries there', async label => {
+      const text = '教务系统课表服务暂时不可用（错误编号：test-error）';
+      getTimetableSchedule.mockRejectedValueOnce({ response: { data: { detail: text } } });
+      await mountQuery(label);
+      const results = container.querySelector('.timetable-query-results');
+      const notice = container.querySelector('.timetable-mobile-notices');
+      expect(notice).not.toBeNull();
+      expect(results.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(container.querySelectorAll('.timetable-error')).toHaveLength(1);
+      expect(notice.textContent).toContain(text);
+      await click([...notice.querySelectorAll('button')].find(button => button.textContent.replace(/\s/g, '') === '重试'));
+      expect(container.querySelector('.timetable-mobile-notices')).toBeNull();
+      expect(container.textContent).toContain('当前条件下暂无课程安排');
+    },
+  );
+
+  test('keeps failed week changes in one bottom notice without repeating the error above old results', async () => {
+    getTimetableSchedule.mockImplementation(async request => ({ ...empty(request), courses: [course] }));
+    await mountQuery('教室课表');
+    getTimetableSchedule.mockRejectedValueOnce({ response: { data: { detail: '课表服务暂时不可用' } } });
+    await click(week(2));
+    expect(container.querySelector('.timetable-query-transition').textContent)
+      .toContain('并非当前选择范围');
+    expect(container.querySelector('.timetable-query-transition').textContent).not.toContain('失败');
+    expect(container.querySelectorAll('.timetable-mobile-notices [role="alert"]')).toHaveLength(1);
+    expect(container.querySelector('.timetable-query-stale').hasAttribute('inert')).toBe(true);
+  });
+
+  test('places personal timetable startup errors below the mobile results', async () => {
+    getTimetableTerms.mockRejectedValue({ response: { data: { detail: '学期服务暂时不可用' } } });
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+    const results = container.querySelector('.timetable-query-results');
+    const notice = container.querySelector('.timetable-mobile-notices');
+    expect(notice.textContent).toContain('学期服务暂时不可用');
+    expect(results.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelectorAll('.timetable-error')).toHaveLength(1);
+  });
+
+  test('preserves desktop errors above the results', async () => {
+    window.matchMedia = () => ({
+      matches: true, addListener: jest.fn(), removeListener: jest.fn(),
+      addEventListener: jest.fn(), removeEventListener: jest.fn(),
+    });
+    getTimetableSchedule.mockRejectedValueOnce({ response: { data: { detail: '课表服务暂时不可用' } } });
+    await mountQuery('教室课表');
+    const results = container.querySelector('.timetable-query-results');
+    const error = container.querySelector('.timetable-error');
+    expect(error.compareDocumentPosition(results) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector('.timetable-mobile-notices')).toBeNull();
+  });
+
+  test('merges duplicate errors and recovery messages while retaining both actions', async () => {
+    const onRetry = jest.fn();
+    const onLogin = jest.fn();
+    await act(async () => root.render(
+      <MobileTimetableNotices
+        error={{ message: '课表服务暂时不可用' }}
+        conflictError="课表服务暂时不可用"
+        cacheAuthFailure
+        onRetry={onRetry}
+        onLogin={onLogin}
+      />,
+    ));
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    expect(container.textContent.split('课表服务暂时不可用')).toHaveLength(2);
+    expect(container.textContent).toContain('登录已失效，请重新登录');
+    await click([...container.querySelectorAll('button')].find(button => button.textContent.replace(/\s/g, '') === '重试'));
+    await click([...container.querySelectorAll('button')].find(button => button.textContent === '重新登录'));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onLogin).toHaveBeenCalledTimes(1);
+  });
+
+  test('shows one login message and action when both request and cache report expired login', async () => {
+    await act(async () => root.render(
+      <MobileTimetableNotices
+        error={{ message: TIMETABLE_LOGIN_ERROR_TEXT }}
+        recoveryNotice="恢复中"
+        cacheAuthFailure
+      />,
+    ));
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    expect(container.textContent).toContain(TIMETABLE_LOGIN_ERROR_TEXT);
+    expect(container.textContent).not.toContain('当前显示本机课表');
+    expect(container.textContent).not.toContain('登录已失效，请重新登录');
+    expect(container.querySelectorAll('button')).toHaveLength(1);
+  });
 
   test.each(['教室课表', '教师课表', '班级课表'])(
     '%s distinguishes initial and consecutive empty weeks from pending requests', async label => {

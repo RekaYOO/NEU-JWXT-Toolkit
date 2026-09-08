@@ -1,0 +1,17 @@
+[
+  {
+    "filename": "pydantic_core-2.46.4.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/9d/56/921726b776ace8d8f5db44c4ef961006580d91dc52b803c489fafd1aa249/pydantic_core-2.46.4.tar.gz",
+    "sha256": "62f875393d7f270851f20523dd2e29f082bcc82292d66db2b64ea71f64b6e1c1"
+  },
+  {
+    "filename": "lxml-6.1.1.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/05/3b/aab6728cae887456f409b4d75e8a01856e4f04bd510de38052a47768b680/lxml-6.1.1.tar.gz",
+    "sha256": "ba96ae44888e0185281e937633a743ea90d5a196c6000f82565ebb0580012d40"
+  },
+  {
+    "filename": "pycryptodome-3.23.0.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/8e/a6/8452177684d5e906854776276ddd34eca30d1b1e15aa1ee9cefc289a33f5/pycryptodome-3.23.0.tar.gz",
+    "sha256": "447700a657182d60338bab09fdb27518f8856aecd80ae4c6bdddb67ff5da44ef"
+  }
+]

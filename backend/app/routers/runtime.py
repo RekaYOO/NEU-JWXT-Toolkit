@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from backend.core.runtime import get_runtime_config
+from backend.core.runtime.capabilities import MOBILE_API_VERSION, runtime_capabilities
 from backend.core.runtime.access import (
     COOKIE_NAME,
     COOKIE_TTL_SECONDS,
@@ -50,6 +51,8 @@ async def health():
         "status": "ok",
         "version": config.version,
         "profile": config.profile,
+        "mobile_api_version": MOBILE_API_VERSION,
+        "capabilities": runtime_capabilities(config),
     }
     if config.desktop_mode:
         result["shutdown_token"] = os.environ.get("NEU_JWXT_SHUTDOWN_TOKEN", "")

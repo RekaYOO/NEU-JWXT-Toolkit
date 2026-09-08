@@ -20,6 +20,7 @@ import {
   BellOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
+  MailOutlined,
   ReloadOutlined,
   SaveOutlined,
 } from '@ant-design/icons';
@@ -31,6 +32,7 @@ import {
   updateGradeTrackingConfig,
 } from '../services/api';
 import { MobileActionBar } from '../components/mobile/MobileUX';
+import { nativeShellInfo } from '../services/nativeBridge';
 import './GradeTrackingPage.css';
 
 const STAGES = {
@@ -74,6 +76,7 @@ const GradeTrackingPage = () => {
   const [checking, setChecking] = useState(false);
   const [status, setStatus] = useState({ stage: 'disabled', enabled: false });
   const navigate = useNavigate();
+  const mobileLocal = nativeShellInfo()?.kind === 'local';
 
   const loadStatus = useCallback(async () => {
     try {
@@ -140,7 +143,9 @@ const GradeTrackingPage = () => {
       await loadStatus();
       message.success(
         nextEnabled
-          ? '成绩追踪已开启，初始邮件将在同步完成后自动发送'
+          ? (mobileLocal
+            ? '成绩追踪已开启，初始通知将在同步完成后发送'
+            : '成绩追踪已开启，初始邮件将在同步完成后自动发送')
           : '成绩追踪已关闭'
       );
     } catch (error) {
@@ -194,7 +199,7 @@ const GradeTrackingPage = () => {
           <span className="tracking-heading-icon"><BellOutlined /></span>
           <div>
             <h1>成绩追踪</h1>
-            <p>定时检查成绩变化，并通过邮件提醒你。</p>
+            <p>{mobileLocal ? '定时检查成绩变化，并通过系统通知提醒你。' : '定时检查成绩变化，并通过邮件提醒你。'}</p>
           </div>
         </div>
         <Switch
@@ -296,8 +301,8 @@ const GradeTrackingPage = () => {
           </Row>
           <div className="tracking-inline-setting">
             <div>
-              <strong>开启后发送初始邮件</strong>
-              <span>每次开启成绩追踪，都会同步当前成绩并自动发送一封初始邮件。</span>
+              <strong>开启后发送初始{mobileLocal ? '通知' : '邮件'}</strong>
+              <span>每次开启成绩追踪，都会同步当前成绩并自动发送一{mobileLocal ? '条系统通知' : '封初始邮件'}。</span>
             </div>
           </div>
         </Card>
@@ -309,7 +314,9 @@ const GradeTrackingPage = () => {
         type="info"
         showIcon
         message="追踪依赖本程序持续运行"
-        description="Windows 请保持本地服务运行；Linux 服务会由 systemd 常驻。教务会话失效后，需要回到工具箱重新登录。"
+        description={mobileLocal
+          ? 'Android 会在追踪启用时显示常驻运行通知。教务会话失效后，点击系统通知即可重新登录。'
+          : 'Windows 请保持本地服务运行；Linux 服务会由 systemd 常驻。教务会话失效后，需要回到工具箱重新登录。'}
       />
 
       <MobileActionBar className="tracking-mobile-action-bar">

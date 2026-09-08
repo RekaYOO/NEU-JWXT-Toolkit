@@ -1,0 +1,121 @@
+plugins {
+    id "com.android.application"
+    id "com.chaquo.python"
+}
+
+def signingValues = [
+    file: System.getenv("ANDROID_KEYSTORE_FILE"),
+    storePassword: System.getenv("ANDROID_SIGNING_STORE_PASSWORD"),
+    alias: System.getenv("ANDROID_SIGNING_KEY_ALIAS"),
+    keyPassword: System.getenv("ANDROID_SIGNING_KEY_PASSWORD"),
+]
+def releaseSigningReady = signingValues.values().every { it != null && !it.isBlank() }
+
+android {
+    namespace "io.github.rekayoo.neujwxt.local"
+    compileSdk rootProject.ext.compileSdkVersion
+
+    defaultConfig {
+        applicationId "io.github.rekayoo.neujwxt.local"
+        minSdk rootProject.ext.minSdkVersion
+        targetSdk rootProject.ext.targetSdkVersion
+        versionCode rootProject.ext.androidVersionCode
+        versionName rootProject.ext.toolkitVersion
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    flavorDimensions += "abi"
+    productFlavors {
+        arm64 {
+            dimension "abi"
+            ndk { abiFilters "arm64-v8a" }
+        }
+        x86Test {
+            dimension "abi"
+            applicationIdSuffix ".test"
+            versionNameSuffix "-x86-test"
+            ndk { abiFilters "x86_64" }
+        }
+    }
+
+    signingConfigs {
+        if (releaseSigningReady) {
+            release {
+                storeFile file(signingValues.file)
+                storePassword signingValues.storePassword
+                keyAlias signingValues.alias
+                keyPassword signingValues.keyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        debug { applicationIdSuffix ".debug" }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            if (releaseSigningReady) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.13"
+        // PyCryptodome resolves its ctypes libraries relative to __file__.
+        extractPackages("Crypto")
+        pip {
+            options("--no-index", "--only-binary=:all:", "--find-links", rootProject.file("wheelhouse").toURI().toString())
+            install("-r", rootProject.file("requirements-android.txt").absolutePath)
+        }
+        pyc {
+            src = true
+            pip = true
+        }
+    }
+    sourceSets {
+        getByName("main") {
+            srcDirs = [layout.buildDirectory.dir("generated/mobilePython"), file("src/main/python")]
+        }
+    }
+}
+
+tasks.register("stageMobilePython", Sync) {
+    from(rootProject.ext.repoRoot) {
+        include "backend/**/*.py"
+        include "launchers/mobile.py"
+        include "VERSION"
+        exclude "backend/tests/**", "**/__pycache__/**"
+    }
+    into layout.buildDirectory.dir("generated/mobilePython")
+}
+tasks.matching {
+    it.name.startsWith("merge") && it.name.endsWith("PythonSources")
+}.configureEach {
+    dependsOn "stageMobilePython"
+}
+tasks.named("preBuild").configure { dependsOn "stageMobilePython" }
+
+gradle.taskGraph.whenReady { graph ->
+    def requestedRelease = graph.allTasks.any {
+        it.project == project && it.name.toLowerCase().contains("release")
+    }
+    if (requestedRelease && !releaseSigningReady) {
+        throw new GradleException("Android release signing Secrets are required")
+    }
+}
+
+dependencies {
+    implementation project(":shared")
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.json:json:20250107"
+    androidTestImplementation "androidx.test:core:1.6.1"
+    androidTestImplementation "androidx.test:runner:1.6.2"
+    androidTestImplementation "androidx.test.ext:junit:1.2.1"
+}

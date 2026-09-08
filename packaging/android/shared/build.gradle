@@ -1,0 +1,74 @@
+plugins {
+    id "com.android.library"
+}
+
+android {
+    namespace "io.github.rekayoo.neujwxt.shared"
+    compileSdk rootProject.ext.compileSdkVersion
+
+    defaultConfig {
+        minSdk rootProject.ext.minSdkVersion
+        consumerProguardFiles "consumer-rules.pro"
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir("generated/webAssets")
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir("generated/licenseAssets")
+    sourceSets.main.res.srcDir layout.buildDirectory.dir("generated/brandingRes")
+}
+
+tasks.register("stageBranding", Copy) {
+    from new File(rootProject.ext.repoRoot, "assets/branding/app-icon.png")
+    rename "app-icon.png", "app_icon.png"
+    into layout.buildDirectory.dir("generated/brandingRes/drawable")
+}
+
+tasks.register("stageWebAssets", Sync) {
+    from(new File(rootProject.ext.repoRoot, "frontend/build")) {
+        exclude "**/*.map", "**/*.gz", "**/*.br"
+    }
+    into layout.buildDirectory.dir("generated/webAssets")
+}
+
+tasks.register("stageLicenses", Sync) {
+    from(new File(rootProject.ext.repoRoot, "LICENSE"))
+    from(new File(rootProject.ext.repoRoot, "backend/core/course_selection/THIRD_PARTY_NOTICE.md"))
+    into layout.buildDirectory.dir("generated/licenseAssets/licenses")
+}
+
+tasks.register("verifyWebAssets") {
+    doLast {
+        def index = new File(rootProject.ext.repoRoot, "frontend/build/index.html")
+        if (!index.isFile()) {
+            throw new GradleException("frontend/build/index.html is missing; build web assets first")
+        }
+        def maps = fileTree(new File(rootProject.ext.repoRoot, "frontend/build")) { include "**/*.map" }
+        if (!maps.isEmpty()) {
+            throw new GradleException("Source maps must be removed before Android packaging")
+        }
+    }
+}
+tasks.named("preBuild").configure {
+    dependsOn "verifyWebAssets", "stageBranding", "stageWebAssets", "stageLicenses"
+}
+
+dependencies {
+    api "androidx.appcompat:appcompat:1.7.0"
+    api "androidx.webkit:webkit:1.13.0"
+    api "com.squareup.okhttp3:okhttp:4.12.0"
+    api "androidx.security:security-crypto:1.1.0-alpha06"
+    // Tink Android 1.8 omits these referenced annotations from its published POM.
+    implementation "com.google.errorprone:error_prone_annotations:2.18.0"
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.json:json:20250107"
+    testImplementation "com.squareup.okhttp3:mockwebserver:4.12.0"
+    testImplementation "com.squareup.okhttp3:okhttp-tls:4.12.0"
+}

@@ -17,7 +17,7 @@ from typing import Any, Dict, Iterable
 
 
 APP_NAME = "NEU-JWXT-Toolkit"
-VALID_PROFILES = {"development", "desktop", "server"}
+VALID_PROFILES = {"development", "desktop", "mobile", "server"}
 
 
 def project_root() -> Path:
@@ -25,6 +25,9 @@ def project_root() -> Path:
 
 
 def resource_root() -> Path:
+    override = os.environ.get("NEU_JWXT_RESOURCE_ROOT")
+    if override:
+        return Path(override).expanduser()
     frozen_root = getattr(sys, "_MEIPASS", None)
     if frozen_root:
         return Path(frozen_root)
@@ -100,6 +103,7 @@ class RuntimeConfig:
     access_password_salt: str = ""
     access_password_hash: str = ""
     session_secret: str = ""
+    mobile_session_token: str = ""
 
     @property
     def access_gateway_enabled(self) -> bool:
@@ -108,6 +112,10 @@ class RuntimeConfig:
     @property
     def desktop_mode(self) -> bool:
         return self.profile == "desktop"
+
+    @property
+    def mobile_mode(self) -> bool:
+        return self.profile == "mobile"
 
 
 def _normalize_profile(raw: str | None) -> str:
@@ -162,11 +170,14 @@ def get_runtime_config() -> RuntimeConfig:
         os.environ.get("BACKEND_PORT", str(file_config.get("port", default_port))),
     )
 
-    if profile == "server" and not is_loopback_host(host):
+    if profile in {"mobile", "server"} and not is_loopback_host(host):
         raise ValueError(
-            "server 模式只允许监听回环地址（127.0.0.1、::1 或 localhost）；"
-            "请通过同机 HTTPS 反向代理提供外部访问"
+            f"{profile} 模式只允许监听回环地址（127.0.0.1、::1 或 localhost）"
         )
+
+    mobile_session_token = str(os.environ.get("NEU_JWXT_MOBILE_TOKEN", ""))
+    if profile == "mobile" and len(mobile_session_token) < 32:
+        raise ValueError("mobile 模式需要至少 32 个字符的 NEU_JWXT_MOBILE_TOKEN")
 
     secure_directory(data_dir)
     return RuntimeConfig(
@@ -180,4 +191,5 @@ def get_runtime_config() -> RuntimeConfig:
         access_password_salt=str(password_config.get("salt", "")),
         access_password_hash=str(password_config.get("hash", "")),
         session_secret=str(file_config.get("session_secret", "")),
+        mobile_session_token=mobile_session_token,
     )

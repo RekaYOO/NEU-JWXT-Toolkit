@@ -68,6 +68,7 @@ class GradeTrackingService:
         self.report_storage = report_storage
         self.logger = logger
         self.mail_service = mail_service
+        self._notification_label = "通知" if getattr(mail_service, "channel", "") == "android" else "邮件"
         self.auth_recovery_service = auth_recovery_service
         self.login_flow_pending = login_flow_pending
         self.score_refresher = score_refresher
@@ -135,7 +136,7 @@ class GradeTrackingService:
         ):
             self._state.update(
                 stage="scheduled",
-                message="成绩追踪已启用，正在准备初始邮件",
+                message=f"成绩追踪已启用，正在准备初始{self._notification_label}",
                 next_check_at=_iso(),
                 last_error=None,
             )
@@ -221,7 +222,7 @@ class GradeTrackingService:
                 if not previously_enabled or self._state.get("stage") == "disabled":
                     self._state.update(
                         stage="scheduled",
-                        message="成绩追踪已启用，正在准备初始邮件",
+                        message=f"成绩追踪已启用，正在准备初始{self._notification_label}",
                         next_check_at=_iso(),
                         last_error=None,
                     )

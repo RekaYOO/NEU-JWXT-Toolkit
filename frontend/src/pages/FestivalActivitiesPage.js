@@ -13,6 +13,7 @@ import { useCachedResource } from '../resources/ResourceStore';
 import {
   deleteFestivalActivitiesCache, downloadFestivalCertificates, getFestivalActivities,
 } from '../services/api';
+import { saveNativeFile } from '../services/nativeBridge';
 import {
   academicYearChoices, activityHasAward, activityHasCertificate,
   activityInRange, activityStart, currentAcademicYear,
@@ -340,14 +341,16 @@ const FestivalActivitiesPage = ({ offlineMode = false }) => {
         startDate: range[0].format('YYYY-MM-DD'),
         endDate: range[1].format('YYYY-MM-DD'),
       });
-      const url = URL.createObjectURL(result.blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = result.filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
+      if (!saveNativeFile(result.filename, 'application/zip', result.blob)) {
+        const url = URL.createObjectURL(result.blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = result.filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+      }
       if (result.failed > 0) {
         message.warning(`已下载 ${result.succeeded} 张证书，${result.failed} 张失败；详情见压缩包内下载说明`);
       } else {

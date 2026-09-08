@@ -15,6 +15,7 @@ import {
 import { changedOfficialBatchTimes, courseCampusLabels, selectionParticipantCount } from '../utils/jwxkSchedule';
 import { jwxkBatchAccessMeta, jwxkSelectionMode } from '../utils/jwxkModes';
 import WebVPNAuthModal from '../components/WebVPNAuthModal';
+import { nativeShellInfo } from '../services/nativeBridge';
 import './CourseSelectionPage.css';
 
 const { Paragraph, Text, Title } = Typography;
@@ -28,6 +29,7 @@ const CAMPUS_NETWORK_MESSAGE = '当前处于校园网环境，学校 WebVPN 不�
 
 const CourseSelectionPage = () => {
   const navigate = useNavigate();
+  const mobileLocal = nativeShellInfo()?.kind === 'local';
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -636,8 +638,8 @@ const CourseSelectionPage = () => {
           </section>}
           <Divider />
           <section className="course-selection-automation-section">
-            <div><Title level={5}>邮件通知</Title><Text type="secondary">{automationBatch?.selection_type_code === '04' ? '邮件只包含当前轮次中你的投权、方案组课程和策略任务课程，不会发送全市场其他课程。' : '邮件只包含抢选任务绑定的方案组、目标课程和本任务产生的状态，不会发送其他任务课程。'}通知失败不会触发或重放远端写操作。</Text></div>
-            <label className="course-selection-setting-row"><span><b>启用本轮邮件通知</b><small>关闭后下面选中的通知类型也不会发送。运行中的任务因登录失效而暂停时，启用本轮邮件且系统 SMTP 可用即可发送登录恢复通知。</small></span><Radio.Group className="course-selection-setting-toggle" optionType="button" buttonStyle="solid" value={automationSettings.mail_enabled ? 'on' : 'off'} onChange={event => setAutomationSettings(s => ({ ...s, mail_enabled: event.target.value === 'on' }))} options={[{ value: 'on', label: '开启' }, { value: 'off', label: '关闭' }]} /></label>
+            <div><Title level={5}>{mobileLocal ? '系统通知' : '邮件通知'}</Title><Text type="secondary">{automationBatch?.selection_type_code === '04' ? `${mobileLocal ? '通知' : '邮件'}只包含当前轮次中你的投权、方案组课程和策略任务课程，不会发送全市场其他课程。` : `${mobileLocal ? '通知' : '邮件'}只包含抢选任务绑定的方案组、目标课程和本任务产生的状态，不会发送其他任务课程。`}通知失败不会触发或重放远端写操作。</Text></div>
+            <label className="course-selection-setting-row"><span><b>{mobileLocal ? '启用本轮系统通知' : '启用本轮邮件通知'}</b><small>{mobileLocal ? '关闭后下面选中的通知类型也不会弹出；登录失效时仍会提醒你打开本机应用重新登录。' : '关闭后下面选中的通知类型也不会发送。运行中的任务因登录失效而暂停时，启用本轮邮件且系统 SMTP 可用即可发送登录恢复通知。'}</small></span><Radio.Group className="course-selection-setting-toggle" optionType="button" buttonStyle="solid" value={automationSettings.mail_enabled ? 'on' : 'off'} onChange={event => setAutomationSettings(s => ({ ...s, mail_enabled: event.target.value === 'on' }))} options={[{ value: 'on', label: '开启' }, { value: 'off', label: '关闭' }]} /></label>
             <Checkbox.Group className="course-selection-notification-grid" disabled={!automationSettings.mail_enabled} value={Object.keys(automationSettings).filter(key => key.startsWith('notify_') && automationSettings[key])} onChange={keys => setAutomationSettings(s => Object.fromEntries(Object.entries(s).map(([key, value]) => [key, key.startsWith('notify_') ? keys.includes(key) : value])))} options={[
               ['notify_round_start', '轮次开始提醒'], ['notify_round_end', '轮次结束总结'], ['notify_final_rebalance', '临近结束与最终检查结果'], ['notify_capacity_transition', '关注课程从未满变为满员或超额'], ['notify_over_capacity', '关注课程超额达到阈值'], ['notify_underfilled_warning', '关注课程开课风险（结束前人数不足 10）'], ['notify_grab_result', '抢课任务成功或待核验'],
             ].filter(([value]) => automationBatch?.selection_type_code === '04'
@@ -647,7 +649,7 @@ const CourseSelectionPage = () => {
             {automationBatch?.selection_type_code === '04' && <label className="course-selection-setting-row"><span><b>临近结束的策略结果通知</b><small>默认结束前 5 分钟；若这个时刻晚于“最晚发送时间”，则提前到当天该时刻发送。</small></span><div className="course-selection-setting-control course-selection-inline-control"><Space><Text type="secondary">结束前</Text><InputNumber min={1} max={1440} value={automationSettings.final_notice_minutes ?? 5} onChange={value => setAutomationSettings(s => ({ ...s, final_notice_minutes: Number(value) || 5 }))} /><Text>分钟</Text></Space><Space><Text type="secondary">最晚</Text><Input className="course-selection-time-input" type="time" value={automationSettings.final_notice_latest_time || '23:00'} onChange={event => setAutomationSettings(s => ({ ...s, final_notice_latest_time: event.target.value || '23:00' }))} /></Space></div></label>}
             {automationBatch?.selection_type_code === '04' && <label className="course-selection-setting-row"><span><b>超额提醒阈值</b><small>例如 20% 表示容量 100、已投注人数达到 120 时提醒。</small></span><Space className="course-selection-setting-control"><InputNumber min={0} max={10} step={0.05} value={automationSettings.over_capacity_ratio} formatter={value => `${Number(value || 0) * 100}%`} parser={value => Number(String(value).replace('%', '')) / 100} onChange={value => setAutomationSettings(s => ({ ...s, over_capacity_ratio: value ?? 0.2 }))} /><Text type="secondary">超额人数 ÷ 容量</Text></Space></label>}
             {automationBatch?.selection_type_code === '02' && <Alert type="info" showIcon message={`${jwxkSelectionMode('02').label}任务通知`} description="轮次开始、容量变化、任务成功、最终失败或待核验会按已启用项目通知，并统一显示课程意愿值和已选人数。" />}
-            <Alert type={automationSettings.smtp_configured ? 'success' : 'warning'} showIcon message={automationSettings.smtp_status} description={automationSettings.smtp_configured ? '复用系统设置中的 SMTP 通道，不会在这里保存密码。' : '请先前往系统设置配置 SMTP；未配置时不会发送邮件，也不会影响自动任务。'} />
+            <Alert type={automationSettings.smtp_configured ? 'success' : 'warning'} showIcon message={automationSettings.smtp_status} description={mobileLocal ? '通知由 Android 本机投递，不生成邮件或远程恢复链接。' : (automationSettings.smtp_configured ? '复用系统设置中的 SMTP 通道，不会在这里保存密码。' : '请先前往系统设置配置 SMTP；未配置时不会发送邮件，也不会影响自动任务。')} />
           </section>
         </div>}
       </Modal>

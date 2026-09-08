@@ -6,7 +6,7 @@ neu_auth/client.py
 特性：
 - HTTP/HTTPS 协议自动回退（目标服务协议切换时自动适配）
 - 动态密钥刷新（登录时从页面提取最新公钥，失败时自动从服务器获取）
-- 自动重试机制
+- 网络故障与认证失败分类
 - 票据失效自动重新登录
 - CAS Cookie 持久化（免密刷新票据）
 - 请求限流保护
@@ -22,8 +22,7 @@ import time
 import logging
 import uuid
 from http.cookies import SimpleCookie
-from functools import wraps
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Dict, Any
 from urllib.parse import urlencode, urljoin, urlparse, parse_qs, urlsplit, urlunsplit
 
 import requests
@@ -143,8 +142,6 @@ DEFAULT_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # 秒
 
 # 登录错误类型
 LOGIN_ERR_WRONG_PWD = "WRONG_PASSWORD"   # 密码错误
@@ -187,30 +184,6 @@ _WEBVPN_CAMPUS_BLOCK_MESSAGE = (
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
-
-def retry_on_error(max_retries: int = MAX_RETRIES, delay: float = RETRY_DELAY):
-    """装饰器：请求失败时自动重试"""
-    def decorator(func: Callable) -> Callable:
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            last_exception = None
-            for attempt in range(max_retries):
-                try:
-                    return func(*args, **kwargs)
-                except requests.RequestException as e:
-                    last_exception = e
-                    logger.warning(
-                        "请求失败 (尝试 %s/%s): %s",
-                        attempt + 1,
-                        max_retries,
-                        type(e).__name__,
-                    )
-                    if attempt < max_retries - 1:
-                        time.sleep(delay * (attempt + 1))  # 指数退避
-            raise last_exception
-        return wrapper
-    return decorator
-
 
 def _rsa_encrypt(username: str, password: str) -> str:
     """RSA加密（使用内置默认公钥）"""
@@ -454,12 +427,12 @@ class NEUAuthClient:
 
     def login(self, target: str = "https://jwxt.neu.edu.cn") -> bool:
         """
-        执行 CAS 登录（含 HTTP/HTTPS 协议回退）
+        执行直连 CAS 登录
         
         登录策略：
-        1. 优先使用目标 URL 的协议尝试登录
-        2. 若连接失败（ConnectionError/SSLError/重定向循环），自动切换协议重试
-        3. 核心登录流程：优先从登录页面提取最新 RSA 公钥，失败时从 JS 文件刷新
+        1. 使用目标服务 URL，优先从登录页面提取最新 RSA 公钥
+        2. 明确的认证拒绝可按原有规则核验公钥，网络异常不重放登录
+        3. 直连不可达及时返回 WebVPN 建议；后台恢复退避由会话管理器统一处理
         
         Args:
             target: 目标系统 URL
@@ -483,7 +456,6 @@ class NEUAuthClient:
                 requests.exceptions.Timeout, requests.exceptions.TooManyRedirects) as e:
             raise DirectAccessError("直连教务系统超时，请检查校园网络；校外请切换 WebVPN 模式") from e
 
-    @retry_on_error(max_retries=3, delay=2)
     def _do_login(self, target: str) -> bool:
         """
         CAS 登录核心逻辑
@@ -614,7 +586,8 @@ class NEUAuthClient:
             return None  # 登录成功
             
         except requests.RequestException as e:
-            return f"网络错误: {e}"
+            # A lost response is not a key rejection and must not replay the form.
+            raise DirectAccessError("直连登录请求失败，请检查校园网络；校外请切换 WebVPN 模式") from e
 
     def _build_login_form(self, hidden: Dict[str, str], key_b64: str) -> Dict[str, str]:
         """Build the same credentials payload used by the official CAS form."""
