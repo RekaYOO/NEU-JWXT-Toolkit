@@ -174,9 +174,9 @@ public class LocalLaunchTest {
             assertEquals(outlines.toString(), 200, outlines.getInt("status"));
             assertEquals(1, new JSONObject(outlines.getString("body")).getInt("total"));
             assertEquals("no-store", outlines.getJSONObject("headers").getString("cache-control"));
-            assertTrue(scope.get("verify").call().toBoolean());
+            assertTrue(builtins.callAttr("eval", "verify()", scope).toBoolean());
         } finally {
-            if (scope.get("cleanup") != null) scope.get("cleanup").call();
+            builtins.callAttr("exec", "if 'cleanup' in globals(): cleanup()", scope);
             evaluate(scenario,
                 "if (window.__neuParityDeliver) window.__neuNativeDeliver = window.__neuParityDeliver;"
                 + "delete window.__neuParityDeliver; delete window.__neuParityResults; delete window.__neuParityId;");
