@@ -40,5 +40,10 @@
     "react-scripts": "^5.0.1",
     "terser": "5.46.1"
   },
-  "proxy": "http://localhost:8000"
+  "proxy": "http://localhost:8000",
+  "jest": {
+    "moduleNameMapper": {
+      "^axios$": "<rootDir>/node_modules/axios/dist/browser/axios.cjs"
+    }
+  }
 }

@@ -53,7 +53,24 @@ public class LocalLaunchTest {
                         value -> { rendered.set("true".equals(value)); done.countDown(); });
                 });
                 assertTrue(done.await(5, TimeUnit.SECONDS));
-                if (rendered.get()) return;
+                if (rendered.get()) {
+                    String originalToken = LocalBackendService.sessionToken();
+                    String originalEndpoint = LocalBackendService.endpoint();
+                    scenario.onActivity(activity -> activity.stopService(
+                        new android.content.Intent(activity, LocalBackendService.class)));
+                    Thread.sleep(500);
+                    scenario.recreate();
+                    CountDownLatch restarted = new CountDownLatch(1);
+                    scenario.onActivity(activity -> LocalBackendService.whenReady(restarted::countDown));
+                    assertTrue("Service recreation never became ready", restarted.await(60, TimeUnit.SECONDS));
+                    assertEquals(originalToken, LocalBackendService.sessionToken());
+                    assertEquals(originalEndpoint, LocalBackendService.endpoint());
+                    try (Response healthy = http.newCall(new Request.Builder().url(originalEndpoint + "api/health")
+                        .header("X-NEU-Mobile-Token", originalToken).build()).execute()) {
+                        assertEquals(200, healthy.code());
+                    }
+                    return;
+                }
                 Thread.sleep(500);
             }
             fail("Local React application never rendered");

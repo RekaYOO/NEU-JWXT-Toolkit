@@ -384,7 +384,6 @@ jobs:
     permissions:
       contents: read
     env:
-      ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/neu-android-release.jks
       ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
       ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
       ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
@@ -408,8 +407,10 @@ jobs:
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/neu-android-release.jks
         run: |
           set -euo pipefail
+          printf 'ANDROID_KEYSTORE_FILE=%s\n' "$ANDROID_KEYSTORE_FILE" >> "$GITHUB_ENV"
           for value in "$KEYSTORE_BASE64" "$ANDROID_SIGNING_STORE_PASSWORD" "$ANDROID_SIGNING_KEY_ALIAS" "$ANDROID_SIGNING_KEY_PASSWORD"; do
             if [[ -z "$value" ]]; then
               echo "All four Android signing Secrets are required" >&2
@@ -463,7 +464,10 @@ jobs:
       - name: Remove temporary signing keystore
         if: always()
         shell: bash
-        run: rm -f -- "$ANDROID_KEYSTORE_FILE"
+        run: |
+          if [[ -n "${ANDROID_KEYSTORE_FILE:-}" ]]; then
+            rm -f -- "$ANDROID_KEYSTORE_FILE"
+          fi
 
   publish:
     name: Publish GitHub release
