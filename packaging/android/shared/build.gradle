@@ -65,6 +65,8 @@ dependencies {
     api "androidx.webkit:webkit:1.13.0"
     api "com.squareup.okhttp3:okhttp:4.12.0"
     api "androidx.security:security-crypto:1.1.0-alpha06"
+    // Tink Android 1.8 omits these referenced annotations from its published POM.
+    implementation "com.google.errorprone:error_prone_annotations:2.18.0"
     testImplementation "junit:junit:4.13.2"
     testImplementation "org.json:json:20250107"
     testImplementation "com.squareup.okhttp3:mockwebserver:4.12.0"

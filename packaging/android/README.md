@@ -62,6 +62,11 @@ alias variables documented in the release workflow. GitHub decodes the keystore
 from `ANDROID_SIGNING_KEYSTORE_BASE64` into a private temporary file and removes it
 after the job. Debug builds use the Android debug key only.
 
+Both release modules keep R8 and resource shrinking enabled. The shared module
+explicitly supplies Error Prone annotations referenced by Tink Android 1.8 but
+omitted from its published POM. Do not replace this dependency with global
+missing-class warning suppression: debug builds do not exercise this release gate.
+
 ## Native Dependencies
 
 Versions exactly match `requirements.lock`; no Termux wheel or dependency downgrade

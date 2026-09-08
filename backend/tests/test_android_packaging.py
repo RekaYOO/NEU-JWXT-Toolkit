@@ -62,6 +62,17 @@ def test_android_version_code_and_gradle_wrapper_are_pinned():
     )
 
 
+def test_android_release_resolves_tink_annotations_without_disabling_r8():
+    shared = (ANDROID / "shared" / "build.gradle").read_text(encoding="utf-8")
+    assert 'implementation "com.google.errorprone:error_prone_annotations:2.18.0"' in shared
+    for module in ("client-app", "local-app"):
+        build = (ANDROID / module / "build.gradle").read_text(encoding="utf-8")
+        rules = (ANDROID / module / "proguard-rules.pro").read_text(encoding="utf-8")
+        assert "minifyEnabled true" in build
+        assert "-ignorewarnings" not in rules
+        assert "-dontwarn com.google.errorprone" not in rules
+
+
 def test_android_manifests_do_not_request_external_storage():
     manifests = [
         ANDROID / "client-app" / "src" / "main" / "AndroidManifest.xml",
