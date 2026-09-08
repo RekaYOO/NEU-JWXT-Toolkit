@@ -148,6 +148,27 @@ SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Acti
 为保持流程简单，Release 不跨 workflow 查询 CI 状态或下载历史产物；分支保护负责确保
 主分支合入前通过 CI，发布者必须只从已通过 CI 的 `main` 提交创建正式标签。
 
+### Android 固定签名与候选构建
+
+仓库 Actions Secrets 使用以下四个名称，两个 Android 正式包共用同一签名：
+`ANDROID_SIGNING_KEYSTORE_BASE64`、`ANDROID_SIGNING_STORE_PASSWORD`、
+`ANDROID_SIGNING_KEY_ALIAS` 和 `ANDROID_SIGNING_KEY_PASSWORD`。Keystore 的 Base64
+不是加密，不得写入仓库、日志或构建产物。初始化前先核对已有 Secrets；不得通过重新生成
+密钥修复配置错误，否则现有正式安装将无法覆盖升级。
+
+维护者必须在仓库外保留 Keystore、密码、别名和公开证书的完整备份，并另存于加密离线
+存储。GitHub Secrets 无法作为可下载恢复的密钥备份。可通过 GitHub Secrets API 的
+公开密钥和标准 sealed-box 加密一次配置四项，无需修改工作流或为每次构建生成新密码。
+
+候选构建先递增 `VERSION` 和 `ANDROID_VERSION_CODE`，再手动运行 `Release` 工作流。
+全部成功后，`android-release` artifact 包含两个固定签名、正式包名的 APK；
+Windows/Linux 成品分别位于对应的 release artifact。候选 artifact 默认保留 7 天，
+它不是已公开发布的 GitHub Release，也尚未经过标签发布阶段的统一摘要与来源证明。
+正式标签只应指向通过 CI 和必要真机验收的 `main` 提交。
+
+调试 APK 使用 `.debug` 包名和 Runner 调试密钥，与正式包独立安装、独立存储；不能假设
+安装正式包会自动迁移调试包的数据，也不要为解决签名冲突而让用户卸载旧包丢失本地数据。
+
 上述自动化验证的是特定 GitHub runner 上的成品布局和核心启动流程，不能替代所有
 Windows 版本、企业安全策略、代理配置和真实升级场景的人工验收。
 
