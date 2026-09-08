@@ -9,7 +9,8 @@
     sections, sections_by_campus: {'00': sections},
     courses: [{
       id: 'startup-cache-fixture', course_name: '启动缓存验收课程',
-      weekday: 1, start_section: 1, end_section: 2, weeks: [1],
+      // Mobile opens today's column, so the visible fixture must follow the device date.
+      weekday: new Date().getDay() || 7, start_section: 1, end_section: 2, weeks: [1],
       teachers: ['测试教师'], location: '测试教室',
     }],
     unscheduled: [], practices: [], is_fresh: true,
