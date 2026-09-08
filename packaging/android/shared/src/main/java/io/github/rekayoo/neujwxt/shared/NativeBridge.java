@@ -77,7 +77,11 @@ public final class NativeBridge {
 
     private void deliver(String id, JSONObject payload) {
         String script = "window.__neuNativeDeliver(" + JSONObject.quote(id) + "," + payload + ");";
-        webView.post(() -> webView.evaluateJavascript(script, null));
+        webView.post(() -> {
+            if (!activity.isDestroyed() && !activity.isFinishing()) {
+                webView.evaluateJavascript(script, null);
+            }
+        });
     }
 
     private static JSONObject error(String message, String code) {
