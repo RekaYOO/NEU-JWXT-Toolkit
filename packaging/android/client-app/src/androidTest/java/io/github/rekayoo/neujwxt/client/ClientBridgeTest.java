@@ -74,6 +74,7 @@ public class ClientBridgeTest {
                 }
             });
             server.start();
+            okhttp3.HttpUrl serverUrl = server.url("/");
             ServerConfigStore config = new ServerConfigStore(
                 InstrumentationRegistry.getInstrumentation().getTargetContext());
             config.setServerUrl("https://offline.invalid/");
@@ -92,13 +93,13 @@ public class ClientBridgeTest {
                         Field cookieField = MainActivity.class.getDeclaredField("cookies");
                         cookieField.setAccessible(true);
                         EncryptedCookieJar cookies = (EncryptedCookieJar) cookieField.get(activity);
-                        cookies.setOrigin(server.url("/"));
+                        cookies.setOrigin(serverUrl);
                         Field transportField = BaseShellActivity.class.getDeclaredField("transport");
                         transportField.setAccessible(true);
                         ((ApiTransport) transportField.get(activity)).close();
                         OkHttpClient http = new OkHttpClient.Builder().cookieJar(cookies)
                             .sslSocketFactory(clientCertificates.sslSocketFactory(), clientCertificates.trustManager()).build();
-                        transportField.set(activity, new OkHttpTransport(http, server.url("/"), Collections.emptyMap(), null));
+                        transportField.set(activity, new OkHttpTransport(http, serverUrl, Collections.emptyMap(), null));
                     } catch (ReflectiveOperationException exception) {
                         throw new AssertionError(exception);
                     }

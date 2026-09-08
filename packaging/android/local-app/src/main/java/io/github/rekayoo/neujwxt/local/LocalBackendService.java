@@ -124,6 +124,11 @@ public final class LocalBackendService extends Service {
         return startupFailure;
     }
 
+    static boolean isRunning() {
+        LocalBackendService current = instance;
+        return current != null && !current.destroyed;
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();

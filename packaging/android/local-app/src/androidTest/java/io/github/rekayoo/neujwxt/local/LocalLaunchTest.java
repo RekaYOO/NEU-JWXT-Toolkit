@@ -87,11 +87,79 @@ public class LocalLaunchTest {
                         .header("X-NEU-Mobile-Token", originalToken).build()).execute()) {
                         assertEquals(200, healthy.code());
                     }
+                    verifyNotificationsAndTaskLifecycle(scenario);
                     return;
                 }
                 Thread.sleep(500);
             }
             fail("Local React application never rendered");
         }
+    }
+
+    private void verifyNotificationsAndTaskLifecycle(ActivityScenario<MainActivity> scenario) throws Exception {
+        Python python = Python.getInstance();
+        com.chaquo.python.PyObject builtins = python.getModule("builtins");
+        com.chaquo.python.PyObject testScope = builtins.callAttr("dict");
+        android.content.Context context = androidx.test.platform.app.InstrumentationRegistry
+            .getInstrumentation().getTargetContext();
+        android.app.NotificationManager manager = context.getSystemService(android.app.NotificationManager.class);
+        assertTrue(androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled());
+        // Override only the state query. No tracking worker or remote account is enabled.
+        builtins.callAttr("exec",
+            "from backend.app.main import app as _neu_test_app\n"
+            + "from backend.app.dependencies import get_grade_tracker as _neu_test_tracker\n"
+            + "from types import SimpleNamespace as _NeuTestNamespace\n"
+            + "_neu_test_app.dependency_overrides[_neu_test_tracker] = "
+            + "lambda: _NeuTestNamespace(get_status=lambda: {'enabled': True})", testScope);
+        try {
+            com.chaquo.python.PyObject notifications = python.getModule("backend.app.dependencies")
+                .callAttr("get_system_mail_service");
+            assertTrue(notifications.callAttr("queue_notification", "auth_recovery",
+                "Integration login required", "Synthetic notification only", "android-integration-login").toBoolean());
+            scenario.onActivity(activity -> androidx.core.content.ContextCompat.startForegroundService(
+                activity, new android.content.Intent(activity, LocalBackendService.class)));
+            android.app.Notification delivered = null;
+            for (int attempt = 0; attempt < 100; attempt++) {
+                for (android.service.notification.StatusBarNotification item : manager.getActiveNotifications()) {
+                    if ("Integration login required".contentEquals(
+                        item.getNotification().extras.getCharSequence(android.app.Notification.EXTRA_TITLE, ""))) {
+                        delivered = item.getNotification();
+                    }
+                }
+                if (delivered != null && notifications.callAttr("pending_count").toInt() == 0) break;
+                Thread.sleep(200);
+            }
+            assertNotNull("Durable outbox was never displayed", delivered);
+            assertEquals(0, notifications.callAttr("pending_count").toInt());
+            assertNotNull("Lock screen summary is missing", delivered.publicVersion);
+            assertEquals("NEU 工具箱有新消息",
+                delivered.publicVersion.extras.getCharSequence(android.app.Notification.EXTRA_TITLE).toString());
+            if (android.os.Build.VERSION.SDK_INT >= 26) assertEquals("task_errors", delivered.getChannelId());
+            assertTrue(LocalBackendService.isRunning());
+            assertTrue(java.util.Arrays.stream(manager.getActiveNotifications())
+                .anyMatch(item -> (item.getNotification().flags & android.app.Notification.FLAG_FOREGROUND_SERVICE) != 0));
+            delivered.contentIntent.send();
+            boolean deepLink = false;
+            for (int attempt = 0; attempt < 50; attempt++) {
+                CountDownLatch done = new CountDownLatch(1);
+                AtomicBoolean matched = new AtomicBoolean();
+                scenario.onActivity(activity -> {
+                    WebView web = activity.findViewById(io.github.rekayoo.neujwxt.shared.R.id.webview);
+                    web.evaluateJavascript("location.pathname === '/login'", value -> {
+                        matched.set("true".equals(value));
+                        done.countDown();
+                    });
+                });
+                assertTrue(done.await(5, TimeUnit.SECONDS));
+                if (matched.get()) { deepLink = true; break; }
+                Thread.sleep(200);
+            }
+            assertTrue("Login notification did not open the local login page", deepLink);
+        } finally {
+            builtins.callAttr("exec", "_neu_test_app.dependency_overrides.pop(_neu_test_tracker, None)", testScope);
+            manager.cancelAll();
+        }
+        for (int attempt = 0; attempt < 100 && LocalBackendService.isRunning(); attempt++) Thread.sleep(200);
+        assertFalse("Foreground service remained running without enabled tasks", LocalBackendService.isRunning());
     }
 }
