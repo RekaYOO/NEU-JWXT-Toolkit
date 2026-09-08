@@ -210,7 +210,14 @@ public class LocalLaunchTest {
     private void verifyNotificationsAndTaskLifecycle(ActivityScenario<MainActivity> scenario) throws Exception {
         java.util.concurrent.atomic.AtomicReference<android.content.Intent> launchIntent =
             new java.util.concurrent.atomic.AtomicReference<>();
-        scenario.onActivity(activity -> launchIntent.set(new android.content.Intent(activity.getIntent())));
+        java.util.concurrent.atomic.AtomicReference<MainActivity> launchedActivity =
+            new java.util.concurrent.atomic.AtomicReference<>();
+        scenario.onActivity(activity -> {
+            launchedActivity.set(activity);
+            launchIntent.set(new android.content.Intent(activity.getIntent()));
+        });
+        android.app.Instrumentation instrumentation = androidx.test.platform.app.InstrumentationRegistry
+            .getInstrumentation();
         Python python = Python.getInstance();
         com.chaquo.python.PyObject builtins = python.getModule("builtins");
         com.chaquo.python.PyObject testScope = builtins.callAttr("dict");
@@ -257,8 +264,8 @@ public class LocalLaunchTest {
             for (int attempt = 0; attempt < 50; attempt++) {
                 CountDownLatch done = new CountDownLatch(1);
                 AtomicBoolean matched = new AtomicBoolean();
-                scenario.onActivity(activity -> {
-                    WebView web = activity.findViewById(io.github.rekayoo.neujwxt.shared.R.id.webview);
+                instrumentation.runOnMainSync(() -> {
+                    WebView web = launchedActivity.get().findViewById(io.github.rekayoo.neujwxt.shared.R.id.webview);
                     web.evaluateJavascript("location.pathname === '/login'", value -> {
                         matched.set("true".equals(value));
                         done.countDown();
@@ -272,8 +279,9 @@ public class LocalLaunchTest {
         } finally {
             builtins.callAttr("exec", "_neu_test_app.dependency_overrides.pop(_neu_test_tracker, None)", testScope);
             manager.cancelAll();
-            // ActivityScenario matches cleanup events by the original launch intent.
-            scenario.onActivity(activity -> activity.setIntent(launchIntent.get()));
+            // A notification changes Intent, so ActivityScenario ignores RESUMED.
+            // Do not call onActivity while restoring the intent used by its tracker.
+            instrumentation.runOnMainSync(() -> launchedActivity.get().setIntent(launchIntent.get()));
         }
         for (int attempt = 0; attempt < 100 && LocalBackendService.isRunning(); attempt++) Thread.sleep(200);
         assertFalse("Foreground service remained running without enabled tasks", LocalBackendService.isRunning());
