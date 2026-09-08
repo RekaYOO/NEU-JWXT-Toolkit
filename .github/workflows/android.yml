@@ -173,7 +173,7 @@ jobs:
             --name neu-ci --package "system-images;android-35;google_apis;x86_64" --device pixel_5
           sudo chmod 666 /dev/kvm
           nohup "$ANDROID_HOME/emulator/emulator" @neu-ci \
-            -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect \
+            -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -memory 3072 \
             > "$RUNNER_TEMP/emulator.log" 2>&1 &
           timeout 180 adb wait-for-device
           for attempt in $(seq 1 180); do

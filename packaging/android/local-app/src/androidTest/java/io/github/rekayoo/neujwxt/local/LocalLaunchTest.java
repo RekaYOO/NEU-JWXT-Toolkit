@@ -78,12 +78,33 @@ public class LocalLaunchTest {
                     assertTrue(directory.isDirectory() || directory.mkdirs());
                     android.graphics.Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot();
                     assertNotNull(screenshot);
+                    boolean visibleForm = false;
+                    for (int frame = 0; frame < 50; frame++) {
+                        int white = 0;
+                        int sampled = 0;
+                        for (int y = screenshot.getHeight() / 5; y < screenshot.getHeight() * 4 / 5; y += 8) {
+                            for (int x = screenshot.getWidth() / 10; x < screenshot.getWidth() * 9 / 10; x += 8) {
+                                int pixel = screenshot.getPixel(x, y);
+                                if (android.graphics.Color.red(pixel) > 250 && android.graphics.Color.green(pixel) > 250
+                                    && android.graphics.Color.blue(pixel) > 250) white++;
+                                sampled++;
+                            }
+                        }
+                        // The white login panel must replace the blue-gray startup screen.
+                        if (white > sampled / 3) { visibleForm = true; break; }
+                        if (frame == 49) break;
+                        screenshot.recycle();
+                        Thread.sleep(200);
+                        screenshot = instrumentation.getUiAutomation().takeScreenshot();
+                        assertNotNull(screenshot);
+                    }
                     try (java.io.FileOutputStream output = new java.io.FileOutputStream(
                         new java.io.File(directory, "local-startup.png"))) {
                         assertTrue(screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output));
                     } finally {
                         screenshot.recycle();
                     }
+                    assertTrue("Login form exists in DOM but was not painted on screen", visibleForm);
                     String originalToken = LocalBackendService.sessionToken();
                     String originalEndpoint = LocalBackendService.endpoint();
                     scenario.onActivity(activity -> activity.stopService(
