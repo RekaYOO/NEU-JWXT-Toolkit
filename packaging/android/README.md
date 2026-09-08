@@ -102,11 +102,14 @@ imports and AES execution, service recreation, HTTPS bridge/cookie isolation,
 system document-picker save/cancel, notification delivery/acknowledgement/deep links,
 and foreground service shutdown after tasks stop. A separate instrumentation
 process tests enabling/stopping tasks after POST_NOTIFICATIONS is revoked.
-The full gate passed in Actions run 34223603664 (build commit d97a836).
-Local regression passed 811 Python tests (2 skipped for Windows symlink limits)
+The full gate passed in Actions run 34228121946 (build commit 5aa94f2).
+The latest full local regression passed 811 Python tests (2 skipped for Windows symlink limits)
 and 337 frontend tests across 39 suites; production build and size budgets passed.
 Local-screen pixel checks supplement the DOM and compositor assertions; both
 application screenshots were also visually inspected.
+The shared native module passed 16 tests and Lint, including an aging-socket
+submission race and 100 successive HTTPS requests. Instrumentation also idles
+six seconds after page initialization before its first login submission.
 
 Parity regression coverage includes delayed direct-login hints, a single SMS
 verification, automatic first-page outline reads, four runtime profiles across
@@ -115,6 +118,12 @@ loopback responses and Android SQLite/credential persistence. These checks passe
 in the same full CI run. The fixture stubs
 upstream academic operations, not the bridge or FastAPI routes, and is excluded
 from the application APK. This does not replace real-account device acceptance.
+
+A separate authorized, memory-only real-account probe on the current Windows
+network completed its first shared Python direct login in about 0.85 seconds.
+WebVPN returned the school's explicit campus-network 403 rejection. Credentials
+were not persisted or uploaded to CI. The original handset error and real
+off-campus WebVPN/SMS login still require same-device/network verification.
 
 Real academic login, long-running background work, boot recovery, every export
 format, API 24 device behavior, arm64 data-preserving upgrades and the fixed-key
