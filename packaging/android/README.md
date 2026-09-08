@@ -92,14 +92,17 @@ imports and AES execution, service recreation, HTTPS bridge/cookie isolation,
 system document-picker save/cancel, notification delivery/acknowledgement/deep links,
 and foreground service shutdown after tasks stop. A separate instrumentation
 process tests enabling/stopping tasks after POST_NOTIFICATIONS is revoked.
-The full gate passed in Actions run 34193956047 (commit c1859d6).
+The full gate passed in Actions run 34223603664 (build commit d97a836).
+Local regression passed 811 Python tests (2 skipped for Windows symlink limits)
+and 337 frontend tests across 39 suites; production build and size budgets passed.
 Local-screen pixel checks supplement the DOM and compositor assertions; both
 application screenshots were also visually inspected.
 
 Parity regression coverage includes delayed direct-login hints, a single SMS
 verification, automatic first-page outline reads, four runtime profiles across
 process restarts, and an instrumentation-only Python fixture for 11-second real
-loopback responses and Android SQLite/credential persistence. The fixture stubs
+loopback responses and Android SQLite/credential persistence. These checks passed
+in the same full CI run. The fixture stubs
 upstream academic operations, not the bridge or FastAPI routes, and is excluded
 from the application APK. This does not replace real-account device acceptance.
 
