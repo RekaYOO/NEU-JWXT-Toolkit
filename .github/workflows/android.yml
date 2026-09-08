@@ -74,6 +74,10 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config patchelf
+          sdk_bin="$ANDROID_HOME/cmdline-tools/latest/bin"
+          test -x "$sdk_bin/sdkmanager"
+          export PATH="$sdk_bin:$ANDROID_HOME/platform-tools:$PATH"
+          printf '%s\n' "$sdk_bin" "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           set +o pipefail
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail

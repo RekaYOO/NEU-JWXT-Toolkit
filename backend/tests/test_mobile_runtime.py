@@ -1,5 +1,7 @@
 from dataclasses import replace
 from unittest.mock import Mock
+from pathlib import Path
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -168,6 +170,40 @@ def test_mobile_invalid_notification_is_discarded_before_delivery(tmp_path):
     service.queue_notification("grade_tracking", "grade", "", "stale")
     assert service.pending() == []
     assert service.pending_count() == 0
+
+
+def test_mobile_failed_enqueue_does_not_suppress_retry(tmp_path, monkeypatch):
+    service = MobileNotificationService(tmp_path, Mock())
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", Mock(side_effect=OSError("disk full")))
+        with pytest.raises(OSError):
+            service.queue_notification("grade_tracking", "grade", "", "retry")
+        assert service.pending_count() == 0
+    assert service.queue_notification("grade_tracking", "grade", "", "retry")
+    assert MobileNotificationService(tmp_path, Mock()).pending_count() == 1
+
+
+def test_mobile_failed_ack_persistence_keeps_message_in_memory_and_on_disk(tmp_path, monkeypatch):
+    service = MobileNotificationService(tmp_path, Mock())
+    service.queue_notification("grade_tracking", "grade", "", "retry")
+    message = service.pending()[0]
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", Mock(side_effect=OSError("disk full")))
+        with pytest.raises(OSError):
+            service.acknowledge(message["id"])
+        assert service.pending_count() == 1
+        assert MobileNotificationService(tmp_path, Mock()).pending_count() == 1
+    assert service.acknowledge(message["id"])
+
+
+def test_mobile_failed_discard_preserves_outbox(tmp_path, monkeypatch):
+    service = MobileNotificationService(tmp_path, Mock())
+    service.queue_notification("grade_tracking", "grade", "", "retry")
+    monkeypatch.setattr(Path, "replace", Mock(side_effect=OSError("disk full")))
+    with pytest.raises(OSError):
+        service.discard(source="grade_tracking")
+    assert service.has_pending("grade_tracking", "retry")
+    assert MobileNotificationService(tmp_path, Mock()).has_pending("grade_tracking", "retry")
 
 
 def test_mobile_launcher_reuses_process_identity_and_protects_real_socket(tmp_path):

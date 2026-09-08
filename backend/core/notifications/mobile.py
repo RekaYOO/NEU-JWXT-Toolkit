@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import uuid
 from copy import deepcopy
@@ -45,14 +46,16 @@ class MobileNotificationService:
         except (OSError, ValueError, TypeError):
             return []
 
-    def _save(self) -> None:
+    def _save(self, messages: list[dict[str, Any]]) -> None:
         temporary = self.outbox_path.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps({"messages": self._outbox}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        with temporary.open("w", encoding="utf-8") as stream:
+            secure_file(temporary)
+            json.dump({"messages": messages}, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
         temporary.replace(self.outbox_path)
-        secure_file(self.outbox_path)
+        # Publish in memory only after the durable file has been replaced.
+        self._outbox = messages
 
     def start(self) -> None:
         return None
@@ -120,11 +123,7 @@ class MobileNotificationService:
                 "route": str((template_metadata or {}).get("route") or self._route(source)),
                 "created_at": _iso(),
             }
-            if priority:
-                self._outbox.insert(0, message)
-            else:
-                self._outbox.append(message)
-            self._save()
+            self._save([message, *self._outbox] if priority else [*self._outbox, message])
         return True
 
     @staticmethod
@@ -159,7 +158,7 @@ class MobileNotificationService:
     ) -> None:
         context_ids = {str(value) for value in (template_context_ids or set()) if value}
         with self._lock:
-            self._outbox = [
+            remaining = [
                 item for item in self._outbox
                 if not (
                     (source is None or item.get("source") == source)
@@ -173,7 +172,7 @@ class MobileNotificationService:
                          in context_ids)
                 )
             ]
-            self._save()
+            self._save(remaining)
 
     def pending(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._lock:
@@ -201,8 +200,7 @@ class MobileNotificationService:
                 self.logger.exception("[移动通知] 校验或生成通知失败")
         with self._lock:
             if discarded:
-                self._outbox = [item for item in self._outbox if item["id"] not in discarded]
-                self._save()
+                self._save([item for item in self._outbox if item["id"] not in discarded])
             existing = {item["id"] for item in self._outbox}
         return [item for item in valid if item["id"] in existing][: max(1, min(100, int(limit)))]
 
@@ -219,6 +217,5 @@ class MobileNotificationService:
                 self.logger.exception("[移动通知] 发送完成回调失败")
                 return False
             with self._lock:
-                self._outbox = [row for row in self._outbox if row.get("id") != message_id]
-                self._save()
+                self._save([row for row in self._outbox if row.get("id") != message_id])
             return True
