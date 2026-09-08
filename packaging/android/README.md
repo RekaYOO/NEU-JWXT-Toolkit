@@ -73,11 +73,19 @@ Only complete wheelhouses are cached, keyed by the locked dependencies and recip
 Debug APK jobs reuse the tested frontend and wheel artifacts. The Release workflow
 reuses the same arm64 wheel artifact instead of compiling it again after validation.
 
-CI gates release on instrumented React rendering, protected FastAPI health and
-imports of the three native dependencies. It does not yet cover every workflow
-from the requested acceptance plan. HTTPS proxy/login, all document-picker paths,
-notification deep links and permissions, task lifecycle, boot recovery and
-arm64 data-preserving upgrades still need end-to-end/device acceptance.
+CI gates release on instrumented React rendering, protected FastAPI health,
+imports and AES execution, service recreation, HTTPS bridge/cookie isolation,
+system document-picker save/cancel, notification delivery/acknowledgement/deep links,
+and foreground service shutdown after tasks stop. A separate instrumentation
+process tests enabling/stopping tasks after POST_NOTIFICATIONS is revoked.
+The full gate passed in Actions run 34193956047 (commit c1859d6).
+Local-screen pixel checks supplement the DOM and compositor assertions; both
+application screenshots were also visually inspected.
+
+Real academic login, long-running background work, boot recovery, every export
+format, API 24 device behavior, arm64 data-preserving upgrades and the fixed-key
+minified release still need device/release acceptance. Debug builds use separate
+package names and ephemeral Runner keys, not the persistent release signing key.
 
 Never use `-x install...PythonRequirements` in CI or release builds. It is useful
 only for isolated Java diagnostics on a host without the Android wheelhouse.

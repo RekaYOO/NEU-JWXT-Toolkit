@@ -163,7 +163,7 @@ Android 正式签名固定使用以下 GitHub Secrets：
 `NEU-JWXT-Toolkit-<version>-android-local-arm64.apk`，并与桌面产物一起进入 SHA-256 清单和
 GitHub artifact attestation。
 
-Android 仍处于集成验证阶段，当前不能将本地版 Java 编译通过视为 APK 验收通过。
+Android 双 ABI 构建和 API 35 模拟器功能门禁已通过，仍待真机及正式签名混淆包验收。
 `release.yml` 通过可复用 `android.yml` 先执行 x86_64 仪器测试，再构建签名 arm64 产物；
 复用前端作业已通过体积预算的 `web-build`，在 Android 门禁中测试同一提交的前端代码，
 不重复构建或使用另一份前端资源。
