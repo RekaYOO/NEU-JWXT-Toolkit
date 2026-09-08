@@ -82,6 +82,10 @@ SHA-256 digests before extraction into a fresh temporary directory.
   and target sysconfig, without executing Android binaries on the build host.
 - Pure dependencies are downloaded with `--platform any` so host-native wheels
   cannot accidentally enter the wheelhouse.
+- APK assembly uses `--no-index` and the complete wheelhouse, including patched
+  pure wheels. Allowing indexes here can select an unpatched upstream wheel with
+  the same version instead of the Android-compatible file. The final APK verifier
+  also requires the Uvicorn adaptation marker inside the packaged requirements.
 - Android's Uvicorn wheel defers CLI imports, avoiding `_multiprocessing` during
   single-process `Config`/`Server` startup. Its version, server implementation and
   license are unchanged; the wheel RECORD is regenerated and the adaptation is

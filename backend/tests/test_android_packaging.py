@@ -44,6 +44,7 @@ def test_android_modules_keep_python_out_of_client_package():
     assert 'id "com.chaquo.python"' in local
     assert 'version = "3.13"' in local
     assert 'extractPackages("Crypto")' in local
+    assert 'options("--no-index", "--only-binary=:all:", "--find-links"' in local
 
 
 def test_android_version_code_and_gradle_wrapper_are_pinned():
@@ -127,6 +128,26 @@ def test_android_verifier_rejects_private_keys_in_allowlisted_trust_bundles():
         content.seek(0)
         with zipfile.ZipFile(content) as archive, pytest.raises(SystemExit, match="trust bundle"):
             _check_entries(archive)
+
+
+@pytest.mark.parametrize("patched", [False, True])
+def test_android_verifier_requires_the_packaged_uvicorn_patch(patched):
+    from tools.verify_android_release import _check_android_python_patch
+
+    with io.BytesIO() as nested, io.BytesIO() as outer:
+        with zipfile.ZipFile(nested, "w") as requirements:
+            requirements.writestr("uvicorn/__init__.pyc", b"fixture")
+            if patched:
+                requirements.writestr("uvicorn/ANDROID_COMPATIBILITY.txt", "Android adaptation")
+        with zipfile.ZipFile(outer, "w") as apk:
+            apk.writestr("assets/chaquopy/requirements-common.imy", nested.getvalue())
+        outer.seek(0)
+        with zipfile.ZipFile(outer) as apk:
+            if patched:
+                _check_android_python_patch(apk)
+            else:
+                with pytest.raises(SystemExit, match="compatibility patch"):
+                    _check_android_python_patch(apk)
 
 
 def test_android_build_tool_lookup_never_selects_aapt2(tmp_path, monkeypatch):

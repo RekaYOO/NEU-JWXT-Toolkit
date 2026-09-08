@@ -98,6 +98,16 @@ def _check_entries(
                     _check_entries(nested, f"{prefix}{entry.filename}!/", depth + 1, abi)
 
 
+def _check_android_python_patch(archive: zipfile.ZipFile) -> None:
+    payload = "assets/chaquopy/requirements-common.imy"
+    if payload not in archive.namelist():
+        raise SystemExit("Local APK is missing its shared Python requirements")
+    with zipfile.ZipFile(io.BytesIO(archive.read(payload))) as requirements:
+        marker = "uvicorn/ANDROID_COMPATIBILITY.txt"
+        if marker not in requirements.namelist():
+            raise SystemExit("Local APK contains Uvicorn without the Android compatibility patch")
+
+
 def verify(apk: Path, package: str, version: str, version_code: str, abi: str, local: bool) -> str:
     badging = _badging(apk)
     expected = f"package: name='{package}' versionCode='{version_code}' versionName='{version}'"
@@ -111,6 +121,8 @@ def verify(apk: Path, package: str, version: str, version_code: str, abi: str, l
     with zipfile.ZipFile(apk) as archive:
         names = archive.namelist()
         _check_entries(archive, abi=abi)
+        if local:
+            _check_android_python_patch(archive)
     lowered = [name.lower() for name in names]
     if not any(name.endswith("assets/index.html") for name in names):
         raise SystemExit(f"Embedded frontend is missing from {apk.name}")

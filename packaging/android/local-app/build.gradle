@@ -71,7 +71,7 @@ chaquopy {
         // PyCryptodome resolves its ctypes libraries relative to __file__.
         extractPackages("Crypto")
         pip {
-            options("--only-binary=:all:", "--find-links", rootProject.file("wheelhouse").toURI().toString())
+            options("--no-index", "--only-binary=:all:", "--find-links", rootProject.file("wheelhouse").toURI().toString())
             install("-r", rootProject.file("requirements-android.txt").absolutePath)
         }
         pyc {
