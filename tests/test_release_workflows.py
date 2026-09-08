@@ -6,6 +6,7 @@ CI = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 RELEASE = (ROOT / ".github" / "workflows" / "release.yml").read_text(
     encoding="utf-8"
 )
+ANDROID = (ROOT / ".github" / "workflows" / "android.yml").read_text(encoding="utf-8")
 
 
 def test_ci_avoids_duplicate_push_and_pull_request_runs():
@@ -42,15 +43,32 @@ def test_release_builds_web_once_without_repeating_source_tests():
     )
     assert all(command not in RELEASE for command in duplicated_commands)
     assert RELEASE.count("npm run build") == 1
-    assert RELEASE.count("name: web-build") == 3
+    assert RELEASE.count("name: web-build") == 4
     assert "run-id:" not in RELEASE
     assert "github-token:" not in RELEASE
 
 
 def test_release_dag_stays_small_and_explicit():
-    assert RELEASE.count("needs: [validate, web]") == 2
-    assert "needs: [validate, windows, linux]" in RELEASE
+    assert RELEASE.count("needs: [validate, web]") == 3
+    assert "needs: [validate, web, android-tests]" in RELEASE
+    assert "needs: [validate, windows, linux, android]" in RELEASE
+    assert "uses: ./.github/workflows/android.yml" in RELEASE
+    assert "frontend_artifact: web-build" in RELEASE
     assert "ci_gate:" not in RELEASE
+
+
+def test_android_release_gate_checks_actual_runtime_and_reuses_web_build():
+    assert "workflow_call:" in ANDROID
+    assert "if: ${{ !inputs.frontend_artifact }}" in ANDROID
+    assert "name: ${{ inputs.frontend_artifact }}" in ANDROID
+    assert 'python-version: "3.13"' in ANDROID
+    assert ":client-app:connectedX86TestDebugAndroidTest" in ANDROID
+    assert ":local-app:connectedX86TestDebugAndroidTest" in ANDROID
+    assert "uiautomator dump" not in ANDROID
+    assert "-x :local-app:install" not in ANDROID
+    for secret in ("ANDROID_SIGNING_KEYSTORE_BASE64", "ANDROID_SIGNING_STORE_PASSWORD",
+                   "ANDROID_SIGNING_KEY_ALIAS", "ANDROID_SIGNING_KEY_PASSWORD"):
+        assert f"secrets.{secret}" in RELEASE
 
 
 def test_release_only_publishes_version_tags_and_final_artifacts():

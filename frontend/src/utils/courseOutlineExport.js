@@ -1,3 +1,5 @@
+import { saveNativeFile } from '../services/nativeBridge';
+
 const escapeHtml = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 const valueOrEmpty = value => value == null || value === '' ? '<span class="empty">暂无内容</span>' : escapeHtml(value);
 
@@ -24,7 +26,11 @@ export const buildCourseOutlineHtml = ({ overview, groups }) => {
 };
 
 export const downloadCourseOutlineHtml = data => {
-  const html = buildCourseOutlineHtml(data); const blob = new Blob([html], { type: 'text/html;charset=utf-8' }); const url = URL.createObjectURL(blob); const link = document.createElement('a');
+  const html = buildCourseOutlineHtml(data);
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   const safe = `${data.overview.course_code || '课程'}_${data.overview.course_name || '课程大纲'}`.replace(/[\\/:*?"<>|]/g, '_');
+  if (saveNativeFile(`${safe}_课程大纲.html`, blob.type, blob)) return;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
   link.href = url; link.download = `${safe}_课程大纲.html`; link.click(); URL.revokeObjectURL(url);
 };

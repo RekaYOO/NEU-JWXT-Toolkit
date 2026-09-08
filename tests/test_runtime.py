@@ -335,16 +335,24 @@ def test_health_exposes_shutdown_token_only_in_desktop_mode():
     from backend.app.routers import runtime
 
     with (
-        patch.object(runtime, "config", SimpleNamespace(desktop_mode=True, version="1", profile="desktop")),
+        patch.object(runtime, "config", SimpleNamespace(desktop_mode=True, mobile_mode=False, version="1", profile="desktop")),
         patch.dict(runtime.os.environ, {"NEU_JWXT_SHUTDOWN_TOKEN": "test-token"}),
     ):
         assert asyncio.run(runtime.health())["shutdown_token"] == "test-token"
     with patch.object(
         runtime,
         "config",
-        SimpleNamespace(desktop_mode=False, version="1", profile="server"),
+        SimpleNamespace(desktop_mode=False, mobile_mode=False, version="1", profile="server"),
     ):
         assert "shutdown_token" not in asyncio.run(runtime.health())
+    with patch.object(
+        runtime, "config",
+        SimpleNamespace(desktop_mode=False, mobile_mode=True, version="1", profile="mobile"),
+    ):
+        response = asyncio.run(runtime.health())
+        assert "shutdown_token" not in response
+        assert "mobile_session_token" not in response
+        assert response["capabilities"]["native_notifications"] is True
 
 
 def test_config_healthcheck_uses_exact_port_and_ignores_http_proxy(

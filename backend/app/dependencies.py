@@ -34,8 +34,10 @@ from backend.core.log import (
 )
 from backend.core.log.manager import LogManager
 from backend.core.tracking import GradeTrackingService
-from backend.core.notifications import SystemMailService
+from backend.core.notifications import MobileNotificationService, SystemMailService
 from backend.core.auth.recovery import RemoteAuthRecoveryService
+from backend.core.auth.mobile_recovery import MobileAuthRecoveryService
+from backend.core.runtime import get_runtime_config
 from backend.core.academic.gpa_policy import GpaPolicyService
 from backend.core.cache import (
     AccountScope,
@@ -633,7 +635,11 @@ def set_auth_client(
         _jwxk_recovered_client = None
     recovery = globals().get("_auth_recovery")
     if recovery and client is not None and client.is_logged_in:
-        recovery.invalidate_all()
+        foreground_login = getattr(recovery, "notify_foreground_login", None)
+        if callable(foreground_login):
+            foreground_login(str(client.username))
+        else:
+            recovery.invalidate_all()
 
 
 def logout_auth_client(*, clear_cache: bool) -> str | None:
@@ -1097,21 +1103,28 @@ def _tracking_score_detail_lookup(account: str, score: dict) -> dict:
     }
 
 
-_system_mail = SystemMailService(
-    data_dir=_storage.config.data_dir,
-    logger=_api_logger,
-)
-
-_auth_recovery = RemoteAuthRecoveryService(
-    data_dir=_storage.config.data_dir,
-    mail_service=_system_mail,
-    logger=_api_logger,
-    qr_login_starter=_start_auth_recovery_qr_login,
-    pending_sms_provider=_pending_auth_recovery_sms_login,
-    auth_committer=_commit_recovered_auth,
-    remote_guard=foreground_auth_session_guard,
-    auth_error_code_provider=lambda: _last_auth_recovery_error_code,
-)
+_runtime_config = get_runtime_config()
+if _runtime_config.mobile_mode:
+    _system_mail = MobileNotificationService(
+        data_dir=_storage.config.data_dir,
+        logger=_api_logger,
+    )
+    _auth_recovery = MobileAuthRecoveryService(_system_mail)
+else:
+    _system_mail = SystemMailService(
+        data_dir=_storage.config.data_dir,
+        logger=_api_logger,
+    )
+    _auth_recovery = RemoteAuthRecoveryService(
+        data_dir=_storage.config.data_dir,
+        mail_service=_system_mail,
+        logger=_api_logger,
+        qr_login_starter=_start_auth_recovery_qr_login,
+        pending_sms_provider=_pending_auth_recovery_sms_login,
+        auth_committer=_commit_recovered_auth,
+        remote_guard=foreground_auth_session_guard,
+        auth_error_code_provider=lambda: _last_auth_recovery_error_code,
+    )
 
 _gpa_policy = GpaPolicyService(_storage.config.data_dir, _cache_store, _cache_registry)
 

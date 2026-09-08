@@ -30,7 +30,7 @@ from backend.app.dependencies import (
     get_log_config,
     peek_auth_client,
 )
-from backend.app.routers import auth, auth_recovery, cache, client, logs, system_settings, scores, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking, festival_activities, course_selection, timetable, scheduling, course_outline, academic_documents
+from backend.app.routers import auth, auth_recovery, cache, client, logs, mobile, system_settings, scores, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking, festival_activities, course_selection, timetable, scheduling, course_outline, academic_documents
 from backend.core.runtime import get_runtime_config, resource_path
 from backend.core.runtime.access import AccessGatewayMiddleware
 from backend.core.runtime.static import PrecompressedStaticFiles, REVALIDATE_CACHE_CONTROL
@@ -98,6 +98,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(cache.router, prefix="/api")
 app.include_router(client.router, prefix="/api")
+app.include_router(mobile.router, prefix="/api")
 app.include_router(scores.router, prefix="/api")
 app.include_router(logs.router, prefix="/api")
 app.include_router(system_settings.router, prefix="/api")

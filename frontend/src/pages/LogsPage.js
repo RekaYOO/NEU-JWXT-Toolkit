@@ -8,7 +8,8 @@ import {
   FileTextOutlined, DownloadOutlined, DeleteOutlined,
   SearchOutlined, ReloadOutlined
 } from '@ant-design/icons';
-import { getLogSummary, getLogFiles, getLogContent, tailLog, searchLogs, cleanupLogs } from '../services/api';
+import { getLogSummary, getLogFiles, getLogContent, tailLog, searchLogs, cleanupLogs, downloadLog } from '../services/api';
+import { isNativeShell, saveNativeFile } from '../services/nativeBridge';
 import dayjs from 'dayjs';
 import {
   MobileFilterButton,
@@ -425,10 +426,19 @@ const LogsPage = () => {
   };
 
   // 下载日志
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (!selectedCategory || !selectedDate) return;
     const dateStr = selectedDate.format('YYYY-MM-DD');
     const url = `/api/logs/download/${selectedCategory}/${dateStr}`;
+    if (isNativeShell()) {
+      try {
+        const blob = await downloadLog(selectedCategory, dateStr);
+        saveNativeFile(`${selectedCategory}-${dateStr}.log`, 'text/plain', blob);
+      } catch (_error) {
+        message.error('日志下载失败');
+      }
+      return;
+    }
     window.open(url, '_blank');
   };
 

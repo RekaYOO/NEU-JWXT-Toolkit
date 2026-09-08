@@ -1029,6 +1029,14 @@ class CourseSelectionAutomationService:
         """Resume safe task checks after a shared authentication recovery."""
         self._wake.set()
 
+    def has_active_tasks(self) -> bool:
+        with self._lock:
+            return any(
+                task.get("desired_state") == "running"
+                and task.get("status") in {"running", "waiting"}
+                for task in self._tasks
+            )
+
     def list(self, account: str, batch_code: str = "") -> list[dict[str, Any]]:
         with self._lock:
             return [

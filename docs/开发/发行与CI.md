@@ -6,15 +6,18 @@
 
 ## 版本来源
 
-根目录 `VERSION` 是发行版本的唯一来源。后端健康检查、Nuitka 程序和发行文件名均从该文件读取。Git 标签必须使用相同版本并带 `v` 前缀，例如 `VERSION` 为 `1.4.0` 时使用标签 `v1.4.0`。
+根目录 `VERSION` 是面向用户的发行版本唯一来源。后端健康检查、Nuitka 程序、Android
+`versionName` 和发行文件名均从该文件读取。Android 另用正整数 `ANDROID_VERSION_CODE` 作为
+系统覆盖安装顺序，每次 Android 正式发布都必须递增。Git 标签必须与 `VERSION` 相同并带 `v` 前缀。
 
-项目定义三种运行模式：
+项目定义四种运行模式：
 
 | 模式 | 用途 | 数据目录 |
 |------|------|----------|
 | `development` | 仓库源码运行 | 仓库当前目录下的 `data/` |
 | `desktop` | Windows 本机发行版 | `%LOCALAPPDATA%\NEU-JWXT-Toolkit\data` |
 | `server` | Linux 常驻服务 | `/var/lib/neu-jwxt-toolkit` |
+| `mobile` | Android 本地版内嵌服务 | Android 应用内部目录 |
 
 `NEU_JWXT_DATA_DIR` 在全部模式下具有最高优先级。发行程序通过统一资源定位函数读取打包内的 `frontend/build` 和 `VERSION`。
 
@@ -59,6 +62,20 @@ sudo apt-get install build-essential patchelf ccache
 python packaging/nuitka/build.py server
 ```
 
+Android 调试包需要 JDK 17、Android SDK 35 和 Python 3.13。先构建前端，再为目标 ABI 构建
+锁定的 Android wheel，最后运行 Gradle Wrapper：
+
+```bash
+bash packaging/android/build_android_wheels.sh x86_64
+cd packaging/android
+bash gradlew :client-app:assembleX86TestDebug :local-app:assembleX86TestDebug
+```
+
+`packaging/android/` 是 `shared`、`client-app`、`local-app` 三模块工程。客户端模块不应用
+Chaquopy 插件；本地模块使用 Chaquopy 17、Python 3.13，并只从 `wheelhouse` 安装锁定依赖。
+`pydantic-core`、`lxml` 和 `pycryptodome` 通过 cibuildwheel 的 Android/NDK 交叉编译支持生成，
+不使用 Termux wheel。正式包只构建 `arm64-v8a`，普通 Android CI 构建 `x86_64` 调试包。
+
 Windows 与 Linux 均使用 Nuitka `standalone`，前端构建和 `VERSION` 被复制进独立载荷
 目录。Windows 只把该载荷压成普通便携 ZIP；不再用 Inno Setup 包成无签名自解压安装器。
 Linux 载荷与安装脚本、systemd 单元和反代示例一起进入 `tar.gz`。
@@ -91,6 +108,8 @@ Defender 安全智能下，官方 1.4.5 启动器未检出，而官方 1.4.6 启
 
 同一 PR 连续推送时取消已被替代的旧 CI，最新提交仍执行所有门禁；`main` push 和手动
 运行使用各自独立的并发组，不相互取消，也不取消 Release 工作流。
+`.github/workflows/android.yml` 另使用 Python 3.13 跑完整后端测试，构建两个 `x86_64` 调试
+APK，并在 API 35 模拟器完成安装、启动和本地页面 smoke test。调试包只用标准 debug 签名。
 前端全量测试使用最多两个 worker，同时检查增量测试选择器自身的回归测试。
 本地 `test:changed`/`test:related` 只用于缩短开发反馈，不用于替换 CI 全量、生产构建、
 体积预算、同源检查和成品 smoke test。不得因增量命令没有选中用例就报告完整回归通过。
@@ -111,14 +130,17 @@ SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Acti
 2. 构建一次 Release 专用 React 静态资源；source map 只上传为保留 30 天的私有 Actions
    artifact，随后从运行目录删除，再将同一个 `web-build` 传给两个平台任务；Release 不重复
    执行普通 CI 已覆盖的后端测试、前端测试和源码编译检查；
-3. 分别构建 Windows x64 与 Linux amd64 standalone 程序；
+3. 分别构建 Windows x64、Linux amd64、Android 客户端 arm64 和 Android 本地版 arm64；
 4. 对两条最终产物路径分别验收：
    - 便携 ZIP 解压到新临时目录后，检查目录结构和敏感数据，再验证健康检查、首页、
      单实例、关闭浏览器后再次启动恢复页面，以及关闭；
    - Linux tar 包解压后，从解压目录启动服务，验证健康检查、首页、未授权状态和
      命令行健康检查；
-5. 生成 Windows 安全状态说明，明确未签名、未发布安装器且自动杀毒扫描不作为发行门禁；
-6. 生成排序稳定的 `SHA256SUMS.txt`，为所有发行文件生成 GitHub artifact
+5. Android 构建必须读取固定签名 Secrets，并用 `apksigner`、`aapt` 和 ZIP 内容检查验证包名、
+   版本、API 24、单 ABI、相同签名、客户端不含 Python、本地版包含 Python、无 source map 和
+     敏感配置；两个 APK 任一个失败都会阻止整个 Release；
+6. 生成 Windows 安全状态说明，明确未签名、未发布安装器且自动杀毒扫描不作为发行门禁；
+7. 生成排序稳定的 `SHA256SUMS.txt`，为所有发行文件生成 GitHub artifact
    attestation，并上传到同一个 GitHub Release。
 
 手动触发工作流只构建并保留 Actions 产物，不自动创建 Release；为避免同名候选包与已
@@ -128,6 +150,25 @@ SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Acti
 
 上述自动化验证的是特定 GitHub runner 上的成品布局和核心启动流程，不能替代所有
 Windows 版本、企业安全策略、代理配置和真实升级场景的人工验收。
+
+Android 正式签名固定使用以下 GitHub Secrets：
+
+- `ANDROID_SIGNING_KEYSTORE_BASE64`
+- `ANDROID_SIGNING_STORE_PASSWORD`
+- `ANDROID_SIGNING_KEY_ALIAS`
+- `ANDROID_SIGNING_KEY_PASSWORD`
+
+标签和手动 Release 候选构建缺少任一项时直接失败，不生成临时签名。正式文件名固定为
+`NEU-JWXT-Toolkit-<version>-android-client-arm64.apk` 与
+`NEU-JWXT-Toolkit-<version>-android-local-arm64.apk`，并与桌面产物一起进入 SHA-256 清单和
+GitHub artifact attestation。
+
+Android 仍处于集成验证阶段，当前不能将本地版 Java 编译通过视为 APK 验收通过。
+`release.yml` 通过可复用 `android.yml` 先执行 x86_64 仪器测试，再构建签名 arm64 产物；
+复用前端作业已通过体积预算的 `web-build`，在 Android 门禁中测试同一提交的前端代码，
+不重复构建或使用另一份前端资源。
+任何 Android 构建、依赖导入或模拟器门禁失败都会阻止 Windows/Linux/Android 整个 Release。
+具体已验证项及剩余阻塞见 [Android 安装与运行](../部署/Android安装.md#验证状态)。
 
 ## Windows 信任、Defender 与误报
 
@@ -192,6 +233,9 @@ GitHub Actions 构建身份的关联，不审计源码逻辑、不提供 Authent
 - Windows 自动化必须验收解压后的便携包、PE 版本资源和真实启动链；正式发布仍应在
   未安装 Python/Node.js 的干净 Windows 10/11 环境，从浏览器下载后抽查保留、解压和启动。
 - Linux 应验证安装、重启、升级成功、健康检查失败回滚和两种反向代理。
+- Android 应验证两个包名、`VERSION`/`ANDROID_VERSION_CODE`、arm64 单 ABI、固定签名、
+  客户端服务器切换和 Cookie 隔离、本地登录、下载、后台任务、通知深链、进程/手机重启以及
+  关闭全部任务后退出前台服务。正式发布前仍需 arm64 真机覆盖安装验收。
 - 检查 Actions 中 Windows standalone 构建、便携包启动验收、敏感文件排除、校验和与
   artifact attestation 的实际结论。
 - 下载 Release 成品后复核 `SHA256SUMS.txt` 和 artifact attestation，不能只校验

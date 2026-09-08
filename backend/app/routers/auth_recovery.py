@@ -5,9 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from backend.app.dependencies import get_auth_recovery_service
 from backend.app.schemas.auth_recovery import AuthRecoveryCaptchaRequest, AuthRecoverySMSRequest
 from backend.core.log import log_application_error, log_security_event
+from backend.core.runtime import get_runtime_config
 
 
 router = APIRouter()
+_runtime_config = get_runtime_config()
 
 
 def _recovery_error(error: Exception) -> HTTPException:
@@ -20,6 +22,8 @@ def _recovery_error(error: Exception) -> HTTPException:
 
 
 def _call(operation: str, callback, *, security_event: str = "", auth_method: str = ""):
+    if _runtime_config.mobile_mode:
+        raise HTTPException(status_code=404, detail="Android 本地版不提供远程登录恢复")
     try:
         return callback()
     except Exception as error:

@@ -10,6 +10,7 @@ import {
   FileTextOutlined
 } from '@ant-design/icons';
 import { getExamTerms, getExams, exportExamsICS } from '../services/api';
+import { saveNativeFile } from '../services/nativeBridge';
 import './ExamPage.css';
 
 const { Option } = Select;
@@ -83,10 +84,15 @@ const ExamPage = () => {
     setExporting(true);
     try {
       const blob = await exportExamsICS(selectedTerm);
+      const filename = `exams_${selectedTerm}.ics`;
+      if (saveNativeFile(filename, 'text/calendar', blob)) {
+        message.success('ICS 文件已导出');
+        return;
+      }
       const url = window.URL.createObjectURL(new Blob([blob], { type: 'text/calendar' }));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `exams_${selectedTerm}.ics`);
+      link.setAttribute('download', filename);
       document.body.appendChild(link);
       link.click();
       link.remove();

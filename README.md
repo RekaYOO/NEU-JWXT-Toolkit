@@ -8,7 +8,7 @@
 选课、评教、科研训练和资料导出集中到一个响应式 Web 界面，并通过本地缓存改善官方系统
 响应慢或暂时不可用时的使用体验。
 
-项目支持 Windows 本机应用、Linux 单用户轻量服务和源码开发三种运行方式。它不是东北大学
+项目支持 Windows 本机应用、Linux 单用户轻量服务和源码开发，Android 客户端/本地版正在集成验证。它不是东北大学
 官方产品，也不会绕过学校的身份认证、选课资格或业务规则。
 
 ## 主要功能
@@ -57,6 +57,14 @@ sudo ./install.sh
 要求的网站访问密码。程序数据位于 `/var/lib/neu-jwxt-toolkit`。详见
 [Linux 轻量服务](docs/部署/Linux轻量服务.md)。
 
+### Android
+
+Android 双版本尚未完成发行验收。目标是在同一 Release 同时提供
+`android-client-arm64.apk` 和 `android-local-arm64.apk`。客户端版内置
+静态前端并连接用户配置的 HTTPS 服务端；本地版内置 Python 3.13 与完整后端，数据只写入应用
+内部目录。两者要求 Android 7.0 及以上和 `arm64-v8a` 设备，可同时安装。安装、通知权限、
+固定自签名与更新说明见 [Android 安装](docs/部署/Android安装.md)。
+
 ### 从源码运行
 
 需要 Python 3.11、Node.js 20 和 npm：
@@ -90,6 +98,8 @@ python start_all.py --port 8080
 - **Linux 服务**：下载新 tarball，解压后在新目录执行 `sudo ./install.sh --upgrade`。安装脚本
   会保留 `/var/lib/neu-jwxt-toolkit` 的数据和配置，并重启 systemd 服务；升级后先查看服务状态
   和健康检查，异常时可回退到上一份发行目录。详见[Linux 轻量服务](docs/部署/Linux轻量服务.md)。
+- **Android**：下载与已安装版本相同包名的新 APK 并覆盖安装。客户端版和本地版互不替代；
+  固定签名和递增 `ANDROID_VERSION_CODE` 用于保留应用内部数据。
 - **源码运行**：在仓库目录执行 `git pull`，然后按锁文件重新安装前端依赖并重建：
   `cd frontend && npm ci && cd .. && python start_all.py --build`。不要为“更新代码”删除 `data/`
   或 `.venv`；只有明确要重置本地环境时才清理它们。

@@ -222,7 +222,17 @@ class AccessGatewayMiddleware(BaseHTTPMiddleware):
         self.config = config
 
     async def dispatch(self, request: Request, call_next):
-        if (
+        if self.config.mobile_mode and request.url.path.startswith("/api/"):
+            supplied = request.headers.get("x-neu-mobile-token", "")
+            expected = self.config.mobile_session_token
+            if expected and hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+                response = await call_next(request)
+            else:
+                response = JSONResponse(
+                    status_code=401,
+                    content={"detail": "移动端本地会话验证失败", "code": "MOBILE_ACCESS_REQUIRED"},
+                )
+        elif (
             not self.config.access_gateway_enabled
             or not request.url.path.startswith("/api/")
             or is_public_api_path(request.url.path)

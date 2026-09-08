@@ -16,6 +16,7 @@ import EvaluationPage from './pages/EvaluationPage';
 import ExamPage from './pages/ExamPage';
 import GradeTrackingPage from './pages/GradeTrackingPage';
 import AuthRecoveryPage from './pages/AuthRecoveryPage';
+import { nativeShellInfo } from './services/nativeBridge';
 import ResearchTrainingPage from './pages/ResearchTrainingPage';
 import ExportPage from './pages/ExportPage';
 import FestivalActivitiesPage from './pages/FestivalActivitiesPage';
@@ -313,7 +314,7 @@ function App() {
   const recoveryMatch = window.location.pathname.match(
     /^\/auth-recovery\/([^/]+)\/?$/
   );
-  const recoveryToken = recoveryMatch
+  const recoveryToken = recoveryMatch && nativeShellInfo()?.kind !== 'local'
     ? decodeURIComponent(recoveryMatch[1])
     : null;
   const [isLoggedIn, setIsLoggedIn] = useState(false);

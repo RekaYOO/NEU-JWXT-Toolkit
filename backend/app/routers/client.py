@@ -21,6 +21,7 @@ from backend.app.client_snapshot import (
 )
 from backend.core.cache.resources import avatar_bytes, avatar_token
 from backend.core.runtime import get_runtime_config
+from backend.core.runtime.capabilities import MOBILE_API_VERSION, runtime_capabilities
 
 
 router = APIRouter(prefix="/client", tags=["client-bootstrap"])
@@ -86,6 +87,8 @@ def get_client_bootstrap():
             "status": "ok",
             "version": _config.version,
             "profile": _config.profile,
+            "mobile_api_version": MOBILE_API_VERSION,
+            "capabilities": runtime_capabilities(_config),
         },
         "auth": _auth_snapshot(client, account),
         "pending_auth": pending_auth_challenge_snapshot(),

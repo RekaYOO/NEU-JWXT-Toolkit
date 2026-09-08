@@ -15,10 +15,17 @@ from backend.app.schemas.system_settings import (
     SystemMailConfigUpdate,
     AuthRecoveryConfigUpdate,
 )
+from backend.core.runtime import get_runtime_config
 
 router = APIRouter(prefix="/system-settings", tags=["system-settings"])
+_runtime_config = get_runtime_config()
 
 _MAX_INTERVAL_MINUTES = 52_560_000
+
+
+def _require_remote_notifications() -> None:
+    if _runtime_config.mobile_mode:
+        raise HTTPException(status_code=404, detail="Android 本地版使用系统通知")
 
 
 def _safe_interval_minutes(value, fallback=5):
@@ -94,11 +101,13 @@ def update_cache_settings(payload: CacheSettingsUpdate, storage=Depends(get_stor
 
 @router.get("/mail")
 def get_mail_settings(service=Depends(get_system_mail_service)):
+    _require_remote_notifications()
     return service.get_config()
 
 
 @router.put("/mail")
 def update_mail_settings(payload: SystemMailConfigUpdate, service=Depends(get_system_mail_service)):
+    _require_remote_notifications()
     try:
         return {"success": True, "config": service.update_config(payload.model_dump(exclude_none=True))}
     except ValueError as error:
@@ -107,6 +116,7 @@ def update_mail_settings(payload: SystemMailConfigUpdate, service=Depends(get_sy
 
 @router.post("/mail/test")
 def test_mail_settings(service=Depends(get_system_mail_service)):
+    _require_remote_notifications()
     try:
         service.test_email()
         return {"success": True, "message": "测试邮件已发送"}
@@ -118,11 +128,13 @@ def test_mail_settings(service=Depends(get_system_mail_service)):
 
 @router.get("/auth-recovery")
 def get_auth_recovery_settings(service=Depends(get_auth_recovery_service)):
+    _require_remote_notifications()
     return service.get_config()
 
 
 @router.put("/auth-recovery")
 def update_auth_recovery_settings(payload: AuthRecoveryConfigUpdate, service=Depends(get_auth_recovery_service)):
+    _require_remote_notifications()
     try:
         return {"success": True, "config": service.update_config(payload.model_dump(exclude_unset=True))}
     except ValueError as error:
