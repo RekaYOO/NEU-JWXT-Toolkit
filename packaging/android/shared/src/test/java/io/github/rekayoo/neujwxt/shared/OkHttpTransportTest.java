@@ -92,8 +92,14 @@ public class OkHttpTransportTest {
         HandshakeCertificates clientTls = new HandshakeCertificates.Builder()
             .addTrustedCertificate(certificate.certificate()).build();
         AtomicReference<java.util.List<okhttp3.Cookie>> cookies = new AtomicReference<>(Collections.emptyList());
+        AtomicReference<java.io.IOException> readFailure = new AtomicReference<>();
         OkHttpClient client = new OkHttpClient.Builder()
             .sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager())
+            .eventListener(new okhttp3.EventListener() {
+                @Override public void responseFailed(okhttp3.Call call, java.io.IOException error) {
+                    readFailure.set(error);
+                }
+            })
             .cookieJar(new okhttp3.CookieJar() {
                 @Override public void saveFromResponse(okhttp3.HttpUrl url, java.util.List<okhttp3.Cookie> values) {
                     cookies.set(values);
@@ -106,20 +112,24 @@ public class OkHttpTransportTest {
             server.useHttps(serverTls.sslSocketFactory(), false);
             server.enqueue(new MockResponse().addHeader("Set-Cookie", "access=synthetic; Secure; HttpOnly; Path=/")
                 .setBody("{}"));
-            server.enqueue(new MockResponse().setBody("{\"success\":true}"));
+            for (int index = 0; index < 100; index++) {
+                server.enqueue(new MockResponse().setBody("{\"success\":true}"));
+            }
             OkHttpTransport transport = new OkHttpTransport(client,
                 server.url("/").newBuilder().host("localhost").build(),
                 Collections.singletonMap("X-NEU-Mobile-Token", "synthetic-native-token"), null);
             try {
                 JSONObject access = request(transport, "{\"path\":\"/api/access/login\",\"method\":\"POST\"}");
                 assertEquals(access.toString(), 200, access.getInt("status"));
-                JSONObject login = request(transport, "{\"path\":\"/api/login\",\"method\":\"POST\",\"body\":\"{}\"}");
-                assertEquals(login.toString(), 200, login.getInt("status"));
                 server.takeRequest();
-                okhttp3.mockwebserver.RecordedRequest sent = server.takeRequest();
-                assertEquals(0, sent.getSequenceNumber());
-                assertEquals("access=synthetic", sent.getHeader("Cookie"));
-                assertEquals("synthetic-native-token", sent.getHeader("X-NEU-Mobile-Token"));
+                for (int index = 0; index < 100; index++) {
+                    JSONObject login = request(transport, "{\"path\":\"/api/login\",\"method\":\"POST\",\"body\":\"{}\"}");
+                    assertEquals(login + " body failure: " + readFailure.get(), 200, login.getInt("status"));
+                    okhttp3.mockwebserver.RecordedRequest sent = server.takeRequest();
+                    assertEquals(0, sent.getSequenceNumber());
+                    assertEquals("access=synthetic", sent.getHeader("Cookie"));
+                    assertEquals("synthetic-native-token", sent.getHeader("X-NEU-Mobile-Token"));
+                }
             } finally {
                 transport.close();
                 client.connectionPool().evictAll();

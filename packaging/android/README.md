@@ -33,6 +33,10 @@ An idle pooled socket can close after its health check but before the request bo
 is sent; replaying that request is unsafe and previously surfaced as a first-click
 network failure. GET/HEAD retain pooling, while new mutation connections retain
 the same TLS validation, cookie jar, proxy policy and fixed native headers.
+Each private pool is evicted after the response is fully consumed and closed,
+not via zero-idle eviction that can race HTTP/2 body reads. Delivery occurs once,
+after response cleanup. The HTTPS regression exercises 100 consecutive fresh
+requests with cookies and fixed native headers.
 
 ## Build Prerequisites
 

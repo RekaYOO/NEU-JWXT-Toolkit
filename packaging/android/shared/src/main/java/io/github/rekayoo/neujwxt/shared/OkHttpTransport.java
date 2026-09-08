@@ -75,11 +75,13 @@ public class OkHttpTransport implements ApiTransport {
             .readTimeout(input.timeoutMs, TimeUnit.MILLISECONDS)
             .writeTimeout(input.timeoutMs, TimeUnit.MILLISECONDS)
             .callTimeout(input.timeoutMs, TimeUnit.MILLISECONDS);
-        if (body != null) {
+        ConnectionPool requestPool = body == null ? null : new ConnectionPool();
+        if (requestPool != null) {
             // A pooled socket can close after its health check. One-shot
             // requests cannot recover that race by replaying credentials or
-            // mutations, so start them on a fresh, non-retained connection.
-            timedBuilder.connectionPool(new ConnectionPool(0, 1, TimeUnit.SECONDS));
+            // mutations, so give each call its own pool. Evict only after the
+            // response closes: immediate idle eviction can reset HTTP/2 reads.
+            timedBuilder.connectionPool(requestPool);
         }
         Call call = timedBuilder.build().newCall(builder.build());
         calls.put(id, call);
@@ -88,6 +90,7 @@ public class OkHttpTransport implements ApiTransport {
             @Override
             public void onFailure(Call ignored, IOException exception) {
                 calls.remove(id);
+                if (requestPool != null) requestPool.evictAll();
                 boolean timedOut = exception instanceof java.io.InterruptedIOException;
                 callback.complete(error(timedOut ? "请求超时" : call.isCanceled() ? "请求已取消" : "网络请求失败",
                     timedOut ? "ECONNABORTED" : call.isCanceled() ? "ERR_CANCELED" : "ERR_NETWORK"));
@@ -95,6 +98,7 @@ public class OkHttpTransport implements ApiTransport {
 
             @Override
             public void onResponse(Call ignored, Response response) {
+                JSONObject payload;
                 try (response) {
                     JSONObject headers = new JSONObject();
                     Headers responseHeaders = response.headers();
@@ -103,7 +107,7 @@ public class OkHttpTransport implements ApiTransport {
                             headers.put(name.toLowerCase(java.util.Locale.ROOT), responseHeaders.get(name));
                         }
                     }
-                    JSONObject payload = new JSONObject()
+                    payload = new JSONObject()
                         .put("status", response.code())
                         .put("headers", headers);
                     boolean streamToFile = response.isSuccessful()
@@ -121,14 +125,15 @@ public class OkHttpTransport implements ApiTransport {
                             payload.put("body", new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
                         }
                     }
-                    callback.complete(payload);
                 } catch (Exception exception) {
                     boolean timedOut = exception instanceof java.io.InterruptedIOException;
-                    callback.complete(error(timedOut ? "请求超时" : "响应读取失败",
-                        timedOut ? "ECONNABORTED" : call.isCanceled() ? "ERR_CANCELED" : "ERR_BAD_RESPONSE"));
+                    payload = error(timedOut ? "请求超时" : "响应读取失败",
+                        timedOut ? "ECONNABORTED" : call.isCanceled() ? "ERR_CANCELED" : "ERR_BAD_RESPONSE");
                 } finally {
                     calls.remove(id);
+                    if (requestPool != null) requestPool.evictAll();
                 }
+                callback.complete(payload);
             }
         });
     }
