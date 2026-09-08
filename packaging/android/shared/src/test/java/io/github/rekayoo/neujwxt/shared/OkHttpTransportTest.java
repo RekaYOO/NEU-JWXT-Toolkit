@@ -96,4 +96,33 @@ public class OkHttpTransportTest {
             assertEquals(0, server.getRequestCount());
         }
     }
+
+    @Test public void readReconnectsWhenPooledConnectionCloses() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.enqueue(new MockResponse().setBody("warm"));
+            server.enqueue(new MockResponse().setSocketPolicy(
+                okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST));
+            server.enqueue(new MockResponse().setBody("reconnected"));
+            OkHttpTransport transport = new OkHttpTransport(new OkHttpClient(), server.url("/"),
+                Collections.emptyMap(), null);
+            assertEquals(200, request(transport, "{\"path\":\"/api/health\"}").getInt("status"));
+            assertEquals("reconnected", request(transport, "{\"path\":\"/api/health\"}").getString("body"));
+            assertEquals(3, server.getRequestCount());
+        }
+    }
+
+    @Test public void disconnectedMutationIsNeverReplayed() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.enqueue(new MockResponse().setBody("warm"));
+            server.enqueue(new MockResponse().setSocketPolicy(
+                okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST));
+            server.enqueue(new MockResponse().setBody("must not be sent"));
+            OkHttpTransport transport = new OkHttpTransport(new OkHttpClient(), server.url("/"),
+                Collections.emptyMap(), null);
+            assertEquals(200, request(transport, "{\"path\":\"/api/health\"}").getInt("status"));
+            assertEquals("ERR_NETWORK", request(transport,
+                "{\"path\":\"/api/mutation\",\"method\":\"POST\",\"body\":\"{}\"}").getString("code"));
+            assertEquals(2, server.getRequestCount());
+        }
+    }
 }

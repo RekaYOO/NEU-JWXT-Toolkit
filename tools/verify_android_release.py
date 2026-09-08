@@ -27,7 +27,7 @@ def _tool(name: str) -> Path:
 
 def _run(*args: str | Path) -> str:
     return subprocess.run(
-        [str(item) for item in args], check=True, text=True,
+        [str(item) for item in args], check=True, text=True, encoding="utf-8",
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     ).stdout
 

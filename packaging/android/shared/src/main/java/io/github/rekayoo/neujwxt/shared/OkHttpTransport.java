@@ -68,6 +68,7 @@ public class OkHttpTransport implements ApiTransport {
         }
         builder.method(input.method, body);
         OkHttpClient timedClient = client.newBuilder()
+            .retryOnConnectionFailure(input.method.equals("GET") || input.method.equals("HEAD"))
             .callTimeout(input.timeoutMs, TimeUnit.MILLISECONDS).build();
         Call call = timedClient.newCall(builder.build());
         calls.put(id, call);

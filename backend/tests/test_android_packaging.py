@@ -129,6 +129,13 @@ def test_android_build_tool_lookup_never_selects_aapt2(tmp_path, monkeypatch):
     assert _tool("aapt").name == "aapt"
 
 
+def test_android_tool_output_uses_utf8_independently_of_host_locale():
+    import sys
+    from tools.verify_android_release import _run
+
+    assert _run(sys.executable, "-c", "import sys; sys.stdout.buffer.write(bytes.fromhex('e5b7a5e585b7'))") == "工具"
+
+
 def test_android_verifier_checks_native_abi_and_page_alignment():
     import struct
     from tools.verify_android_release import _check_elf

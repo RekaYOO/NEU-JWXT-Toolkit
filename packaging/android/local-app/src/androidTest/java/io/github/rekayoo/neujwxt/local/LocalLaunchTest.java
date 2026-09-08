@@ -54,11 +54,12 @@ public class LocalLaunchTest {
                     WebView web = activity.findViewById(io.github.rekayoo.neujwxt.shared.R.id.webview);
                     web.evaluateJavascript(
                         "location.origin === 'https://appassets.androidplatform.net' && "
-                        + "!!document.querySelector('#root > *') && document.body.innerText.trim().length > 20",
+                        + "!!document.querySelector('.login-shell input') && document.body.innerText.trim().length > 20",
                         value -> { rendered.set("true".equals(value)); done.countDown(); });
                 });
                 assertTrue(done.await(5, TimeUnit.SECONDS));
                 if (rendered.get()) {
+                    Thread.sleep(500);
                     android.app.Instrumentation instrumentation =
                         androidx.test.platform.app.InstrumentationRegistry.getInstrumentation();
                     java.io.File directory = new java.io.File(
@@ -83,6 +84,7 @@ public class LocalLaunchTest {
                     assertTrue("Service recreation never became ready", restarted.await(60, TimeUnit.SECONDS));
                     assertEquals(originalToken, LocalBackendService.sessionToken());
                     assertEquals(originalEndpoint, LocalBackendService.endpoint());
+                    http.connectionPool().evictAll();
                     try (Response healthy = http.newCall(new Request.Builder().url(originalEndpoint + "api/health")
                         .header("X-NEU-Mobile-Token", originalToken).build()).execute()) {
                         assertEquals(200, healthy.code());

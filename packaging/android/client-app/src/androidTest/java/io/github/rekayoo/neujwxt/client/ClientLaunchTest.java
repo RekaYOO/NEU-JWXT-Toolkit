@@ -18,14 +18,14 @@ public class ClientLaunchTest {
             InstrumentationRegistry.getInstrumentation().getTargetContext());
         config.setServerUrl("https://offline.invalid/");
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
-            for (int attempt = 0; attempt < 60; attempt++) {
+            for (int attempt = 0; attempt < 120; attempt++) {
                 CountDownLatch done = new CountDownLatch(1);
                 AtomicBoolean rendered = new AtomicBoolean();
                 scenario.onActivity(activity -> {
                     WebView web = activity.findViewById(io.github.rekayoo.neujwxt.shared.R.id.webview);
                     web.evaluateJavascript(
                         "location.origin === 'https://appassets.androidplatform.net' && "
-                        + "!!window.NeuNative && !!document.querySelector('#root > *') && "
+                        + "!!window.NeuNative && !!document.querySelector('.login-shell input') && "
                         + "document.body.innerText.trim().length > 20 && "
                         + "performance.getEntriesByType('resource').filter(r => "
                         + "r.initiatorType === 'script' || r.initiatorType === 'link').every(r => "
@@ -34,6 +34,7 @@ public class ClientLaunchTest {
                 });
                 assertTrue(done.await(5, TimeUnit.SECONDS));
                 if (rendered.get()) {
+                    Thread.sleep(500);
                     android.content.Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
                     java.io.File directory = new java.io.File(context.getExternalFilesDir(null), "test-screenshots");
                     assertTrue(directory.isDirectory() || directory.mkdirs());
