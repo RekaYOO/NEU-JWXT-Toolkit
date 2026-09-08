@@ -24,6 +24,7 @@ public class OkHttpTransport implements ApiTransport {
     private final Map<String, String> fixedHeaders;
     private final NativeFileRegistry nativeFiles;
     private final ConcurrentHashMap<String, Call> calls = new ConcurrentHashMap<>();
+    private volatile boolean closed;
 
     public OkHttpTransport(OkHttpClient client, HttpUrl baseUrl, Map<String, String> fixedHeaders,
                            NativeFileRegistry nativeFiles) {
@@ -36,6 +37,10 @@ public class OkHttpTransport implements ApiTransport {
 
     @Override
     public void request(String id, NativeRequest input, ApiTransport.Callback callback) {
+        if (closed) {
+            callback.complete(error("请求会话已关闭", "ERR_CANCELED"));
+            return;
+        }
         HttpUrl url = baseUrl.resolve(input.path.substring(1));
         if (url == null || !url.host().equals(baseUrl.host())
             || url.port() != baseUrl.port() || !url.scheme().equals(baseUrl.scheme())
@@ -66,6 +71,7 @@ public class OkHttpTransport implements ApiTransport {
             .callTimeout(input.timeoutMs, TimeUnit.MILLISECONDS).build();
         Call call = timedClient.newCall(builder.build());
         calls.put(id, call);
+        if (closed) call.cancel();
         call.enqueue(new okhttp3.Callback() {
             @Override
             public void onFailure(Call ignored, IOException exception) {
@@ -105,7 +111,9 @@ public class OkHttpTransport implements ApiTransport {
                     }
                     callback.complete(payload);
                 } catch (Exception exception) {
-                    callback.complete(error("响应读取失败", call.isCanceled() ? "ERR_CANCELED" : "ERR_BAD_RESPONSE"));
+                    boolean timedOut = exception instanceof java.io.InterruptedIOException;
+                    callback.complete(error(timedOut ? "请求超时" : "响应读取失败",
+                        timedOut ? "ECONNABORTED" : call.isCanceled() ? "ERR_CANCELED" : "ERR_BAD_RESPONSE"));
                 } finally {
                     calls.remove(id);
                 }
@@ -121,6 +129,7 @@ public class OkHttpTransport implements ApiTransport {
 
     @Override
     public void close() {
+        closed = true;
         for (Call call : calls.values()) call.cancel();
         calls.clear();
     }

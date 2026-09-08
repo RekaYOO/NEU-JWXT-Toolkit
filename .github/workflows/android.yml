@@ -68,7 +68,7 @@ jobs:
           path: frontend/build
       - name: Test production resources
         run: python -m pytest tests
-      - name: Install Android SDK and emulator
+      - name: Install Android build tools
         shell: bash
         run: |
           set -euo pipefail
@@ -82,8 +82,7 @@ jobs:
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail
           sdkmanager \
-            "platform-tools" "emulator" "platforms;android-35" "build-tools;35.0.0" \
-            "ndk;27.2.12479018" "system-images;android-35;google_apis;x86_64"
+            "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
       - name: Build locked x86_64 Python wheels
         shell: bash
         run: bash packaging/android/build_android_wheels.sh x86_64
@@ -99,6 +98,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sdkmanager "emulator" "system-images;android-35;google_apis;x86_64"
           echo no | avdmanager create avd --force \
             --name neu-ci --package "system-images;android-35;google_apis;x86_64" --device pixel_5
           sudo chmod 666 /dev/kvm

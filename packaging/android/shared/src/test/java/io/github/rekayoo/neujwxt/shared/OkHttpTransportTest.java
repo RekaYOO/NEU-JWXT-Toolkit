@@ -7,6 +7,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import okhttp3.OkHttpClient;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.tls.HandshakeCertificates;
+import okhttp3.tls.HeldCertificate;
 import org.json.JSONObject;
 import org.junit.Test;
 import static org.junit.Assert.*;
@@ -58,6 +60,40 @@ public class OkHttpTransportTest {
             assertEquals(503, request(transport,
                 "{\"path\":\"/api/mutation\",\"method\":\"POST\",\"body\":\"{}\"}").getInt("status"));
             assertEquals(1, server.getRequestCount());
+        }
+    }
+
+    @Test public void untrustedHttpsCertificateIsRejected() throws Exception {
+        HeldCertificate certificate = new HeldCertificate.Builder().addSubjectAlternativeName("localhost").build();
+        HandshakeCertificates certificates = new HandshakeCertificates.Builder().heldCertificate(certificate).build();
+        try (MockWebServer server = new MockWebServer()) {
+            server.useHttps(certificates.sslSocketFactory(), false);
+            server.enqueue(new MockResponse().setBody("must not be read"));
+            OkHttpTransport transport = new OkHttpTransport(new OkHttpClient(), server.url("/"),
+                Collections.emptyMap(), null);
+            assertEquals("ERR_NETWORK", request(transport, "{\"path\":\"/api/health\"}").getString("code"));
+            assertEquals(0, server.getRequestCount());
+        }
+    }
+
+    @Test public void timeoutDuringBodyReadRemainsTimeout() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.enqueue(new MockResponse().setBody("slow body").setBodyDelay(3, TimeUnit.SECONDS));
+            OkHttpTransport transport = new OkHttpTransport(new OkHttpClient(), server.url("/"),
+                Collections.emptyMap(), null);
+            assertEquals("ECONNABORTED", request(transport,
+                "{\"path\":\"/api/slow\",\"timeout_ms\":1000}").getString("code"));
+        }
+    }
+
+    @Test public void closedSessionCannotSendNewRequests() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            OkHttpTransport transport = new OkHttpTransport(new OkHttpClient(), server.url("/"),
+                Collections.emptyMap(), null);
+            transport.close();
+            assertEquals("ERR_CANCELED", request(transport,
+                "{\"path\":\"/api/mutation\",\"method\":\"POST\"}").getString("code"));
+            assertEquals(0, server.getRequestCount());
         }
     }
 }

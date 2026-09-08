@@ -15,6 +15,18 @@ import subprocess
 import sysconfig
 
 
+def _host_config_command(command: str, *args: str) -> str:
+    if not command:
+        return ""
+    # Target sys.platform makes subprocess select /system/bin/sh. These are
+    # host-side xml2/xslt configuration scripts, not Android executables.
+    result = subprocess.run(
+        " ".join((command, *args)), shell=True, executable="/bin/sh",
+        capture_output=True, text=True,
+    )
+    return "" if result.returncode and result.stderr else result.stdout.strip()
+
+
 def _configure() -> None:
     triplet = os.environ.get("CIBW_HOST_TRIPLET")
     if triplet not in {"aarch64-linux-android", "x86_64-linux-android"}:
@@ -46,6 +58,7 @@ def _configure() -> None:
             "ZLIB_VERSION": "1.3.2",
         })
         libraries = importlib.import_module("buildlibxml")
+        importlib.import_module("setupinfo").run_command = _host_config_command
         original = libraries.cmmi
         if not getattr(original, "_neu_cross", False):
             build_triplet = subprocess.check_output(["gcc", "-dumpmachine"], text=True).strip()

@@ -235,8 +235,10 @@ public abstract class BaseShellActivity extends AppCompatActivity {
     protected void clearSessionAndReload() {
         if (!initialized) return;
         if (transport != null) transport.close();
-        transport = createTransport();
-        webView.evaluateJavascript("sessionStorage.clear(); location.replace('/')", null);
+        // Keep the old page on a closed transport until its JavaScript context is destroyed.
+        webView.evaluateJavascript("sessionStorage.clear()", ignored -> {
+            if (!isFinishing() && !isDestroyed()) recreate();
+        });
     }
 
     @Override

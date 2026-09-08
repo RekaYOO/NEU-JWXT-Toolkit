@@ -54,3 +54,13 @@ def test_recipe_rejects_host_build_accident(recipe, monkeypatch):
     monkeypatch.delenv("CIBW_HOST_TRIPLET")
     with pytest.raises(RuntimeError, match="cross environment"):
         recipe._configure()
+
+
+def test_lxml_config_commands_explicitly_use_host_shell(recipe, monkeypatch):
+    run = Mock(return_value=SimpleNamespace(returncode=0, stderr="", stdout="2.15.2\n"))
+    monkeypatch.setattr(recipe, "subprocess", SimpleNamespace(run=run))
+    assert recipe._host_config_command("/build/xml2-config", "--version") == "2.15.2"
+    assert run.call_args.args == ("/build/xml2-config --version",)
+    assert run.call_args.kwargs["executable"] == "/bin/sh"
+    assert recipe._host_config_command("") == ""
+    run.assert_called_once()

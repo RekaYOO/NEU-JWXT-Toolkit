@@ -114,9 +114,9 @@ public final class MainActivity extends BaseShellActivity {
             });
             if (cancelable) dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
                 resetCookies(ServerConfigStore.validate(config.getServerUrl()), true);
+                dialog.dismiss();
                 android.webkit.CookieManager.getInstance().removeAllCookies(null);
                 clearSessionAndReload();
-                showError("登录 Cookie 已清除");
             });
         });
         dialog.show();
