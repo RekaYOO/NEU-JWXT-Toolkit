@@ -69,6 +69,9 @@ jobs:
       - name: Test production resources
         run: python -m pytest tests
       - name: Share tested frontend
+        # The Release workflow already owns and reuses web-build. Avoid creating
+        # a second artifact from the reusable quality gate.
+        if: ${{ github.event_name != 'workflow_call' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: android-web-build
