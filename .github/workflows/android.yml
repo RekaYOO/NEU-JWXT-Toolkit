@@ -21,8 +21,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  android:
-    name: Python 3.13, x86_64 APKs and emulator smoke test
+  quality:
+    name: Python 3.13 and frontend quality checks
     runs-on: ubuntu-22.04
     timeout-minutes: 150
     steps:
@@ -68,33 +68,103 @@ jobs:
           path: frontend/build
       - name: Test production resources
         run: python -m pytest tests
-      - name: Install Android build tools
+      - name: Share tested frontend
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-web-build
+          path: frontend/build
+          if-no-files-found: error
+          retention-days: 7
+
+  wheels:
+    name: Native Python wheels (${{ matrix.abi }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [x86_64, arm64_v8a]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - name: Restore locked native wheels
+        id: wheels-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: packaging/android/wheelhouse
+          key: android-wheels-v1-${{ matrix.abi }}-${{ hashFiles('packaging/android/recipes/*.py', 'packaging/android/recipes/sources.json', 'packaging/android/requirements-android.txt', 'packaging/android/build_android_wheels.sh') }}
+      - name: Install native build tools
+        if: steps.wheels-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config patchelf
-          sdk_bin="$ANDROID_HOME/cmdline-tools/latest/bin"
-          test -x "$sdk_bin/sdkmanager"
-          export PATH="$sdk_bin:$ANDROID_HOME/platform-tools:$PATH"
-          printf '%s\n' "$sdk_bin" "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-          set +o pipefail
-          yes | sdkmanager --licenses >/dev/null
-          set -o pipefail
-          sdkmanager \
-            "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
-      - name: Build locked x86_64 Python wheels
+          bash packaging/android/setup_ci_sdk.sh "ndk;27.2.12479018"
+      - name: Build locked Python wheels
+        if: steps.wheels-cache.outputs.cache-hit != 'true'
         shell: bash
-        run: bash packaging/android/build_android_wheels.sh x86_64
-      - name: Build and test x86_64 debug APKs
+        run: bash packaging/android/build_android_wheels.sh "${{ matrix.abi }}"
+      - name: Share locked wheels
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-wheels-${{ matrix.abi }}
+          path: packaging/android/wheelhouse/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  android:
+    name: Debug APKs (${{ matrix.abi }})
+    needs: [quality, wheels]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: x86_64
+            flavor: X86Test
+            directory: x86Test
+          - abi: arm64_v8a
+            flavor: Arm64
+            directory: arm64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: android-web-build
+          path: frontend/build
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: android-wheels-${{ matrix.abi }}
+          path: packaging/android/wheelhouse
+      - name: Restore Gradle dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: android-gradle-v1-${{ matrix.abi }}-${{ hashFiles('packaging/android/**/*.gradle', 'packaging/android/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Install APK build tools
+        run: bash packaging/android/setup_ci_sdk.sh "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+      - name: Build and test debug APKs
         working-directory: packaging/android
         run: |
           export JAVA_HOME="$JAVA_HOME_17_X64"
-          bash gradlew --no-daemon :shared:testDebugUnitTest testX86TestDebugUnitTest \
-            :client-app:lintX86TestDebug :local-app:lintX86TestDebug \
-            :client-app:assembleX86TestDebug :local-app:assembleX86TestDebug \
-            :client-app:assembleX86TestDebugAndroidTest :local-app:assembleX86TestDebugAndroidTest
+          bash gradlew --no-daemon :shared:testDebugUnitTest test${{ matrix.flavor }}DebugUnitTest \
+            :client-app:lint${{ matrix.flavor }}Debug :local-app:lint${{ matrix.flavor }}Debug \
+            :client-app:assemble${{ matrix.flavor }}Debug :local-app:assemble${{ matrix.flavor }}Debug
       - name: Start API 35 emulator
+        if: matrix.abi == 'x86_64'
         shell: bash
         run: |
           set -euo pipefail
@@ -115,6 +185,7 @@ jobs:
           cat "$RUNNER_TEMP/emulator.log"
           exit 1
       - name: Test bundled pages, Python dependencies and token isolation
+        if: matrix.abi == 'x86_64'
         shell: bash
         run: |
           set -euo pipefail
@@ -130,16 +201,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: android-test-reports
+          name: android-test-reports-${{ matrix.abi }}
           path: packaging/android/*/build/reports/
           if-no-files-found: ignore
-      - name: Upload debug APKs and native wheels
+      - name: Upload debug APKs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: android-debug-build
-          path: |
-            packaging/android/*/build/outputs/apk/x86Test/debug/*.apk
-            packaging/android/wheelhouse/*.whl
+          name: android-debug-${{ matrix.abi }}
+          path: packaging/android/*/build/outputs/apk/${{ matrix.directory }}/debug/*.apk
           if-no-files-found: ignore
           retention-days: 7

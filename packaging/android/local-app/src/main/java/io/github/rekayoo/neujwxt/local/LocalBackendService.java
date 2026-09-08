@@ -183,9 +183,11 @@ public final class LocalBackendService extends Service {
 
     private void waitUntilHealthy() throws Exception {
         Exception last = null;
-        for (int attempt = 0; attempt < 120; attempt++) {
+        long deadline = android.os.SystemClock.elapsedRealtime() + 30_000;
+        OkHttpClient healthClient = http.newBuilder().callTimeout(1, TimeUnit.SECONDS).build();
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
             if (destroyed) throw new IOException("Local service was stopped during startup");
-            try (Response response = http.newCall(new Request.Builder()
+            try (Response response = healthClient.newCall(new Request.Builder()
                 .url(startupEndpoint + "api/health").header("X-NEU-Mobile-Token", token).build()).execute()) {
                 if (response.isSuccessful()) return;
             } catch (Exception exception) {

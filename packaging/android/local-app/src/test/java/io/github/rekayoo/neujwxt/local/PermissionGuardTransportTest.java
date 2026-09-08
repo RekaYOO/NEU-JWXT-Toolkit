@@ -17,6 +17,12 @@ public final class PermissionGuardTransportTest {
             "{\"method\":\"POST\",\"path\":\"/api/course-selection/jwxk/automation/tasks/start\"}"
         )));
         assertTrue(PermissionGuardTransport.enablesBackgroundTask(NativeRequest.parse(
+            "{\"method\":\"PATCH\",\"path\":\"/api/%67rade-tracking/enabled\",\"body\":\"{\\\"enabled\\\":true}\"}"
+        )));
+        assertTrue(PermissionGuardTransport.enablesBackgroundTask(NativeRequest.parse(
+            "{\"method\":\"POST\",\"path\":\"/api/course-selection/jwxk/automation/tasks/%73tart?x=1\"}"
+        )));
+        assertTrue(PermissionGuardTransport.enablesBackgroundTask(NativeRequest.parse(
             "{\"method\":\"PUT\",\"path\":\"/api/grade-tracking/config?x=1\",\"body\":\"{\\\"enabled\\\": true}\"}"
         )));
         assertTrue(PermissionGuardTransport.enablesBackgroundTask(NativeRequest.parse(

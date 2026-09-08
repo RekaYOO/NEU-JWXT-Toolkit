@@ -71,6 +71,14 @@ def test_android_release_gate_checks_actual_runtime_and_reuses_web_build():
         assert f"secrets.{secret}" in RELEASE
 
 
+def test_android_ci_builds_both_abis_and_reuses_locked_wheels_for_release():
+    assert "abi: [x86_64, arm64_v8a]" in ANDROID
+    assert "needs: [quality, wheels]" in ANDROID
+    assert "name: android-wheels-${{ matrix.abi }}" in ANDROID
+    assert "name: android-wheels-arm64_v8a" in RELEASE
+    assert "build_android_wheels.sh arm64_v8a" not in RELEASE
+
+
 def test_release_only_publishes_version_tags_and_final_artifacts():
     assert 'tags: ["v*"]' in RELEASE
     assert "workflow_dispatch:" in RELEASE

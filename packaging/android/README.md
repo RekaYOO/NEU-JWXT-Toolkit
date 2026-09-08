@@ -61,6 +61,11 @@ cross compilation, ABI loading and 16 KiB page-size device checks remain unverif
 
 ## Acceptance
 
+The branch CI runs source quality checks and the two native ABI builds in parallel.
+Only complete wheelhouses are cached, keyed by the locked dependencies and recipes.
+Debug APK jobs reuse the tested frontend and wheel artifacts. The Release workflow
+reuses the same arm64 wheel artifact instead of compiling it again after validation.
+
 CI gates release on instrumented React rendering, protected FastAPI health and
 imports of the three native dependencies. It does not yet cover every workflow
 from the requested acceptance plan. HTTPS proxy/login, all document-picker paths,

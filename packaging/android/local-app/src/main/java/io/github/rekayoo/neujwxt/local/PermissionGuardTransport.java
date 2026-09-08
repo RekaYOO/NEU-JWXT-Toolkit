@@ -110,7 +110,7 @@ final class PermissionGuardTransport implements ApiTransport {
     }
 
     static boolean enablesBackgroundTask(NativeRequest request) {
-        String path = request.path.split("\\?", 2)[0];
+        String path = java.net.URI.create(request.path).getPath();
         if ((request.method.equals("PATCH") && path.equals("/api/grade-tracking/enabled"))
             || (request.method.equals("PUT") && path.equals("/api/grade-tracking/config"))) {
             try {
