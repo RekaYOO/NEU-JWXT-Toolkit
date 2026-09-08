@@ -132,6 +132,18 @@ public class LocalLaunchTest {
     }
 
     private void verifySlowBackendResponses(ActivityScenario<MainActivity> scenario) throws Exception {
+        // Service readiness precedes the recreated page's module initialization.
+        // Install the observer only after React has installed its bridge callback.
+        boolean bridgeReady = false;
+        for (int attempt = 0; attempt < 120; attempt++) {
+            if ("true".equals(evaluate(scenario,
+                "typeof window.__neuNativeDeliver === 'function' && !!document.querySelector('.login-shell input')"))) {
+                bridgeReady = true;
+                break;
+            }
+            Thread.sleep(500);
+        }
+        assertTrue("Recreated login page did not initialize its bridge", bridgeReady);
         com.chaquo.python.PyObject builtins = Python.getInstance().getModule("builtins");
         com.chaquo.python.PyObject scope = builtins.callAttr("dict");
         android.content.Context tests = androidx.test.platform.app.InstrumentationRegistry
