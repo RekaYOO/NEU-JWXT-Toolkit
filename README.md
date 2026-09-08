@@ -6,9 +6,9 @@
 
 面向东北大学教务场景的第三方工具箱。项目把成绩、培养计划、课表、考试、课程大纲、
 选课、评教、科研训练和资料导出集中到一个响应式 Web 界面，并通过本地缓存改善官方系统
-响应慢或暂时不可用时的使用体验。
+响应慢或暂时不可用时的使用体验。当前发行版本为 `2.0.0`。
 
-项目支持 Windows 本机应用、Linux 单用户轻量服务和源码开发，Android 客户端/本地版正在集成验证。它不是东北大学
+项目支持 Windows 本机应用、Linux 单用户轻量服务、Android 客户端/本地版和源码开发。它不是东北大学
 官方产品，也不会绕过学校的身份认证、选课资格或业务规则。
 
 ## 主要功能
@@ -59,11 +59,17 @@ sudo ./install.sh
 
 ### Android
 
-Android 双版本尚未完成发行验收。目标是在同一 Release 同时提供
-`android-client-arm64.apk` 和 `android-local-arm64.apk`。客户端版内置
-静态前端并连接用户配置的 HTTPS 服务端；本地版内置 Python 3.13 与完整后端，数据只写入应用
-内部目录。两者要求 Android 7.0 及以上和 `arm64-v8a` 设备，可同时安装。安装、通知权限、
-固定自签名与更新说明见 [Android 安装](docs/部署/Android安装.md)。
+同一 Release 会提供两个可以直接安装的 APK：
+
+| APK | 用途 |
+|---|---|
+| `android-client-arm64.apk` | 内置前端，连接用户配置的 HTTPS 服务端 |
+| `android-local-arm64.apk` | 内置前端、Python 3.13 和完整 FastAPI 后端，数据留在手机 |
+
+两者要求 Android 7.0（API 24）及以上和 `arm64-v8a` 设备，可以同时安装。APK 使用固定的
+自签名密钥，首次安装只需允许系统安装未知来源应用；后续同包名版本可以直接覆盖安装。
+本地版开启“打开时默认课表”且存在缓存时，会先显示本机缓存课表，不等待内置后端启动。
+安装、通知权限、数据目录、更新和安全边界见 [Android 安装](docs/部署/Android安装.md)。
 
 ### 从源码运行
 
@@ -106,6 +112,20 @@ python start_all.py --port 8080
 
 发行维护者的版本号、标签、GitHub Actions 和 Release 触发规则见[发行与 CI/CD](docs/开发/发行与CI.md)。
 
+### GitHub Release
+
+正式发布使用根目录 `VERSION` 作为唯一版本来源，并推送对应的 `v` 标签：
+
+```bash
+git pull origin main
+git tag v2.0.0
+git push origin v2.0.0
+```
+
+推送标签后，GitHub Actions 会依次完成前端、Linux 服务端、Windows 便携版、Android 双 APK、
+模拟器验收、SHA-256 清单和 artifact attestation；全部成功后才创建 GitHub Release。标签必须与
+`VERSION` 完全一致。普通提交和 Pull Request 只运行测试与调试构建，不会创建正式 Release。
+
 ## 使用前须知
 
 - 校内网络可使用直连；校外访问可选择 WebVPN 密码、短信或微信扫码流程。遇到设备二次认证时，
@@ -142,7 +162,8 @@ npm test
 npm run build
 ```
 
-发行版本由根目录 `VERSION` 决定；匹配的 `v<版本>` 标签触发 Release workflow。完整流程见
+发行版本由根目录 `VERSION` 决定，Android 覆盖安装顺序由递增的 `ANDROID_VERSION_CODE` 决定；
+匹配的 `v<版本>` 标签触发 Release workflow。完整流程见
 [发行与 CI/CD](docs/开发/发行与CI.md)。
 
 ## 许可与免责声明
