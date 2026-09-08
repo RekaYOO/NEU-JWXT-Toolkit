@@ -28,6 +28,12 @@ allowed before a request is sent; one-shot bodies prohibit replay after dispatch
 or HTTP 408/503 follow-ups. Local loopback traffic explicitly bypasses system HTTP
 proxies; academic traffic still follows the shared Python direct/WebVPN policy.
 
+One-shot requests also use a fresh, non-retaining connection pool for each call.
+An idle pooled socket can close after its health check but before the request body
+is sent; replaying that request is unsafe and previously surfaced as a first-click
+network failure. GET/HEAD retain pooling, while new mutation connections retain
+the same TLS validation, cookie jar, proxy policy and fixed native headers.
+
 ## Build Prerequisites
 
 Use Linux for native wheels: Python 3.13, Node 20, JDK 17, Android SDK 35/build-tools

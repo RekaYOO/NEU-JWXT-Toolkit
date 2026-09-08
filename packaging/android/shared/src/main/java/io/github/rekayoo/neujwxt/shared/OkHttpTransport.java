@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.Call;
+import okhttp3.ConnectionPool;
 import okhttp3.Headers;
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
@@ -69,12 +70,18 @@ public class OkHttpTransport implements ApiTransport {
         builder.method(input.method, body);
         // Axios owns the deadline. Inherited 10-second socket timeouts otherwise
         // discard slow backend results before its 30-second request can finish.
-        OkHttpClient timedClient = client.newBuilder()
+        OkHttpClient.Builder timedBuilder = client.newBuilder()
             .connectTimeout(input.timeoutMs, TimeUnit.MILLISECONDS)
             .readTimeout(input.timeoutMs, TimeUnit.MILLISECONDS)
             .writeTimeout(input.timeoutMs, TimeUnit.MILLISECONDS)
-            .callTimeout(input.timeoutMs, TimeUnit.MILLISECONDS).build();
-        Call call = timedClient.newCall(builder.build());
+            .callTimeout(input.timeoutMs, TimeUnit.MILLISECONDS);
+        if (body != null) {
+            // A pooled socket can close after its health check. One-shot
+            // requests cannot recover that race by replaying credentials or
+            // mutations, so start them on a fresh, non-retained connection.
+            timedBuilder.connectionPool(new ConnectionPool(0, 1, TimeUnit.SECONDS));
+        }
+        Call call = timedBuilder.build().newCall(builder.build());
         calls.put(id, call);
         if (closed) call.cancel();
         call.enqueue(new okhttp3.Callback() {

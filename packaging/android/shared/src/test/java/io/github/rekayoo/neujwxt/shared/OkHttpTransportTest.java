@@ -14,6 +14,119 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class OkHttpTransportTest {
+    @Test public void firstMutationDoesNotUseTheLoginPagesAgingConnection() throws Exception {
+        for (String method : new String[] {"POST", "PUT", "PATCH", "DELETE"}) {
+            try (MockWebServer server = new MockWebServer()) {
+                server.enqueue(new MockResponse().setBody("login page ready"));
+                server.enqueue(new MockResponse().setBody("{\"success\":true}"));
+                AtomicReference<java.net.Socket> pageConnection = new AtomicReference<>();
+                AtomicReference<java.net.Socket> activeConnection = new AtomicReference<>();
+                OkHttpClient client = new OkHttpClient.Builder()
+                    .eventListener(new okhttp3.EventListener() {
+                        @Override public void connectionAcquired(okhttp3.Call call, okhttp3.Connection connection) {
+                            activeConnection.set(connection.socket());
+                            if (call.request().method().equals("GET")) {
+                                pageConnection.set(connection.socket());
+                            }
+                        }
+                        @Override public void requestHeadersEnd(okhttp3.Call call, okhttp3.Request request) {
+                            if (!request.method().equals("GET") && activeConnection.get() == pageConnection.get()) {
+                                // The old socket closes after the health check and
+                                // headers, before the first credential body is sent.
+                                try {
+                                    activeConnection.get().close();
+                                } catch (java.io.IOException error) {
+                                    throw new AssertionError(error);
+                                }
+                            }
+                        }
+                    }).build();
+                OkHttpTransport transport = new OkHttpTransport(client, server.url("/"),
+                    Collections.emptyMap(), null);
+                try {
+                    assertEquals(200, request(transport, "{\"path\":\"/api/status\"}").getInt("status"));
+                    assertNotNull(pageConnection.get());
+                    JSONObject response = request(transport,
+                        "{\"path\":\"/api/login\",\"method\":\"" + method + "\",\"body\":\"{}\"}");
+                    assertEquals(method + ": " + response, 200, response.getInt("status"));
+                    assertEquals(2, server.getRequestCount());
+                    server.takeRequest();
+                    assertEquals("Mutation must use a fresh connection", 0,
+                        server.takeRequest().getSequenceNumber());
+                } finally {
+                    transport.close();
+                    client.connectionPool().evictAll();
+                }
+            }
+        }
+    }
+
+    @Test public void consecutiveMutationsUseFreshConnectionsButReadsStillPool() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            for (int index = 0; index < 4; index++) server.enqueue(new MockResponse().setBody("{}"));
+            OkHttpClient client = new OkHttpClient();
+            OkHttpTransport transport = new OkHttpTransport(client, server.url("/"),
+                Collections.emptyMap(), null);
+            try {
+                assertEquals(200, request(transport, "{\"path\":\"/api/health\"}").getInt("status"));
+                assertEquals(200, request(transport, "{\"path\":\"/api/health\"}").getInt("status"));
+                assertEquals(200, request(transport,
+                    "{\"path\":\"/api/login\",\"method\":\"POST\",\"body\":\"{}\"}").getInt("status"));
+                assertEquals(200, request(transport,
+                    "{\"path\":\"/api/webvpn/sms/verify\",\"method\":\"POST\",\"body\":\"{}\"}").getInt("status"));
+                assertEquals(0, server.takeRequest().getSequenceNumber());
+                assertEquals("Healthy reads should retain connection pooling", 1,
+                    server.takeRequest().getSequenceNumber());
+                assertEquals(0, server.takeRequest().getSequenceNumber());
+                assertEquals(0, server.takeRequest().getSequenceNumber());
+            } finally {
+                transport.close();
+                client.connectionPool().evictAll();
+            }
+        }
+    }
+
+    @Test public void freshMutationConnectionsKeepTlsCookiesAndFixedHeaders() throws Exception {
+        HeldCertificate certificate = new HeldCertificate.Builder().addSubjectAlternativeName("localhost").build();
+        HandshakeCertificates serverTls = new HandshakeCertificates.Builder().heldCertificate(certificate).build();
+        HandshakeCertificates clientTls = new HandshakeCertificates.Builder()
+            .addTrustedCertificate(certificate.certificate()).build();
+        AtomicReference<java.util.List<okhttp3.Cookie>> cookies = new AtomicReference<>(Collections.emptyList());
+        OkHttpClient client = new OkHttpClient.Builder()
+            .sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager())
+            .cookieJar(new okhttp3.CookieJar() {
+                @Override public void saveFromResponse(okhttp3.HttpUrl url, java.util.List<okhttp3.Cookie> values) {
+                    cookies.set(values);
+                }
+                @Override public java.util.List<okhttp3.Cookie> loadForRequest(okhttp3.HttpUrl url) {
+                    return cookies.get();
+                }
+            }).build();
+        try (MockWebServer server = new MockWebServer()) {
+            server.useHttps(serverTls.sslSocketFactory(), false);
+            server.enqueue(new MockResponse().addHeader("Set-Cookie", "access=synthetic; Secure; HttpOnly; Path=/")
+                .setBody("{}"));
+            server.enqueue(new MockResponse().setBody("{\"success\":true}"));
+            OkHttpTransport transport = new OkHttpTransport(client,
+                server.url("/").newBuilder().host("localhost").build(),
+                Collections.singletonMap("X-NEU-Mobile-Token", "synthetic-native-token"), null);
+            try {
+                JSONObject access = request(transport, "{\"path\":\"/api/access/login\",\"method\":\"POST\"}");
+                assertEquals(access.toString(), 200, access.getInt("status"));
+                JSONObject login = request(transport, "{\"path\":\"/api/login\",\"method\":\"POST\",\"body\":\"{}\"}");
+                assertEquals(login.toString(), 200, login.getInt("status"));
+                server.takeRequest();
+                okhttp3.mockwebserver.RecordedRequest sent = server.takeRequest();
+                assertEquals(0, sent.getSequenceNumber());
+                assertEquals("access=synthetic", sent.getHeader("Cookie"));
+                assertEquals("synthetic-native-token", sent.getHeader("X-NEU-Mobile-Token"));
+            } finally {
+                transport.close();
+                client.connectionPool().evictAll();
+            }
+        }
+    }
+
     @Test public void axiosTimeoutOverridesInheritedSocketTimeouts() throws Exception {
         try (MockWebServer server = new MockWebServer()) {
             server.enqueue(new MockResponse().setHeadersDelay(350, TimeUnit.MILLISECONDS)

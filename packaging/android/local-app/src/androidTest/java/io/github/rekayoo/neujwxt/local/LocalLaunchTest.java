@@ -162,6 +162,11 @@ public class LocalLaunchTest {
                 "window.__neuParityResults = {}; window.__neuParityDeliver = window.__neuNativeDeliver;"
                 + "window.__neuNativeDeliver = (id, payload) => {"
                 + "window.__neuParityResults[id] = payload; window.__neuParityDeliver(id, payload); };");
+            JSONObject warm = nativeRequest(scenario, "/api/health", "", "GET");
+            assertEquals(warm.toString(), 200, warm.getInt("status"));
+            // A user spends time filling the form after page initialization.
+            // Let Uvicorn's idle keep-alive expire before the first submission.
+            Thread.sleep(6000);
             JSONObject direct = nativeRequest(scenario, "/api/login",
                 "{\"username\":\"20240001\",\"password\":\"synthetic-password\",\"network_mode\":\"direct\"}");
             assertEquals(direct.toString(), 200, direct.getInt("status"));
@@ -184,7 +189,12 @@ public class LocalLaunchTest {
     }
 
     private JSONObject nativeRequest(ActivityScenario<MainActivity> scenario, String path, String body) throws Exception {
-        String request = new JSONObject().put("path", path).put("method", "POST")
+        return nativeRequest(scenario, path, body, "POST");
+    }
+
+    private JSONObject nativeRequest(ActivityScenario<MainActivity> scenario, String path, String body,
+                                     String method) throws Exception {
+        String request = new JSONObject().put("path", path).put("method", method)
             .put("body", body).put("timeout_ms", 30000).toString();
         evaluate(scenario, "window.__neuParityId = window.NeuNative.request(" + JSONObject.quote(request) + ");");
         for (int attempt = 0; attempt < 90; attempt++) {
