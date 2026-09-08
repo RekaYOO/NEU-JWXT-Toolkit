@@ -196,8 +196,21 @@ jobs:
           export JAVA_HOME="$JAVA_HOME_17_X64"
           cd packaging/android
           bash gradlew --no-daemon --continue -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true \
+            -Pandroid.testInstrumentationRunnerArguments.notClass=io.github.rekayoo.neujwxt.local.NotificationPermissionTest \
             :client-app:connectedX86TestDebugAndroidTest \
             :local-app:connectedX86TestDebugAndroidTest
+      - name: Verify denied notification permission
+        if: matrix.abi == 'x86_64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="io.github.rekayoo.neujwxt.local.test.debug"
+          adb shell pm revoke "$package" android.permission.POST_NOTIFICATIONS
+          adb shell am instrument -w \
+            -e class io.github.rekayoo.neujwxt.local.NotificationPermissionTest \
+            "$package.test/androidx.test.runner.AndroidJUnitRunner" \
+            | tee "$RUNNER_TEMP/notification-permission-test.txt"
+          grep -Eq '^OK \(1 test\)' "$RUNNER_TEMP/notification-permission-test.txt"
       - name: Collect emulator diagnostics
         if: always() && matrix.abi == 'x86_64'
         shell: bash
@@ -211,6 +224,9 @@ jobs:
           fi
           if [[ -f "$RUNNER_TEMP/emulator.log" ]]; then
             cp "$RUNNER_TEMP/emulator.log" packaging/android/diagnostics/
+          fi
+          if [[ -f "$RUNNER_TEMP/notification-permission-test.txt" ]]; then
+            cp "$RUNNER_TEMP/notification-permission-test.txt" packaging/android/diagnostics/
           fi
       - name: Upload Android test reports
         if: always()

@@ -1,14 +1,11 @@
 package io.github.rekayoo.neujwxt.local;
 
-import android.app.UiAutomation;
 import android.content.Context;
-import android.os.ParcelFileDescriptor;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import io.github.rekayoo.neujwxt.shared.ApiTransport;
 import io.github.rekayoo.neujwxt.shared.NativeRequest;
-import java.io.InputStream;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.json.JSONObject;
@@ -18,23 +15,9 @@ import static org.junit.Assert.*;
 
 @RunWith(AndroidJUnit4.class)
 public class NotificationPermissionTest {
-    private void notificationMode(UiAutomation ui, Context context, String mode) throws Exception {
-        try (InputStream input = new ParcelFileDescriptor.AutoCloseInputStream(ui.executeShellCommand(
-            "appops set " + context.getPackageName() + " POST_NOTIFICATION " + mode))) {
-            byte[] buffer = new byte[1024];
-            while (input.read(buffer) != -1) {}
-        }
-        for (int attempt = 0; attempt < 50; attempt++) {
-            if (NotificationManagerCompat.from(context).areNotificationsEnabled() == mode.equals("allow")) return;
-            Thread.sleep(100);
-        }
-        fail("Notification app-op did not change");
-    }
-
     @Test public void deniedNotificationsBlockEnablingButNotStoppingTasks() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        UiAutomation ui = InstrumentationRegistry.getInstrumentation().getUiAutomation();
-        assertTrue("CI must install the local test APK with notification permission",
+        assertFalse("Run this test separately after revoking POST_NOTIFICATIONS",
             NotificationManagerCompat.from(context).areNotificationsEnabled());
         AtomicInteger delegated = new AtomicInteger();
         ApiTransport delegate = new ApiTransport() {
@@ -48,7 +31,6 @@ public class NotificationPermissionTest {
         };
         PermissionGuardTransport guarded = new PermissionGuardTransport(context, delegate);
         try {
-            notificationMode(ui, context, "ignore");
             String[] denied = {
                 "{\"method\":\"PATCH\",\"path\":\"/api/grade-tracking/enabled\",\"body\":\"{\\\"enabled\\\":true}\"}",
                 "{\"method\":\"PUT\",\"path\":\"/api/grade-tracking/config\",\"body\":\"{\\\"enabled\\\":true}\"}",
@@ -70,7 +52,6 @@ public class NotificationPermissionTest {
             assertEquals(1, delegated.get());
         } finally {
             guarded.close();
-            notificationMode(ui, context, "allow");
         }
     }
 }
