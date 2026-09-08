@@ -17,6 +17,7 @@ import ExamPage from './pages/ExamPage';
 import GradeTrackingPage from './pages/GradeTrackingPage';
 import AuthRecoveryPage from './pages/AuthRecoveryPage';
 import { nativeShellInfo } from './services/nativeBridge';
+import NativeServerSettingsButton from './components/NativeServerSettingsButton';
 import ResearchTrainingPage from './pages/ResearchTrainingPage';
 import ExportPage from './pages/ExportPage';
 import FestivalActivitiesPage from './pages/FestivalActivitiesPage';
@@ -175,6 +176,7 @@ function AppContent({
       <div className="loading" role="status" aria-live="polite">
         <Spin size="large" />
         <span>{initialAuthSlow ? '正在恢复登录状态，请稍候' : '正在连接教务服务'}</span>
+        <NativeServerSettingsButton />
       </div>
     );
   }
@@ -721,6 +723,7 @@ function App() {
       <div className="loading" role="status" aria-live="polite">
         <Spin size="large" />
         <span>{initialAuthSlow ? '正在恢复登录状态，请稍候' : '正在连接教务服务'}</span>
+        <NativeServerSettingsButton />
       </div>
     );
   }

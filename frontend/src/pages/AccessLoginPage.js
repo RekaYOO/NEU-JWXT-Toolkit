@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Alert, Button, Card, Form, Input, Typography } from 'antd';
 import { LockOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { loginAccessGateway } from '../services/api';
+import NativeServerSettingsButton from '../components/NativeServerSettingsButton';
 import './AccessLoginPage.css';
 
 const { Text, Title } = Typography;
@@ -77,6 +78,7 @@ const AccessLoginPage = ({ configured, onSuccess }) => {
             </Button>
           </Form>
         )}
+        <NativeServerSettingsButton />
       </Card>
     </main>
   );
