@@ -53,11 +53,18 @@ SHA-256 digests before extraction into a fresh temporary directory.
   and target sysconfig, without executing Android binaries on the build host.
 - Pure dependencies are downloaded with `--platform any` so host-native wheels
   cannot accidentally enter the wheelhouse.
+- Android's Uvicorn wheel defers CLI imports, avoiding `_multiprocessing` during
+  single-process `Config`/`Server` startup. Its version, server implementation and
+  license are unchanged; the wheel RECORD is regenerated and the adaptation is
+  identified by `uvicorn/ANDROID_COMPATIBILITY.txt`. Desktop/server wheels are untouched.
+- Chaquopy extracts `Crypto` into private storage because PyCryptodome loads
+  ctypes libraries by filesystem path instead of Python's APK importer.
 
 `ANDROID_API_LEVEL=24` is the actual cross-build variable. The similarly named
 `CIBW_ANDROID_API_LEVEL` is not supported by this pinned cibuildwheel version.
-The wheel preparation and recipe unit tests have passed on Windows; complete Linux
-cross compilation, ABI loading and 16 KiB page-size device checks remain unverified.
+Linux cross compilation now passes for both arm64 and x86_64 with the locked native
+versions. Packaged ELF architecture and 16 KiB alignment are checked. Runtime module
+loading, Android startup and real-device page-size acceptance remain separate gates.
 
 ## Acceptance
 

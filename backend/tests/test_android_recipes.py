@@ -64,3 +64,65 @@ def test_lxml_config_commands_explicitly_use_host_shell(recipe, monkeypatch):
     assert run.call_args.kwargs["executable"] == "/bin/sh"
     assert recipe._host_config_command("") == ""
     run.assert_called_once()
+
+
+@pytest.fixture
+def pure_recipe():
+    path = Path(__file__).resolve().parents[2] / "packaging/android/recipes/patch_pure_wheels.py"
+    spec = importlib.util.spec_from_file_location("neu_pure_recipe_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_android_uvicorn_import_does_not_require_multiprocessing(tmp_path, pure_recipe):
+    import subprocess
+    import sys
+    import uvicorn
+
+    source = Path(uvicorn.__file__).read_text(encoding="utf-8")
+    initializer = tmp_path / "__init__.py"
+    initializer.write_text(pure_recipe.uvicorn_initializer(source), encoding="utf-8")
+    script = """
+import importlib.abc, importlib.util, sys
+class NoMultiprocessing(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "_multiprocessing":
+            raise ModuleNotFoundError("Android does not provide _multiprocessing")
+sys.meta_path.insert(0, NoMultiprocessing())
+spec = importlib.util.spec_from_file_location("uvicorn", sys.argv[1],
+    submodule_search_locations=[sys.argv[2]])
+module = importlib.util.module_from_spec(spec)
+sys.modules["uvicorn"] = module
+spec.loader.exec_module(module)
+assert module.Config and module.Server
+assert "uvicorn.main" not in sys.modules
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(initializer), str(Path(uvicorn.__file__).parent)],
+                            text=True, capture_output=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_android_pure_wheel_patch_updates_record_and_preserves_version(tmp_path, pure_recipe):
+    import base64
+    import csv
+    import hashlib
+    import io
+    import zipfile
+
+    wheel = tmp_path / "uvicorn-0.51.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("uvicorn/__init__.py",
+                         "from uvicorn.config import Config\nfrom uvicorn.main import Server, main, run\n")
+        archive.writestr("uvicorn-0.51.0.dist-info/METADATA", "Version: 0.51.0\n")
+        archive.writestr("uvicorn-0.51.0.dist-info/RECORD", "")
+    pure_recipe.patch_uvicorn(wheel)
+    with zipfile.ZipFile(wheel) as archive:
+        assert archive.read("uvicorn-0.51.0.dist-info/METADATA") == b"Version: 0.51.0\n"
+        records = csv.reader(io.StringIO(archive.read("uvicorn-0.51.0.dist-info/RECORD").decode()))
+        for name, digest, size in records:
+            if digest:
+                content = archive.read(name)
+                assert digest == "sha256=" + base64.urlsafe_b64encode(
+                    hashlib.sha256(content).digest()).rstrip(b"=").decode()
+                assert int(size) == len(content)

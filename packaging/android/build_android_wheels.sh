@@ -38,6 +38,7 @@ grep -Ev '^(pydantic_core|lxml|pycryptodome)==' "$android_root/requirements-andr
 python -m pip download --disable-pip-version-check --no-deps --only-binary=:all: \
   --platform any --implementation py --abi none --python-version 3.13 \
   --dest "$wheelhouse" -r "$work/pure-requirements.txt"
+python "$android_root/recipes/patch_pure_wheels.py" "$wheelhouse"
 
 for package in pydantic_core lxml pycryptodome; do
   if ! find "$wheelhouse" -maxdepth 1 -type f -iname "${package//-/_}-*android_24_${abi}.whl" | grep -q .; then
