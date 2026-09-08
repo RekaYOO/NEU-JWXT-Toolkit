@@ -18,6 +18,7 @@ import java.util.concurrent.Executors;
 
 import io.github.rekayoo.neujwxt.shared.ApiTransport;
 import io.github.rekayoo.neujwxt.shared.BaseShellActivity;
+import io.github.rekayoo.neujwxt.shared.DeferredTransport;
 import io.github.rekayoo.neujwxt.shared.OkHttpTransport;
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
@@ -26,10 +27,13 @@ import androidx.webkit.WebViewAssetLoader;
 public final class MainActivity extends BaseShellActivity {
     private File webRuntime;
     private Runnable readyCallback;
+    private final DeferredTransport backendTransport = new DeferredTransport();
     private final ExecutorService preparation = Executors.newSingleThreadExecutor();
 
     @Override
     protected void prepareShell(Runnable ready) {
+        // React owns loading states; do not overlay a native spinner on a cached timetable.
+        findViewById(io.github.rekayoo.neujwxt.shared.R.id.progress).setVisibility(android.view.View.GONE);
         android.content.Context application = getApplicationContext();
         preparation.execute(() -> {
             try {
@@ -39,7 +43,8 @@ public final class MainActivity extends BaseShellActivity {
                 runOnUiThread(() -> {
                     if (isDestroyed() || isFinishing()) return;
                     webRuntime = installed;
-                    startBackend(ready);
+                    ready.run();
+                    startBackend();
                 });
             } catch (Exception exception) {
                 runOnUiThread(() -> {
@@ -49,25 +54,35 @@ public final class MainActivity extends BaseShellActivity {
         });
     }
 
-    private void startBackend(Runnable ready) {
+    private void startBackend() {
         Intent service = new Intent(this, LocalBackendService.class);
         try {
             ContextCompat.startForegroundService(this, service);
         } catch (RuntimeException exception) {
-            showStartupError("系统暂不允许启动本地服务");
+            backendTransport.fail("系统暂不允许启动本地服务，请重新打开应用");
             return;
         }
         readyCallback = () -> {
             if (isDestroyed() || isFinishing()) return;
             if (LocalBackendService.endpoint() == null) {
-                showStartupError("本地服务启动失败，请重试");
-            } else ready.run();
+                backendTransport.fail("本地服务启动失败，请重新打开应用");
+            } else {
+                try {
+                    backendTransport.ready(createBackendTransport());
+                } catch (RuntimeException exception) {
+                    backendTransport.fail("本地请求通道初始化失败，请重新打开应用");
+                }
+            }
         };
         LocalBackendService.whenReady(readyCallback);
     }
 
     @Override
     protected ApiTransport createTransport() {
+        return backendTransport;
+    }
+
+    private ApiTransport createBackendTransport() {
         String endpoint = LocalBackendService.endpoint();
         if (endpoint == null) throw new IllegalStateException("本地服务尚未启动");
         OkHttpTransport transport = new OkHttpTransport(
@@ -108,6 +123,7 @@ public final class MainActivity extends BaseShellActivity {
     protected void onDestroy() {
         preparation.shutdown();
         LocalBackendService.removeReadyCallback(readyCallback);
+        backendTransport.close();
         super.onDestroy();
     }
 }

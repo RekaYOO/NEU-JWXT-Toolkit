@@ -28,6 +28,11 @@ public final class NativeRequest {
         this.download = download;
     }
 
+    public NativeRequest withTimeout(long remainingMs) {
+        return new NativeRequest(method, path, headers, body,
+            Math.max(1, Math.min(timeoutMs, remainingMs)), responseType, download);
+    }
+
     public static NativeRequest parse(String raw) throws JSONException {
         JSONObject value = new JSONObject(raw);
         String path = value.optString("path", "");

@@ -21,6 +21,15 @@ as the web app. The local APK uses the same Python storage/cache coordinator and
 academic networking code, with private data paths and native notifications.
 Course outlines remain no-store and load on page entry.
 
+The local WebView starts as soon as bundled assets are ready, independently of
+Python startup. Its read-only IndexedDB timetable recovery is the same React
+workflow as the browser. `DeferredTransport` waits for the protected backend only
+when an API is requested; waiting consumes the original deadline, and canceled,
+expired or destroyed-activity requests cannot be replayed when startup completes.
+Backend startup failure must not cover a cached timetable with a native overlay.
+Instrumentation holds the Python startup lock, seeds a synthetic timetable and
+recreates the activity to verify cached course rendering before any health response.
+
 The native transport applies the Axios deadline to connect/read/write and the
 whole call. Inheriting OkHttp's shorter socket timeout discards legitimate slow
 backend responses, including direct-login WebVPN hints. Connection recovery is
