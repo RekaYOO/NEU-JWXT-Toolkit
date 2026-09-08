@@ -2,7 +2,6 @@ package io.github.rekayoo.neujwxt.client;
 
 import android.app.UiAutomation;
 import android.os.ParcelFileDescriptor;
-import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.webkit.WebView;
 import androidx.test.core.app.ActivityScenario;
@@ -107,8 +106,9 @@ public class ClientFileSaveTest {
             scenario.onActivity(activity -> activity.saveFile("neu-canceled.bin", "application/octet-stream",
                 "@native:" + canceled));
             saveButton(ui);
-            assertTrue(ui.injectInputEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK), true));
-            assertTrue(ui.injectInputEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK), true));
+            shell(ui, "input keyevent KEYCODE_BACK");
+            Thread.sleep(500);
+            if (registry.size(canceled) != 0) shell(ui, "input keyevent KEYCODE_BACK");
             for (int attempt = 0; attempt < 100 && registry.size(canceled) != 0; attempt++) Thread.sleep(100);
             assertEquals("Canceled save left a claimable temporary file", 0, registry.size(canceled));
         } finally {

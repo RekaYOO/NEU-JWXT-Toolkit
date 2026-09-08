@@ -59,7 +59,18 @@ public class LocalLaunchTest {
                 });
                 assertTrue(done.await(5, TimeUnit.SECONDS));
                 if (rendered.get()) {
-                    Thread.sleep(500);
+                    CountDownLatch painted = new CountDownLatch(1);
+                    scenario.onActivity(activity -> {
+                        WebView web = activity.findViewById(io.github.rekayoo.neujwxt.shared.R.id.webview);
+                        web.postVisualStateCallback(1, new WebView.VisualStateCallback() {
+                            @Override public void onComplete(long requestId) {
+                                web.invalidate();
+                                painted.countDown();
+                            }
+                        });
+                    });
+                    assertTrue("Login form did not reach the WebView compositor", painted.await(10, TimeUnit.SECONDS));
+                    Thread.sleep(1000);
                     android.app.Instrumentation instrumentation =
                         androidx.test.platform.app.InstrumentationRegistry.getInstrumentation();
                     java.io.File directory = new java.io.File(
@@ -99,6 +110,9 @@ public class LocalLaunchTest {
     }
 
     private void verifyNotificationsAndTaskLifecycle(ActivityScenario<MainActivity> scenario) throws Exception {
+        java.util.concurrent.atomic.AtomicReference<android.content.Intent> launchIntent =
+            new java.util.concurrent.atomic.AtomicReference<>();
+        scenario.onActivity(activity -> launchIntent.set(new android.content.Intent(activity.getIntent())));
         Python python = Python.getInstance();
         com.chaquo.python.PyObject builtins = python.getModule("builtins");
         com.chaquo.python.PyObject testScope = builtins.callAttr("dict");
@@ -160,6 +174,8 @@ public class LocalLaunchTest {
         } finally {
             builtins.callAttr("exec", "_neu_test_app.dependency_overrides.pop(_neu_test_tracker, None)", testScope);
             manager.cancelAll();
+            // ActivityScenario matches cleanup events by the original launch intent.
+            scenario.onActivity(activity -> activity.setIntent(launchIntent.get()));
         }
         for (int attempt = 0; attempt < 100 && LocalBackendService.isRunning(); attempt++) Thread.sleep(200);
         assertFalse("Foreground service remained running without enabled tasks", LocalBackendService.isRunning());
