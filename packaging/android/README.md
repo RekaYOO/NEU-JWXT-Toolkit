@@ -14,6 +14,20 @@ does not create a runnable local APK.
 The client never depends on Chaquopy. `VERSION` and `ANDROID_VERSION_CODE` are read
 from the repository root. Do not change signing keys between releases.
 
+## Shared Runtime Contracts
+
+Both APKs use the same frontend API, authentication flows and page-loading rules
+as the web app. The local APK uses the same Python storage/cache coordinator and
+academic networking code, with private data paths and native notifications.
+Course outlines remain no-store and load on page entry.
+
+The native transport applies the Axios deadline to connect/read/write and the
+whole call. Inheriting OkHttp's shorter socket timeout discards legitimate slow
+backend responses, including direct-login WebVPN hints. Connection recovery is
+allowed before a request is sent; one-shot bodies prohibit replay after dispatch
+or HTTP 408/503 follow-ups. Local loopback traffic explicitly bypasses system HTTP
+proxies; academic traffic still follows the shared Python direct/WebVPN policy.
+
 ## Build Prerequisites
 
 Use Linux for native wheels: Python 3.13, Node 20, JDK 17, Android SDK 35/build-tools
@@ -81,6 +95,13 @@ process tests enabling/stopping tasks after POST_NOTIFICATIONS is revoked.
 The full gate passed in Actions run 34193956047 (commit c1859d6).
 Local-screen pixel checks supplement the DOM and compositor assertions; both
 application screenshots were also visually inspected.
+
+Parity regression coverage includes delayed direct-login hints, a single SMS
+verification, automatic first-page outline reads, four runtime profiles across
+process restarts, and an instrumentation-only Python fixture for 11-second real
+loopback responses and Android SQLite/credential persistence. The fixture stubs
+upstream academic operations, not the bridge or FastAPI routes, and is excluded
+from the application APK. This does not replace real-account device acceptance.
 
 Real academic login, long-running background work, boot recovery, every export
 format, API 24 device behavior, arm64 data-preserving upgrades and the fixed-key

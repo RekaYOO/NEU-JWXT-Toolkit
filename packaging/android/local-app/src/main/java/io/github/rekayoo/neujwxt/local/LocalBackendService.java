@@ -66,6 +66,7 @@ public final class LocalBackendService extends Service {
 
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
     private final OkHttpClient http = new OkHttpClient.Builder()
+        .proxy(java.net.Proxy.NO_PROXY)
         .connectTimeout(5, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
         .followRedirects(false).retryOnConnectionFailure(false).build();
     private volatile boolean foreground;

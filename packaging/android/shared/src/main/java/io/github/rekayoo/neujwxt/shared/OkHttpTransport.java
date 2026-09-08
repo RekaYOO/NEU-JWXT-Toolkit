@@ -29,7 +29,7 @@ public class OkHttpTransport implements ApiTransport {
     public OkHttpTransport(OkHttpClient client, HttpUrl baseUrl, Map<String, String> fixedHeaders,
                            NativeFileRegistry nativeFiles) {
         this.client = client.newBuilder().followRedirects(false).followSslRedirects(false)
-            .retryOnConnectionFailure(false).build();
+            .retryOnConnectionFailure(true).build();
         this.baseUrl = baseUrl;
         this.fixedHeaders = fixedHeaders;
         this.nativeFiles = nativeFiles;
@@ -57,8 +57,8 @@ public class OkHttpTransport implements ApiTransport {
                 .filter(row -> row.getKey().equalsIgnoreCase("content-type"))
                 .map(Map.Entry::getValue).findFirst().orElse("application/json; charset=utf-8");
             RequestBody content = RequestBody.create(input.body, MediaType.parse(contentType));
-            // retryOnConnectionFailure(false) does not disable HTTP 503 follow-ups.
-            // A one-shot body prevents OkHttp from replaying a business mutation.
+            // Recover connections only before sending; never replay a dispatched
+            // mutation, including HTTP 408/503 follow-ups or a lost response.
             body = new RequestBody() {
                 @Override public MediaType contentType() { return content.contentType(); }
                 @Override public long contentLength() throws IOException { return content.contentLength(); }
@@ -67,8 +67,12 @@ public class OkHttpTransport implements ApiTransport {
             };
         }
         builder.method(input.method, body);
+        // Axios owns the deadline. Inherited 10-second socket timeouts otherwise
+        // discard slow backend results before its 30-second request can finish.
         OkHttpClient timedClient = client.newBuilder()
-            .retryOnConnectionFailure(input.method.equals("GET") || input.method.equals("HEAD"))
+            .connectTimeout(input.timeoutMs, TimeUnit.MILLISECONDS)
+            .readTimeout(input.timeoutMs, TimeUnit.MILLISECONDS)
+            .writeTimeout(input.timeoutMs, TimeUnit.MILLISECONDS)
             .callTimeout(input.timeoutMs, TimeUnit.MILLISECONDS).build();
         Call call = timedClient.newCall(builder.build());
         calls.put(id, call);

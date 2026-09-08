@@ -121,6 +121,7 @@ public class LocalLaunchTest {
                         .header("X-NEU-Mobile-Token", originalToken).build()).execute()) {
                         assertEquals(200, healthy.code());
                     }
+                    verifySlowBackendResponses(scenario);
                     verifyNotificationsAndTaskLifecycle(scenario);
                     return;
                 }
@@ -128,6 +129,70 @@ public class LocalLaunchTest {
             }
             fail("Local React application never rendered");
         }
+    }
+
+    private void verifySlowBackendResponses(ActivityScenario<MainActivity> scenario) throws Exception {
+        com.chaquo.python.PyObject builtins = Python.getInstance().getModule("builtins");
+        com.chaquo.python.PyObject scope = builtins.callAttr("dict");
+        android.content.Context tests = androidx.test.platform.app.InstrumentationRegistry
+            .getInstrumentation().getContext();
+        String fixture;
+        try (java.io.InputStream input = tests.getAssets().open("slow_runtime_fixture.py");
+             java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) bytes.write(buffer, 0, count);
+            fixture = bytes.toString("UTF-8");
+        }
+        try {
+            builtins.callAttr("exec", fixture, scope);
+            evaluate(scenario,
+                "window.__neuParityResults = {}; window.__neuParityDeliver = window.__neuNativeDeliver;"
+                + "window.__neuNativeDeliver = (id, payload) => {"
+                + "window.__neuParityResults[id] = payload; window.__neuParityDeliver(id, payload); };");
+            JSONObject direct = nativeRequest(scenario, "/api/login",
+                "{\"username\":\"20240001\",\"password\":\"synthetic-password\",\"network_mode\":\"direct\"}");
+            assertEquals(direct.toString(), 200, direct.getInt("status"));
+            assertTrue(new JSONObject(direct.getString("body")).getBoolean("requires_webvpn"));
+            JSONObject sms = nativeRequest(scenario, "/api/webvpn/sms/verify",
+                "{\"flow_id\":\"synthetic-sms\",\"code\":\"123456\"}");
+            assertEquals(sms.toString(), 200, sms.getInt("status"));
+            assertEquals("authenticated", new JSONObject(sms.getString("body")).getString("status"));
+            JSONObject outlines = nativeRequest(scenario, "/api/course-outlines/search", "{\"page\":1,\"page_size\":20}");
+            assertEquals(outlines.toString(), 200, outlines.getInt("status"));
+            assertEquals(1, new JSONObject(outlines.getString("body")).getInt("total"));
+            assertEquals("no-store", outlines.getJSONObject("headers").getString("cache-control"));
+            assertTrue(scope.get("verify").call().toBoolean());
+        } finally {
+            if (scope.get("cleanup") != null) scope.get("cleanup").call();
+            evaluate(scenario,
+                "if (window.__neuParityDeliver) window.__neuNativeDeliver = window.__neuParityDeliver;"
+                + "delete window.__neuParityDeliver; delete window.__neuParityResults; delete window.__neuParityId;");
+        }
+    }
+
+    private JSONObject nativeRequest(ActivityScenario<MainActivity> scenario, String path, String body) throws Exception {
+        String request = new JSONObject().put("path", path).put("method", "POST")
+            .put("body", body).put("timeout_ms", 30000).toString();
+        evaluate(scenario, "window.__neuParityId = window.NeuNative.request(" + JSONObject.quote(request) + ");");
+        for (int attempt = 0; attempt < 90; attempt++) {
+            String encoded = evaluate(scenario, "JSON.stringify(window.__neuParityResults[window.__neuParityId] || null)");
+            Object decoded = new org.json.JSONTokener(encoded).nextValue();
+            if (decoded instanceof String && !decoded.equals("null")) return new JSONObject((String) decoded);
+            Thread.sleep(500);
+        }
+        throw new AssertionError("Native response never arrived: " + path);
+    }
+
+    private String evaluate(ActivityScenario<MainActivity> scenario, String script) throws Exception {
+        CountDownLatch done = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<String> result = new java.util.concurrent.atomic.AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView web = activity.findViewById(io.github.rekayoo.neujwxt.shared.R.id.webview);
+            web.evaluateJavascript(script, value -> { result.set(value); done.countDown(); });
+        });
+        assertTrue("WebView did not respond", done.await(10, TimeUnit.SECONDS));
+        return result.get();
     }
 
     private void verifyNotificationsAndTaskLifecycle(ActivityScenario<MainActivity> scenario) throws Exception {

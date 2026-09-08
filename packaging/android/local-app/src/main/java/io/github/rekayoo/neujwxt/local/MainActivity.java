@@ -71,7 +71,7 @@ public final class MainActivity extends BaseShellActivity {
         String endpoint = LocalBackendService.endpoint();
         if (endpoint == null) throw new IllegalStateException("本地服务尚未启动");
         OkHttpTransport transport = new OkHttpTransport(
-            new OkHttpClient.Builder().followRedirects(false).build(),
+            new OkHttpClient.Builder().proxy(java.net.Proxy.NO_PROXY).followRedirects(false).build(),
             HttpUrl.get(endpoint),
             Collections.singletonMap("X-NEU-Mobile-Token", LocalBackendService.sessionToken()),
             nativeFiles()

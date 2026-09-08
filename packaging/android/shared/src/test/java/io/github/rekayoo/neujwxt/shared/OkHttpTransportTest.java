@@ -14,6 +14,47 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class OkHttpTransportTest {
+    @Test public void axiosTimeoutOverridesInheritedSocketTimeouts() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.enqueue(new MockResponse().setHeadersDelay(350, TimeUnit.MILLISECONDS)
+                .setBody("{\"requires_webvpn\":true,\"error_code\":\"DIRECT_ACCESS_FAILED\"}"));
+            server.enqueue(new MockResponse().setBodyDelay(350, TimeUnit.MILLISECONDS)
+                .setBody("{\"items\":[{\"course_code\":\"TEST001\"}],\"total\":1}"));
+            OkHttpClient shortSocketTimeout = new OkHttpClient.Builder()
+                .readTimeout(100, TimeUnit.MILLISECONDS).build();
+            OkHttpTransport transport = new OkHttpTransport(shortSocketTimeout, server.url("/"),
+                Collections.emptyMap(), null);
+            JSONObject login = request(transport,
+                "{\"path\":\"/api/login\",\"method\":\"POST\",\"timeout_ms\":3000}");
+            assertEquals(login.toString(), 200, login.getInt("status"));
+            assertTrue(new JSONObject(login.getString("body")).getBoolean("requires_webvpn"));
+            JSONObject outlines = request(transport,
+                "{\"path\":\"/api/course-outlines/search\",\"method\":\"POST\",\"timeout_ms\":3000}");
+            assertEquals(outlines.toString(), 200, outlines.getInt("status"));
+            assertEquals(1, new JSONObject(outlines.getString("body")).getInt("total"));
+            assertEquals(2, server.getRequestCount());
+        }
+    }
+
+    @Test public void connectFailureBeforeSendingMutationCanTryNextAddress() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.start(java.net.InetAddress.getByName("127.0.0.1"), 0);
+            server.enqueue(new MockResponse().setBody("{\"success\":true}"));
+            OkHttpClient client = new OkHttpClient.Builder()
+                .proxy(java.net.Proxy.NO_PROXY)
+                .dns(host -> java.util.Arrays.asList(
+                    java.net.InetAddress.getByName("127.0.0.2"),
+                    java.net.InetAddress.getByName("127.0.0.1")))
+                .build();
+            OkHttpTransport transport = new OkHttpTransport(client,
+                server.url("/").newBuilder().host("backend.test").build(), Collections.emptyMap(), null);
+            JSONObject response = request(transport,
+                "{\"path\":\"/api/webvpn/sms/verify\",\"method\":\"POST\",\"body\":\"{}\",\"timeout_ms\":5000}");
+            assertEquals(response.toString(), 200, response.getInt("status"));
+            assertEquals(1, server.getRequestCount());
+        }
+    }
+
     private JSONObject request(OkHttpTransport transport, String json) throws Exception {
         AtomicReference<JSONObject> result = new AtomicReference<>();
         CountDownLatch done = new CountDownLatch(1);
@@ -51,14 +92,28 @@ public class OkHttpTransportTest {
         }
     }
 
-    @Test public void serviceUnavailableDoesNotReplayMutations() throws Exception {
+    @Test public void httpFailureDoesNotReplayMutations() throws Exception {
+        for (int status : new int[] {408, 503}) {
+            try (MockWebServer server = new MockWebServer()) {
+                server.enqueue(new MockResponse().setResponseCode(status).addHeader("Retry-After", "0"));
+                server.enqueue(new MockResponse().setBody("must not be sent"));
+                OkHttpTransport transport = new OkHttpTransport(new OkHttpClient(), server.url("/"),
+                    Collections.emptyMap(), null);
+                assertEquals(status, request(transport,
+                    "{\"path\":\"/api/mutation\",\"method\":\"POST\",\"body\":\"{}\"}").getInt("status"));
+                assertEquals(1, server.getRequestCount());
+            }
+        }
+    }
+
+    @Test public void mutationDeadlineStillExpiresWithoutReplay() throws Exception {
         try (MockWebServer server = new MockWebServer()) {
-            server.enqueue(new MockResponse().setResponseCode(503).addHeader("Retry-After", "0"));
+            server.enqueue(new MockResponse().setHeadersDelay(2, TimeUnit.SECONDS).setBody("{\"success\":true}"));
             server.enqueue(new MockResponse().setBody("must not be sent"));
             OkHttpTransport transport = new OkHttpTransport(new OkHttpClient(), server.url("/"),
                 Collections.emptyMap(), null);
-            assertEquals(503, request(transport,
-                "{\"path\":\"/api/mutation\",\"method\":\"POST\",\"body\":\"{}\"}").getInt("status"));
+            assertEquals("ECONNABORTED", request(transport,
+                "{\"path\":\"/api/webvpn/sms/verify\",\"method\":\"POST\",\"timeout_ms\":1000}").getString("code"));
             assertEquals(1, server.getRequestCount());
         }
     }
