@@ -68,6 +68,8 @@ android {
 chaquopy {
     defaultConfig {
         version = "3.13"
+        // PyCryptodome resolves its ctypes libraries relative to __file__.
+        extractPackages("Crypto")
         pip {
             options("--only-binary=:all:", "--find-links", rootProject.file("wheelhouse").toURI().toString())
             install("-r", rootProject.file("requirements-android.txt").absolutePath)

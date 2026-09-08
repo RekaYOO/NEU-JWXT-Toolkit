@@ -43,6 +43,7 @@ def test_android_modules_keep_python_out_of_client_package():
     assert 'applicationId "io.github.rekayoo.neujwxt.local"' in local
     assert 'id "com.chaquo.python"' in local
     assert 'version = "3.13"' in local
+    assert 'extractPackages("Crypto")' in local
 
 
 def test_android_version_code_and_gradle_wrapper_are_pinned():
@@ -89,7 +90,8 @@ def test_android_verifier_inspects_nested_python_payload_and_allows_trust_store(
 
     with io.BytesIO() as valid:
         with zipfile.ZipFile(valid, "w") as archive:
-            archive.writestr("certifi/cacert.pem", "public CA bundle")
+            archive.writestr("certifi/cacert.pem", "-----BEGIN CERTIFICATE-----\npublic CA\n-----END CERTIFICATE-----")
+            archive.writestr("assets/chaquopy/cacert.pem", "-----BEGIN CERTIFICATE-----\npublic CA\n-----END CERTIFICATE-----")
             archive.writestr("assets/static/main.js", "")
         valid.seek(0)
         with zipfile.ZipFile(valid) as archive:
@@ -104,6 +106,18 @@ def test_android_verifier_inspects_nested_python_payload_and_allows_trust_store(
             _check_entries(archive)
 
 
+def test_android_verifier_rejects_private_keys_in_allowlisted_trust_bundles():
+    from tools.verify_android_release import _check_entries
+
+    with io.BytesIO() as content:
+        with zipfile.ZipFile(content, "w") as archive:
+            archive.writestr("assets/chaquopy/cacert.pem",
+                            "-----BEGIN CERTIFICATE-----\n-----BEGIN PRIVATE KEY-----")
+        content.seek(0)
+        with zipfile.ZipFile(content) as archive, pytest.raises(SystemExit, match="trust bundle"):
+            _check_entries(archive)
+
+
 def test_android_build_tool_lookup_never_selects_aapt2(tmp_path, monkeypatch):
     from tools.verify_android_release import _tool
 
@@ -113,3 +127,24 @@ def test_android_build_tool_lookup_never_selects_aapt2(tmp_path, monkeypatch):
     (folder / "aapt2").touch()
     monkeypatch.setenv("ANDROID_HOME", str(tmp_path))
     assert _tool("aapt").name == "aapt"
+
+
+def test_android_verifier_checks_native_abi_and_page_alignment():
+    import struct
+    from tools.verify_android_release import _check_elf
+
+    elf = bytearray(120)
+    elf[:6] = b"\x7fELF\x02\x01"
+    struct.pack_into("<H", elf, 18, 183)
+    struct.pack_into("<Q", elf, 32, 64)
+    struct.pack_into("<HH", elf, 54, 56, 1)
+    struct.pack_into("<I", elf, 64, 1)
+    struct.pack_into("<Q", elf, 112, 16384)
+    _check_elf(bytes(elf), "module.so", "arm64-v8a")
+    with pytest.raises(SystemExit, match="architecture"):
+        _check_elf(bytes(elf), "module.so", "x86_64")
+    struct.pack_into("<Q", elf, 112, 4096)
+    with pytest.raises(SystemExit, match="16 KiB"):
+        _check_elf(bytes(elf), "module.so", "arm64-v8a")
+    with pytest.raises(SystemExit, match="ELF64"):
+        _check_elf(b"invalid", "module.so", "arm64-v8a")

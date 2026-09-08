@@ -43,8 +43,10 @@ public class LocalLaunchTest {
             assertEquals("2.46.4", Python.getInstance().getModule("pydantic_core").get("__version__").toString());
             assertEquals("6.1.1", Python.getInstance().getModule("lxml.etree").get("__version__").toString());
             assertEquals("3.23.0", Python.getInstance().getModule("Crypto").get("__version__").toString());
-            Python.getInstance().getModule("Crypto.Cipher.AES").callAttr(
-                "new", new byte[16], 1).callAttr("encrypt", new byte[16]);
+            com.chaquo.python.PyObject bytes = Python.getInstance().getModule("builtins").callAttr("bytes", 16);
+            assertEquals("66e94bd4ef8a2c3b884cfa59ca342b2e",
+                Python.getInstance().getModule("Crypto.Cipher.AES").callAttr(
+                    "new", bytes, 1).callAttr("encrypt", bytes).callAttr("hex").toString());
             for (int attempt = 0; attempt < 60; attempt++) {
                 CountDownLatch done = new CountDownLatch(1);
                 AtomicBoolean rendered = new AtomicBoolean();

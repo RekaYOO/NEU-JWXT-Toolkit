@@ -195,7 +195,8 @@ jobs:
           adb install -g "$local_apk"
           export JAVA_HOME="$JAVA_HOME_17_X64"
           cd packaging/android
-          bash gradlew --no-daemon :client-app:connectedX86TestDebugAndroidTest \
+          bash gradlew --no-daemon -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true \
+            :client-app:connectedX86TestDebugAndroidTest \
             :local-app:connectedX86TestDebugAndroidTest
       - name: Collect emulator diagnostics
         if: always() && matrix.abi == 'x86_64'

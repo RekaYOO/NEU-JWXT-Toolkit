@@ -9,6 +9,7 @@ import re
 import subprocess
 import zipfile
 import io
+import struct
 from pathlib import Path
 
 
@@ -43,24 +44,58 @@ def _certificate(apk: Path) -> str:
     return match.group(1).lower()
 
 
-def _check_entries(archive: zipfile.ZipFile, prefix: str = "", depth: int = 0) -> None:
+def _check_elf(content: bytes, name: str, abi: str) -> None:
+    if len(content) < 64 or content[:6] != b"\x7fELF\x02\x01":
+        raise SystemExit(f"Native library is not a little-endian ELF64: {name}")
+    machine = struct.unpack_from("<H", content, 18)[0]
+    if machine != {"arm64-v8a": 183, "x86_64": 62}[abi]:
+        raise SystemExit(f"Native library architecture mismatch: {name}")
+    offset = struct.unpack_from("<Q", content, 32)[0]
+    size, count = struct.unpack_from("<HH", content, 54)
+    if size < 56 or count == 0 or offset + size * count > len(content):
+        raise SystemExit(f"Invalid native program headers: {name}")
+    loads = 0
+    for index in range(count):
+        position = offset + index * size
+        if struct.unpack_from("<I", content, position)[0] != 1:
+            continue
+        loads += 1
+        file_offset, address = struct.unpack_from("<QQ", content, position + 8)
+        alignment = struct.unpack_from("<Q", content, position + 48)[0]
+        if alignment < 16384 or alignment & (alignment - 1) or (address - file_offset) % alignment:
+            raise SystemExit(f"Native library is not 16 KiB page compatible: {name}")
+    if not loads:
+        raise SystemExit(f"Native library has no loadable segment: {name}")
+
+
+def _check_entries(
+    archive: zipfile.ZipFile, prefix: str = "", depth: int = 0, abi: str | None = None,
+) -> None:
     for entry in archive.infolist():
         name = entry.filename.lower()
         parts = set(name.split("/"))
         basename = name.rsplit("/", 1)[-1]
+        public_ca = name in {"certifi/cacert.pem", "assets/chaquopy/cacert.pem"}
+        if public_ca:
+            content = archive.read(entry)
+            if (b"PRIVATE KEY" in content or b"BEGIN CERTIFICATE" not in content
+                or re.search(rb"-----BEGIN (?!CERTIFICATE-----)", content)):
+                raise SystemExit(f"Invalid public trust bundle: {prefix}{entry.filename}")
         if (name.endswith((".map", ".jks", ".keystore", ".key"))
-            or (name.endswith(".pem") and not name.endswith("certifi/cacert.pem"))
+            or (name.endswith(".pem") and not public_ca)
             or ".git" in parts or "__pycache__" in parts or ".env" in parts
             or basename in {"runtime.json", "config.json", "mobile_notification_outbox.json"}
             or "backend/tests/" in name):
             raise SystemExit(f"Sensitive or development entry: {prefix}{entry.filename}")
+        if abi and name.endswith(".so"):
+            _check_elf(archive.read(entry), f"{prefix}{entry.filename}", abi)
         if depth < 2 and name.endswith((".zip", ".imy")):
             if entry.file_size > 512 * 1024 * 1024:
                 raise SystemExit(f"Nested payload exceeds inspection limit: {prefix}{entry.filename}")
             content = io.BytesIO(archive.read(entry))
             if zipfile.is_zipfile(content):
                 with zipfile.ZipFile(content) as nested:
-                    _check_entries(nested, f"{prefix}{entry.filename}!/", depth + 1)
+                    _check_entries(nested, f"{prefix}{entry.filename}!/", depth + 1, abi)
 
 
 def verify(apk: Path, package: str, version: str, version_code: str, abi: str, local: bool) -> str:
@@ -75,7 +110,7 @@ def verify(apk: Path, package: str, version: str, version_code: str, abi: str, l
 
     with zipfile.ZipFile(apk) as archive:
         names = archive.namelist()
-        _check_entries(archive)
+        _check_entries(archive, abi=abi)
     lowered = [name.lower() for name in names]
     if not any(name.endswith("assets/index.html") for name in names):
         raise SystemExit(f"Embedded frontend is missing from {apk.name}")
@@ -90,6 +125,7 @@ def verify(apk: Path, package: str, version: str, version_code: str, abi: str, l
         raise SystemExit(f"Local APK does not contain the Python runtime for {abi}")
     if not local and has_python:
         raise SystemExit("Client APK unexpectedly contains the Python runtime")
+    _run(_tool("zipalign"), "-c", "-P", "16", "4", apk)
     return _certificate(apk)
 
 
