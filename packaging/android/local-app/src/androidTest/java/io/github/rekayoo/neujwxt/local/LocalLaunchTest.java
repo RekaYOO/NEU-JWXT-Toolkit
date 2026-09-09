@@ -2,7 +2,9 @@ package io.github.rekayoo.neujwxt.local;
 
 import android.webkit.WebView;
 import androidx.test.core.app.ActivityScenario;
+import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.lifecycle.Lifecycle;
 import com.chaquo.python.Python;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -18,7 +20,12 @@ import static org.junit.Assert.*;
 @RunWith(AndroidJUnit4.class)
 public class LocalLaunchTest {
     @Test public void bundledPythonAndReactStartWithProtectedHealth() throws Exception {
-        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+        // ActivityScenario matches lifecycle events by Intent action/categories.
+        // Use the same explicit entry as notifications; launcher cold starts are
+        // covered separately by CachedStartupTest.
+        android.content.Intent entry = new android.content.Intent(
+            ApplicationProvider.getApplicationContext(), MainActivity.class);
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(entry)) {
             String endpoint = null;
             for (int attempt = 0; attempt < 240; attempt++) {
                 if (LocalBackendService.startupFailure() != null) {
@@ -123,6 +130,8 @@ public class LocalLaunchTest {
                     }
                     verifySlowBackendResponses(scenario);
                     verifyNotificationsAndTaskLifecycle(scenario);
+                    scenario.moveToState(Lifecycle.State.DESTROYED);
+                    assertEquals(Lifecycle.State.DESTROYED, scenario.getState());
                     return;
                 }
                 Thread.sleep(500);
@@ -218,16 +227,9 @@ public class LocalLaunchTest {
     }
 
     private void verifyNotificationsAndTaskLifecycle(ActivityScenario<MainActivity> scenario) throws Exception {
-        java.util.concurrent.atomic.AtomicReference<android.content.Intent> launchIntent =
-            new java.util.concurrent.atomic.AtomicReference<>();
         java.util.concurrent.atomic.AtomicReference<MainActivity> launchedActivity =
             new java.util.concurrent.atomic.AtomicReference<>();
-        scenario.onActivity(activity -> {
-            launchedActivity.set(activity);
-            launchIntent.set(new android.content.Intent(activity.getIntent()));
-        });
-        android.app.Instrumentation instrumentation = androidx.test.platform.app.InstrumentationRegistry
-            .getInstrumentation();
+        scenario.onActivity(launchedActivity::set);
         Python python = Python.getInstance();
         com.chaquo.python.PyObject builtins = python.getModule("builtins");
         com.chaquo.python.PyObject testScope = builtins.callAttr("dict");
@@ -269,29 +271,32 @@ public class LocalLaunchTest {
             assertTrue(LocalBackendService.isRunning());
             assertTrue(java.util.Arrays.stream(manager.getActiveNotifications())
                 .anyMatch(item -> (item.getNotification().flags & android.app.Notification.FLAG_FOREGROUND_SERVICE) != 0));
+            // The page already starts at /login. Move its URL first so a
+            // dropped notification cannot accidentally satisfy the assertion.
+            assertEquals("\"/notification-test-before\"", evaluate(scenario,
+                "history.replaceState(null, '', '/notification-test-before'); location.pathname"));
             delivered.contentIntent.send();
             boolean deepLink = false;
             for (int attempt = 0; attempt < 50; attempt++) {
-                CountDownLatch done = new CountDownLatch(1);
-                AtomicBoolean matched = new AtomicBoolean();
-                instrumentation.runOnMainSync(() -> {
-                    WebView web = launchedActivity.get().findViewById(io.github.rekayoo.neujwxt.shared.R.id.webview);
-                    web.evaluateJavascript("location.pathname === '/login'", value -> {
-                        matched.set("true".equals(value));
-                        done.countDown();
-                    });
-                });
-                assertTrue(done.await(5, TimeUnit.SECONDS));
-                if (matched.get()) { deepLink = true; break; }
+                if ("true".equals(evaluate(scenario,
+                    "location.pathname === '/login' && !!document.querySelector('.login-shell input')"))) {
+                    deepLink = true;
+                    break;
+                }
                 Thread.sleep(200);
             }
             assertTrue("Login notification did not open the local login page", deepLink);
+            scenario.onActivity(activity -> {
+                assertSame("Notification should reuse the current shell", launchedActivity.get(), activity);
+                assertEquals("/login", activity.getIntent().getStringExtra("route"));
+            });
+            assertEquals(Lifecycle.State.RESUMED, scenario.getState());
+            scenario.moveToState(Lifecycle.State.CREATED);
+            scenario.moveToState(Lifecycle.State.RESUMED);
+            assertEquals(Lifecycle.State.RESUMED, scenario.getState());
         } finally {
             builtins.callAttr("exec", "_neu_test_app.dependency_overrides.pop(_neu_test_tracker, None)", testScope);
             manager.cancelAll();
-            // A notification changes Intent, so ActivityScenario ignores RESUMED.
-            // Do not call onActivity while restoring the intent used by its tracker.
-            instrumentation.runOnMainSync(() -> launchedActivity.get().setIntent(launchIntent.get()));
         }
         for (int attempt = 0; attempt < 100 && LocalBackendService.isRunning(); attempt++) Thread.sleep(200);
         assertFalse("Foreground service remained running without enabled tasks", LocalBackendService.isRunning());

@@ -169,6 +169,12 @@ Windows/Linux 成品分别位于对应的 release artifact。候选 artifact 默
 调试 APK 使用 `.debug` 包名和 Runner 调试密钥，与正式包独立安装、独立存储；不能假设
 安装正式包会自动迁移调试包的数据，也不要为解决签名冲突而让用户卸载旧包丢失本地数据。
 
+通知端到端测试用与通知相同的显式 Activity Intent 启动 `ActivityScenario`；桌面启动入口另由
+缓存冷启动测试覆盖。`ActivityScenario` 按 Intent 的 action/categories 等字段跟踪生命周期，
+通知更新 Intent 后再手动改回旧值不能补回已丢弃的生命周期事件。测试必须先离开登录页地址，
+再验证真实通知重新打开登录页，并确认 Activity 能暂停、恢复和销毁；不得跳过销毁断言或
+仅延长超时来掩盖跟踪失配。此约束仅属于测试，不更改应用正常的通知 Intent 或跳转行为。
+
 上述自动化验证的是特定 GitHub runner 上的成品布局和核心启动流程，不能替代所有
 Windows 版本、企业安全策略、代理配置和真实升级场景的人工验收。
 
