@@ -33,6 +33,31 @@ describe('AuthRecoveryPage', () => {
     jest.restoreAllMocks();
   });
 
+  test('verified SMS can resume session establishment without a code or new SMS', async () => {
+    getAuthRecoveryStatus.mockResolvedValue({
+      status: 'sms_required', flow_id: 'sms-flow', sms_verified: true, expires_in: 180,
+    });
+    verifyAuthRecoverySMS.mockResolvedValueOnce({
+      status: 'session_pending', sms_verified: true, message: '教务服务暂不可用',
+    }).mockResolvedValueOnce({ status: 'authenticated' });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<AuthRecoveryPage token="fixture-token" />));
+    const button = () => [...container.querySelectorAll('button')]
+      .find(element => element.textContent === '继续建立会话');
+    expect(button().disabled).toBe(false);
+    await act(async () => button().dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(container.textContent).toContain('教务服务暂不可用');
+    await act(async () => button().dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(verifyAuthRecoverySMS).toHaveBeenNthCalledWith(1, 'fixture-token', '');
+    expect(verifyAuthRecoverySMS).toHaveBeenNthCalledWith(2, 'fixture-token', '');
+    expect(sendAuthRecoverySMS).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('登录已恢复');
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
   test('expired link shows the server expiry message without restarting login', async () => {
     getAuthRecoveryStatus.mockRejectedValue({
       response: { status: 404, data: { detail: '一次性登录链接已过期，请进入工具箱重新登录' } },

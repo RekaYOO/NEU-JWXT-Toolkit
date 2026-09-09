@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Breadcrumb, Button, Card, Col, DatePicker, Descriptions, Drawer, Empty,
   Form, Grid, Input, Modal, Radio, Row, Segmented, Select, Space, Spin, Statistic, Tag, Tooltip,
@@ -26,6 +26,8 @@ import {
   MobileFilterButton, MobileFilterChips, MobileFilterDrawer,
 } from '../components/mobile/MobileUX';
 import './FestivalActivitiesPage.css';
+import useFestivalConnection from '../hooks/useFestivalConnection';
+import { ServiceRouteControl, ServiceAuthNotice, ServiceWebVPNLogin } from '../components/ServiceConnection';
 
 const { RangePicker } = DatePicker;
 const { Paragraph, Text, Title } = Typography;
@@ -44,6 +46,10 @@ const warningText = (warning) => (
     ? warning
     : warning?.message || warning?.detail || '部分活动详情不完整'
 );
+const requestErrorText = (error, fallback) => {
+  const detail = error?.response?.data?.detail;
+  return (typeof detail === 'string' ? detail : detail?.message) || error?.message || fallback;
+};
 const durationText = (activity) => {
   const duration = pick(activity, 'duration', 'duration_hours');
   if (duration === undefined || duration === null || duration === '') return '—';
@@ -51,6 +57,10 @@ const durationText = (activity) => {
 };
 
 const FestivalActivitiesPage = ({ offlineMode = false }) => {
+  const connection = useFestivalConnection(offlineMode);
+  const serviceLogin = useRef(null);
+  const readGeneration = useRef(0);
+  const [readSignal, setReadSignal] = useState(0);
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
   const defaultAcademicYear = useMemo(() => currentAcademicYear(), []);
@@ -90,7 +100,7 @@ const FestivalActivitiesPage = ({ offlineMode = false }) => {
   const activities = normalizeActivities(data);
   const loading = dataMode === AUTOMATIC_MODE ? resource.loading : directLoading;
   const error = dataMode === AUTOMATIC_MODE
-    ? (resource.error?.response?.data?.detail || resource.error?.message || resource.syncError || '')
+    ? (resource.error?.response?.data?.detail?.message || resource.error?.message || resource.syncError || '')
     : directError;
 
   useEffect(() => {
@@ -127,22 +137,28 @@ const FestivalActivitiesPage = ({ offlineMode = false }) => {
   useEffect(() => {
     if (!configurationConfirmed || dataMode !== ON_DEMAND_MODE || offlineMode) return undefined;
     let active = true;
+    const generation = ++readGeneration.current;
     setDirectLoading(true);
     setDirectError('');
     getFestivalActivities()
       .then((payload) => {
-        if (active) setDirectData(payload);
+        if (active && generation === readGeneration.current) setDirectData(payload);
       })
       .catch((requestError) => {
-        if (active) {
-          setDirectError(requestError.response?.data?.detail || requestError.message || '活动数据读取失败');
+        if (active && generation === readGeneration.current) {
+          setDirectError(requestErrorText(requestError, '活动数据读取失败'));
+          connection.check();
         }
       })
       .finally(() => {
-        if (active) setDirectLoading(false);
+        if (active && generation === readGeneration.current) setDirectLoading(false);
       });
     return () => { active = false; };
-  }, [configurationConfirmed, dataMode, offlineMode]);
+  }, [configurationConfirmed, dataMode, offlineMode, readSignal, connection.check]);
+
+  useEffect(() => {
+    if (resource.syncState === 'failed' && !offlineMode) connection.check();
+  }, [resource.syncState, offlineMode, connection.check]);
 
   const festivals = useMemo(() => [...new Set(activities.map(activity => (
     pick(activity, 'festival_label', 'festival', 'section')
@@ -303,6 +319,7 @@ const FestivalActivitiesPage = ({ offlineMode = false }) => {
 
   const refreshNow = async () => {
     if (offlineMode) return false;
+    const generation = ++readGeneration.current;
     setRefreshing(true);
     try {
       if (dataMode === AUTOMATIC_MODE) {
@@ -310,19 +327,58 @@ const FestivalActivitiesPage = ({ offlineMode = false }) => {
         await resource.reloadAndApply();
       } else {
         setDirectError('');
-        setDirectData(await getFestivalActivities());
+        const payload = await getFestivalActivities();
+        if (generation !== readGeneration.current) return false;
+        setDirectData(payload);
       }
       message.success(dataMode === AUTOMATIC_MODE ? '四节活动已刷新并保存' : '四节活动已按需重新读取');
       return true;
     } catch (requestError) {
-      const detail = requestError.response?.data?.detail || requestError.message || '重新获取四节活动失败';
+      if (generation !== readGeneration.current) return false;
+      const detail = requestErrorText(requestError, '重新获取四节活动失败');
       if (dataMode === ON_DEMAND_MODE) setDirectError(detail);
+      connection.check();
       message.error(detail);
       return false;
     } finally {
       setRefreshing(false);
     }
   };
+
+  const resumeActivities = async () => {
+    if (!configurationConfirmed || offlineMode) return;
+    if (dataMode === AUTOMATIC_MODE) await refreshNow();
+    else setReadSignal(value => value + 1);
+  };
+
+  const changeServiceRoute = async mode => {
+    serviceLogin.current?.close();
+    readGeneration.current += 1;
+    setDirectLoading(false);
+    const result = await connection.change(mode);
+    if (result?.service_authenticated) await resumeActivities();
+  };
+
+  const onServiceAuthenticated = async result => {
+    if (result?.service_auth_state === 'service_unavailable') {
+      connection.unavailable();
+      return;
+    }
+    const status = await connection.check();
+    if (status?.service_authenticated) await resumeActivities();
+  };
+
+  const renderConnection = () => (
+    <section className="service-connection" aria-label="创院系统线路">
+      <h3>创院系统线路</h3>
+      <ServiceRouteControl status={connection.status} busy={connection.busy} offline={offlineMode}
+        saving={connection.saving}
+        onChange={changeServiceRoute} onCheck={connection.check} />
+      <ServiceAuthNotice status={connection.status} busy={connection.busy} offline={offlineMode}
+        onChange={changeServiceRoute} onCheck={connection.check}
+        onLogin={view => serviceLogin.current?.open(view)} />
+    </section>
+  );
 
   const applyLatestSnapshot = () => {
     resource.applyAvailable();
@@ -359,7 +415,8 @@ const FestivalActivitiesPage = ({ offlineMode = false }) => {
           : '证书压缩包已开始下载');
       }
     } catch (error) {
-      message.error(error.response?.data?.detail || error.message || '证书打包失败');
+      message.error(error.message || '证书打包失败');
+      connection.check();
     } finally {
       setDownloading(false);
     }
@@ -396,7 +453,11 @@ const FestivalActivitiesPage = ({ offlineMode = false }) => {
 
   return (
     <main className="festival-page">
+      <ServiceWebVPNLogin ref={serviceLogin} service="cxcy" offline={offlineMode}
+        username={connection.status?.current_user || ''}
+        onAuthenticated={onServiceAuthenticated} onBlocked={connection.block} />
       <Modal
+        rootClassName="festival-entry-modal"
         title="选择四节活动时间与读取方式"
         open={!configurationConfirmed}
         closable={false}
@@ -404,11 +465,13 @@ const FestivalActivitiesPage = ({ offlineMode = false }) => {
         keyboard={false}
         destroyOnHidden={false}
         footer={(
-          <Button type="primary" onClick={confirmConfiguration} loading={confirmingConfiguration} block={isMobile}>
+          <Button type="primary" onClick={confirmConfiguration} loading={confirmingConfiguration}
+            disabled={connection.saving} block={isMobile}>
             确认并读取活动
           </Button>
         )}
       >
+        {!configurationConfirmed && renderConnection()}
         <Paragraph type="secondary">
           先选择要查看和导出证书的日期范围。活动时间需要进入每条详情确认，因此确认后会读取完整参加记录，再按日期筛选。
         </Paragraph>
@@ -485,6 +548,7 @@ const FestivalActivitiesPage = ({ offlineMode = false }) => {
           </Tooltip>
         </Space>
       </header>
+      {configurationConfirmed && renderConnection()}
 
       {offlineMode && <Alert type="info" showIcon message="当前显示已保存的本地数据" description="活动筛选和详情可继续查看；刷新和证书导出需要连接学校系统，当前已停用。" />}
       {dataMode === AUTOMATIC_MODE && resource.updateAvailable && (

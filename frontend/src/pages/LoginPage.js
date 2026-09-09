@@ -265,7 +265,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   };
 
   const verifySMSCode = async () => {
-    if (!smsFlow || !smsCode.trim()) {
+    if (!smsFlow || (!smsFlow.sms_verified && !smsCode.trim())) {
       message.warning('请输入短信验证码');
       return;
     }
@@ -273,6 +273,12 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     try {
       const result = await verifyWebVPNSMSCode(smsFlow.flow_id, smsCode.trim());
       if (handleCampusNetworkBlock(result)) return;
+      if (result.sms_verified && result.status === 'session_pending') {
+        setSmsFlow(previous => ({ ...previous, ...result }));
+        setSmsCode('');
+        message.warning(result.message);
+        return;
+      }
       if (!result.success && result.status === 'captcha_invalid') {
         setSmsFlow(prev => ({ ...prev, ...result }));
         setCaptchaCode('');

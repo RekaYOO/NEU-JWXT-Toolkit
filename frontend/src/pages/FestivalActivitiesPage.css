@@ -6,6 +6,11 @@
 .festival-page__mode { display: flex; margin-top: 6px; }
 .festival-page > .ant-alert { margin-bottom: 12px; }
 .festival-refreshing-alert { margin-bottom: 14px; }
+.festival-entry-modal .ant-modal { top: 24px; padding-bottom: 24px; }
+.festival-entry-modal .ant-modal-content { display: flex; flex-direction: column; max-height: calc(100dvh - 48px); }
+.festival-entry-modal .ant-modal-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.festival-entry-modal .ant-modal-header,
+.festival-entry-modal .ant-modal-footer { flex-shrink: 0; }
 .festival-entry-form { display: grid; gap: 16px; margin-top: 18px; }
 .festival-entry-form label > span:first-child,
 .festival-entry-form legend { display: block; margin-bottom: 6px; color: var(--color-muted); font-size: 12px; font-weight: 600; }

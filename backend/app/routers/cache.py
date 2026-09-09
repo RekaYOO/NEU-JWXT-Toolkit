@@ -43,6 +43,7 @@ def _job_response(job) -> dict:
         "changed": job.changed,
         "diff": dict(job.changes),
         "error_kind": job.error_kind,
+        **({"auth_scope": "cxcy"} if job.key.resource == "festival-activities" else {}),
     }
 
 
@@ -77,6 +78,7 @@ def refresh_cache_resource(
         "job_id": submission.job_id,
         "revision": submission.revision,
         "is_stale": submission.is_stale,
+        **({"auth_scope": "cxcy"} if resource == "festival-activities" else {}),
     }
     if submission.status == RefreshStatus.THROTTLED:
         entry = _cache_store.get(submission.key)

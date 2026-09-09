@@ -27,7 +27,7 @@
 `NEUAuthClient` 在 `webvpn` 模式下通常会将 `*.neu.edu.cn` 教务业务请求改写为 WebVPN
 URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控服务请求是例外：
 `request_service(...)` 统一复用当前 CAS 身份和底层 Session，为登记过的校园业务系统建立
-各自的业务会话。`cxcy` 始终直连；`jwxk` 可按服务级设置跟随、直连或使用 WebVPN。服务级
+各自的业务会话。`cxcy` 和 `jwxk` 均可按服务级设置跟随、直连或使用 WebVPN，默认跟随教务。服务级
 线路覆盖不会修改教务系统的 `active_mode`，也不会创建第二份凭据或 Cookie 文件。
 
 ## 登录流程
@@ -38,7 +38,7 @@ URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控�
 2. 后端返回 CAS 官方二维码内容、`flow_id`、轮询间隔和过期时间。
 3. 前端每隔 `poll_interval` 秒调用 `POST /api/webvpn/qr/status`。
 4. 扫码成功后，后端完成 CAS 回调并同步 WebVPN 所需的认证 Cookie。普通登录通过教务系统
-   当前用户接口校验；选课页传入 `target_service=jwxk` 时改为核验 JWXK 服务入口。
+   当前用户接口校验；服务页传入 `target_service=jwxk|cxcy` 时改为核验对应服务入口。
 5. 校验成功后将 Cookie 保存到本地 `data/session.json`。
 
 二维码流程有效期为 180 秒。`flow_id` 仅存在于后端内存；后端重启、取消流程或过期后，必须重新获取二维码。
@@ -55,6 +55,16 @@ URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控�
    `?vpn-12-o2-pass.neu.edu.cn`。`secondAuthCode` 请求体只接收
    `code=<图形验证码>&method=mobile`。短信发送失败或图形验证码错误时会刷新图片并保留当前 Flow。
 6. 用户输入短信验证码后调用 `POST /api/webvpn/sms/verify`，后端提交二次认证表单并校验教务系统会话。
+
+短信验证与教务业务会话建立是两个阶段。网关验证通过后，如果首次当前用户查询失败，
+后端通过受控 WebVPN 跳转访问教务 CAS 入口，再做一次只读身份核验，不重新提交账号密码或
+短信表单。成功仍必须获得真实的当前用户身份，不能仅以网关 Cookie 或前端填写学号判定。
+
+如果会话仍未建立，返回 `status=session_pending`、`sms_verified=true` 和原 `flow_id`。
+页面显示“继续建立会话”，不再要求图形验证码或短信。后续 verify 请求可携带空 `code`，
+仅当后端原 Flow 已验证短信时才允许跳过短信提交。此阶段 Session 仅在内存中保留五分钟，
+不随重试延长；取消、过期或进程重启会结束流程。后台不自动重发短信，各端与远程恢复页
+共用这一状态，尚未验证短信的 Flow 仍必须走学校验证码校验。
 
 短信分支由统一认证服务决定；某些账户、设备授信状态或保护期不会触发该分支。未触发并不代表项目跳过了短信流程。待提交表单只存在于内存中，短信验证码按学校约五分钟的有效时间展示；服务器额外保留一分钟请求容错，避免浏览器调度、时钟差或在途请求导致本地提前拒绝，最终有效性仍由学校接口判断。表单绝不会写入 `session.json`、日志或接口响应。
 
@@ -127,7 +137,7 @@ WebVPN 专用接口在保留 `message` 和 `status` 的同时返回稳定的 `er
 
 | 方法和路径 | 请求字段 | 成功响应/状态 |
 | --- | --- | --- |
-| `POST /api/webvpn/qr/start` | `username`（可选）、`target_service=primary|jwxk`（默认 `primary`） | `success`、`flow_id`、`qr_content`、`expires_in`、`poll_interval` |
+| `POST /api/webvpn/qr/start` | `username`（可选）、`target_service=primary|jwxk|cxcy`（默认 `primary`） | `success`、`flow_id`、`qr_content`、`expires_in`、`poll_interval` |
 | `POST /api/webvpn/qr/status` | `flow_id` | `pending`、`sms_required`、`authenticated`、`expired` 或 `error` |
 | `POST /api/webvpn/qr/cancel` | `flow_id` | `success` |
 
@@ -137,7 +147,7 @@ WebVPN 专用接口在保留 `message` 和 `status` 的同时返回稳定的 `er
 
 | 方法和路径 | 请求字段 | 成功响应/状态 |
 | --- | --- | --- |
-| `POST /api/webvpn/password/start` | `username`、`password`、`remember=false`、`target_service=primary|jwxk`（默认 `primary`） | `status: "authenticated"` 或 `status: "sms_required"`；后者附带 `flow_id`、`expires_in` |
+| `POST /api/webvpn/password/start` | `username`、`password`、`remember=false`、`target_service=primary|jwxk|cxcy`（默认 `primary`） | `status: "authenticated"` 或 `status: "sms_required"`；后者附带 `flow_id`、`expires_in` |
 | `POST /api/webvpn/sms/captcha/refresh` | `flow_id` | 学校实时返回的新验证码图片，并以 `expires_in` 重新给出约五分钟预计窗口 |
 | `POST /api/webvpn/sms/send` | `flow_id`、`captcha_code` | `status: "sent"`、`expires_in`；只在用户明确点击后发送，成功重发会重置预计窗口 |
 | `POST /api/webvpn/sms/verify` | `flow_id`、`code`、`trust_device=false` | `status: "authenticated"`、`username`、`message` |
@@ -265,7 +275,17 @@ WebVPN 账密登录；该过程保留直连主线路及其非 WebVPN Cookie，�
 新 WebVPN 网关会话；随后 JWXK 超时、未开放或没有服务 token 时由选课状态接口显示为服务
 不可用，不得把它回退成“短信验证失败”并要求用户重复获取验证码。
 
-JWXK 的 WebVPN CAS 链可能从代理后的 `/xsxk/auth/cas` 返回普通的 `http://pass.neu.edu.cn/tpass/login`，CAS 又返回普通 JWXK 回调地址。客户端只接受官方 CAS 精确路径和登记过的 JWXK 主机，先将明文 CAS 跳转升级为 HTTPS，再把 CAS 与 JWXK 回调转换回 WebVPN URL；不会放宽到其他主机或通过 HTTP 发送 Cookie、ticket。
+JWXK 的 WebVPN CAS 链可能从代理后的 `/xsxk/auth/cas` 返回普通的 `http://pass.neu.edu.cn/tpass/login`，
+也可能返回 WebVPN 已转换的 `/http/<代理主机>/tpass/login`（含标准 80 端口形式），CAS 又返回
+普通 JWXK 回调地址。两种形式都必须在下一次请求前将上游 CAS 升级为 HTTPS。已代理形式仅接受
+HTTPS 网关、标准端口、无用户信息、官方 CAS 主机及精确 `/tpass/login` 路径，保留原查询参数；
+其他 HTTP 代理目标仍拒绝。不能直接用只允许 HTTPS 上游的服务 URL 还原器拒绝这一官方跳转，
+否则会错误进入“网关登录失效”的恢复循环。CAS 与 JWXK 回调始终经过同一受控 WebVPN 转换入口。
+
+选课页面先通过 `GET /api/course-selection/jwxk/status?probe=false` 读取本地线路，再进行远端核验。
+“跟随教务”的有效线路不依赖远端成功；超时必须结束加载并保留历史工作台，旧核验不能覆盖
+线路切换或新认证结果。定向认证已返回 `not_in_selection_round` / `service_unavailable` 时直接展示
+该结果，不立刻再次核验并覆盖成“登录失效”；用户仍可手动重新检测。
 
 WebVPN 不会把上游 JWXK 的 `token` 直接写入本地 HTTP Cookie Jar；浏览器端由网关注入脚本通过 `/wengine-vpn/cookie?method=get` 读取虚拟 Cookie。后端在 WebVPN 模式下复用同一官方机制，从受控的 JWXK 主机和请求路径读取虚拟 `token`，只在内存中缓存并映射为 `Authorization`。直连模式仍读取 `jwxk.neu.edu.cn` 的真实 Cookie，二者不能混用。
 
@@ -294,6 +314,25 @@ epoch。正在执行的单个远端请求不会被强制中断，但尚未执行
 会话，可以继续按“记住登录”设置自动恢复。
 
 ## 日志与排障
+
+### 创院服务与共用前台恢复
+
+四节活动的“创院系统线路”与选课系统共用 `ServiceRouteControl`、`ServiceAuthNotice` 和
+`ServiceWebVPNLogin`。服务目标贯穿二维码、短信和提交过程；待认证快照也包含
+`target_service`，当前服务页负责自己的弹窗，其他页面仍可通过全局弹窗完成待认证挑战。
+服务恢复成功不重新初始化主教务页面。CXCY 不采用 JWXK 的 token/Authorization 协议，
+而是核验自身 CAS 回调和受保护参与列表。创院定向恢复不新增后台任务或邮件恢复链接。
+
+定向扫码另需核验实际扫码账号，不能把二维码启动时预填的学号作为身份凭证。目前使用已有的
+JWXT 当前用户只读接口确认候选 Session 的账号；这一步不切换主会话或线路。若该身份接口
+不可用，则返回 `WEBVPN_ACCOUNT_UNVERIFIED`，保留原登录并提示改用账号密码恢复；
+账号不一致返回 `WEBVPN_ACCOUNT_MISMATCH`，不合并候选 Cookie。CXCY 的业务可用性
+仍以自己的服务入口判断，密码恢复不依赖此额外扫码身份核验。
+
+CXCY 页面、分页和证书中的 WebVPN URL 使用 `WebVPNUrlCodec.restore_service_url`
+还原为登记源站地址；该方法只接受指定主机的 HTTPS 代理前缀，不是任意 URL 解密代理。
+还原后的路径继续接受业务白名单和证书大小限制。配置和 API 见
+[导出中心与四节活动](导出中心与四节活动.md#认证与网络)。
 
 图形验证码被官方拒绝时，后端刷新图片后仍返回 `success=false`、
 `status=captcha_invalid`、`captcha_invalid=true` 和 `WEBVPN_CAPTCHA_INVALID`；

@@ -70,7 +70,7 @@ describe('JWXK automation settings API', () => {
     });
   });
 
-  test('saves the JWXK route locally before starting a separate short probe', async () => {
+  test('saves the JWXK route locally before starting a separate probe', async () => {
     const { client, apiModule } = loadApiWithAxios();
     client.put.mockResolvedValue({ data: { service_auth_state: 'checking' } });
 
@@ -81,6 +81,17 @@ describe('JWXK automation settings API', () => {
       { network_mode: 'follow' },
       { params: { probe: false }, timeout: 5000 },
     );
+  });
+
+  test('separates the remote JWXK probe budget from local metadata requests', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.get.mockResolvedValue({ data: {} });
+    await apiModule.getJwxkStatus();
+    await apiModule.getJwxkStatus({ params: { probe: false }, timeout: 5000 });
+    expect(client.get).toHaveBeenNthCalledWith(1, '/api/course-selection/jwxk/status',
+      expect.objectContaining({ timeout: 60000 }));
+    expect(client.get).toHaveBeenNthCalledWith(2, '/api/course-selection/jwxk/status',
+      expect.objectContaining({ params: { probe: false }, timeout: 5000 }));
   });
 
   test('treats an unavailable avatar as an empty optional resource', async () => {
@@ -434,5 +445,41 @@ describe('JWXK mutation authentication boundary', () => {
       { batch_code: 'BATCH-1', items: [] },
       { skipAuthRedirect: true },
     );
+  });
+});
+
+describe('CXCY service authentication scope', () => {
+  beforeEach(() => sessionStorage.clear());
+  test('concurrent 401 reads share one CXCY probe and never use primary status', async () => {
+    const { client, rejectResponse } = loadApiWithAxios();
+    const dispatch = jest.spyOn(window, 'dispatchEvent');
+    client.get.mockResolvedValue({ data: { service_authenticated: true } });
+    client.request.mockResolvedValue({ data: { activities: [] } });
+    const error = () => ({
+      response: { status: 401, data: {} },
+      config: { url: '/api/export/festival-activities', method: 'get', authRecoveryScope: 'cxcy' },
+    });
+    await Promise.all([rejectResponse(error()), rejectResponse(error())]);
+    expect(client.get).toHaveBeenCalledTimes(1);
+    expect(client.get).toHaveBeenCalledWith('/api/export/festival-activities/status', { skipAuthRedirect: true });
+    expect(client.request).toHaveBeenCalledTimes(2);
+    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'neu-auth-required' }));
+    dispatch.mockRestore();
+  });
+  test('failed recovery and archive failures never replay a download or log out JWXT', async () => {
+    const { client, rejectResponse } = loadApiWithAxios();
+    const dispatch = jest.spyOn(window, 'dispatchEvent');
+    client.get.mockResolvedValue({ data: { service_authenticated: false } });
+    const error = {
+      response: { status: 401, data: { detail: { message: '创院系统登录失效' } } },
+      config: { url: '/api/export/festival-activities/certificates/archive',
+        authRecoveryScope: 'cxcy', authRecoveryRetry: false },
+    };
+    await expect(rejectResponse(error)).rejects.toBe(error);
+    expect(error.message).toBe('创院系统登录失效');
+    expect(client.get).not.toHaveBeenCalled();
+    expect(client.request).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'neu-auth-required' }));
+    dispatch.mockRestore();
   });
 });

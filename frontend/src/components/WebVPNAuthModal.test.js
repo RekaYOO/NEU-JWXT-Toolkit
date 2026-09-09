@@ -54,4 +54,23 @@ describe('WebVPNAuthModal responsive authentication layout', () => {
     expect(removeEventListener).toHaveBeenCalledWith('resize', expect.any(Function));
     container.remove();
   });
+
+  test('verified SMS shows a session retry without requesting another code', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const verify = jest.fn();
+    await act(async () => root.render(
+      <WebVPNAuthModal flow={{ sms_verified: true }} smsCode="" onVerify={verify} />,
+    ));
+    expect(document.querySelector('input[aria-label="短信验证码"]')).toBeNull();
+    expect(document.querySelector('button[aria-label="刷新图形验证码"]')).toBeNull();
+    const button = document.querySelector('.login-sms-modal .ant-btn-primary');
+    expect(button.textContent).toBe('继续建立会话');
+    expect(button.disabled).toBe(false);
+    await act(async () => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(verify).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    container.remove();
+  });
 });

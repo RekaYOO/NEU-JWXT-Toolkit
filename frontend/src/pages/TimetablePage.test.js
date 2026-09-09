@@ -373,7 +373,15 @@ describe('TimetablePage helpers', () => {
           onViewModeChange={() => {}}
         />);
       });
-      await act(async () => container.querySelector('.timetable-mobile-summary-trigger').click());
+      const trigger = container.querySelector('.timetable-mobile-summary-trigger');
+      const chevron = trigger.querySelector('.timetable-mobile-summary-chevron');
+      expect(chevron.querySelector('svg[data-icon="down"]')).not.toBeNull();
+      expect(chevron.getAttribute('aria-hidden')).toBe('true');
+      expect(trigger.getAttribute('aria-expanded')).toBe('false');
+      expect(chevron.classList.contains('is-expanded')).toBe(false);
+      await act(async () => trigger.click());
+      expect(trigger.getAttribute('aria-expanded')).toBe('true');
+      expect(chevron.classList.contains('is-expanded')).toBe(true);
       const detail = container.querySelector('.timetable-mobile-summary-course');
       expect(detail.textContent).toContain('10:30–12:10 · 第3–4节');
       expect(detail.textContent).toContain('浑南校区 · 信息楼A112');
@@ -385,6 +393,10 @@ describe('TimetablePage helpers', () => {
       expect(preferences.querySelectorAll('label')).toHaveLength(2);
       expect(preferences.textContent).toContain('打开时默认课表');
       expect(preferences.textContent).toContain('使用缩略视图');
+      await act(async () => trigger.click());
+      expect(trigger.getAttribute('aria-expanded')).toBe('false');
+      expect(chevron.classList.contains('is-expanded')).toBe(false);
+      expect(container.querySelector('.timetable-mobile-summary-controls')).toBeNull();
     } finally {
       await act(async () => root.unmount());
       container.remove();

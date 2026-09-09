@@ -271,7 +271,7 @@ const AuthRecoveryPage = ({ token }) => {
   };
 
   const verifySMS = async () => {
-    if (!smsCode.trim()) {
+    if (!flow?.sms_verified && !smsCode.trim()) {
       setAuthError('请输入短信验证码');
       return;
     }
@@ -282,6 +282,10 @@ const AuthRecoveryPage = ({ token }) => {
       if (result.status === 'authenticated') {
         finishAuthenticated();
         return;
+      }
+      if (result.status === 'session_pending' && result.sms_verified) {
+        setFlow(current => ({ ...current, ...result }));
+        setSmsCode('');
       }
       if (result.status === 'captcha_invalid') {
         setFlow((current) => ({ ...current, ...result }));
@@ -360,10 +364,10 @@ const AuthRecoveryPage = ({ token }) => {
               <Button
                 type="primary"
                 loading={actionLoading}
-                disabled={!smsCode.trim()}
+                disabled={!flow?.sms_verified && !smsCode.trim()}
                 onClick={verifySMS}
               >
-                验证并恢复登录
+                {flow?.sms_verified ? '继续建立会话' : '验证并恢复登录'}
               </Button>
             </div>
           </>

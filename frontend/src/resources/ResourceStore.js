@@ -19,6 +19,15 @@ const ResourceContext = createContext(null);
 const ACTIVE_SYNC_STATES = new Set(['starting', 'queued', 'running']);
 const IDENTITY_RETRY_ERRORS = new Set(['identity_changed']);
 const IDENTITY_RETRY_DELAY_MS = 250;
+const jobErrorMessage = job => {
+  if (job.auth_scope === 'cxcy') return ({
+    CXCY_LOGIN_REQUIRED: '创院系统登录已失效，请在创院系统线路中恢复登录',
+    CXCY_NETWORK_UNREACHABLE: '创院系统当前线路不可达，请重新检测或切换线路',
+    WEBVPN_CAMPUS_NETWORK_BLOCKED: '校园网环境无法使用 WebVPN，请切换创院系统线路',
+    CXCY_SERVICE_UNAVAILABLE: '创院系统暂时不可用，已保存的活动仍可查看',
+  })[job.error_kind] || job.error || job.error_kind;
+  return job.error || job.error_kind;
+};
 
 export const deriveCachedResourceLoading = ({
   enabled = true, displayedData = null, state = {},
@@ -185,7 +194,7 @@ export const ResourceProvider = ({
       await load(resource, { quiet: true });
       return job;
     }
-    const detail = job.error || job.error_kind || (
+    const detail = jobErrorMessage(job) || (
       job.status === 'cancelled' ? '后台同步已取消' : '后台同步失败'
     );
     if (IDENTITY_RETRY_ERRORS.has(detail)) {
@@ -234,7 +243,7 @@ export const ResourceProvider = ({
               });
               return result;
             }
-            const detail = result.error || result.error_kind || (
+            const detail = jobErrorMessage(result) || (
               result.status === 'throttled'
                 ? '最近一次后台同步失败，系统将在一分钟后自动重试；也可手动刷新'
                 : '后台同步未能启动'

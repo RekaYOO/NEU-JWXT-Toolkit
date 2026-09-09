@@ -238,8 +238,8 @@ def test_service_same_origin_login_trampoline_establishes_session_and_retries(mo
     assert urls[1] == "https://cxcy.neu.edu.cn/ucenter/auth/caslogin?type=student"
 
 
-def test_service_expired_cas_recovers_primary_login_then_rebuilds_service_session(monkeypatch):
-    client = NEUAuthClient(restore_session=False)
+def test_service_expired_cas_recovers_its_own_identity_without_probing_primary(monkeypatch):
+    client = NEUAuthClient("20250001", "fixture-only", restore_session=False)
     client._logged_in = True
     urls = []
     recoveries = []
@@ -262,13 +262,16 @@ def test_service_expired_cas_recovers_primary_login_then_rebuilds_service_sessio
         urls.append(url)
         return next(results)
 
-    def recover():
+    def recover(config):
         recoveries.append(True)
+        assert config["host"] == "cxcy.neu.edu.cn"
+        client._request_service_redirects("GET", config["service"])
         client._logged_in = True
         return True
 
     monkeypatch.setattr(client, "_request_service_redirects", fake_redirects)
-    monkeypatch.setattr(client, "ensure_login", recover)
+    monkeypatch.setattr(client, "_login_direct_service", recover)
+    monkeypatch.setattr(client, "ensure_login", lambda: pytest.fail("must not probe primary"))
 
     result = client.request_service("cxcy", "GET", "/popscience/comp/ucenter/main/index")
 

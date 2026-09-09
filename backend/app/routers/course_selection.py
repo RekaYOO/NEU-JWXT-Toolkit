@@ -216,6 +216,7 @@ def _jwxk_status_message(
 def get_jwxk_status(
     response: Response,
     storage: Storage = Depends(get_storage),
+    probe: bool = True,
 ) -> JwxkStatusResponse:
     response.headers["Cache-Control"] = "no-store"
     preference = _read_jwxk_preference(storage)
@@ -223,6 +224,14 @@ def get_jwxk_status(
     primary_mode = get_primary_network_mode_hint(primary)
     effective = resolve_network_mode(preference, primary_mode)
     primary_authenticated = bool(primary and getattr(primary, "is_logged_in", False))
+    if not probe:
+        return JwxkStatusResponse(
+            available=False, network_mode=preference, effective_network_mode=effective,
+            cas_service=JWXK_CAS_SERVICE, primary_authenticated=primary_authenticated,
+            current_user=str(getattr(primary, "username", "") or ""),
+            service_authenticated=False, authenticated=False, service_auth_state="checking",
+            batches=[], message=_jwxk_status_message("checking", effective=effective),
+        )
     service_authenticated = False
     service_auth_state = "service_unavailable" if primary_authenticated else "login_required"
     authenticated_batches = None
@@ -345,28 +354,7 @@ def update_jwxk_settings(
     config = dict(config) if isinstance(config, dict) else {}
     config[_JWXK_CONFIG_KEY] = {"network_mode": request.network_mode}
     storage.save_config(config)
-    if not probe:
-        primary = peek_auth_client()
-        effective = resolve_network_mode(
-            request.network_mode,
-            get_primary_network_mode_hint(primary),
-        )
-        return JwxkStatusResponse(
-            available=False,
-            network_mode=request.network_mode,
-            effective_network_mode=effective,
-            cas_service=JWXK_CAS_SERVICE,
-            primary_authenticated=bool(
-                primary and getattr(primary, "is_logged_in", False)
-            ),
-            current_user=str(getattr(primary, "username", "") or ""),
-            service_authenticated=False,
-            authenticated=False,
-            service_auth_state="checking",
-            batches=[],
-            message=_jwxk_status_message("checking", effective=effective),
-        )
-    return get_jwxk_status(response, storage)
+    return get_jwxk_status(response, storage, probe=probe)
 
 
 def _run_jwxk_read(storage: Storage, operation):

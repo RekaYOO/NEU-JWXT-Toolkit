@@ -605,6 +605,13 @@ class CacheCoordinator:
                 )
                 return
             error_kind = type(exc).__name__[:128]
+            if getattr(exc, "auth_scope", None) == "cxcy":
+                allowed = {
+                    "CXCY_LOGIN_REQUIRED", "CXCY_NETWORK_UNREACHABLE",
+                    "CXCY_SERVICE_UNAVAILABLE", "WEBVPN_CAMPUS_NETWORK_BLOCKED",
+                }
+                code = getattr(exc, "error_code", "")
+                error_kind = code if code in allowed else "CXCY_SERVICE_UNAVAILABLE"
             self.store.mark_failure(job.key, error_kind)
             failure_key = (
                 job.identity_epoch,

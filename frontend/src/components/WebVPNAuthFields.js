@@ -21,7 +21,10 @@ const WebVPNAuthFields = ({
   onSendSMS,
   onVerify,
   embedded = false,
-}) => (
+}) => flow?.sms_verified ? (
+  <Alert type="info" showIcon message="短信验证已通过"
+    description={error || '正在等待建立教务会话。可继续重试，无需重新获取或提交短信验证码。'} />
+) : (
   <div className={`sms-auth-content${embedded ? ' is-embedded' : ''}`}>
     <div className="sms-auth-intro">
       <span className="sms-auth-icon-shell">

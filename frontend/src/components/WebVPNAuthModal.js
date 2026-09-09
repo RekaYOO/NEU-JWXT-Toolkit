@@ -16,6 +16,7 @@ const WebVPNAuthModal = ({
   onSendSMS,
   onVerify,
   onCancel,
+  zIndex,
 }) => {
   const [viewportHeight, setViewportHeight] = useState(null);
 
@@ -37,12 +38,13 @@ const WebVPNAuthModal = ({
   return (
     <Modal
       rootClassName="login-sms-modal"
+      zIndex={zIndex}
       open={Boolean(flow)}
-      title="短信二次认证"
-      okText="验证并登录"
+      title={flow?.sms_verified ? '建立教务会话' : '短信二次认证'}
+      okText={flow?.sms_verified ? '继续建立会话' : '验证并登录'}
       cancelText="取消"
       confirmLoading={loading}
-      okButtonProps={{ disabled: !String(smsCode || '').trim() }}
+      okButtonProps={{ disabled: !flow?.sms_verified && !String(smsCode || '').trim() }}
       onOk={onVerify}
       onCancel={onCancel}
       destroyOnHidden

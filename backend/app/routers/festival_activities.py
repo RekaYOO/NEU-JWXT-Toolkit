@@ -4,10 +4,11 @@ import re
 import tempfile
 import zipfile
 from calendar import monthrange
+from contextlib import ExitStack
 from datetime import datetime
 from urllib.parse import parse_qsl, quote, unquote, urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, Query
 from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 
@@ -15,14 +16,22 @@ from backend.app.cache_support import read_cache
 from backend.app.dependencies import (
     _cache_coordinator,
     get_auth_generation,
-    require_exclusive_remote_auth,
     require_cached_auth_identity,
-    require_serialized_auth,
+    require_festival_service_auth,
+    get_festival_service_client, get_storage, peek_auth_client, remote_session_guard,
+    get_primary_network_mode_hint,
 )
-from backend.app.schemas.festival_activities import CertificateArchiveRequest, FestivalActivitiesResponse
+from backend.app.schemas.festival_activities import (
+    CertificateArchiveRequest, FestivalActivitiesResponse,
+    FestivalSettingsUpdate, FestivalServiceStatus,
+)
 from backend.core.auth import NEUAuthClient
 from backend.core.auth.client import NEULoginError
 from backend.core.festival_activities import fetch_festival_activities
+from backend.core.festival_service import (
+    CONFIG_KEY, FestivalServiceError, read_preference, effective_mode, status_message,
+)
+from backend.core.network import WebVPNUrlCodec
 from backend.app.presenters import festival_cache_response, festival_remote_response
 
 
@@ -49,15 +58,78 @@ def _username(auth: NEUAuthClient) -> str:
 
 
 def _authentication_failure(error: NEULoginError) -> HTTPException:
-    return HTTPException(status_code=401, detail="统一认证会话已过期，请重新登录")
+    return HTTPException(status_code=401, detail="创院系统会话已过期，请恢复创院系统登录")
 
 
 def _retry_authenticated_read(operation):
     """Replay one idempotent cxcy read after the client attempted auth recovery."""
     try:
         return operation()
+    except FestivalServiceError as error:
+        raise HTTPException(
+            status_code=401 if error.service_auth_state == "login_required" else 503,
+            detail={
+                "message": str(error), "error_code": error.error_code,
+                "service_auth_state": error.service_auth_state, "auth_scope": "cxcy",
+            },
+        ) from error
     except NEULoginError:
         return operation()
+
+
+def _service_status(storage, *, probe=True):
+    primary = peek_auth_client()
+    preference = read_preference(storage)
+    mode = effective_mode(preference, get_primary_network_mode_hint(primary))
+    authenticated = bool(primary and getattr(primary, "is_logged_in", False))
+    state, code = ("checking", None) if authenticated else ("login_required", "CXCY_LOGIN_REQUIRED")
+    if authenticated and probe:
+        try:
+            with remote_session_guard():
+                if peek_auth_client() is not primary:
+                    raise HTTPException(status_code=409, detail="登录账号已变化，请重试")
+                client = get_festival_service_client(primary)
+                previous_timeout = getattr(primary, "timeout", None)
+                try:
+                    if isinstance(previous_timeout, (int, float)):
+                        primary.timeout = min(previous_timeout, 8)
+                    result = client.request_service(
+                        "cxcy", "GET", "/popscience/comp/ucenter/main/index", timeout=8,
+                    )
+                    result.close()
+                finally:
+                    if previous_timeout is not None:
+                        primary.timeout = previous_timeout
+                mode = client.network_mode
+                state = "authenticated"
+        except FestivalServiceError as error:
+            state, code = error.service_auth_state, error.error_code
+    return FestivalServiceStatus(
+        network_mode=preference, effective_network_mode=mode,
+        primary_authenticated=authenticated,
+        current_user=str(getattr(primary, "username", "") or ""),
+        service_authenticated=state == "authenticated", service_auth_state=state,
+        message=status_message(state, mode), error_code=code,
+    )
+
+
+@router.get("/export/festival-activities/status", response_model=FestivalServiceStatus)
+def get_festival_service_status(response: Response, storage=Depends(get_storage)):
+    response.headers["Cache-Control"] = "no-store"
+    return _service_status(storage)
+
+
+@router.put("/export/festival-activities/settings", response_model=FestivalServiceStatus)
+def update_festival_settings(
+    request: FestivalSettingsUpdate, response: Response,
+    storage=Depends(get_storage), probe: bool = Query(True),
+):
+    response.headers["Cache-Control"] = "no-store"
+    config = storage.load_config()
+    config = dict(config) if isinstance(config, dict) else {}
+    config[CONFIG_KEY] = {"network_mode": request.network_mode}
+    storage.save_config(config)
+    return _service_status(storage, probe=probe)
 
 
 def _cache_response(username: str, entry, stale: bool, source: str = "cache") -> dict:
@@ -97,7 +169,7 @@ def delete_festival_activities_cache(
 @router.get("/export/festival-activities", response_model=FestivalActivitiesResponse)
 def get_festival_activities(
     response: Response,
-    auth: NEUAuthClient = Depends(require_serialized_auth),
+    auth: NEUAuthClient = Depends(require_festival_service_auth),
 ):
     response.headers["Cache-Control"] = "no-store"
     username = _username(auth)
@@ -109,6 +181,7 @@ def get_festival_activities(
 
 
 def _safe_certificate_path(value: str) -> str:
+    value = WebVPNUrlCodec.restore_service_url(value, origin="https://cxcy.neu.edu.cn")
     parsed = urlparse(value)
     try:
         port = parsed.port
@@ -201,7 +274,7 @@ def _archive_scope_label(start_date, end_date) -> str:
 @router.post("/export/festival-activities/certificates/archive")
 def download_certificate_archive(
     request: CertificateArchiveRequest,
-    auth: NEUAuthClient = Depends(require_exclusive_remote_auth),
+    auth: NEUAuthClient = Depends(require_festival_service_auth),
 ):
     _username(auth)
     try:
@@ -227,7 +300,8 @@ def download_certificate_archive(
     total_bytes = 0
     names: set[str] = set()
     authentication_error: NEULoginError | None = None
-    with zipfile.ZipFile(spool, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with ExitStack() as cleanup, zipfile.ZipFile(spool, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        cleanup.callback(spool.close)
         for activity_date, item in candidates:
             try:
                 path = _safe_certificate_path(str(item.get("certificate_url") or ""))
@@ -266,6 +340,8 @@ def download_certificate_archive(
                 names.add(name)
                 archive.writestr(name, bytes(body))
                 successes += 1
+            except HTTPException:
+                raise
             except NEULoginError as exc:
                 authentication_error = exc
                 break
@@ -273,6 +349,7 @@ def download_certificate_archive(
                 failures.append(f"{item.get('name') or '未命名活动'}：{type(exc).__name__}")
         if failures:
             archive.writestr("下载说明.txt", "以下证书下载失败：\n" + "\n".join(failures))
+        cleanup.pop_all()
     if authentication_error is not None:
         spool.close()
         raise _authentication_failure(authentication_error) from authentication_error

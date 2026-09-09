@@ -436,7 +436,7 @@ class RemoteAuthRecoveryService:
 
     @staticmethod
     def _update_flow(flow: dict[str, Any], result: dict[str, Any]) -> None:
-        for key in ("captcha_image", "expires_in"):
+        for key in ("captcha_image", "expires_in", "sms_verified"):
             if key in result:
                 flow[key] = result[key]
         if "expires_in" in result:
@@ -460,7 +460,7 @@ class RemoteAuthRecoveryService:
             expires_in = max(0, int(float(flow.get("expires_at", 0)) - time.time()))
             return {"status": status, "expires_in": expires_in, **{
                 key: value for key, value in flow.items()
-                if key in {"flow_id", "qr_content", "poll_interval", "captcha_image"}
+                if key in {"flow_id", "qr_content", "poll_interval", "captcha_image", "sms_verified"}
             }}
 
     def start(self, token: str) -> dict[str, Any]:
@@ -479,7 +479,7 @@ class RemoteAuthRecoveryService:
                 flow = self._flows[context_id]["flow"]
                 return {"status": "sms_required", **{
                     key: value for key, value in flow.items()
-                    if key in {"flow_id", "captcha_image", "expires_in"}
+                    if key in {"flow_id", "captcha_image", "expires_in", "sms_verified"}
                 }}
             if not self.qr_login_starter:
                 raise RuntimeError("当前运行环境不支持二维码恢复")
@@ -502,7 +502,7 @@ class RemoteAuthRecoveryService:
             if flow.get("kind") == "sms":
                 return {"status": "sms_required", **{
                     key: value for key, value in flow.items()
-                    if key in {"flow_id", "captcha_image", "expires_in"}
+                    if key in {"flow_id", "captcha_image", "expires_in", "sms_verified"}
                 }}
             try:
                 result = record["client"].poll_webvpn_qr_login(flow["flow_id"])

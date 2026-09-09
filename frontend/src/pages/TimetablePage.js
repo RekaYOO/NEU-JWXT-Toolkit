@@ -21,6 +21,7 @@ import {
   Tooltip,
 } from 'antd';
 import {
+  DownOutlined,
   EnvironmentOutlined,
   FilterOutlined,
   ReloadOutlined,
@@ -1667,7 +1668,7 @@ function TimetablePage({
     if (recoveryMode) return Promise.resolve();
     if (termsRequestRef.current) return termsRequestRef.current;
     const generation = ++termsGeneration.current;
-    if (!(embedded && preferredTermCode)) setLoading(true);
+    if (!(embedded && preferredTermCode) && !personalPayloadRef.current) setLoading(true);
     setError(null);
     const request = (async () => {
       try {
@@ -2027,8 +2028,9 @@ function TimetablePage({
 
   useEffect(() => {
     if (!usesPersonalTimetableEndpoint || recoveryMode) return;
+    if (personalPayload?.term_code === termCode && schedule) return;
     loadPersonalTimetable(termCode, { autoDetect: !autoDefaultResolved.current });
-  }, [loadPersonalTimetable, recoveryMode, termCode, usesPersonalTimetableEndpoint]);
+  }, [loadPersonalTimetable, personalPayload, recoveryMode, schedule, termCode, usesPersonalTimetableEndpoint]);
 
   const appliedRefreshSignal = useRef(refreshSignal);
   useEffect(() => {
@@ -2992,7 +2994,9 @@ function TimetablePage({
 
   useLayoutEffect(() => {
     if (
-      !isMobile
+      // An unresolved breakpoint is not a small screen. Cached timetables
+      // can render before useBreakpoint reports the desktop viewport.
+      screens.lg !== false
       // The selection/archive pages embed a compact timetable.  Their parent
       // page owns the scroll position, so the personal timetable's initial
       // focus must never move that page.
@@ -3083,7 +3087,7 @@ function TimetablePage({
       window.cancelAnimationFrame(secondFrame);
     if (mobileFocusPendingRef.current === focusKey) mobileFocusPendingRef.current = '';
   };
-  }, [embedded, isMobile, mode, schedule, termCode, viewMode]);
+  }, [embedded, screens.lg, mode, schedule, termCode, viewMode]);
   const targetPlaceholder = mode === 'class'
     ? '搜索班级代码或名称'
     : mode === 'teacher'
@@ -4161,7 +4165,7 @@ export function MobileTimetableSummary({
             : (summary?.kind === 'complete' ? summaryName : `${summaryName}${countSuffix}`)}
         </strong>
         {!queryMode && summary?.startTime && <small>{summary.startTime}</small>}
-        <span className={`timetable-mobile-summary-chevron${expanded ? ' is-expanded' : ''}`} aria-hidden="true" />
+        <DownOutlined className={`timetable-mobile-summary-chevron${expanded ? ' is-expanded' : ''}`} aria-hidden="true" />
       </button>
       {expanded && (
         <div id={controlsId} className="timetable-mobile-summary-controls">

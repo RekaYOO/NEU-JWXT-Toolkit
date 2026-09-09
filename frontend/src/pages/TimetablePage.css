@@ -1354,17 +1354,16 @@
   }
 
   .timetable-mobile-summary-chevron {
-    width: 8px;
-    height: 8px;
-    justify-self: end;
-    border-right: 2px solid var(--color-muted);
-    border-bottom: 2px solid var(--color-muted);
-    transform: rotate(45deg) translateY(-2px);
+    flex: 0 0 12px;
+    width: 12px;
+    height: 12px;
+    color: var(--color-muted);
+    font-size: 12px;
     transition: transform .16s ease;
   }
 
   .timetable-mobile-summary-chevron.is-expanded {
-    transform: rotate(225deg) translate(-1px, -1px);
+    transform: rotate(180deg);
   }
 
   .timetable-mobile-summary-controls {

@@ -1,0 +1,17 @@
+.service-route-control { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.service-webvpn-login { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.service-webvpn-login > .ant-qrcode { align-self: center; }
+.service-auth-notice { min-width: 0; }
+.service-connection { display: grid; gap: 12px; min-width: 0; padding-block: 12px; }
+.service-connection h3 { margin: 0; font-size: 16px; }
+@media (max-width: 767px) {
+  .service-route-control { align-items: stretch; flex-direction: column; }
+  .service-route-control .ant-radio-group { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .service-route-control .ant-radio-button-wrapper { text-align: center; padding-inline: 8px; }
+  .service-auth-notice { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; }
+  .service-auth-notice .ant-alert-icon { grid-column: 1; grid-row: 1 / span 2; }
+  .service-auth-notice .ant-alert-content { grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
+  .service-auth-notice .ant-alert-action { grid-column: 2; margin: 12px 0 0; min-width: 0; }
+  .service-auth-notice .ant-alert-action > .ant-space { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr)); width: 100%; }
+  .service-auth-notice .ant-space-item, .service-auth-notice .ant-btn { width: 100%; min-width: 0; }
+}

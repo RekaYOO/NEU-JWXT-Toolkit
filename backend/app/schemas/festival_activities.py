@@ -1,7 +1,27 @@
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+
+class FestivalSettingsUpdate(BaseModel):
+    model_config = {"extra": "forbid"}
+    network_mode: Literal["follow", "direct", "webvpn"]
+
+
+class FestivalServiceStatus(BaseModel):
+    network_mode: Literal["follow", "direct", "webvpn"]
+    effective_network_mode: Literal["direct", "webvpn"]
+    primary_authenticated: bool = False
+    current_user: str = ""
+    service_authenticated: bool = False
+    service_auth_state: Literal[
+        "authenticated", "checking", "login_required", "network_unreachable",
+        "campus_network_blocked", "service_unavailable",
+    ]
+    message: str
+    error_code: Optional[str] = None
+    auth_scope: str = "cxcy"
 
 
 class FestivalActivityModel(BaseModel):

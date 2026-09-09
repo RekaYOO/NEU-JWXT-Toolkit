@@ -55,7 +55,7 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
       : [[320, 800], [375, 812], [430, 932], [768, 900], [1440, 900]];
     for (const [width, height] of viewports) {
       for (const compact of width < 992 ? [false, true] : [false]) {
-        for (const label of ['教室课表', '教师课表', '班级课表']) {
+        for (const label of process.env.QA_FOCUS_ONLY === '1' ? ['我的课表'] : ['教室课表', '教师课表', '班级课表']) {
           const page = await browser.newPage({ viewport: { width, height }, serviceWorkers: 'block' });
           const errors = [];
           let releaseSchedule = null;
@@ -68,6 +68,12 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
           await page.addInitScript(({ compact }) => {
             history.replaceState(null, '', '/timetable');
             localStorage.setItem('neu_toolbox:mobileCompactWeekView', JSON.stringify(compact));
+            window.__timetableFocusCalls = [];
+            const original = Element.prototype.scrollIntoView;
+            Element.prototype.scrollIntoView = function (...args) {
+              if (this.closest('.timetable-page')) window.__timetableFocusCalls.push(this.className);
+              return original.apply(this, args);
+            };
           }, { compact });
           await page.route('**/*', async route => {
             const url = new URL(route.request().url());
@@ -118,6 +124,33 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
             await page.locator('.timetable-target-result-card').first().click();
           };
           await page.goto(`${origin}/`);
+          if (process.env.QA_FOCUS_ONLY === '1') {
+            await page.locator('.timetable-desktop').first().waitFor({ state: 'attached' });
+            await page.waitForFunction(() => document.querySelector('.timetable-page')?.textContent.includes('第1周课程'));
+            await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+            const focus = await page.evaluate(() => ({
+              calls: window.__timetableFocusCalls,
+              top: window.scrollY,
+              padding: document.querySelector('.timetable-page').style.paddingBottom,
+              overflow: document.documentElement.scrollWidth > innerWidth + 1,
+            }));
+            if (width >= 992) {
+              assert.deepEqual(focus.calls, [], 'desktop must never use mobile auto-focus, including cached startup');
+              assert.equal(focus.top, 0);
+              assert.equal(focus.padding, '');
+            } else {
+              assert.ok(focus.calls.length > 0, 'small screens must retain initial focus');
+              assert.ok(focus.top > 0, 'small-screen selector must still be scrolled into view');
+            }
+            assert.equal(focus.overflow, false);
+            assert.deepEqual(errors, []);
+            await page.screenshot({
+              path: path.join(screenshots, `${width}-${compact ? 'compact' : 'daily'}-initial-focus.png`),
+            });
+            console.log(`PASS initial focus ${width}x${height} ${compact ? 'compact' : 'default'}: calls=${focus.calls.length}, scrollY=${focus.top}`);
+            await page.close();
+            continue;
+          }
           await openQuery();
           const empty = page.getByText('当前条件下暂无课程安排', { exact: true });
           await empty.waitFor();

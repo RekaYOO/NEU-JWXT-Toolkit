@@ -35,7 +35,7 @@ class LoginResponse(BaseModel):
 
 class WebVPNQRStartRequest(BaseModel):
     username: Optional[str] = Field(default=None, max_length=64)
-    target_service: Literal["primary", "jwxk"] = "primary"
+    target_service: Literal["primary", "jwxk", "cxcy"] = "primary"
 
     @field_validator("username")
     @classmethod
@@ -53,7 +53,7 @@ class WebVPNPasswordStartRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=256)
     remember: bool = False
-    target_service: Literal["primary", "jwxk"] = "primary"
+    target_service: Literal["primary", "jwxk", "cxcy"] = "primary"
 
     _validate_username = field_validator("username")(_normalize_username)
 

@@ -27,6 +27,8 @@ def pending_auth_challenge_snapshot(clients: tuple[Any, ...] | None = None) -> d
             "required": True,
             "flow_id": flow.get("id"),
             "source": flow.get("source", "password"),
+            "target_service": flow.get("target_service", "primary"),
+            "sms_verified": bool(flow.get("sms_verified")),
             "captcha_image": (
                 f"data:{flow.get('captcha_media_type') or 'image/jpeg'};base64,{flow['captcha_image']}"
                 if flow.get("captcha_image") else None

@@ -612,6 +612,29 @@ class AuthRouteTests(unittest.TestCase):
         clear_pending.assert_called_once_with(candidate)
         save_login.assert_called_once_with(candidate, False)
 
+    def test_verified_sms_pending_keeps_candidate_without_promoting_identity(self):
+        candidate = Mock(username="20250001")
+        candidate._webvpn_sms_flow = {"remember": False, "target_service": "primary"}
+        candidate.verify_webvpn_sms_code.return_value = {
+            "status": "session_pending", "sms_verified": True,
+            "flow_id": "sms-flow", "error_code": "WEBVPN_SESSION_ESTABLISH",
+        }
+        with (
+            patch.object(auth, "_webvpn_sms_client", return_value=candidate),
+            patch.object(auth, "peek_auth_client", return_value=None),
+            patch.object(auth, "peek_pending_auth_client", return_value=candidate),
+            patch.object(auth, "clear_pending_auth_client") as clear_pending,
+            patch.object(auth, "_save_webvpn_password_login") as save_login,
+        ):
+            result = auth.verify_webvpn_sms_code(auth.WebVPNSMSVerifyRequest(
+                flow_id="sms-flow", code="",
+            ))
+        self.assertFalse(result["success"])
+        self.assertTrue(result["sms_verified"])
+        self.assertEqual(result["error_code"], "WEBVPN_SESSION_ESTABLISH")
+        clear_pending.assert_not_called()
+        save_login.assert_not_called()
+
     def test_jwxk_sms_success_merges_gateway_without_replacing_primary(self):
         active = Mock(username="20250001", is_logged_in=True)
         candidate = Mock(username="20250001", password="not-used")

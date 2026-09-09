@@ -15,6 +15,7 @@ from backend.app.schemas import (
 )
 from backend.core.auth import NEUAuthClient
 from backend.core.auth.client import (
+    SERVICE_CONFIGS,
     DirectAccessError, LOGIN_ERR_WRONG_PWD, NEULoginError,
     WebVPNLoginError, WebVPNRequiredError,
     WEBVPN_ERR_CAPTCHA_FETCH, WEBVPN_ERR_CAPTCHA_INVALID,
@@ -259,13 +260,13 @@ def start_webvpn_qr_login(request: WebVPNQRStartRequest):
             account = request.username or str(getattr(active, "username", "") or "")
             client = NEUAuthClient(
                 username=account,
-                cookie_file=COOKIE_FILE,
+                cookie_file=COOKIE_FILE if request.target_service == "primary" else None,
                 network_mode="webvpn",
                 restore_session=False,
             )
             flow = (
-                client.start_webvpn_qr_login(target_service="jwxk")
-                if request.target_service == "jwxk"
+                client.start_webvpn_qr_login(target_service=request.target_service)
+                if request.target_service in SERVICE_CONFIGS
                 else client.start_webvpn_qr_login()
             )
             set_pending_auth_client(client)
@@ -338,9 +339,9 @@ def get_webvpn_qr_status(request: WebVPNQRStatusRequest):
             if result.get("status") == "authenticated":
                 target_service = str(result.get("target_service") or "primary")
                 clear_pending_auth_client(client)
-                if target_service == "jwxk":
+                if target_service in SERVICE_CONFIGS:
                     _commit_webvpn_login(
-                        client, target_service="jwxk", remember=False,
+                        client, target_service=target_service, remember=False,
                     )
                 else:
                     set_auth_client(client, force_epoch=True)
@@ -434,8 +435,8 @@ def _save_webvpn_password_login(client: NEUAuthClient, remember: bool) -> None:
 def _commit_webvpn_login(
     client: NEUAuthClient, *, target_service: str, remember: bool,
 ) -> None:
-    """Commit a primary login or merge a JWXK-only gateway recovery."""
-    if target_service != "jwxk":
+    """Commit a primary login or merge a same-account service recovery."""
+    if target_service not in SERVICE_CONFIGS:
         _save_webvpn_password_login(client, remember)
         return
     active = peek_auth_client()
@@ -458,13 +459,13 @@ def start_webvpn_password_login(request: WebVPNPasswordStartRequest):
             client = NEUAuthClient(
                 request.username,
                 request.password,
-                cookie_file=COOKIE_FILE,
+                cookie_file=COOKIE_FILE if request.target_service == "primary" else None,
                 network_mode="webvpn",
                 restore_session=False,
             )
             result = (
-                client.start_webvpn_password_login(target_service="jwxk")
-                if request.target_service == "jwxk"
+                client.start_webvpn_password_login(target_service=request.target_service)
+                if request.target_service in SERVICE_CONFIGS
                 else client.start_webvpn_password_login()
             )
             if result["status"] == "authenticated":

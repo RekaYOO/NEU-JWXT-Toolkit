@@ -23,6 +23,10 @@ export const downloadLog = async (category, date) => {
 };
 
 const authRecoveryPromises = new Map();
+const serviceRecoveryUrls = {
+  jwxk: '/api/course-selection/jwxk/status',
+  cxcy: '/api/export/festival-activities/status',
+};
 const singleFlightRequests = new Map();
 const cacheJobWatchers = new Map();
 let clientBootstrapSnapshot = null;
@@ -47,14 +51,12 @@ const takeBootstrapResource = (key) => {
 
 const trySilentAuthRecovery = async (scope = 'primary') => {
   if (!authRecoveryPromises.has(scope)) {
-    const statusUrl = scope === 'jwxk'
-      ? '/api/course-selection/jwxk/status'
-      : '/api/status';
+    const statusUrl = serviceRecoveryUrls[scope] || '/api/status';
     const recovery = api.get(statusUrl, {
       skipAuthRedirect: true,
     }).then(response => ({
       recovered: Boolean(
-        scope === 'jwxk'
+        serviceRecoveryUrls[scope]
           ? response.data?.service_authenticated
           : response.data?.is_logged_in
       ),
@@ -84,7 +86,7 @@ api.interceptors.response.use(
         && !error.config?.url?.startsWith('/api/access/')
         && !error.config?.url?.startsWith('/api/offline/')
       ) {
-        if (!error.config?._silentAuthRecoveryRetried) {
+        if (!error.config?._silentAuthRecoveryRetried && error.config?.authRecoveryRetry !== false) {
           const recoveryScope = error.config?.authRecoveryScope || 'primary';
           const recovery = await trySilentAuthRecovery(recoveryScope);
           if (recovery.recovered && !isManualLogoutActive()) {
@@ -94,6 +96,7 @@ api.interceptors.response.use(
             });
           }
           if (isWebVPNCampusNetworkBlocked(recovery.status)) {
+            if (serviceRecoveryUrls[recoveryScope]) return Promise.reject(error);
             window.dispatchEvent(new CustomEvent('neu-webvpn-campus-blocked', {
               detail: recovery.status,
             }));
@@ -106,13 +109,14 @@ api.interceptors.response.use(
         // A JWXK business session can expire while the primary JWXT session
         // remains valid.  Never turn that service-local failure into the
         // application-wide "教务会话已失效" flow.
-        if (error.config?.authRecoveryScope !== 'jwxk') {
+        if (!serviceRecoveryUrls[error.config?.authRecoveryScope]) {
           window.dispatchEvent(new CustomEvent('neu-auth-required'));
         }
       }
     }
     const detail = error.response?.data?.detail;
     if (typeof detail === 'string' && detail.trim()) error.message = detail;
+    else if (detail?.message) error.message = detail.message;
     return Promise.reject(error);
   }
 );
@@ -483,9 +487,22 @@ export const getOfflineFestivalActivities = async () => {
 export const getFestivalActivities = async () => {
   const response = await api.get('/api/export/festival-activities', {
     timeout: 180000,
+    authRecoveryScope: 'cxcy',
   });
   return response.data;
 };
+
+export const getFestivalServiceStatus = async () => (
+  await api.get('/api/export/festival-activities/status', {
+    skipAuthRedirect: true, timeout: 60000,
+  })
+).data;
+
+export const updateFestivalSettings = async networkMode => (
+  await api.put('/api/export/festival-activities/settings', { network_mode: networkMode }, {
+    params: { probe: false }, skipAuthRedirect: true,
+  })
+).data;
 
 export const getFestivalActivitiesCache = async () => {
   const response = await api.get('/api/export/festival-activities/cache', {
@@ -504,7 +521,7 @@ const decodeBlobError = async (error) => {
   if (!(blob instanceof Blob)) return error;
   try {
     const payload = JSON.parse(await blob.text());
-    const detail = payload.detail || payload.message || '证书打包失败';
+    const detail = payload.detail?.message || payload.detail || payload.message || '证书打包失败';
     const decoded = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
     decoded.response = { ...error.response, data: payload };
     return decoded;
@@ -526,7 +543,10 @@ export const downloadFestivalCertificates = async ({ startDate, endDate }) => {
     const response = await api.post(
       '/api/export/festival-activities/certificates/archive',
       { start_date: startDate, end_date: endDate },
-      { responseType: 'blob', nativeDownload: true, timeout: 180000 },
+      {
+        responseType: 'blob', nativeDownload: true, timeout: 180000,
+        authRecoveryScope: 'cxcy', authRecoveryRetry: false,
+      },
     );
     return {
       blob: response.data,
@@ -1167,7 +1187,7 @@ export const checkScheduleConflicts = async (data) => {
 export const getJwxkStatus = async (config = {}) => {
   const response = await api.get('/api/course-selection/jwxk/status', {
     authRecoveryScope: 'jwxk',
-    timeout: 10000,
+    timeout: 60000,
     ...config,
   });
   return response.data;

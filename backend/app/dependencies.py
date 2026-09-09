@@ -290,7 +290,22 @@ def _fetch_research_resource(context):
 
 
 def _fetch_festival_resource(context):
-    return fetch_festival_activities(_cache_client(context))
+    return fetch_festival_activities(get_festival_service_client(_cache_client(context)))
+
+
+def get_festival_service_client(auth):
+    from backend.core.festival_service import FestivalServiceClient
+
+    attach_saved_auth_credentials(auth)
+    return FestivalServiceClient(
+        auth, get_storage(), allow_identity_recovery=peek_pending_auth_client() is None,
+    )
+
+
+def require_festival_service_auth():
+    # Child-session establishment must not upgrade a shared read lock.
+    with remote_session_guard(priority="foreground", label="cxcy-service-route"):
+        yield get_festival_service_client(require_cached_auth_identity())
 
 
 def _fetch_personal_timetable_resource(context):

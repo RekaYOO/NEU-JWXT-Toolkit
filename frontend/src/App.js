@@ -49,6 +49,7 @@ import { browserTimetableRecoveryIdentity } from './resources/BrowserTimetableSt
 import './App.css';
 import { loadSetting } from './utils/settings';
 import WebVPNAuthModal from './components/WebVPNAuthModal';
+import { hasServiceAuthOwner } from './components/ServiceConnection';
 
 const { Content } = Layout;
 dayjs.locale('zh-cn');
@@ -543,6 +544,7 @@ function App() {
     const onPending = event => {
       const challenge = event.detail || {};
       if (!challenge.required) return;
+      if (hasServiceAuthOwner(challenge.target_service)) return;
       setPendingAuthFlow(previous => ({ ...previous, ...challenge }));
     };
     const wake = () => window.dispatchEvent(new CustomEvent('neu-client-updates-wake'));
@@ -625,13 +627,19 @@ function App() {
   };
 
   const verifyPendingSms = async () => {
-    if (!pendingAuthFlow || !pendingSmsCode.trim()) {
+    if (!pendingAuthFlow || (!pendingAuthFlow.sms_verified && !pendingSmsCode.trim())) {
       message.warning('请输入短信验证码');
       return;
     }
     setPendingSmsLoading(true);
     try {
       const result = await verifyWebVPNSMSCode(pendingAuthFlow.flow_id, pendingSmsCode.trim());
+      if (result.sms_verified && result.status === 'session_pending') {
+        setPendingAuthFlow(previous => ({ ...previous, ...result }));
+        setPendingSmsCode('');
+        message.warning(result.message);
+        return;
+      }
       if (isCampusNetworkBlocked(result)) {
         setPendingAuthFlow(null);
         message.warning({
@@ -656,7 +664,11 @@ function App() {
       setPendingCaptchaCode('');
       setPendingSmsCode('');
       setPendingSmsSent(false);
-      handleLoginSuccess(result.username || userInfo || '已登录');
+      if (['jwxk', 'cxcy'].includes(result.target_service || pendingAuthFlow.target_service)) {
+        message.success('业务系统 WebVPN 登录已恢复');
+      } else {
+        handleLoginSuccess(result.username || userInfo || '已登录');
+      }
     } catch (error) {
       if (isCampusNetworkBlocked(error)) {
         setPendingAuthFlow(null);

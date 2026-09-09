@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
+from backend.core.network import WebVPNUrlCodec
 
 
 CXCY_ORIGIN = "https://cxcy.neu.edu.cn"
@@ -77,8 +78,18 @@ def _activity_id(url: str) -> str:
 
 
 def _safe_cache_url(url: str) -> str:
-    parsed = urlparse(urljoin(CXCY_ORIGIN, url))
-    if parsed.hostname != "cxcy.neu.edu.cn":
+    try:
+        source = urlparse(url)
+        # Legacy activity pages emit HTTP links; upgrade only this exact
+        # origin before validation. Certificate inputs remain HTTPS-only.
+        if (
+            source.scheme == "http" and source.hostname == "cxcy.neu.edu.cn"
+            and source.port in {None, 80}
+            and source.username is None and source.password is None
+        ):
+            url = urlunparse(("https", "cxcy.neu.edu.cn", source.path, source.params, source.query, source.fragment))
+        parsed = urlparse(WebVPNUrlCodec.restore_service_url(url, origin=CXCY_ORIGIN))
+    except ValueError:
         return ""
     query = [
         (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
@@ -97,10 +108,10 @@ def _record_container(link: Any, section: str) -> Any:
             continue
         detail_links = 0
         for candidate in parent.find_all("a", href=True):
-            href = urljoin(
+            href = _safe_cache_url(urljoin(
                 f"{CXCY_ORIGIN}/{section}/comp/ucenter/main/index",
                 str(candidate.get("href") or ""),
-            )
+            ))
             if urlparse(href).path == detail_path and _activity_id(href):
                 detail_links += 1
         if detail_links > 1:
@@ -121,6 +132,10 @@ def _record_container(link: Any, section: str) -> Any:
 def _certificate_url(raw_url: str, section: str) -> str:
     """Accept only the static image directory assigned to this section."""
     if not raw_url:
+        return ""
+    try:
+        raw_url = WebVPNUrlCodec.restore_service_url(raw_url, origin=CXCY_ORIGIN)
+    except ValueError:
         return ""
     parsed_input = urlparse(raw_url)
     if parsed_input.scheme and parsed_input.scheme != "https":
@@ -198,10 +213,10 @@ def parse_participation_page(html: str, section: str) -> tuple[list[FestivalActi
     activities: list[FestivalActivity] = []
     seen: set[str] = set()
     for link in soup.find_all("a", href=True):
-        href = urljoin(
+        href = _safe_cache_url(urljoin(
             f"{CXCY_ORIGIN}/{section}/comp/ucenter/main/index",
             str(link.get("href") or ""),
-        )
+        ))
         parsed_href = urlparse(href)
         if (
             parsed_href.hostname != "cxcy.neu.edu.cn"
@@ -240,7 +255,7 @@ def parse_participation_page(html: str, section: str) -> tuple[list[FestivalActi
         ))
     pages: set[str] = set()
     for link in soup.find_all("a", href=True):
-        href = urljoin(f"{CXCY_ORIGIN}/{section}/comp/ucenter/main/index", link["href"])
+        href = _safe_cache_url(urljoin(f"{CXCY_ORIGIN}/{section}/comp/ucenter/main/index", link["href"]))
         parsed = urlparse(href)
         if parsed.hostname == "cxcy.neu.edu.cn" and parsed.path.startswith(f"/{section}/comp/ucenter/"):
             query = dict(parse_qsl(parsed.query))

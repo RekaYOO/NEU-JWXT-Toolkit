@@ -34,6 +34,45 @@ class WebVPNUrlCodec:
         return cipher.encrypt(hostname.encode("utf-8")).hex()
 
     @classmethod
+    def restore_service_url(cls, url: str, *, origin: str) -> str:
+        """Unwrap only the exact HTTPS proxy prefix for a registered origin."""
+        from urllib.parse import urljoin, unquote
+
+        raw_path = urlsplit(url).path
+        decoded = unquote(raw_path)
+        if (
+            "\\" in url or unquote(decoded) != decoded
+            or any(part in {".", ".."} for part in decoded.split("/"))
+            or any(ord(char) < 32 for char in url)
+        ):
+            raise ValueError("unsafe service path")
+
+        parsed = urlsplit(urljoin(origin, url))
+        target = urlsplit(origin)
+        if (
+            parsed.scheme != "https" or parsed.username is not None
+            or parsed.password is not None or parsed.port not in {None, 443}
+        ):
+            raise ValueError("untrusted service URL")
+        proxy_path = parsed.path.startswith(("/https/", "/https-443/", "/http/"))
+        if parsed.hostname == "webvpn.neu.edu.cn" or proxy_path:
+            prefixes = (
+                f"/https/{URL_PREFIX}{cls.encrypt_hostname(target.hostname)}/",
+                f"/https-443/{URL_PREFIX}{cls.encrypt_hostname(target.hostname)}/",
+            )
+            if parsed.hostname not in {"webvpn.neu.edu.cn", target.hostname}:
+                raise ValueError("untrusted proxy host")
+            prefix = next((value for value in prefixes if parsed.path.startswith(value)), None)
+            if prefix is None:
+                raise ValueError("untrusted proxy target")
+            path = "/" + parsed.path[len(prefix):]
+        else:
+            if parsed.hostname != target.hostname:
+                raise ValueError("untrusted service host")
+            path = parsed.path
+        return urlunsplit(("https", target.netloc, path, parsed.query, parsed.fragment))
+
+    @classmethod
     def convert_url(cls, url: str) -> str:
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:

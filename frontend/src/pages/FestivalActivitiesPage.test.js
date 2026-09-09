@@ -6,6 +6,7 @@ import FestivalActivitiesPage from './FestivalActivitiesPage';
 import { useCachedResource } from '../resources/ResourceStore';
 import {
   deleteFestivalActivitiesCache, downloadFestivalCertificates, getFestivalActivities,
+  getFestivalServiceStatus, updateFestivalSettings,
 } from '../services/api';
 import { currentAcademicYear } from '../export/festivalActivityUtils';
 
@@ -17,6 +18,8 @@ jest.mock('../services/api', () => ({
   deleteFestivalActivitiesCache: jest.fn(),
   downloadFestivalCertificates: jest.fn(),
   getFestivalActivities: jest.fn(),
+  getFestivalServiceStatus: jest.fn(),
+  updateFestivalSettings: jest.fn(),
 }));
 
 const resource = {
@@ -93,6 +96,13 @@ describe('FestivalActivitiesPage data mode flow', () => {
   });
 
   beforeEach(() => {
+    getFestivalServiceStatus.mockResolvedValue({
+      network_mode: 'follow', effective_network_mode: 'direct',
+      primary_authenticated: true, service_authenticated: true, service_auth_state: 'authenticated',
+    });
+    updateFestivalSettings.mockResolvedValue({
+      network_mode: 'webvpn', effective_network_mode: 'webvpn', service_auth_state: 'checking',
+    });
     localStorage.clear();
     jest.clearAllMocks();
     Object.assign(resource, {

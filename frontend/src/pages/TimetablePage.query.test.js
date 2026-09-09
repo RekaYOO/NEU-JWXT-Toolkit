@@ -21,13 +21,14 @@ jest.mock('../services/api', () => ({
   getTimetableTargetFilterOptions: jest.fn(),
   checkScheduleConflicts: jest.fn(),
 }));
+let mockRecoveryMode = false;
+const mockTimetableMemory = { data: null, publish: jest.fn() };
 jest.mock('../resources/ResourceStore', () => {
-  const memory = { data: null, publish: jest.fn() };
   return {
-    useResourceMemory: () => memory,
+    useResourceMemory: () => mockTimetableMemory,
     useResourceIdentity: () => 'query-fixture',
     useResourceOfflineMode: () => false,
-    useResourceRecoveryMode: () => false,
+    useResourceRecoveryMode: () => mockRecoveryMode,
   };
 });
 jest.mock('../resources/BrowserTimetableStore', () => ({
@@ -64,6 +65,8 @@ describe('query timetable request lifecycle', () => {
   let header;
   beforeEach(() => {
     jest.clearAllMocks();
+    mockRecoveryMode = false;
+    mockTimetableMemory.data = null;
     global.IS_REACT_ACT_ENVIRONMENT = true;
     window.matchMedia = () => ({
       matches: false, addListener: jest.fn(), removeListener: jest.fn(),
@@ -118,6 +121,114 @@ describe('query timetable request lifecycle', () => {
     await click(container.querySelector('.timetable-target-result-card'));
   };
   const week = number => container.querySelector(`[data-week="${number}"]`);
+
+  test.each(['week', 'term'])(
+    'desktop cached %s timetable never auto-scrolls while breakpoints initialize',
+    async viewMode => {
+      window.matchMedia = () => ({
+        matches: true, addListener: jest.fn(), removeListener: jest.fn(),
+        addEventListener: jest.fn(), removeEventListener: jest.fn(),
+      });
+      mockTimetableMemory.data = {
+        payload: personal, terms: [{ code: termCode, name: '测试学期', current: true }],
+        currentTermCode: termCode, campusCode: '00', weekNumber: 1, viewMode,
+      };
+      await act(async () => root.render(
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <TimetablePage />
+        </MemoryRouter>,
+      ));
+      await flush();
+      expect(container.textContent).toContain('个人课程');
+      expect(container.querySelector('.timetable-desktop-controls')).not.toBeNull();
+      expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+      expect(window.scrollTo).not.toHaveBeenCalled();
+      expect(container.querySelector('.timetable-page').style.paddingBottom).toBe('');
+    },
+  );
+
+  test.each(['week', 'term'])(
+    'small-screen cached %s timetable retains its initial auto-focus',
+    async viewMode => {
+      mockTimetableMemory.data = {
+        payload: personal, terms: [{ code: termCode, name: '测试学期', current: true }],
+        currentTermCode: termCode, campusCode: '00', weekNumber: 1, viewMode,
+      };
+      await act(async () => root.render(
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <TimetablePage />
+        </MemoryRouter>,
+      ));
+      await flush();
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({
+        block: 'start', inline: 'nearest', behavior: 'auto',
+      });
+      const anchors = Element.prototype.scrollIntoView.mock.instances;
+      expect(anchors.every(anchor => viewMode === 'week'
+        ? anchor.querySelector('[data-week]') !== null
+        : anchor.classList.contains('timetable-mobile-day-selector'))).toBe(true);
+    },
+  );
+
+  test('keeps a cached personal timetable stable when online mode takes over', async () => {
+    const termsRequest = deferred();
+    const bootstrapRequest = deferred();
+    const cached = {
+      ...personal,
+      source: 'browser',
+      is_fresh: false,
+      cache: { saved_at: '2026-09-09T08:00:00Z' },
+    };
+    mockRecoveryMode = true;
+    readBrowserTimetableCache.mockResolvedValue({
+      terms: [{ code: termCode, name: '测试学期', current: true }],
+      current: termCode,
+      personal: [cached],
+      viewState: { termCode, campusCode: '00', weekNumber: 1, viewMode: 'week' },
+    });
+    getTimetableTerms.mockReturnValue(termsRequest.promise);
+    getTimetableBootstrap.mockReturnValue(bootstrapRequest.promise);
+
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+    const timetable = container.querySelector('.timetable-desktop');
+    expect(timetable).not.toBeNull();
+    expect(container.textContent).toContain('个人课程');
+
+    mockRecoveryMode = false;
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+
+    expect(container.querySelector('.timetable-desktop')).toBe(timetable);
+    expect(container.textContent).toContain('个人课程');
+    expect(container.querySelector('.timetable-refresh-button.ant-btn-loading')).toBeNull();
+    expect(getPersonalTimetable).not.toHaveBeenCalled();
+
+    await act(async () => {
+      termsRequest.resolve({
+        terms: [{ code: termCode, name: '测试学期', current: true }],
+        current: termCode,
+      });
+      bootstrapRequest.resolve({
+        terms: [{ code: termCode, name: '测试学期', current: true }],
+        current: termCode,
+        personal: [{ ...cached, cache: { saved_at: '2026-09-09T08:05:00Z' } }],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.timetable-desktop')).toBe(timetable);
+    expect(getPersonalTimetable).not.toHaveBeenCalled();
+  });
 
   test.each(['教室课表', '教师课表', '班级课表'])(
     '%s places a service error only below the mobile results and retries there', async label => {
