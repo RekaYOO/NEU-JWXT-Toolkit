@@ -81,9 +81,14 @@ describe.each(['local', 'client'])('%s native workflow parity', kind => {
         const id = `parity-${++sequence}`;
         requests.push(request);
         Promise.resolve().then(() => handler(request.path, request))
-          .then(body => window.__neuNativeDeliver(id, {
-            status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-          }));
+          .then(result => {
+            const { __httpStatus = 200, ...body } = result;
+            window.__neuNativeDeliver(id, {
+              status: __httpStatus,
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+            });
+          });
         return id;
       },
       cancel: jest.fn(),
@@ -141,6 +146,28 @@ describe.each(['local', 'client'])('%s native workflow parity', kind => {
     expect(onLoginSuccess).toHaveBeenCalledWith('20250001');
     expect(requests.filter(request => request.path === '/api/webvpn/sms/verify')).toHaveLength(1);
     expect(window.NeuNative.cancel).not.toHaveBeenCalled();
+  });
+
+  test('structured direct failure survives a non-2xx native response and switches to WebVPN', async () => {
+    const initialHandler = handler;
+    handler = path => {
+      if (path === '/api/login') return {
+        __httpStatus: 503,
+        success: false,
+        requires_webvpn: true,
+        error_code: 'DIRECT_ACCESS_FAILED',
+        suggestion: '校外网络请选择 WebVPN。',
+      };
+      return initialHandler(path);
+    };
+
+    await render(<LoginPage onLoginSuccess={jest.fn()} onOfflineSuccess={jest.fn()} />);
+    await input('input[placeholder="学号"]', '20250001');
+    await input('input[placeholder="密码"]', 'synthetic-password');
+    await submit();
+
+    expect(container.querySelector('input[value="webvpn"]').checked).toBe(true);
+    expect(document.body.textContent).toContain('校外网络请选择 WebVPN。');
   });
 
   test('entering outlines automatically loads the first page without storing full outlines', async () => {

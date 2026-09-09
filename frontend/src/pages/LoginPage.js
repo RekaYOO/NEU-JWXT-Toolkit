@@ -55,6 +55,18 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     return true;
   }, []);
 
+  const handleDirectWebVPNRequired = useCallback((value) => {
+    const payload = value?.response?.data || value;
+    if (!payload?.requires_webvpn) return false;
+    setNetworkMode('webvpn');
+    message.warning(
+      payload.suggestion
+      || payload.message
+      || '当前网络无法直连教务系统，请切换到 WebVPN 后继续登录。',
+    );
+    return true;
+  }, []);
+
   // 自然会话失效时允许再次静默恢复；用户明确退出后则只读取离线能力，
   // 避免 Cookie 或已保存凭据把用户立即带回主界面。
   useEffect(() => {
@@ -328,14 +340,15 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       
       if (result.success) {
         onLoginSuccess(result.username);
-      } else if (result.requires_webvpn) {
-        setNetworkMode('webvpn');
-        message.warning(result.suggestion || '当前网络需要 WebVPN，请切换后继续登录。');
+      } else if (handleDirectWebVPNRequired(result)) {
+        return;
       } else {
         message.error(result.message || result.suggestion || '登录失败');
       }
     } catch (error) {
-      message.error('登录请求失败: ' + error.message);
+      if (!handleDirectWebVPNRequired(error)) {
+        message.error(getWebVPNErrorMessage(error, '登录请求失败，请检查服务端连接。'));
+      }
     } finally {
       if (slowTimer) clearTimeout(slowTimer);
       message.destroy(slowRequestKey);

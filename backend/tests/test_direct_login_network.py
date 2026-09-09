@@ -27,6 +27,37 @@ def test_unreachable_direct_login_returns_webvpn_hint_after_one_attempt(monkeypa
     sleep.assert_not_called()
 
 
+def test_cas_login_page_without_explicit_rejection_returns_webvpn_hint(monkeypatch):
+    client = NEUAuthClient("20240001", "synthetic-password", restore_session=False)
+    login_page = Mock(
+        url=auth_module.CAS_LOGIN_URL,
+        text='<form id="loginForm"><input type="hidden" name="lt" value="synthetic"></form>',
+    )
+    login_page.raise_for_status = Mock()
+    submit_response = Mock(
+        url=auth_module.CAS_LOGIN_URL,
+        text='<form id="loginForm"></form>',
+    )
+    submit_response.raise_for_status = Mock()
+    monkeypatch.setattr(client._session, "get", Mock(return_value=login_page))
+    monkeypatch.setattr(client, "_submit_login_form", Mock(return_value=submit_response))
+    refresh_key = Mock()
+    monkeypatch.setattr(auth_module, "_fetch_rsa_key_from_server", refresh_key)
+    monkeypatch.setattr(auth_router, "NEUAuthClient", Mock(return_value=client))
+
+    result = auth_router.login(LoginRequest(
+        username="20240001",
+        password="synthetic-password",
+        network_mode="direct",
+    ))
+
+    assert not result.success
+    assert result.requires_webvpn
+    assert result.error_code == "DIRECT_ACCESS_FAILED"
+    assert "WebVPN" in result.suggestion
+    refresh_key.assert_not_called()
+
+
 def test_lost_password_response_is_not_treated_as_a_rotated_rsa_key(monkeypatch):
     client = NEUAuthClient("20240001", "synthetic-password", restore_session=False)
     page = Mock(url=auth_module.CAS_LOGIN_URL, text='<input name="lt" value="synthetic">')

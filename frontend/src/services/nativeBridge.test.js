@@ -81,6 +81,31 @@ describe('native Android bridge', () => {
       .resolves.toMatchObject({ status: 404, data: { detail: 'missing' } });
   });
 
+  test('preserves structured backend guidance on non-success responses', async () => {
+    window.NeuNative = { request: () => 'direct-failure' };
+    const pending = nativeAxiosAdapter({ url: '/api/login', method: 'post' });
+    window.__neuNativeDeliver('direct-failure', {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        requires_webvpn: true,
+        error_code: 'DIRECT_ACCESS_FAILED',
+        suggestion: '校外网络请选择 WebVPN。',
+      }),
+    });
+
+    await expect(pending).rejects.toMatchObject({
+      response: {
+        status: 503,
+        data: {
+          requires_webvpn: true,
+          error_code: 'DIRECT_ACCESS_FAILED',
+          suggestion: '校外网络请选择 WebVPN。',
+        },
+      },
+    });
+  });
+
   test('preserves timeout errors without fabricating an HTTP response', async () => {
     window.NeuNative = { request: () => 'timeout' };
     const result = nativeAxiosAdapter({ url: '/api/status' });

@@ -581,7 +581,12 @@ class NEUAuthClient:
                 self.active_mode = "webvpn"
                 raise WebVPNRequiredError("教务系统已跳转到 WebVPN 登录页")
             if urlparse(final_url).netloc == urlparse(CAS_LOGIN_URL).netloc:
-                return self._extract_error_message(resp2.text)
+                error_message = self._find_login_error_message(resp2.text)
+                if not error_message:
+                    raise DirectAccessError(
+                        "直连认证未能进入教务系统，请检查校园网络；校外请切换 WebVPN 模式"
+                    )
+                return error_message
             
             return None  # 登录成功
             
@@ -2766,14 +2771,19 @@ class NEUAuthClient:
         return fields
 
     @staticmethod
-    def _extract_error_message(html: str) -> str:
-        """提取错误信息"""
+    def _find_login_error_message(html: str) -> Optional[str]:
+        """Return an explicit CAS error, without inventing an unknown one."""
         soup = BeautifulSoup(html, "lxml")
         for selector in ["#errormsg", ".error", "#errormsghide", ".alert"]:
             el = soup.select_one(selector)
             if el and el.get_text(strip=True):
                 return el.get_text(strip=True)
-        return "未知错误"
+        return None
+
+    @staticmethod
+    def _extract_error_message(html: str) -> str:
+        """Extract a legacy display message for non-direct login flows."""
+        return NEUAuthClient._find_login_error_message(html) or "未知错误"
 
     @staticmethod
     def _swap_protocol(url: str) -> str:

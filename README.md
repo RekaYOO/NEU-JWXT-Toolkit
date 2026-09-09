@@ -6,7 +6,8 @@
 
 面向东北大学教务场景的第三方工具箱。项目把成绩、培养计划、课表、考试、课程大纲、
 选课、评教、科研训练和资料导出集中到一个响应式 Web 界面，并通过本地缓存改善官方系统
-响应慢或暂时不可用时的使用体验。当前发行版本为 `2.0.0`。
+响应慢或暂时不可用时的使用体验。当前稳定版本及安装包见
+[GitHub Releases](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest)。
 
 项目支持 Windows 本机应用、Linux 单用户轻量服务、Android 客户端/本地版和源码开发。它不是东北大学
 官方产品，也不会绕过学校的身份认证、选课资格或业务规则。
@@ -118,8 +119,9 @@ python start_all.py --port 8080
 
 ```bash
 git pull origin main
-git tag v2.0.0
-git push origin v2.0.0
+version="$(tr -d '\r\n' < VERSION)"
+git tag "v${version}"
+git push origin "v${version}"
 ```
 
 推送标签后，GitHub Actions 会依次完成前端、Linux 服务端、Windows 便携版、Android 双 APK、
