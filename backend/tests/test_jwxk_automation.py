@@ -615,6 +615,34 @@ def test_legacy_cancelled_tasks_are_removed_on_restart(tmp_path):
     assert _service(tmp_path).list("student") == []
 
 
+def test_legacy_weight_catalog_capacity_is_migrated_in_archive_and_query_cache(tmp_path):
+    archive_path = tmp_path / "course_selection_catalog_history.json"
+    legacy_course = {
+        "class_id": "CLASS-1", "course_code": "COURSE-1", "course_name": "示例课程",
+        "teaching_class_type": "XGKC", "capacity": 150, "selected_count": 149,
+        "weight_participant_count": 5, "market_participant_count": 5,
+    }
+    archive_path.write_text(json.dumps([{
+        "archive_id": "archive-1", "account": "student", "batch_code": "batch",
+        "selection_type_code": "04", "courses": [legacy_course],
+        "query_cache": {"query": {"payload": {
+            "courses": [dict(legacy_course)],
+            "groups": [{"group_id": "COURSE-1", "classes": [dict(legacy_course)]}],
+        }}},
+    }]), encoding="utf-8")
+
+    service = _service(tmp_path)
+    archived = service.get_catalog_archive_view("student", "batch")["courses"][0]
+    cached = service.get_catalog_query("student", batch_code="batch", query_key="query")
+
+    assert archived["total_capacity"] == 150
+    assert archived["capacity"] == 1
+    assert archived["market_capacity_label"] == "可选容量"
+    assert cached["courses"][0]["capacity"] == 1
+    assert cached["groups"][0]["classes"][0]["capacity"] == 1
+    assert cached["groups"][0]["available_count"] == 0
+
+
 def test_catalog_archives_are_account_scoped_and_only_deleted_explicitly(tmp_path):
     service = _service(tmp_path)
     archive = service.merge_catalog_archive(
@@ -1072,7 +1100,7 @@ def test_underfilled_warning_only_lists_current_weighted_courses(tmp_path):
     subject, body, _, html_body = messages[0]
     assert subject == "JWXK 关注课程开课风险提示"
     assert "已投课程-W1" in body
-    assert "已投注人数：8 / 容量：30" in body
+    assert "已投注人数：8 / 可选容量：30" in body
     assert "我的投权" in html_body
     assert "未投课程" not in body
 

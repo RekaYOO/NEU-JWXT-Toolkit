@@ -643,6 +643,10 @@ def _normalize_class(row: dict[str, Any], parent: dict[str, Any]) -> dict[str, A
         "teacher_details": _teacher_details(course.get("SKJSLB")),
         "teacher_titles": _text(course.get("SKJSZC")),
         "target_classes": _target_classes(course),
+        # KRL/classCapacity is the teaching-class total.  Weight rounds show
+        # the remaining quota as 可选容量, which is derived once the active
+        # round is known by apply_selection_market_semantics.
+        "total_capacity": capacity,
         "capacity": capacity,
         "selected_count": selected,
         "first_choice_count": _number(course.get("DYZYRS") or course.get("numberOfFirstVolunteer")),
@@ -695,10 +699,29 @@ def normalize_course_rows(rows: Any) -> list[dict[str, Any]]:
 def apply_selection_market_semantics(
     courses: list[dict[str, Any]], selection_type_code: str,
 ) -> list[dict[str, Any]]:
-    """Attach the correct anonymous participant metric for the active round."""
+    """Attach the official participant and capacity semantics for one round.
+
+    JWXK's KRL field is the teaching-class total.  In weight rounds the
+    official table labels KRL - YXRS as 可选容量, while QZXKRS is the number
+    competing for those remaining places.  Keep the raw total separately so
+    repeated normalization and persisted archives remain lossless.
+    """
 
     is_weight_round = _text(selection_type_code) == "04"
     for course in courses:
+        total_capacity = course.get("total_capacity")
+        if total_capacity is None:
+            total_capacity = course.get("capacity")
+        if total_capacity is not None:
+            course["total_capacity"] = total_capacity
+        selected_count = course.get("selected_count")
+        if is_weight_round and total_capacity is not None and selected_count is not None:
+            try:
+                course["capacity"] = max(0, int(total_capacity) - int(selected_count))
+            except (TypeError, ValueError):
+                course["capacity"] = total_capacity
+        else:
+            course["capacity"] = total_capacity
         participant_count = (
             course.get("weight_participant_count")
             if is_weight_round else course.get("selected_count")
@@ -706,6 +729,7 @@ def apply_selection_market_semantics(
         course["selection_type_code"] = _text(selection_type_code)
         course["market_participant_count"] = participant_count
         course["market_participant_label"] = "已投注人数" if is_weight_round else "已选人数"
+        course["market_capacity_label"] = "可选容量" if is_weight_round else "容量"
         # 权重轮次允许投注人数超过容量，不能用 YXRS 或容量边界阻止投权。
         if is_weight_round:
             course["full"] = False

@@ -73,7 +73,7 @@
 
 .timetable-controls {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(160px, .72fr) auto minmax(170px, .9fr) auto;
+  grid-template-columns: minmax(180px, 1fr) minmax(150px, .72fr) auto minmax(165px, .85fr) minmax(170px, .85fr) auto;
   gap: var(--space-3);
   align-items: end;
   margin-bottom: var(--space-4);
@@ -82,7 +82,7 @@
 }
 
 .timetable-controls:has(.timetable-target-field) {
-  grid-template-columns: minmax(170px, .9fr) minmax(240px, 1.4fr) minmax(150px, .7fr) auto minmax(170px, .9fr) auto;
+  grid-template-columns: minmax(165px, .8fr) minmax(230px, 1.25fr) minmax(145px, .65fr) auto minmax(160px, .75fr) minmax(165px, .75fr) auto;
 }
 
 .timetable-controls label,
@@ -100,6 +100,22 @@
 .timetable-target-select,
 .timetable-filter-field .ant-select {
   width: 100%;
+}
+
+.timetable-time-filter-group {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 4px 0;
+}
+
+.timetable-time-filter-group .ant-checkbox-wrapper {
+  margin-inline-start: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .timetable-target-search-row {
@@ -2039,6 +2055,11 @@
 
   .timetable-filter-field > span {
     color: var(--color-ink);
+  }
+
+  .timetable-filter-field .timetable-time-filter-group {
+    min-height: 40px;
+    padding: 6px 0;
   }
 }
 

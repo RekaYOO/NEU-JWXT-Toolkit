@@ -30,6 +30,7 @@ import {
   removeSelectionRecord,
   selectionParticipantCount,
   selectionParticipantLabel,
+  selectionCapacityLabel,
   selectionTimeConflictStatus,
   sortCatalogGroupsBySelectability,
   summarizeSelectionConflictsByClass,
@@ -40,6 +41,12 @@ import {
   UNGROUPED_WEIGHT_GROUP_ID,
   upsertSelectionRecord,
 } from './jwxkSchedule';
+
+test('weight rounds label the derived quota as selectable capacity', () => {
+  expect(selectionCapacityLabel({}, '04')).toBe('可选容量');
+  expect(selectionCapacityLabel({}, '02')).toBe('容量');
+  expect(selectionCapacityLabel({ market_capacity_label: '本轮名额' }, '04')).toBe('本轮名额');
+});
 
 test('conflict matches merge duplicate sources but keep distinct split-course times', () => {
   const merged = mergeSelectionConflictMatches([

@@ -122,6 +122,12 @@ export const selectionParticipantLabel = (course, selectionTypeCode = '') => (
   || jwxkSelectionMode(selectionTypeCode || course?.selection_type_code).participantLabel
 );
 
+export const selectionCapacityLabel = (course, selectionTypeCode = '') => (
+  course?.market_capacity_label
+  || (String(selectionTypeCode || course?.selection_type_code || '') === '04'
+    ? '可选容量' : '容量')
+);
+
 export const selectionTimeConflictStatus = result => {
   if (!result || result.status !== 'conflict') return result?.status || 'unknown';
   const confirmed = (result.matches || []).some(match => (

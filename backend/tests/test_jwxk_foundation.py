@@ -383,14 +383,49 @@ def test_round_market_semantics_distinguish_selected_and_weight_participants():
     }], "02")[0]
     assert grab["market_participant_count"] == 40
     assert grab["market_participant_label"] == "已选人数"
+    assert grab["market_capacity_label"] == "容量"
+    assert grab["total_capacity"] == 50
+    assert grab["capacity"] == 50
 
     weight = apply_selection_market_semantics([{
-        "selected_count": 50, "weight_participant_count": 63,
-        "capacity": 50, "full": True,
+        "selected_count": 149, "weight_participant_count": 5,
+        "capacity": 150, "full": True,
     }], "04")[0]
-    assert weight["market_participant_count"] == 63
+    assert weight["market_participant_count"] == 5
     assert weight["market_participant_label"] == "已投注人数"
+    assert weight["market_capacity_label"] == "可选容量"
+    assert weight["total_capacity"] == 150
+    assert weight["capacity"] == 1
     assert weight["full"] is False
+
+
+def test_weight_capacity_semantics_are_idempotent_and_tolerate_incomplete_rows():
+    courses = [{
+        "selected_count": 151, "weight_participant_count": 4, "capacity": 150,
+    }, {
+        "selected_count": None, "weight_participant_count": 8, "capacity": 10,
+    }]
+
+    apply_selection_market_semantics(courses, "04")
+    apply_selection_market_semantics(courses, "04")
+
+    assert courses[0]["total_capacity"] == 150
+    assert courses[0]["capacity"] == 0
+    assert courses[1]["total_capacity"] == 10
+    assert courses[1]["capacity"] == 10
+
+
+def test_weight_round_uses_official_remaining_quota_instead_of_class_total():
+    [course] = normalize_course_rows([{
+        "KCH": "COURSE-1", "KCM": "示例课程", "JXBID": "CLASS-1",
+        "KRL": 150, "YXRS": 149, "QZXKRS": 5,
+    }])
+
+    apply_selection_market_semantics([course], "04")
+
+    assert course["total_capacity"] == 150
+    assert course["capacity"] == 1
+    assert course["market_participant_count"] == 5
 
 
 def test_course_campus_keeps_request_code_and_user_facing_name_separate():

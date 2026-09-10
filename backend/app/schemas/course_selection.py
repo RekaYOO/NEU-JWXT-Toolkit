@@ -235,6 +235,7 @@ class JwxkCourseItem(StrictModel):
     teacher_details: list[dict[str, str]] = Field(default_factory=list)
     teacher_titles: str = ""
     target_classes: list[str] = Field(default_factory=list)
+    total_capacity: int | None = None
     capacity: int | None = None
     selected_count: int | None = None
     first_choice_count: int | None = None
@@ -242,6 +243,7 @@ class JwxkCourseItem(StrictModel):
     selection_type_code: str = ""
     market_participant_count: int | None = None
     market_participant_label: str = ""
+    market_capacity_label: str = ""
     capacity_updated_at: str = ""
     devoted_weight: int | None = None
     selection_source: str = ""

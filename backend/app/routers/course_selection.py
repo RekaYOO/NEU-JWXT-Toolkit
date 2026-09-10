@@ -551,9 +551,9 @@ def get_jwxk_selected(
                     live_by_class[class_id] = course
 
     enrichment_fields = (
-        "capacity", "selected_count", "first_choice_count",
+        "total_capacity", "capacity", "selected_count", "first_choice_count",
         "weight_participant_count", "market_participant_count",
-        "market_participant_label", "capacity_updated_at", "full",
+        "market_participant_label", "market_capacity_label", "capacity_updated_at", "full",
         "schedules", "location", "campus", "campus_name", "teacher",
         "teaching_class_type", "course_nature", "course_category",
         "normalized_course_category", "course_categories",

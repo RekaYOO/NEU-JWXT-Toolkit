@@ -21,8 +21,8 @@ from backend.core.runtime.config import secure_file
 from backend.core.scheduling import check_conflicts, normalize_meeting
 
 from .jwxk import (
-    JwxkError, JwxkRateLimitError, JwxkSessionClient, course_categories_equivalent,
-    group_course_rows, normalize_jwxk_campus_code,
+    JwxkError, JwxkRateLimitError, JwxkSessionClient, apply_selection_market_semantics,
+    course_categories_equivalent, group_course_rows, normalize_jwxk_campus_code,
 )
 from .modes import current_selection_records, is_real_teaching_class_type
 from .weight_optimizer import (
@@ -56,8 +56,9 @@ class CourseSelectionAutomationService:
     _CATALOG_RETRY_MAX_SECONDS = 300
     _CATALOG_STALE_PROGRESS_SECONDS = 120
     _CATALOG_DYNAMIC_FIELDS = (
-        "capacity", "selected_count", "full",
+        "total_capacity", "capacity", "selected_count", "full",
         "first_choice_count", "weight_participant_count", "market_participant_count",
+        "market_capacity_label",
     )
 
     def __init__(
@@ -412,6 +413,7 @@ class CourseSelectionAutomationService:
         selection_type = str(archive.get("selection_type_code") or "")
         is_weight = selection_type == "04"
         count_label = "已投注人数" if selection_type == "04" else "已选人数"
+        capacity_label = "可选容量" if is_weight else "容量"
         plain_rows = []
         html_rows = []
         for course in courses:
@@ -438,7 +440,7 @@ class CourseSelectionAutomationService:
             )
             plain_rows.append(
                 f"- {title}\n  {'；'.join(detail_bits)}\n  {count_label}：{count if count is not None else '待更新'} / "
-                f"容量：{course.get('capacity') if course.get('capacity') is not None else '待更新'}"
+                f"{capacity_label}：{course.get('capacity') if course.get('capacity') is not None else '待更新'}"
                 f"{weight_details}"
             )
             badges = "".join(
@@ -475,7 +477,7 @@ class CourseSelectionAutomationService:
         extra_headers = '<th style="padding:10px 12px">当前投权</th><th style="padding:10px 12px">预测选中概率</th>' if is_weight else ''
         column_count = 4 if is_weight else 2
         footer = "预测值是策略模型代理值，不是官方录取承诺。邮件发送失败不会触发或重放选课写操作。" if is_weight else "邮件发送失败不会触发或重放选课写操作。"
-        html_body = f'''<!doctype html><html><body style="margin:0;background:#f3f6fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;color:#25324b"><div style="max-width:760px;margin:0 auto;padding:24px 12px"><div style="background:linear-gradient(135deg,#1769e0,#6b8cff);padding:24px;border-radius:16px 16px 0 0;color:white"><div style="font-size:12px;opacity:.85">NEU JWXT TOOLKIT · 选课通知</div><h1 style="margin:8px 0 0;font-size:22px">{html.escape(heading)}</h1></div><div style="background:white;padding:20px;border-radius:0 0 16px 16px;box-shadow:0 8px 28px rgba(31,53,90,.08)"><div style="padding:12px 14px;background:#f7f9fc;border-radius:10px;line-height:1.8"><b>{html.escape(str(archive.get('batch_name') or archive.get('batch_code') or '选课轮次'))}</b><br>{html.escape(str(archive.get('term_name') or archive.get('term_code') or '学期待定'))}<br><span style="color:#667085">{html.escape(reason)}</span></div><div style="overflow-x:auto;margin-top:18px"><table style="width:100%;border-collapse:collapse;min-width:620px"><thead><tr style="background:#f7f9fc;color:#475467"><th style="padding:10px 12px;text-align:left">课程与来源</th><th style="padding:10px 12px">{html.escape(count_label)} / 容量</th>{extra_headers}</tr></thead><tbody>{''.join(html_rows) or f'<tr><td colspan="{column_count}" style="padding:24px;text-align:center;color:#667085">当前没有需要通知的课程</td></tr>'}</tbody></table></div><p style="margin:18px 0 0;color:#98a2b3;font-size:12px;line-height:1.6">{html.escape(footer)}</p></div></div></body></html>'''
+        html_body = f'''<!doctype html><html><body style="margin:0;background:#f3f6fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;color:#25324b"><div style="max-width:760px;margin:0 auto;padding:24px 12px"><div style="background:linear-gradient(135deg,#1769e0,#6b8cff);padding:24px;border-radius:16px 16px 0 0;color:white"><div style="font-size:12px;opacity:.85">NEU JWXT TOOLKIT · 选课通知</div><h1 style="margin:8px 0 0;font-size:22px">{html.escape(heading)}</h1></div><div style="background:white;padding:20px;border-radius:0 0 16px 16px;box-shadow:0 8px 28px rgba(31,53,90,.08)"><div style="padding:12px 14px;background:#f7f9fc;border-radius:10px;line-height:1.8"><b>{html.escape(str(archive.get('batch_name') or archive.get('batch_code') or '选课轮次'))}</b><br>{html.escape(str(archive.get('term_name') or archive.get('term_code') or '学期待定'))}<br><span style="color:#667085">{html.escape(reason)}</span></div><div style="overflow-x:auto;margin-top:18px"><table style="width:100%;border-collapse:collapse;min-width:620px"><thead><tr style="background:#f7f9fc;color:#475467"><th style="padding:10px 12px;text-align:left">课程与来源</th><th style="padding:10px 12px">{html.escape(count_label)} / {html.escape(capacity_label)}</th>{extra_headers}</tr></thead><tbody>{''.join(html_rows) or f'<tr><td colspan="{column_count}" style="padding:24px;text-align:center;color:#667085">当前没有需要通知的课程</td></tr>'}</tbody></table></div><p style="margin:18px 0 0;color:#98a2b3;font-size:12px;line-height:1.6">{html.escape(footer)}</p></div></div></body></html>'''
         return plain, html_body
 
     def _write(self) -> None:
@@ -549,12 +551,41 @@ class CourseSelectionAutomationService:
     def _normalize_archived_courses(self) -> bool:
         changed = False
         for archive in self._archives:
+            selection_type_code = str(archive.get("selection_type_code") or "")
             previous = list(archive.get("courses") or [])
             cleaned = [
                 normalized for course in previous
                 if (normalized := self._persistable_archive_course(course)) is not None
             ]
-            if cleaned != previous:
+            apply_selection_market_semantics(cleaned, selection_type_code)
+            query_cache = archive.get("query_cache")
+            previous_query_cache = copy.deepcopy(query_cache)
+            if isinstance(query_cache, dict):
+                for cached in query_cache.values():
+                    payload = cached.get("payload") if isinstance(cached, dict) else None
+                    if not isinstance(payload, dict):
+                        continue
+                    payload_courses = payload.get("courses")
+                    if isinstance(payload_courses, list):
+                        apply_selection_market_semantics(payload_courses, selection_type_code)
+                    for group in payload.get("groups") or []:
+                        classes = group.get("classes") if isinstance(group, dict) else None
+                        if not isinstance(classes, list):
+                            continue
+                        apply_selection_market_semantics(classes, selection_type_code)
+                        available_count = 0
+                        for course in classes:
+                            try:
+                                available = (
+                                    course.get("capacity") is not None
+                                    and course.get("market_participant_count") is not None
+                                    and int(course["capacity"]) > int(course["market_participant_count"])
+                                )
+                            except (TypeError, ValueError):
+                                available = False
+                            available_count += int(available)
+                        group["available_count"] = available_count
+            if cleaned != previous or query_cache != previous_query_cache:
                 archive["courses"] = cleaned
                 archive["updated_at"] = datetime.now().astimezone().isoformat()
                 changed = True
@@ -569,9 +600,10 @@ class CourseSelectionAutomationService:
             "normalized_course_category", "general_elective_category_code",
             "general_elective_category", "exam_type_code", "exam_type",
             "score_scale_code", "score_scale", "teaching_mode", "teacher_details",
-            "teacher_titles", "target_classes", "capacity",
+            "teacher_titles", "target_classes", "total_capacity", "capacity",
             "selected_count", "first_choice_count", "weight_participant_count", "devoted_weight",
             "selection_type_code", "market_participant_count", "market_participant_label",
+            "market_capacity_label",
             "conflict", "conflict_description", "restricted", "eligibility_status",
             "eligibility_reason", "full", "selected", "has_test", "has_book", "notice", "schedules",
         }
@@ -1051,9 +1083,9 @@ class CourseSelectionAutomationService:
             "plan_group_id", "plan_group_name", "plan_group_target_count",
             "course_code", "course_name", "class_id", "class_number",
             "teaching_class_type", "teacher", "utility",
-            "capacity", "selected_count", "first_choice_count",
+            "total_capacity", "capacity", "selected_count", "first_choice_count",
             "weight_participant_count", "market_participant_count",
-            "market_participant_label", "devoted_weight", "weight",
+            "market_participant_label", "market_capacity_label", "devoted_weight", "weight",
             "current_weight", "action", "classification", "selected",
             "scenario_success_rates", "forecast_participants", "forecast_status",
             "recommendation_reason",
@@ -1927,9 +1959,9 @@ class CourseSelectionAutomationService:
         now = datetime.now().astimezone().isoformat()
         previous = task.get("course_states") if isinstance(task.get("course_states"), dict) else {}
         fields = (
-            "class_id", "course_code", "course_name", "teacher", "capacity",
+            "class_id", "course_code", "course_name", "teacher", "total_capacity", "capacity",
             "selected_count", "first_choice_count", "weight_participant_count",
-            "market_participant_count", "market_participant_label", "full",
+            "market_participant_count", "market_participant_label", "market_capacity_label", "full",
             "restricted", "eligibility_status", "eligibility_reason",
         )
         task["course_states"] = {

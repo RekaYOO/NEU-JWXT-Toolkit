@@ -57,6 +57,7 @@ import {
   buildConflictCourseScheduleMap,
   personalConflictMapFromResponse,
   mergeScheduleWithSelectionOverlays,
+  filterTimetableCoursesByTime,
   requestErrorText,
   TIMETABLE_LOGIN_ERROR_TEXT,
   restorePersonalTimetableMemory,
@@ -159,6 +160,10 @@ describe('TimetablePage helpers', () => {
       mode: 'teacher', target: { id: 'T1' }, viewMode: 'week',
       selectedWeekName: '第3周', selectedCampusName: '浑南校区',
     })).toBe('第3周 · 浑南校区');
+    expect(timetableMobileContextText({
+      mode: 'personal', target: null, viewMode: 'term',
+      selectedCampusName: '南湖校区', timeFilters: ['no_first', 'no_twelfth'],
+    })).toBe('全学期 · 南湖校区 · 不上早八、不上晚十');
   });
 
   test('formats integer classroom floors without changing special floor labels', () => {
@@ -198,6 +203,51 @@ describe('TimetablePage helpers', () => {
       expect.objectContaining({ weeks: [1, 2], weekday: 2, start_section: 1, end_section: 2 }),
       expect.objectContaining({ weeks: [5, 6], weekday: 4, start_section: 7, end_section: 8 }),
     ]));
+  });
+
+  test('filters an entire split course when any meeting contains the first section', () => {
+    const courses = [
+      { id: 'a-morning', course_code: 'A1', course_name: '分段课程', start_section: 1, end_section: 2 },
+      { id: 'a-afternoon', course_code: 'A1', course_name: '分段课程', start_section: 7, end_section: 8 },
+      { id: 'b', course_code: 'B1', course_name: '保留课程', start_section: 2, end_section: 4 },
+    ];
+
+    expect(filterTimetableCoursesByTime(courses, ['no_first'])).toEqual([courses[2]]);
+  });
+
+  test('keeps another teaching class with the same course code', () => {
+    const courses = [
+      { id: 'a-early', teaching_class_id: 'A', course_code: 'C1', start_section: 1, end_section: 2 },
+      { id: 'a-later', teaching_class_id: 'A', course_code: 'C1', start_section: 5, end_section: 6 },
+      { id: 'b', teaching_class_id: 'B', course_code: 'C1', start_section: 3, end_section: 4 },
+    ];
+
+    expect(filterTimetableCoursesByTime(courses, ['no_first'])).toEqual([courses[2]]);
+  });
+
+  test('can filter a weekly slice using the complete term as its reference', () => {
+    const currentWeek = [
+      { id: 'later', teaching_class_id: 'A', course_code: 'C1', start_section: 5, end_section: 6 },
+    ];
+    const completeTerm = [
+      ...currentWeek,
+      { id: 'early', teaching_class_id: 'A', course_code: 'C1', start_section: 1, end_section: 2 },
+    ];
+
+    expect(filterTimetableCoursesByTime(currentWeek, ['no_first'], completeTerm)).toEqual([]);
+  });
+
+  test('supports combining first-section and twelfth-section exclusions', () => {
+    const courses = [
+      { id: 'first', course_code: 'A1', start_section: 1, end_section: 1 },
+      { id: 'middle', course_code: 'B1', start_section: 10, end_section: 11 },
+      { id: 'late', course_code: 'C1', start_section: 11, end_section: 12 },
+      { id: 'unknown', course_code: 'D1', start_section: 0, end_section: 0 },
+    ];
+
+    expect(filterTimetableCoursesByTime(courses, ['no_first', 'no_twelfth']))
+      .toEqual([courses[1], courses[3]]);
+    expect(filterTimetableCoursesByTime(courses, [])).toBe(courses);
   });
 
   test('recognizes the official preselection tag for blue course names', () => {
