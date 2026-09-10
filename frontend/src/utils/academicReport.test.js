@@ -5,6 +5,37 @@ import {
   overlayExternalSelectedCourses,
 } from './academicReport';
 
+test('选课缺口排除只有子组完成约束的汇总父类，培养计划仍保留原规则', () => {
+  const categories = [{
+    wid: 'general', name: '通识类', requirement_type: 'mixed',
+    required_credits: 12, remaining_credits: 0, missing_group_count: 1,
+    children: [{
+      wid: 'humanities', name: '人文社会科学类', requirement_type: 'elective',
+      required_credits: 4, remaining_credits: 2, children: [], courses: [],
+    }],
+    courses: [],
+  }];
+  expect(collectAcademicPlanDeficits(categories).map(item => item.wid))
+    .toEqual(['humanities', 'general']);
+  expect(collectAcademicPlanDeficits(categories, undefined, { actionableOnly: true })
+    .map(item => item.wid)).toEqual(['humanities']);
+});
+
+test('选课缺口保留叶级课程组要求和父级独立总学分差额', () => {
+  const result = collectAcademicPlanDeficits([{
+    wid: 'total', name: '跨类别选修', requirement_type: 'elective',
+    requires_child_minimums_and_total: true,
+    required_credits: 6, remaining_credits: 4, aggregate_remaining_credits: 4,
+    children: [{
+      wid: 'leaf', name: '任选', requirement_type: 'elective',
+      required_credits: 2, remaining_credits: 0, missing_group_count: 1,
+      children: [], courses: [],
+    }], courses: [],
+  }], undefined, { actionableOnly: true });
+  expect(result.map(item => item.wid)).toEqual(['total', 'leaf']);
+  expect(result[0].remaining_credits).toBe(4);
+});
+
 test('选课工作台复用培养计划缺口口径并带出待修课程分类信息', () => {
   const deficits = collectAcademicPlanDeficits([{
     wid: 'humanities', name: '人文社会科学类', path: '通识类 > 人文社会科学类',

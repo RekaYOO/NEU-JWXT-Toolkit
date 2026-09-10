@@ -259,7 +259,15 @@ export const overlayExternalSelectedCourses = (categories = [], selectedCourses 
  * 使用与培养计划“缺学分”面板相同的口径生成可操作缺口。
  * earned/remaining 已把已选课计入，不能在选课工作台再次相加。
  */
-export const collectAcademicPlanDeficits = (categories, filterFn = () => true) => {
+export const collectAcademicPlanDeficits = (
+  categories, filterFn = () => true, { actionableOnly = false } = {},
+) => {
+  // Count-only aggregate rules describe child completion, not another course
+  // to select. Keep them in the academic report, but not in JWXK search cards.
+  const isActionable = (node, credits) => !actionableOnly
+    || credits > 0
+    || (node.courses || []).length > 0
+    || !(node.children || []).some(child => Number(child.required_credits) > 0);
   const toSummaryItem = (node, remainingCredits) => {
     const allNodeCourses = descendantCourses(node);
     const pendingCourses = allNodeCourses.filter(course => course.is_selected && !course.is_passed);
@@ -320,7 +328,7 @@ export const collectAcademicPlanDeficits = (categories, filterFn = () => true) =
           ? (node.aggregate_remaining_credits || 0)
           : (node.remaining_credits || 0);
         const incrementalDeficit = Math.max(0, ownCreditDeficit - childCreditDeficit);
-        if (incrementalDeficit > 0 || hasCountRuleDeficit) {
+        if ((incrementalDeficit > 0 || hasCountRuleDeficit) && isActionable(node, incrementalDeficit)) {
           result.push(toSummaryItem(node, incrementalDeficit));
         }
         result.push(...childItems);
@@ -328,7 +336,7 @@ export const collectAcademicPlanDeficits = (categories, filterFn = () => true) =
       }
       const shouldShowParentRule = (node.remaining_credits || 0) === 0 && hasCountRuleDeficit;
       if (!node.children || node.children.length === 0 || childrenAllZero || shouldShowParentRule) {
-        if (node.remaining_credits > 0 || hasCountRuleDeficit) {
+        if ((node.remaining_credits > 0 || hasCountRuleDeficit) && isActionable(node, node.remaining_credits)) {
           result.push(toSummaryItem(node, node.remaining_credits || 0));
         }
       }

@@ -45,6 +45,94 @@ class MemoryStorage:
         self.config = dict(config)
 
 
+@pytest.mark.parametrize("mode", ["direct", "webvpn"])
+@pytest.mark.parametrize("metadata_source", ["menu", "types", "profile"])
+def test_context_metadata_uses_selected_service_route(monkeypatch, mode, metadata_source):
+    import json
+    import requests
+
+    row = {"code": "batch", "name": "选修课初选", "canSelect": "1"}
+    if metadata_source == "menu":
+        row["menuList"] = [{"teachingClassType": "XGKC"}]
+    elif metadata_source == "types":
+        row["clazzTypeList"] = ["XGKC"]
+    calls = []
+
+    class Auth:
+        def ensure_service_session(self, service, **kwargs):
+            assert service == "jwxk"
+            assert kwargs["network_mode_override"] == mode
+
+        def get_service_token(self, service, **kwargs):
+            assert kwargs["network_mode"] == mode
+            return "fixture-token"
+
+        def request_service(self, service, method, path, **kwargs):
+            assert service == "jwxk"
+            assert kwargs["network_mode_override"] == mode
+            calls.append(path)
+            response = requests.Response()
+            response.status_code = 200
+            if path == "/xsxk/profile/index.html":
+                response._content = (
+                    "loginVue.batchList = "
+                    + json.dumps([{**row, "clazzTypeList": ["XGKC"]}])
+                    + ";"
+                ).encode()
+            else:
+                data = {"student": {"electiveBatchList": [row]}} if path.endswith("studentInfo") else {}
+                response._content = json.dumps({"code": 200, "data": data}).encode()
+            return response
+
+    monkeypatch.setattr(
+        jwxk_module.JwxkPublicClient, "get_batches",
+        lambda *_: pytest.fail("authenticated reads must not open a direct public client"),
+    )
+    context = JwxkSessionClient(Auth(), network_mode=mode).get_context()
+    assert context["batches"][0].menus == ({"code": "XGKC", "name": "通识选修课"},)
+    assert ("/xsxk/profile/index.html" in calls) == (metadata_source == "profile")
+
+
+def test_missing_round_metadata_does_not_become_an_empty_catalog():
+    batch = parse_account_batches(
+        [{"code": "batch", "name": "选课", "canSelect": "1"}], official_now=None,
+    )[0]
+
+    class Client(JwxkSessionClient):
+        def get_context(self):
+            return {"batches": [batch]}
+
+        def _activate_batch(self, _batch_code):
+            pytest.fail("missing metadata should stop before catalog calls")
+
+    client = Client(object(), network_mode="webvpn")
+    with pytest.raises(JwxkError, match="尚未取得本轮课程范围"):
+        client.search_catalog(batch_code="batch", page_number=1, page_size=20, scope="ALL")
+    with pytest.raises(JwxkError, match="尚未取得本轮课程范围"):
+        client.get_catalog_filter_options(batch_code="batch")
+
+
+@pytest.mark.parametrize("preference,primary_mode,expected", [
+    ("follow", "webvpn", "webvpn"),
+    ("follow", "direct", "direct"),
+    ("direct", "webvpn", "direct"),
+    ("webvpn", "direct", "webvpn"),
+])
+def test_workspace_read_uses_effective_route_without_changing_primary(
+    monkeypatch, preference, primary_mode, expected,
+):
+    from contextlib import nullcontext
+    auth = type("Auth", (), {"is_logged_in": True, "active_mode": primary_mode})()
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: auth)
+    monkeypatch.setattr(course_selection, "remote_session_guard", nullcontext)
+    result = course_selection._run_jwxk_read(
+        MemoryStorage({"course_selection": {"network_mode": preference}}),
+        lambda client: (client.auth is auth, client.network_mode),
+    )
+    assert result == (True, expected)
+    assert auth.active_mode == primary_mode
+
+
 def _html(rows: str) -> str:
     return f"<script>loginVue.batchList = {rows}; loginVue.creditRatios = [];</script>"
 

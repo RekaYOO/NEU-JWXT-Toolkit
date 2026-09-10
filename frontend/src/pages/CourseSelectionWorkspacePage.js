@@ -323,14 +323,9 @@ const selectionRecordsFromResponse = (result, selectionTypeCode = '') => {
 const CourseSelectionWorkspacePage = () => {
   const { batchCode } = useParams();
   const navigate = useNavigate();
-  // The selection workspace only consumes the report already maintained by the
-  // academic-report resource.  Do not let entering JWXK start another remote
-  // refresh, and let this small local read win the browser connection race
-  // before the slower JWXK status/catalog requests begin.
+  // The report is independent of JWXK. Its refresh must not gate or reset
+  // the catalog, saved plan, or selected results.
   const academicReportResource = useCachedResource('academic-report', { autoRefresh: false });
-  const academicReportCacheSettled = Boolean(
-    academicReportResource.data || !academicReportResource.loading,
-  );
   const requestGeneration = useRef(0);
   const workspaceGeneration = useRef(0);
   const planSaveQueue = useRef(Promise.resolve());
@@ -371,6 +366,7 @@ const CourseSelectionWorkspacePage = () => {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState('');
   const [capacityRefreshing, setCapacityRefreshing] = useState(false);
   const [marketDataUpdatedAt, setMarketDataUpdatedAt] = useState(null);
   const [actionLoading, setActionLoading] = useState('');
@@ -437,7 +433,7 @@ const CourseSelectionWorkspacePage = () => {
     academicPlanSelected,
   ), [academicPlanSelected, academicReportResource.data]);
   const academicPlanGaps = useMemo(() => collectAcademicPlanDeficits(
-    academicPlanProjection.categories,
+    academicPlanProjection.categories, undefined, { actionableOnly: true },
   ), [academicPlanProjection.categories]);
   const visibleAcademicPlanGaps = useMemo(
     () => filterAcademicPlanGapsForBatch(academicPlanGaps, batch),
@@ -513,14 +509,14 @@ const CourseSelectionWorkspacePage = () => {
     return applyCatalogDisplayLayout(groups, layout);
   }, [availability, catalogDisplaySignature, groups, weekday]);
 
-  const fetchEligibility = async classIds => {
+  const fetchEligibility = async (classIds, config = {}) => {
     const ids = [...new Set(classIds.filter(Boolean))];
     if (!ids.length) return [];
     setEligibilityLoading(previous => [...new Set([...previous, ...ids])]);
     try {
       const results = [];
       for (let index = 0; index < ids.length; index += 50) {
-        const response = await checkJwxkCatalogEligibility(batchCode, ids.slice(index, index + 50));
+        const response = await checkJwxkCatalogEligibility(batchCode, ids.slice(index, index + 50), config);
         results.push(...(response.results || []));
       }
       return results;
@@ -551,13 +547,14 @@ const CourseSelectionWorkspacePage = () => {
   ) => {
     const silent = Boolean(options.silent);
     const skipLocal = Boolean(options.skipLocal);
-    if (silent && capacityRefreshInFlightRef.current) return;
+    if (silent && capacityRefreshInFlightRef.current && !options.verifyEligibility) return;
     const generation = ++requestGeneration.current;
     if (silent) {
-      capacityRefreshInFlightRef.current = true;
+      capacityRefreshInFlightRef.current = generation;
       setCapacityRefreshing(true);
     } else {
       setLoading(true);
+      setCatalogError('');
     }
     try {
       const safeFilters = cleanCatalogFilters(targetFilters);
@@ -604,7 +601,7 @@ const CourseSelectionWorkspacePage = () => {
               if (generation === requestGeneration.current) {
                 void loadCatalog(
                   targetPage, targetKeyword, targetScope, targetTimeSlot,
-                  targetFilters, targetWeekday, { silent: true, skipLocal: true },
+                  targetFilters, targetWeekday, { silent: true, skipLocal: true, verifyEligibility: true },
                 );
               }
             }, 0);
@@ -620,29 +617,30 @@ const CourseSelectionWorkspacePage = () => {
       );
       if (generation !== requestGeneration.current) return;
       const nextGroups = applyResult(result);
+      setCatalogError('');
       setMarketDataUpdatedAt(new Date());
       if (!silent) setLoading(false);
-      if (silent) return;
+      if (silent && !options.verifyEligibility) return nextGroups;
       const classIds = nextGroups.flatMap(group => (
         group.classes || []
       ).map(course => course.class_id)).filter(Boolean);
       try {
-        const eligibility = await fetchEligibility(classIds);
+        const eligibility = await fetchEligibility(classIds, silent ? { skipAuthRedirect: true } : {});
         if (generation !== requestGeneration.current) return;
         setGroups(previous => mergeEligibilityResults(previous, eligibility));
       } catch (error) {
         if (generation === requestGeneration.current) {
-          message.error(error.message || '核验本页教学班可选性失败');
+          setCatalogError(error.message || '核验本页教学班可选性失败');
         }
       }
       return nextGroups;
     } catch (error) {
-      if (!silent && generation === requestGeneration.current) {
-        message.error(error.message || '读取课程目录失败');
+      if (generation === requestGeneration.current) {
+        setCatalogError(error.message || '读取课程目录失败');
       }
       return [];
     } finally {
-      if (silent) {
+      if (silent && capacityRefreshInFlightRef.current === generation) {
         capacityRefreshInFlightRef.current = false;
         setCapacityRefreshing(false);
       } else if (generation === requestGeneration.current) {
@@ -818,7 +816,6 @@ const CourseSelectionWorkspacePage = () => {
   };
 
   useEffect(() => {
-    if (!academicReportCacheSettled) return undefined;
     const generation = ++workspaceGeneration.current;
     ++requestGeneration.current;
     setStatus(null);
@@ -840,6 +837,7 @@ const CourseSelectionWorkspacePage = () => {
     taskAttentionTimerRef.current = null;
     tasksRefreshInFlightRef.current = false;
     setGroups([]);
+    setCatalogError('');
     setCapacityRefreshing(false);
     setMarketDataUpdatedAt(null);
     setPendingVerificationClassIds([]);
@@ -932,9 +930,12 @@ const CourseSelectionWorkspacePage = () => {
     return () => {
       if (taskAttentionTimerRef.current) window.clearTimeout(taskAttentionTimerRef.current);
       taskAttentionTimerRef.current = null;
-      if (workspaceGeneration.current === generation) ++workspaceGeneration.current;
+      if (workspaceGeneration.current === generation) {
+        ++workspaceGeneration.current;
+        ++requestGeneration.current;
+      }
     };
-  }, [academicReportCacheSettled, batchCode]);
+  }, [batchCode]);
 
   useEffect(() => {
     const homeCampus = String(status?.current_campus || '').trim();
@@ -946,13 +947,12 @@ const CourseSelectionWorkspacePage = () => {
   }, [batchCode, status?.current_campus]);
 
   useEffect(() => {
-    if (!academicReportCacheSettled) return undefined;
     if (focusInProgressRef.current) return undefined;
     const timer = window.setTimeout(() => {
       loadCatalog(1, keyword, scope, timeSlot, effectiveCatalogFilters, weekday);
     }, 80);
     return () => window.clearTimeout(timer);
-  }, [academicReportCacheSettled, batchCode, effectiveCatalogFilters, keyword, remoteAvailability, scope, timeSlot, weekday]);
+  }, [batchCode, effectiveCatalogFilters, keyword, remoteAvailability, scope, timeSlot, weekday]);
 
   useEffect(() => {
     if (!batch || batch.state !== 'active' || view !== 'catalog' || loading) return undefined;
@@ -2427,7 +2427,8 @@ const CourseSelectionWorkspacePage = () => {
               );
             })}
           </div>
-          {!loading && !visibleGroups.length && <Empty description="当前条件下没有课程" />}
+          {catalogError && <Alert type="warning" showIcon message={catalogError} action={<Button size="small" onClick={() => loadCatalog(page)}>重试</Button>} />}
+          {!loading && !capacityRefreshing && !catalogError && !visibleGroups.length && <Empty description="当前条件下没有课程" />}
           {total > 20 && <Pagination current={page} total={total} pageSize={20} showSizeChanger={false} onChange={next => loadCatalog(next)} />}
         </section>
         <aside className="jwxk-plan-aside">
@@ -2443,7 +2444,7 @@ const CourseSelectionWorkspacePage = () => {
                 {academicPlanProjection.unmatched.length > 0 ? `；${academicPlanProjection.unmatched.length} 门因缺少可靠类别未计入` : ''}
               </small>
             )}
-            {academicReportResource.loading && !academicReportResource.data && <div className="jwxk-plan-gap-loading"><Spin size="small" /><span>读取培养计划缓存…</span></div>}
+            {academicReportResource.loading && !academicReportResource.data && <div className="jwxk-plan-gap-loading"><Spin size="small" /><span>{['starting', 'queued', 'running'].includes(academicReportResource.syncState) ? '正在同步培养计划…' : '读取培养计划缓存…'}</span></div>}
             {visibleAcademicPlanGaps.map(gap => {
               const gapId = gap.wid || gap.path || gap.name;
               const unfinished = (gap.unfinished_courses || []).slice(0, 3).map(course => course.course_name).filter(Boolean);

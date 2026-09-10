@@ -188,9 +188,18 @@ export const ResourceProvider = ({
         }
       },
     });
-    if (generation !== generationRef.current || !job) return null;
+    if (generation !== generationRef.current) return null;
+    if (!job || ACTIVE_SYNC_STATES.has(job.status)) {
+      mergeState(resource, {
+        syncState: 'failed',
+        syncError: '等待后台同步超时，可稍后重试；后台任务完成后仍会更新缓存',
+        loading: false,
+      });
+      throw new Error('等待后台同步超时，可稍后重试；后台任务完成后仍会更新缓存');
+    }
 
     if (job.status === 'completed') {
+      mergeState(resource, { syncState: 'completed', syncError: null, loading: false });
       await load(resource, { quiet: true });
       return job;
     }
@@ -276,6 +285,7 @@ export const ResourceProvider = ({
           mergeState(resource, {
             syncState: 'failed',
             syncError: error.response?.data?.detail || error.message,
+            loading: false,
           });
         }
         throw error;

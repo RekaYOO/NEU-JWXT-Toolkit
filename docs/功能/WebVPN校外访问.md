@@ -289,6 +289,10 @@ HTTPS 网关、标准端口、无用户信息、官方 CAS 主机及精确 `/tpa
 
 WebVPN 不会把上游 JWXK 的 `token` 直接写入本地 HTTP Cookie Jar；浏览器端由网关注入脚本通过 `/wengine-vpn/cookie?method=get` 读取虚拟 Cookie。后端在 WebVPN 模式下复用同一官方机制，从受控的 JWXK 主机和请求路径读取虚拟 `token`，只在内存中缓存并映射为 `Authorization`。直连模式仍读取 `jwxk.neu.edu.cn` 的真实 Cookie，二者不能混用。
 
+JWXK 账号轮次需要从公开首页补齐课程范围时，也必须通过 `request_service` 使用当前有效
+线路和共享 Session；不得在 WebVPN 流程内另建直连客户端。账号已提供菜单或课程类型时
+省略这次补齐请求。网络失败和菜单缺失不能被当作本轮无课程。
+
 截至 2026 年 8 月 15 日，JWXK 的 HTTPS 服务入口实际会返回指向
 `http://pass.neu.edu.cn/tpass/login` 的绝对重定向。客户端只对“官方统一认证域名 + 精确
 `/tpass/login` 路径 + 标准 HTTP 端口”这一种情况在发送下一跳前强制升级为 HTTPS；不会真的通过

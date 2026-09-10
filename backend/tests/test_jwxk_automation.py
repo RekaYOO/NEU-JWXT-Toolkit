@@ -688,6 +688,21 @@ def test_complete_catalog_sync_excludes_global_directory_scope(tmp_path):
     ]
 
 
+def test_missing_menus_cannot_mark_an_empty_archive_complete(tmp_path):
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    client = SimpleNamespace(get_context=lambda: {
+        "batches": [SimpleNamespace(code="batch", menus=())],
+    })
+    service = CourseSelectionAutomationService(
+        tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: client,
+    )
+    service.schedule_catalog_sync("student", batch={"code": "batch", "name": "轮次"})
+    service._tick_catalog_sync()
+    saved = service.list_catalog_archives("student")[0]
+    assert saved["sync_status"] == "failed"
+    assert not saved.get("catalog_complete")
+
+
 def test_catalog_archive_persists_menu_metadata_without_global_directory_rows(tmp_path):
     service = _service(tmp_path)
     service.merge_catalog_archive(

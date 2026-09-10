@@ -701,6 +701,21 @@ test('background eligibility and capacity updates preserve the loaded catalog la
   expect(visible[0].classes[0]).toMatchObject({ eligibility_status: 'unavailable', selected_count: 30 });
 });
 
+test('capacity-only refresh does not erase previously verified eligibility', () => {
+  const [group] = mergeCatalogRefreshPreservingOrder([{
+    course_code: 'C', classes: [{
+      class_id: 'A', eligibility_status: 'selectable', selected_count: 1,
+    }],
+  }], [{
+    course_code: 'C', classes: [{
+      class_id: 'A', eligibility_status: 'unknown', selected_count: 2,
+    }],
+  }]);
+  expect(group.classes[0]).toMatchObject({
+    eligibility_status: 'selectable', selected_count: 2,
+  });
+});
+
 test('academic-plan gaps map to official task category and nature filters', () => {
   expect(matchAcademicGapCatalogFilters({
     name: '专业基础类',

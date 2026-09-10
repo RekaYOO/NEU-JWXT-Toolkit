@@ -584,6 +584,12 @@ export const mergeCatalogRefreshPreservingOrder = (previous = [], incoming = [])
         ...(group.classes || []).map(course => ({
           ...course,
           ...(nextClasses.get(catalogClassKey(course)) || {}),
+          ...(!nextClasses.get(catalogClassKey(course))?.eligibility_status
+            || nextClasses.get(catalogClassKey(course))?.eligibility_status === 'unknown'
+            ? {
+              eligibility_status: course.eligibility_status,
+              eligibility_reason: course.eligibility_reason,
+            } : {}),
         })),
         ...(nextGroup.classes || []).filter(course => !oldClassKeys.has(catalogClassKey(course))),
       ],

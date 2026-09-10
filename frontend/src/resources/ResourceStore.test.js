@@ -21,7 +21,7 @@ import {
   ResourceProvider, deriveCachedResourceLoading, useCachedResource,
 } from './ResourceStore';
 import {
-  getFestivalActivitiesCache, requestCacheRefresh,
+  getFestivalActivitiesCache, requestCacheRefresh, waitForCacheRefreshJob,
 } from '../services/api';
 import { subscribeClientUpdates } from '../services/ClientUpdateScheduler';
 
@@ -30,6 +30,7 @@ const FestivalResourceProbe = () => {
   return (
     <div data-testid="festival-resource-state">
       {resource.loading ? 'loading' : 'idle'}|{resource.data ? 'data' : 'no-data'}
+      {resource.syncError && `|${resource.syncError}`}
     </div>
   );
 };
@@ -132,4 +133,21 @@ describe('cached resource loading state', () => {
     await act(async () => root.unmount());
     container.remove();
   });
+
+  test.each([null, { status: 'queued' }, { status: 'running' }])(
+    'exits loading when the job watcher times out with %p',
+    async job => {
+      getFestivalActivitiesCache.mockResolvedValue({ available: false });
+      requestCacheRefresh.mockResolvedValue({ status: 'queued', job_id: 'job-1' });
+      waitForCacheRefreshJob.mockResolvedValue(job);
+      const container = document.createElement('div');
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(<ResourceProvider><FestivalResourceProbe /></ResourceProvider>);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+      expect(container.textContent).toContain('idle|no-data|等待后台同步超时');
+      await act(async () => root.unmount());
+    },
+  );
 });

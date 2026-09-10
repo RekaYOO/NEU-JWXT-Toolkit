@@ -2129,6 +2129,8 @@ class CourseSelectionAutomationService:
             batch = next((item for item in context.get("batches") or [] if item.code == batch_code), None)
             if batch is None:
                 raise JwxkError("选课轮次已不可见")
+            if not batch.menus:
+                raise JwxkError("尚未取得本轮课程范围，不能将归档标记为同步完成")
             scopes = list(dict.fromkeys(
                 str(item.get("code") or "") for item in batch.menus
                 if str(item.get("code") or "") not in {"", "ALL", "ROUND", "ALLKC"}

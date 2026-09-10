@@ -1010,6 +1010,7 @@ class JwxkSessionClient:
         if path == "/xsxk/elective/clazz/list":
             self._pace_catalog_request()
         kwargs.setdefault("retry_on_auth", self.allow_identity_recovery)
+        kwargs.setdefault("allow_identity_recovery", self.allow_identity_recovery)
         response = self.auth.request_service(
             "jwxk", method, path,
             network_mode_override=self.network_mode,
@@ -1086,12 +1087,25 @@ class JwxkSessionClient:
             student.get("expElectiveBatchList") or []
         )
         batches = parse_account_batches(rows, official_now=now.get("currentTime"))
-        try:
-            public_by_code = {
-                item.code: item for item in JwxkPublicClient(timeout=self.auth.timeout).get_batches()
-            }
-        except (JwxkError, requests.RequestException):
-            public_by_code = {}
+        public_by_code = {}
+        if any(not batch.menus and not batch.course_types for batch in batches):
+            # Account rows may omit menus. Resolve their metadata on the same
+            # route and Session; a failed direct fallback used to look like an
+            # empty round to WebVPN users.
+            try:
+                response = self._request("GET", "/xsxk/profile/index.html")
+                try:
+                    response.raise_for_status()
+                    public_by_code = {
+                        item.code: item for item in parse_public_batches(response.text)
+                    }
+                finally:
+                    response.close()
+            except (JwxkError, requests.RequestException) as error:
+                # Optional metadata failure must not hide account rounds whose
+                # own menus are usable. Catalog reads reject missing menus.
+                logger.info("jwxk menu metadata unavailable mode=%s error=%s",
+                            self.network_mode, type(error).__name__)
         merged_batches = []
         for batch in batches:
             public = public_by_code.get(batch.code)
@@ -1934,6 +1948,8 @@ class JwxkSessionClient:
         if batch is None:
             raise JwxkError("选课轮次不存在或当前账号不可见")
         menu_codes = [str(item.get("code") or "") for item in batch.menus if str(item.get("code") or "")]
+        if not menu_codes:
+            raise JwxkError("尚未取得本轮课程范围，请刷新轮次后重试，不能据此判断本轮无课")
         round_scopes = [code for code in menu_codes if code != "ALLKC"]
         effective_scope = scope if scope in menu_codes or scope in {"ALL", "ROUND"} else "ALL"
         campus = normalize_jwxk_campus_code(campus)
@@ -2131,6 +2147,8 @@ class JwxkSessionClient:
         batch = next((item for item in context["batches"] if item.code == batch_code), None)
         if batch is None:
             raise JwxkError("选课轮次不存在或当前账号不可见")
+        if not batch.menus:
+            raise JwxkError("尚未取得本轮课程范围，请刷新轮次后重试")
         scope = next((item["code"] for item in batch.menus if item.get("code") != "ALLKC"), None) or (
             "ALLKC" if any(item.get("code") == "ALLKC" for item in batch.menus) else
             (batch.menus[0]["code"] if batch.menus else "ALLKC")
