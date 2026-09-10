@@ -295,6 +295,10 @@ JWXK 直连核验允许使用同账号已有或保存的密码，针对 JWXK 的
 
 WebVPN 不会把上游 JWXK 的 `token` 直接写入本地 HTTP Cookie Jar；浏览器端由网关注入脚本通过 `/wengine-vpn/cookie?method=get` 读取虚拟 Cookie。后端在 WebVPN 模式下复用同一官方机制，从受控的 JWXK 主机和请求路径读取虚拟 `token`，只在内存中缓存并映射为 `Authorization`。直连模式仍读取 `jwxk.neu.edu.cn` 的真实 Cookie，二者不能混用。
 
+JWXK 账号信息接口还需要表单 `token`，共享客户端在每次请求及允许的认证重试前，用同一次
+token 解析结果同步填写表单和请求头。不能只更新请求头而重用恢复前的表单；凭据绑定仅登记
+在只读 `/xsxk/web/studentInfo` 路径，不改写选课提交参数，也不增加写请求重试。
+
 JWXK 账号轮次需要从公开首页补齐课程范围时，也必须通过 `request_service` 使用当前有效
 线路和共享 Session；不得在 WebVPN 流程内另建直连客户端。账号已提供菜单或课程类型时
 省略这次补齐请求。网络失败和菜单缺失不能被当作本轮无课程。

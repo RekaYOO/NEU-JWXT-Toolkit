@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Badge, Button, Card, Checkbox, Descriptions, Empty, Input, InputNumber, Modal,
   Pagination, Segmented, Select, Space, Spin, Tabs, Tag, Tooltip, Typography, message,
@@ -49,6 +49,7 @@ import {
   selectionParticipantCount,
   selectionParticipantLabel,
   selectionTimeConflictStatus,
+  selectionTimetableMetadata,
   summarizeSelectionConflictsByClass,
   toggleCatalogPreviewCourse,
   reconcileUngroupedWeightPlan,
@@ -170,6 +171,8 @@ const planItem = (group, course, scope, planGroup) => ({
   campus: course.campus,
   campus_name: course.campus_name,
   course_nature: course.course_nature || group.course_nature,
+  exam_type: course.exam_type || group.exam_type,
+  score_scale: course.score_scale || group.score_scale,
   course_category: course.course_category || group.course_category,
   capacity: course.capacity,
   selected_count: course.selected_count,
@@ -179,14 +182,16 @@ const planItem = (group, course, scope, planGroup) => ({
   schedules: course.schedules || [],
 });
 
-const scheduleOverlayForCourse = (item, layer, idPrefix, selectionTypeCode = '') => (item.schedules || []).map((meeting, index) => ({
+export const scheduleOverlayForCourse = (item, layer, idPrefix, selectionTypeCode = '') => (item.schedules || []).map((meeting, index) => ({
   ...meeting,
+  ...selectionTimetableMetadata(item),
   id: `${idPrefix}-${item.class_id}-${index}`,
   meeting_id: `${idPrefix}-${item.class_id}-${index}`,
   source_id: item.class_id,
   course_name: item.course_name,
   course_code: item.course_code,
   teaching_class_id: item.class_id,
+  teaching_class_type: item.teaching_class_type,
   weekday: Number(meeting.weekday || 0),
   start_section: Number(meeting.start_section || 0),
   end_section: Number(meeting.end_section || meeting.start_section || 0),
@@ -196,7 +201,7 @@ const scheduleOverlayForCourse = (item, layer, idPrefix, selectionTypeCode = '')
   campus: meeting.campus_name || item.campus_name || meeting.campus || item.campus || '',
   teachers: item.teacher ? [item.teacher] : [],
   classes: item.class_number ? [item.class_number] : [],
-  course_type: jwxkScheduleOverlayMeta(layer, selectionTypeCode).label,
+  course_type: item.course_nature || '',
   tags: [jwxkScheduleOverlayMeta(layer, selectionTypeCode).label],
   title_details: [meeting.raw_text, item.official_schedule].filter(Boolean),
   color: jwxkScheduleOverlayMeta(layer, selectionTypeCode).color,
@@ -2069,6 +2074,7 @@ const CourseSelectionWorkspacePage = () => {
     const active = catalogPreviewClasses.some(item => item.class_id === course.class_id);
     const candidate = {
       ...course,
+      ...selectionTimetableMetadata(course, group),
       course_name: group.course_name,
       course_code: group.course_code,
       catalog_group_id: group.group_id,
@@ -2195,6 +2201,17 @@ const CourseSelectionWorkspacePage = () => {
       } : previous);
     }
   };
+
+  const resolvePreviewDetail = useCallback(async meeting => {
+    if (!meeting.layer || !meeting.teaching_class_id) return {};
+    const detail = await getJwxkCatalogDetail({
+      batch_code: batchCode,
+      teaching_class_type: meeting.teaching_class_type || scope,
+      course_code: meeting.course_code,
+      class_id: meeting.teaching_class_id,
+    });
+    return selectionTimetableMetadata(detail.course || {}, meeting);
+  }, [batchCode, scope]);
 
   const closeCatalogDetail = () => {
     catalogDetailGenerationRef.current += 1;
@@ -2736,6 +2753,7 @@ const CourseSelectionWorkspacePage = () => {
         preferredTermCode={termCode}
         initialViewMode="term"
         overlayCourses={allScheduleOverlay}
+        resolveCourseDetail={resolvePreviewDetail}
         presentation="selection"
         externalConflictMap={overlayConflictMap}
         refreshSignal={timetableRefreshSignal}

@@ -1075,13 +1075,7 @@ class JwxkSessionClient:
             allow_identity_recovery=self.allow_identity_recovery,
         )
         now = self._post_form("/xsxk/web/now").get("data") or {}
-        token = self.auth.get_service_token(
-            "jwxk", network_mode=self.network_mode,
-            request_path="/xsxk/web/studentInfo",
-        )
-        student_payload = self._post_form(
-            "/xsxk/web/studentInfo", {"token": token or ""}
-        )
+        student_payload = self._post_form("/xsxk/web/studentInfo")
         student = (student_payload.get("data") or {}).get("student") or {}
         rows = list(student.get("electiveBatchList") or []) + list(
             student.get("expElectiveBatchList") or []

@@ -767,7 +767,7 @@ export const courseCardContent = course => {
   ]).join(' · ') || '地点待定';
   const tagTexts = course.tags || [];
   const nature = course.course_nature
-    || course.course_type
+    || (!course.layer && course.course_type)
     || course.course_category
     || tagTexts.find(tag => /必修|选修/.test(tag))
     || '';
@@ -1477,6 +1477,7 @@ function TimetablePage({
   preferredTermCode = '',
   initialViewMode = 'week',
   overlayCourses = [],
+  resolveCourseDetail,
   presentation = 'default',
   externalConflictMap = {},
   refreshSignal = 0,
@@ -3499,7 +3500,7 @@ function TimetablePage({
         <div className="timetable-mobile-scroll-tail" aria-hidden="true" />
       )}
 
-      <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} conflictMap={effectiveConflictMap} courseScheduleMap={conflictCourseScheduleMap} />
+      <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} conflictMap={effectiveConflictMap} courseScheduleMap={conflictCourseScheduleMap} resolveCourseDetail={resolveCourseDetail} />
 
       <AdaptiveModal
         rootClassName="timetable-target-filter-modal"
@@ -4549,6 +4550,7 @@ function CourseDetailContent({ course, conflictMap = {}, courseScheduleMap = {} 
   const content = courseCardContent(course);
   const details = uniqueTexts(course.title_details?.length ? course.title_details : course.cell_details || []);
   const repeatedTags = new Set([
+    selectionCourseStateLabel(course),
     course.course_nature,
     course.course_type,
     course.assessment_type,
@@ -4573,7 +4575,7 @@ function CourseDetailContent({ course, conflictMap = {}, courseScheduleMap = {} 
         <Descriptions.Item label="教师">{course.teachers?.join('、') || '详见官方安排'}</Descriptions.Item>
         <Descriptions.Item label="班级">{course.classes?.join('、') || '—'}</Descriptions.Item>
         <Descriptions.Item label="课程代码">{course.course_code || '—'}</Descriptions.Item>
-        <Descriptions.Item label="课程性质">{course.course_nature || course.course_type || '未提供'}</Descriptions.Item>
+        <Descriptions.Item label="课程性质">{course.course_nature || (!course.layer && course.course_type) || '未提供'}</Descriptions.Item>
         <Descriptions.Item label="考核方式">{course.assessment_type || '未提供'}</Descriptions.Item>
         {course.grading_scheme && <Descriptions.Item label="成绩类型">{course.grading_scheme}</Descriptions.Item>}
         <Descriptions.Item label="上课周次">{formatWeekNumbers(course.weeks) || '周次待确认'}</Descriptions.Item>
@@ -4611,18 +4613,39 @@ function CourseDetailContent({ course, conflictMap = {}, courseScheduleMap = {} 
   );
 }
 
-function CourseDetail({ course, onClose, isMobile, conflictMap, courseScheduleMap }) {
+export function CourseDetail({ course, onClose, isMobile, conflictMap, courseScheduleMap, resolveCourseDetail }) {
+  const [detail, setDetail] = useState(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!course?.layer || !resolveCourseDetail) return undefined;
+    let active = true;
+    setDetail({ course, loading: true });
+    Promise.resolve().then(() => resolveCourseDetail(course)).then(metadata => {
+      if (active) setDetail({ course, metadata, loading: false });
+    }).catch(() => {
+      if (active) setDetail({ course, error: true, loading: false });
+    });
+    return () => { active = false; };
+  }, [course, resolveCourseDetail, retry]);
+  const currentDetail = detail?.course === course ? detail : null;
   const title = course?.course_name || '课程详情';
+  const content = <>
+    {currentDetail?.loading && <div role="status">正在读取课程详情…</div>}
+    {currentDetail?.error && <Alert type="warning" showIcon message="课程详情暂时无法读取，已保留现有信息"
+      action={<Button size="small" onClick={() => setRetry(value => value + 1)}>重试</Button>} />}
+    <CourseDetailContent course={course ? { ...course, ...(currentDetail?.metadata || {}) } : null}
+      conflictMap={conflictMap} courseScheduleMap={courseScheduleMap} />
+  </>;
   if (isMobile) {
     return (
       <MobileDetailDrawer open={Boolean(course)} onClose={onClose} title={title}>
-        <CourseDetailContent course={course} conflictMap={conflictMap} courseScheduleMap={courseScheduleMap} />
+        {content}
       </MobileDetailDrawer>
     );
   }
   return (
     <Modal open={Boolean(course)} onCancel={onClose} footer={null} title={title} width={560}>
-      <CourseDetailContent course={course} conflictMap={conflictMap} courseScheduleMap={courseScheduleMap} />
+      {content}
     </Modal>
   );
 }

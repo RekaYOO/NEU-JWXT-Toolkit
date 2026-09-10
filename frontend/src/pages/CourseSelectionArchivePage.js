@@ -7,6 +7,7 @@ import TimetablePage from './TimetablePage';
 import {
   courseCampusLabels, isGeneralElectiveCategory, matchesArchivedCourseFilters,
   matchesCatalogAvailability, selectionParticipantCount, selectionParticipantLabel, uniqueDisplayLabels,
+  selectionTimetableMetadata,
 } from '../utils/jwxkSchedule';
 import './CourseSelectionPage.css';
 
@@ -53,8 +54,9 @@ const groupArchiveCourses = courses => {
   }));
 };
 
-const archiveOverlay = course => (course?.schedules || []).map((meeting, index) => ({
+export const archiveOverlay = course => (course?.schedules || []).map((meeting, index) => ({
   ...meeting,
+  ...selectionTimetableMetadata(course),
   id: `jwxk-archive-${course.class_id}-${index}`,
   meeting_id: `jwxk-archive-${course.class_id}-${index}`,
   source_id: course.class_id,
@@ -67,7 +69,7 @@ const archiveOverlay = course => (course?.schedules || []).map((meeting, index) 
   weeks: Array.isArray(meeting.weeks) ? meeting.weeks.map(Number) : [],
   recurrence_unknown: Boolean(meeting.recurrence_unknown || !meeting.weeks?.length),
   teachers: course.teacher ? [course.teacher] : [],
-  course_type: '历史轮次预览',
+  course_type: course.course_nature || '',
   tags: ['历史备份'],
   color: '#64748b',
   layer: 'preview',

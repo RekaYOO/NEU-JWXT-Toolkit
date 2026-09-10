@@ -2,6 +2,14 @@ import { jwxkSelectionMode } from './jwxkModes';
 
 const normalizedName = value => String(value || '').replace(/\s+/g, '').toLocaleLowerCase();
 
+export const selectionTimetableMetadata = (course = {}, fallback = {}) => ({
+  course_nature: course.course_nature || fallback.course_nature || '',
+  assessment_type: course.exam_type || course.assessment_type
+    || fallback.exam_type || fallback.assessment_type || '',
+  grading_scheme: course.score_scale || course.grading_scheme
+    || fallback.score_scale || fallback.grading_scheme || '',
+});
+
 export const UNGROUPED_WEIGHT_GROUP_ID = 'ungrouped_weighted';
 export const UNGROUPED_WEIGHT_GROUP_NAME = '未分组';
 

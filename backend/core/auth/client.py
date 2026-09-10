@@ -93,6 +93,7 @@ SERVICE_CONFIGS = {
         "login_paths": ("/xsxk/auth/cas",),
         "token_cookie": "token",
         "token_header": "Authorization",
+        "token_form_paths": ("/xsxk/web/studentInfo",),
         "auth_response_codes": ("401", "402", "403"),
         # JWXK also uses 401-like business codes for feeds or course scopes
         # that do not apply to the active round.  Only messages that actually
@@ -2120,10 +2121,18 @@ class NEUAuthClient:
         token = self.get_service_token(
             service, network_mode=network_mode, request_path=request_path,
         ) if token_header else None
-        if token:
+        token_form = request_path in config.get("token_form_paths", ())
+        if token or token_form:
             headers = dict(options.get("headers") or {})
-            headers.setdefault(token_header, token)
+            if token_form:
+                headers[token_header] = token or ""
+            else:
+                headers.setdefault(token_header, token)
             options["headers"] = headers
+        if token_form:
+            # The read-only student endpoint authenticates both the header and
+            # form. Rebuild both after CAS recovery, without mutating retry input.
+            options["data"] = {**(options.get("data") or {}), "token": token or ""}
         return options
 
     def _clear_service_token(self, service: str, *, network_mode: str) -> None:
