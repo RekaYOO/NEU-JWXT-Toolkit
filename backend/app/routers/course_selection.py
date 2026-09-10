@@ -258,7 +258,9 @@ def get_jwxk_status(
                             primary,
                             network_mode=effective,
                         )
-                        setattr(status_client, "allow_identity_recovery", False)
+                        # Direct CAS recovery cannot trigger a WebVPN challenge.
+                        # A WebVPN primary may have no direct CAS identity yet.
+                        setattr(status_client, "allow_identity_recovery", effective == "direct")
                         context = status_client.get_context()
                     finally:
                         if original_timeout is not None:

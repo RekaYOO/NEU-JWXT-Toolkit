@@ -2174,13 +2174,23 @@ class NEUAuthClient:
         original_target = self.target
         original_mode = self.active_mode
         original_logged_in = self._logged_in
+        # CAS key refresh may clear the shared jar. Only direct CAS and this
+        # service's cookies belong to the recovery being performed.
+        recovery_hosts = {urlparse(CAS_LOGIN_URL).hostname, config["host"]}
+        preserved = [
+            cookie for cookie in self._session.cookies.copy()
+            if cookie.domain.lstrip(".") not in recovery_hosts
+        ]
         try:
             return bool(self._do_login(config["service"]))
         finally:
             self.target = original_target
             self.active_mode = original_mode
+            for cookie in preserved:
+                self._session.cookies.set_cookie(cookie)
             if original_logged_in:
                 self._logged_in = True
+            self._save_cookies()
 
     def _login_webvpn_service_identity(self, *, target_service: str = "primary") -> Dict[str, Any]:
         """Authenticate WebVPN without changing a direct primary login.
@@ -2298,9 +2308,6 @@ class NEUAuthClient:
             cross_route_webvpn = (
                 network_mode == "webvpn" and self.active_mode != "webvpn"
             )
-            cross_route_direct = (
-                network_mode == "direct" and self.active_mode != "direct"
-            )
             webvpn_password_attempted = False
             identity_recovered = False
 
@@ -2331,8 +2338,10 @@ class NEUAuthClient:
                     logger.info("WebVPN service recovery requires foreground CAPTCHA/SMS")
 
             primary_recovered = False
+            # Direct services recover against their own CAS callback below,
+            # even when JWXT uses direct mode but is currently unreachable.
             if (
-                not cross_route_webvpn and not cross_route_direct
+                network_mode == "webvpn" and not cross_route_webvpn
                 and not config.get("independent_identity_recovery")
             ):
                 primary_recovered = self.ensure_login()

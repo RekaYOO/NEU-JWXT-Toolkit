@@ -287,6 +287,12 @@ HTTPS 网关、标准端口、无用户信息、官方 CAS 主机及精确 `/tpa
 线路切换或新认证结果。定向认证已返回 `not_in_selection_round` / `service_unavailable` 时直接展示
 该结果，不立刻再次核验并覆盖成“登录失效”；用户仍可手动重新检测。
 
+JWXK 直连核验允许使用同账号已有或保存的密码，针对 JWXK 的直连 CAS 回调建立子会话，
+不调用主教务登录检查或 WebVPN 恢复。这样在校外通过 WebVPN 登录后回到校园网，也能单独
+切换选课为直连，无需全局退出。WebVPN 状态核验仍保持被动，不自动开始账密或短信认证；
+`probe=false` 始终只读取本地配置。直连服务认证刷新公钥时会清理 CAS Cookie，共享客户端
+须保留其他主机的 Cookie，并在成功、失败后恢复主线路、持久化合并结果；此保护同时适用于 CXCY。
+
 WebVPN 不会把上游 JWXK 的 `token` 直接写入本地 HTTP Cookie Jar；浏览器端由网关注入脚本通过 `/wengine-vpn/cookie?method=get` 读取虚拟 Cookie。后端在 WebVPN 模式下复用同一官方机制，从受控的 JWXK 主机和请求路径读取虚拟 `token`，只在内存中缓存并映射为 `Authorization`。直连模式仍读取 `jwxk.neu.edu.cn` 的真实 Cookie，二者不能混用。
 
 JWXK 账号轮次需要从公开首页补齐课程范围时，也必须通过 `request_service` 使用当前有效

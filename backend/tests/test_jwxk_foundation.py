@@ -782,8 +782,9 @@ def test_status_route_attaches_same_account_saved_password_for_webvpn_recovery(m
     assert primary.password == "saved-password"
 
 
-def test_status_route_reuses_primary_client_under_remote_guard(monkeypatch):
-    storage = MemoryStorage()
+@pytest.mark.parametrize("mode", ["direct", "webvpn"])
+def test_status_route_reuses_primary_client_under_remote_guard(monkeypatch, mode):
+    storage = MemoryStorage({"course_selection": {"network_mode": mode}})
     events = []
 
     class Primary:
@@ -808,7 +809,7 @@ def test_status_route_reuses_primary_client_under_remote_guard(monkeypatch):
             events.append(("client", network_mode))
 
         def get_context(self):
-            assert self.allow_identity_recovery is False
+            assert self.allow_identity_recovery is (mode == "direct")
             events.append("context")
             return {"batches": []}
 
@@ -817,7 +818,7 @@ def test_status_route_reuses_primary_client_under_remote_guard(monkeypatch):
 
     result = course_selection.get_jwxk_status(Response(), storage)
 
-    assert events == ["enter", ("client", "direct"), "context", "exit"]
+    assert events == ["enter", ("client", mode), "context", "exit"]
     assert result.primary_authenticated is True
     assert result.service_authenticated is True
     assert result.authenticated is True
@@ -875,7 +876,9 @@ def test_jwxk_service_maps_business_token_cookie_to_authorization_header(monkeyp
 
 
 def test_jwxk_session_rebuild_does_not_accept_a_stale_token(monkeypatch):
-    client = NEUAuthClient(restore_session=False)
+    client = NEUAuthClient(
+        username="student", password="fixture-password", restore_session=False,
+    )
     client._logged_in = True
     client.session.cookies.set("token", "stale-token", domain="jwxk.neu.edu.cn", path="/xsxk")
     calls = []
@@ -889,14 +892,14 @@ def test_jwxk_session_rebuild_does_not_accept_a_stale_token(monkeypatch):
         return item
 
     monkeypatch.setattr(client, "_request_service_redirects", fake_redirects)
-    monkeypatch.setattr(client, "ensure_login", lambda: True)
+    monkeypatch.setattr(client, "_login_direct_service", lambda _config: True)
 
     with pytest.raises(NEULoginError, match="无法建立业务系统会话"):
         client.ensure_service_session(
             "jwxk", network_mode_override="direct", force_refresh=True,
         )
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert client.get_service_token(
         "jwxk", network_mode="direct", request_path="/xsxk/web/now",
     ) is None
