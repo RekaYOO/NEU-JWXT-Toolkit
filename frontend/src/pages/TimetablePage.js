@@ -1054,17 +1054,17 @@ export function MobileTimetableNotices({
   );
 }
 
-function QueryTimetablePending({ mode, viewMode, weekNumber, isMobile, includeRange = false }) {
+function QueryTimetablePending({ mode, viewMode, weekNumber, isMobile, includeRange = false, retained = false }) {
   const range = includeRange
     ? (viewMode === 'week' ? `第 ${weekNumber} 周` : '全学期')
     : '';
   return (
     <>
       <div className="timetable-query-pending-copy">
-        <strong>等待拉取课表</strong>
+        <strong>{retained ? '正在更新课表，暂显示上次查询结果' : '等待拉取课表'}</strong>
         <span>正在从教务系统读取{range}{MODE_LABELS[mode]}，返回后会自动显示。</span>
       </div>
-      <Skeleton active title={false} paragraph={{ rows: isMobile ? 4 : 7 }} />
+      {!retained && <Skeleton active title={false} paragraph={{ rows: isMobile ? 4 : 7 }} />}
     </>
   );
 }
@@ -1627,7 +1627,7 @@ function TimetablePage({
   }, []);
 
   const holdQueryViewport = useCallback(() => {
-    if (embedded || modeRef.current === 'personal' || !pageRef.current) return;
+    if (embedded || !pageRef.current) return;
     const page = pageRef.current;
     const height = page.getBoundingClientRect().height;
     queryViewportHeld.current = true;
@@ -1636,7 +1636,7 @@ function TimetablePage({
   }, [embedded]);
 
   useLayoutEffect(() => {
-    if (embedded || mode === 'personal' || loading || !queryViewportHeld.current) return undefined;
+    if (embedded || loading || !queryViewportHeld.current) return undefined;
     const trimReservation = () => {
       const page = pageRef.current;
       if (!page) return;
@@ -1662,7 +1662,7 @@ function TimetablePage({
       window.removeEventListener('scroll', trimReservation);
       window.removeEventListener('resize', trimReservation);
     };
-  }, [embedded, error, loading, mode, schedule]);
+  }, [embedded, error, loading, mode, schedule, viewMode, weekNumber]);
 
   const loadTerms = useCallback(() => {
     if (recoveryMode) return Promise.resolve();
@@ -2733,9 +2733,11 @@ function TimetablePage({
   const switchViewMode = nextViewMode => {
     if (nextViewMode === viewMode) return;
     scheduleGeneration.current += 1;
-    if (mode === 'personal') setSchedule(null);
-    else {
-      holdQueryViewport();
+    holdQueryViewport();
+    if (usesPersonalTimetableEndpoint && personalPayload) {
+      // The complete personal term is local: commit its range and data together.
+      setSchedule(personalScheduleView(personalPayload, campusCode, nextViewMode, weekNumber));
+    } else {
       setLoading(!queryContextEmpty);
     }
     setDetailCourse(null);
@@ -2877,20 +2879,26 @@ function TimetablePage({
     }));
   }, [context]);
 
+  // Keep the retained query's layout and overlays on its actual range until
+  // the new response arrives; controls already show the requested range.
+  const displayedViewMode = !usesPersonalTimetableEndpoint && schedule
+    ? (schedule.week == null ? 'term' : 'week') : viewMode;
+  const displayedWeekNumber = !usesPersonalTimetableEndpoint && schedule
+    ? schedule.week : weekNumber;
   const coursesByDay = useMemo(() => {
     const result = Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]));
     const visibleOverlayCourses = termCode === preferredTermCode ? (overlayCourses || []).filter(course => (
-      viewMode === 'term'
+      displayedViewMode === 'term'
       || course.recurrence_unknown
       || !Array.isArray(course.weeks)
       || !course.weeks.length
-      || course.weeks.includes(weekNumber)
+      || course.weeks.includes(displayedWeekNumber)
     )) : [];
     mergeScheduleWithSelectionOverlays(schedule?.courses || [], visibleOverlayCourses).forEach(course => {
       if (result[course.weekday]) result[course.weekday].push(course);
     });
     return result;
-  }, [overlayCourses, preferredTermCode, schedule, termCode, viewMode, weekNumber]);
+  }, [displayedViewMode, displayedWeekNumber, overlayCourses, preferredTermCode, schedule, termCode]);
   const resolvedSections = useMemo(() => resolveTimetableSections({
     sections,
     sectionsByCampus: mode === 'personal' ? (personalPayload?.sections_by_campus || {}) : {},
@@ -2952,7 +2960,7 @@ function TimetablePage({
   const effectiveCurrentWeekNumber = termCode === currentTermCode
     ? selectDefaultWeek(context?.weeks || [], { currentTerm: true })
     : null;
-  const queryScheduleMatches = mode !== 'personal' && queryTimetableScheduleMatches({
+  const queryScheduleMatches = !usesPersonalTimetableEndpoint && queryTimetableScheduleMatches({
     mode,
     schedule,
     targetId: target?.id || '',
@@ -2961,7 +2969,7 @@ function TimetablePage({
     viewMode,
     weekNumber,
   });
-  const querySubjectMatches = mode !== 'personal' && queryTimetableSubjectMatches({
+  const querySubjectMatches = !usesPersonalTimetableEndpoint && queryTimetableSubjectMatches({
     mode, schedule, targetId: target?.id || '', termCode, campusCode,
   });
   const mobileQuerySummary = useMemo(() => {
@@ -3360,10 +3368,12 @@ function TimetablePage({
         />
       )}
 
-      <div className="timetable-query-results" aria-busy={queryTimetablePending}>
+      <div className="timetable-query-results" aria-busy={queryTimetablePending || Boolean(
+        querySubjectMatches && !queryScheduleMatches && loading && !error
+      )}>
       {querySubjectMatches && !queryScheduleMatches && (
         <div
-          className={`timetable-query-transition${loading && !error ? ' timetable-loading' : ''}`}
+          className="timetable-query-transition"
           role="status"
           aria-live="polite"
         >
@@ -3374,6 +3384,7 @@ function TimetablePage({
               weekNumber={weekNumber}
               isMobile={isMobile}
               includeRange
+              retained
             />
           ) : error
             ? (isMobile ? '下方保留的是上次查询结果，并非当前选择范围' : '当前范围读取失败，请重试')
@@ -3419,7 +3430,7 @@ function TimetablePage({
                   coursesByDay={coursesByDay}
                   sections={resolvedSections}
                   selectedDay={mobileDay}
-                  viewMode={viewMode}
+                  viewMode={displayedViewMode}
                   currentTerm={termCode === currentTermCode}
                   currentWeekNumber={effectiveCurrentWeekNumber}
                   onDayChange={handleMobileDayChange}
@@ -3442,15 +3453,15 @@ function TimetablePage({
                 <TimetableGrid
                   coursesByDay={coursesByDay}
                   sections={resolvedSections}
-                  viewMode={viewMode}
+                  viewMode={displayedViewMode}
                   mode={mode}
                   currentTerm={termCode === currentTermCode}
                   currentWeekNumber={effectiveCurrentWeekNumber}
                   showToday={shouldHighlightToday({
                     termCode,
                     currentTermCode,
-                    viewMode,
-                    weekNumber,
+                    viewMode: displayedViewMode,
+                    weekNumber: displayedWeekNumber,
                     currentWeekNumber: effectiveCurrentWeekNumber,
                   })}
                   onCourseClick={setDetailCourse}
@@ -3484,7 +3495,7 @@ function TimetablePage({
         />
       )}
 
-      {isMobile && viewMode === 'term' && schedule && (mode === 'personal' || queryScheduleMatches) && (
+      {isMobile && displayedViewMode === 'term' && schedule && (mode === 'personal' || querySubjectMatches) && (
         <div className="timetable-mobile-scroll-tail" aria-hidden="true" />
       )}
 

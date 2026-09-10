@@ -55,7 +55,9 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
       : [[320, 800], [375, 812], [430, 932], [768, 900], [1440, 900]];
     for (const [width, height] of viewports) {
       for (const compact of width < 992 ? [false, true] : [false]) {
-        for (const label of process.env.QA_FOCUS_ONLY === '1' ? ['我的课表'] : ['教室课表', '教师课表', '班级课表']) {
+        for (const label of process.env.QA_FOCUS_ONLY === '1' ? ['我的课表']
+          : process.env.QA_VIEW_ONLY === '1' ? ['我的课表', '教室课表', '教师课表', '班级课表']
+          : ['教室课表', '教师课表', '班级课表']) {
           const page = await browser.newPage({ viewport: { width, height }, serviceWorkers: 'block' });
           const errors = [];
           let releaseSchedule = null;
@@ -108,7 +110,8 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
                 delayNextSchedule = false;
                 await new Promise(resolve => { releaseSchedule = resolve; });
               }
-              data = { ...request, courses: [3, 4].includes(request.week) ? courses(request.week) : [],
+              data = { ...request, courses: request.week == null ? [...courses(3), ...courses(4)]
+                : [3, 4].includes(request.week) ? courses(request.week) : [],
                 unscheduled: [], practices: [] };
             }
             return route.fulfill({ json: data });
@@ -151,9 +154,9 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
             await page.close();
             continue;
           }
-          await openQuery();
+          if (label !== '我的课表') await openQuery();
           const empty = page.getByText('当前条件下暂无课程安排', { exact: true });
-          await empty.waitFor();
+          if (label !== '我的课表') await empty.waitFor();
           const selectWeek = async (number, expectRequest = true) => {
             const completed = expectRequest && !delayNextSchedule ? page.waitForResponse(response => (
               response.url().endsWith('/api/timetable/schedule')
@@ -174,6 +177,65 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
               await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
             }
           };
+          if (process.env.QA_VIEW_ONLY === '1') {
+            const query = label !== '我的课表';
+            if (query) await selectWeek(3);
+            await page.locator('.timetable-desktop').first().waitFor({ state: 'attached' });
+            if (width < 992) await page.locator('.timetable-mobile-summary-trigger').click();
+            await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+            await page.evaluate(() => {
+              window.scrollTo(0, 180);
+              window.__grid = document.querySelector('.timetable-desktop');
+              window.__summary = document.querySelector('.timetable-mobile-summary');
+              window.__removedGrid = false;
+              new MutationObserver(records => {
+                for (const record of records) for (const node of record.removedNodes) {
+                  if (node === window.__grid || node.contains?.(window.__grid)) window.__removedGrid = true;
+                }
+              }).observe(document.querySelector('.timetable-query-results'), { childList: true, subtree: true });
+            });
+            const rangeControls = page.locator(width < 992
+              ? '.timetable-mobile-summary-view' : '.timetable-desktop-controls');
+            for (const [range, termView] of width < 992
+              ? [['学期课表', true], ['周课表', false]] : [['全学期', true], ['按周', false]]) {
+              const beforeTop = await page.evaluate(() => scrollY);
+              if (query) delayNextSchedule = true;
+              await rangeControls.getByText(range, { exact: true }).evaluate(node => node.click());
+              if (query) {
+                await page.locator('.timetable-query-transition').waitFor();
+                assert.equal(await page.locator('.timetable-query-stale').evaluate(node => getComputedStyle(node).visibility), 'visible');
+                assert.equal(await page.locator('.timetable-query-results .ant-skeleton').count(), 0);
+                assert.equal(await page.locator('.timetable-mobile').evaluate(node => node.classList.contains('is-term-view')), !termView);
+                if (label === '教室课表' && termView) await page.screenshot({
+                  path: path.join(screenshots, `${width}-${compact ? 'compact' : 'daily'}-view-pending.png`),
+                });
+                assert(releaseSchedule);
+                releaseSchedule();
+                releaseSchedule = null;
+                await page.locator('.timetable-query-stale').waitFor({ state: 'detached' });
+              }
+              await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+              const state = await page.evaluate(() => ({
+                same: window.__grid === document.querySelector('.timetable-desktop'),
+                removed: window.__removedGrid, top: scrollY,
+                summarySame: window.__summary === document.querySelector('.timetable-mobile-summary'),
+                expanded: window.__summary?.classList.contains('expanded'),
+                overflow: document.documentElement.scrollWidth > innerWidth + 1,
+              }));
+              assert(state.same && !state.removed, `${label}: range switch remounted grid`);
+              assert(Math.abs(state.top - beforeTop) < 2, `${label} ${width} ${range}: scroll jumped ${beforeTop} -> ${state.top}`);
+              assert.equal(state.overflow, false);
+              if (width < 992) assert(state.summarySame && state.expanded);
+              assert.equal(await page.locator('.timetable-mobile').evaluate(node => node.classList.contains('is-term-view')), termView);
+              if (label === '教室课表') await page.screenshot({
+                path: path.join(screenshots, `${width}-${compact ? 'compact' : 'daily'}-${termView ? 'term' : 'week'}.png`),
+              });
+            }
+            assert.deepEqual(errors, []);
+            console.log(`PASS views ${label} ${width}x${height} ${compact ? 'compact' : 'daily'}: retained grid, range, scroll, summary`);
+            await page.close();
+            continue;
+          }
           await selectWeek(2);
           await page.waitForFunction(() => !document.querySelector('[aria-busy="true"].timetable-query-results'));
           await empty.waitFor();
@@ -199,8 +261,9 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
           await selectWeek(4);
           await page.locator('.timetable-query-transition').waitFor();
           await page.getByText(`正在从教务系统读取第 4 周${label}，返回后会自动显示。`, { exact: true }).waitFor();
-          assert.equal(await page.locator('.timetable-query-transition .ant-skeleton').count(), 1,
-            `${label}: range transition must reuse the standard loading presentation`);
+          assert.equal(await page.locator('.timetable-query-transition .ant-skeleton').count(), 0,
+            `${label}: retained results must not be covered by a replacement skeleton`);
+          assert.equal(await page.locator('.timetable-query-stale').evaluate(node => getComputedStyle(node).visibility), 'visible');
           const during = await page.evaluate(() => ({
             top: scrollY, height: document.querySelector('.timetable-page').getBoundingClientRect().height,
             summarySame: window.__summary === document.querySelector('.timetable-mobile-summary'),

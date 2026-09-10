@@ -100,6 +100,7 @@ describe('query timetable request lifecycle', () => {
     await act(async () => root.unmount());
     container.remove();
     header.remove();
+    window.history.replaceState(null, '', '/');
     global.IS_REACT_ACT_ENVIRONMENT = false;
   });
   const flush = async () => {
@@ -359,11 +360,79 @@ describe('query timetable request lifecycle', () => {
     expect(container.querySelector('.timetable-query-pending')).toBeNull();
     expect(container.querySelector('.timetable-query-transition').textContent)
       .toContain('正在从教务系统读取第 2 周教室课表');
-    expect(container.querySelector('.timetable-query-transition .ant-skeleton')).not.toBeNull();
+    expect(container.querySelector('.timetable-query-transition .ant-skeleton')).toBeNull();
     expect(container.querySelector('.timetable-query-stale').hasAttribute('inert')).toBe(true);
     await act(async () => request.resolve(empty(getTimetableSchedule.mock.calls.at(-1)[0])));
     expect(summary.classList.contains('expanded')).toBe(true);
     expect(container.textContent).toContain('当前条件下暂无课程安排');
+  });
+
+  test.each([
+    ['我的课表', false], ['我的课表', true],
+    ['教室课表', false], ['教室课表', true],
+    ['教师课表', false], ['教师课表', true],
+    ['班级课表', false], ['班级课表', true],
+    ['个人历史课表', false], ['个人历史课表', true],
+  ])('%s switches view without remounting results (desktop=%s)', async (label, desktop) => {
+    window.matchMedia = () => ({
+      matches: desktop, addListener: jest.fn(), removeListener: jest.fn(),
+      addEventListener: jest.fn(), removeEventListener: jest.fn(),
+    });
+    getTimetableSchedule.mockImplementation(async request => ({ ...empty(request), courses: [course] }));
+    const historical = label === '个人历史课表';
+    if (historical) window.history.replaceState(null, '', `/timetable?term=${termCode}&week=1`);
+    if (historical) getTimetableTerms.mockResolvedValue({
+      terms: [{ code: termCode, name: '历史学期' }, { code: '2027-2028-1', name: '当前学期', current: true }],
+      current: '2027-2028-1',
+    });
+    if (label === '我的课表' || historical) {
+      await act(async () => root.render(
+        <MemoryRouter initialEntries={[`/timetable?term=${termCode}&week=1`]}
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <TimetablePage />
+        </MemoryRouter>,
+      ));
+      await flush();
+    } else await mountQuery(label);
+    if (!desktop) await click(header.querySelector('.timetable-mobile-summary-trigger'));
+    const controls = desktop ? container : header;
+    const range = name => [...controls.querySelectorAll('.ant-segmented-item')]
+      .find(item => item.textContent === (desktop ? (name === '学期课表' ? '全学期' : '按周') : name));
+    const grid = container.querySelector('.timetable-desktop');
+    const mobile = container.querySelector('.timetable-mobile');
+    const summary = header.querySelector('.timetable-mobile-summary');
+    const personalReads = getPersonalTimetable.mock.calls.length;
+    const query = label !== '我的课表';
+    expect(grid).not.toBeNull();
+    for (const [name, termView] of [['学期课表', true], ['周课表', false]]) {
+      const next = deferred();
+      if (query) getTimetableSchedule.mockImplementationOnce(() => next.promise);
+      await click(range(name));
+      expect(container.querySelector('.timetable-desktop')).toBe(grid);
+      expect(container.querySelector('.timetable-mobile')).toBe(mobile);
+      expect(container.querySelector('.timetable-query-results .ant-skeleton')).toBeNull();
+      if (query) {
+        expect(mobile.classList.contains('is-term-view')).toBe(!termView);
+        expect(container.querySelector('.timetable-query-transition').textContent)
+          .toContain('暂显示上次查询结果');
+        expect(container.querySelector('.timetable-query-stale').hasAttribute('inert')).toBe(true);
+        await act(async () => next.resolve({
+          ...empty(getTimetableSchedule.mock.calls.at(-1)[0]), courses: [course],
+        }));
+      }
+      expect(container.querySelector('.timetable-desktop')).toBe(grid);
+      expect(mobile.classList.contains('is-term-view')).toBe(termView);
+      expect(container.querySelector('.timetable-query-transition')).toBeNull();
+      if (!desktop) {
+        expect(header.querySelector('.timetable-mobile-summary')).toBe(summary);
+        expect(summary.classList.contains('expanded')).toBe(true);
+      }
+    }
+    expect(getPersonalTimetable).toHaveBeenCalledTimes(personalReads);
+    if (desktop) {
+      expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+      expect(window.scrollTo).not.toHaveBeenCalled();
+    }
   });
 
   test('does not let personal cache events overwrite a confirmed empty query', async () => {
