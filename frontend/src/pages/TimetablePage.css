@@ -102,22 +102,6 @@
   width: 100%;
 }
 
-.timetable-time-filter-group {
-  min-height: 32px;
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: 4px 0;
-}
-
-.timetable-time-filter-group .ant-checkbox-wrapper {
-  margin-inline-start: 0;
-  color: var(--color-ink);
-  font-size: 13px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
 .timetable-target-search-row {
   min-width: 0;
   display: grid;
@@ -225,9 +209,11 @@
 }
 
 .timetable-control-actions {
+  grid-column: -2 / -1;
   justify-self: end;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--space-2);
   padding-bottom: 1px;
 }
@@ -1893,6 +1879,12 @@
     -webkit-line-clamp: 3;
   }
 
+  /* Keep conflict names red after the compact mobile title rule above. */
+  .timetable-grid.is-mobile-compact .timetable-course-block.has-personal-conflict .course-title,
+  .timetable-grid.is-mobile-compact .timetable-cluster-stack-card.has-personal-conflict > strong {
+    color: var(--color-danger);
+  }
+
   .timetable-grid.is-mobile-compact .timetable-course-block .course-location,
   .timetable-grid.is-mobile-compact .timetable-cluster-stack-detail {
     display: block;
@@ -2057,10 +2049,6 @@
     color: var(--color-ink);
   }
 
-  .timetable-filter-field .timetable-time-filter-group {
-    min-height: 40px;
-    padding: 6px 0;
-  }
 }
 
 @media (max-width: 575.98px) {

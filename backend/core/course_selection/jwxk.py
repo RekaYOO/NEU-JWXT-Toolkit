@@ -393,6 +393,13 @@ def _number(value: Any) -> int | None:
         return None
 
 
+def _decimal_number(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _find_named_number(value: Any, names: set[str]) -> int | None:
     """Find an official numeric field without retaining its personal payload."""
 
@@ -518,14 +525,92 @@ def _matching_fragment(
     return ranked[0][1]
 
 
+def _normalize_experiment_schedules(course: dict[str, Any], class_id: str) -> list[dict[str, Any]]:
+    result = []
+    seen = set()
+    for index, raw in enumerate(course.get("SYPKSJ") or []):
+        if not isinstance(raw, dict):
+            continue
+        raw_text = _text(raw.get("sksj"))
+        schedule_id = _text(raw.get("pklcwid"))
+        if not schedule_id:
+            stable = "|".join((
+                class_id, _text(raw.get("xmmc")), raw_text,
+                _text(raw.get("xsfzwid")), str(index),
+            ))
+            schedule_id = hashlib.sha256(stable.encode("utf-8")).hexdigest()[:24]
+        if schedule_id in seen:
+            continue
+        seen.add(schedule_id)
+        start_section, end_section = _sections_from_text(raw_text)
+        weeks = tuple(parse_weeks(raw_text))
+        campus = normalize_jwxk_campus_code(raw.get("xqdm"))
+        result.append({
+            "schedule_id": schedule_id,
+            "meeting_id": f"jwxk-exp-{schedule_id}",
+            "project_name": _text(raw.get("xmmc")) or "未命名实验",
+            "week_text": re.split(r"星期|周[一二三四五六日天]", raw_text, maxsplit=1)[0].strip(),
+            "weeks": list(weeks),
+            "recurrence_unknown": not bool(weeks),
+            "parse_status": "parsed" if weeks and _weekday_from_text(raw_text) and start_section else "unknown",
+            "weekday": _weekday_from_text(raw_text),
+            "start_section": start_section,
+            "end_section": end_section,
+            "location": _text(raw.get("skddmc") or raw.get("skdd")),
+            "campus": campus,
+            "campus_name": jwxk_campus_label(campus),
+            "teacher": _text(raw.get("skjsxm")),
+            "group_id": _text(raw.get("xsfzwid")),
+            "group_name": _text(raw.get("xsfz")),
+            "target_classes": _text(raw.get("lc")),
+            "hours": _decimal_number(raw.get("syxs")),
+            "raw_text": raw_text,
+        })
+    return result
+
+
+def normalize_course_programs(rows: Any) -> list[dict[str, str]]:
+    """Normalize the public curriculum labels returned by JWXK's ssfa endpoint."""
+
+    result = []
+    seen = set()
+    for raw in rows if isinstance(rows, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        item = {
+            "grade": _text(raw.get("NJ")),
+            "training_code": _text(raw.get("trainingCode")),
+            "program_name": _text(raw.get("FA")),
+            "module_name": _text(raw.get("parentCode")),
+            "course_nature": _text(raw.get("KCXZ")),
+            "course_category": _text(raw.get("KCLB")),
+            "direction_code": _text(raw.get("ZYFXDM")),
+        }
+        identity = tuple(item.values())
+        if not item["program_name"] or identity in seen:
+            continue
+        seen.add(identity)
+        result.append(item)
+    return result
+
+
 def _normalize_class(row: dict[str, Any], parent: dict[str, Any]) -> dict[str, Any]:
     parent_selected = _text(parent.get("SFYX")) == "1"
     course = {**parent, **row}
     class_id = _text(course.get("JXBID") or course.get("KXH"))
+    experiment_schedules = _normalize_experiment_schedules(course, class_id)
+    experiment_hours = _decimal_number(course.get("SYXS"))
+    teaching_mode = _text(course.get("XSXLX"))
+    has_experiment = bool(
+        experiment_schedules
+        or (experiment_hours is not None and experiment_hours > 0)
+        or "实验" in teaching_mode
+    )
     official_schedule = _text(course.get("YPSJDD") or course.get("teachingPlace"))
     fragments = _schedule_fragments(official_schedule)
     schedules = []
-    for index, item in enumerate(row.get("SKSJ") or []):
+    raw_meetings = row.get("SKSJ") or []
+    for index, item in enumerate(raw_meetings):
         if not isinstance(item, dict):
             continue
         week_text = _text(item.get("SKZCMC"))
@@ -572,6 +657,46 @@ def _normalize_class(row: dict[str, Any], parent: dict[str, Any]) -> dict[str, A
             "location": _text(fragment.get("location")) if fragment else "",
             "raw_text": _text(fragment.get("raw_text")) if fragment else "",
         })
+    # Some JWXK catalog feeds omit SKSJ while still returning a structured
+    # official arrangement in YPSJDD. Use only complete, unambiguous fragments
+    # as a fallback; a location-only or free-form note must remain unverified.
+    if not raw_meetings and not schedules:
+        fallback_term = _text(
+            course.get("XNXQ") or course.get("schoolTerm") or course.get("termCode")
+            or course.get("semester") or course.get("xnxq")
+        )
+        fallback_teacher = _text(course.get("SKJS"))
+        for index, fragment in enumerate(fragments):
+            weeks = tuple(fragment.get("weeks") or ())
+            weekday = _number(fragment.get("weekday"))
+            start_section = _number(fragment.get("start_section"))
+            end_section = _number(fragment.get("end_section"))
+            if not weeks or not weekday or not start_section or not end_section:
+                continue
+            teacher = _text(fragment.get("teacher")) or fallback_teacher
+            stable = "|".join((
+                class_id, "official", str(index), _text(fragment.get("raw_text")),
+            ))
+            schedules.append({
+                "meeting_id": "jwxk-mtg-" + hashlib.sha256(stable.encode("utf-8")).hexdigest()[:20],
+                "term_code": fallback_term,
+                "week_text": _text(fragment.get("week_text")),
+                "week_mask": "",
+                "weeks": list(weeks),
+                "recurrence_unknown": False,
+                "parse_status": "official_schedule",
+                "schedule_source": "official_schedule",
+                "weekday": weekday,
+                "start_section": start_section,
+                "end_section": end_section,
+                "teacher": teacher,
+                "campus": normalize_jwxk_campus_code(course.get("XXXQDM") or course.get("campusCode")),
+                "campus_name": jwxk_campus_label(
+                    course.get("XXXQDM"), course.get("XXXQMC")
+                ),
+                "location": _text(fragment.get("location")),
+                "raw_text": _text(fragment.get("raw_text")),
+            })
     locations = list(dict.fromkeys(
         _text(item.get("location")) for item in schedules if _text(item.get("location"))
     ))
@@ -639,7 +764,10 @@ def _normalize_class(row: dict[str, Any], parent: dict[str, Any]) -> dict[str, A
         "teaching_class_type": _text(
             course.get("teachingClassType") or course.get("clazzType")
         ),
-        "teaching_mode": _text(course.get("XSXLX")),
+        "teaching_mode": teaching_mode,
+        "has_experiment": has_experiment,
+        "experiment_hours": experiment_hours,
+        "experiment_schedules": experiment_schedules,
         "teacher_details": _teacher_details(course.get("SKJSLB")),
         "teacher_titles": _text(course.get("SKJSZC")),
         "target_classes": _target_classes(course),
@@ -1525,6 +1653,17 @@ class JwxkSessionClient:
                 *(normalized.get("course_categories") or []), official,
             ]))
             normalized["normalized_course_category"] = normalize_course_category(official)
+        programs: list[dict[str, str]] = []
+        programs_loaded = False
+        try:
+            program_payload = self._post_form("/xsxk/elective/ssfa", {"kch": course_code})
+            programs = normalize_course_programs(program_payload.get("data"))
+            programs_loaded = True
+        except (JwxkError, requests.RequestException):
+            # The newly added program lookup is descriptive. Keep course and
+            # class details usable when that optional endpoint is unavailable.
+            programs_loaded = False
+
         return {
             "course": {
                 "course_code": normalized.get("course_code", ""),
@@ -1546,6 +1685,8 @@ class JwxkSessionClient:
                 "description": course_detail.get("description", ""),
             },
             "teaching_class": normalized,
+            "programs": programs,
+            "programs_loaded": programs_loaded,
         }
 
     def _post_mutation(self, path: str, data: dict[str, Any], *, confirm_risk: bool) -> dict[str, Any]:
@@ -1953,6 +2094,10 @@ class JwxkSessionClient:
                 *normalize_course_rows(tagged(general_volunteered, "xgxkyx")),
             ],
             "withdrawal": normalize_course_rows(withdrawal),
+            # Internal marker consumed by the router before Pydantic validation.
+            # A partial feed read must never be treated as an authoritative empty
+            # result when reconciling the durable course catalog.
+            "_complete": not failures,
         }
 
     def search_catalog(

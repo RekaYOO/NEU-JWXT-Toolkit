@@ -181,36 +181,6 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
             const query = label !== '我的课表';
             if (query) await selectWeek(3);
             await page.locator('.timetable-desktop').first().waitFor({ state: 'attached' });
-            const requestsBeforeFilter = scheduleRequests;
-            const coursesBeforeFilter = await page.locator('.timetable-course-block').count();
-            if (width < 992) {
-              await page.locator('.timetable-context-copy').click();
-              const drawer = page.locator('.ant-drawer-open');
-              await drawer.evaluate(async element => {
-                await Promise.all(element.getAnimations({ subtree: true })
-                  .map(animation => animation.finished.catch(() => {})));
-              });
-              const timeFilter = page.locator('.mobile-sheet .timetable-time-filter-group');
-              await timeFilter.evaluate(element => element.scrollIntoView({ block: 'center' }));
-              await timeFilter.getByText('不上早八', { exact: true }).click();
-              await timeFilter.getByText('不上晚十', { exact: true }).click();
-              await page.locator('.ant-drawer-open .mobile-sheet__footer button').last().click();
-              await page.waitForFunction(() => {
-                const text = document.querySelector('.timetable-context-copy')?.textContent || '';
-                return text.includes('不上早八') && text.includes('不上晚十');
-              });
-            } else {
-              const timeFilter = page.locator('.timetable-desktop-controls .timetable-time-filter-group');
-              await timeFilter.getByText('不上早八', { exact: true }).click();
-              await timeFilter.getByText('不上晚十', { exact: true }).click();
-            }
-            await page.waitForFunction(before => (
-              document.querySelectorAll('.timetable-course-block').length < before
-            ), coursesBeforeFilter);
-            assert.equal(scheduleRequests, requestsBeforeFilter, `${label}: local time filter made a schedule request`);
-            assert.equal(await page.getByText(
-              '当前课表中的课程均已被“不上时间”筛选排除', { exact: true },
-            ).count(), 0, `${label}: fixture should retain middle-day courses`);
             if (width < 992) await page.locator('.timetable-mobile-summary-trigger').click();
             await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
             await page.evaluate(() => {
@@ -256,6 +226,14 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
               assert(Math.abs(state.top - beforeTop) < 2, `${label} ${width} ${range}: scroll jumped ${beforeTop} -> ${state.top}`);
               assert.equal(state.overflow, false);
               if (width < 992) assert(state.summarySame && state.expanded);
+              else {
+                const actionGap = await rangeControls.evaluate(element => {
+                  const controls = element.getBoundingClientRect();
+                  const refresh = element.querySelector('.timetable-refresh-button').getBoundingClientRect();
+                  return controls.right - refresh.right;
+                });
+                assert(Math.abs(actionGap) < 2, `${label} ${range}: desktop refresh is not right-aligned (${actionGap}px)`);
+              }
               assert.equal(await page.locator('.timetable-mobile').evaluate(node => node.classList.contains('is-term-view')), termView);
               if (label === '教室课表') await page.screenshot({
                 path: path.join(screenshots, `${width}-${compact ? 'compact' : 'daily'}-${termView ? 'term' : 'week'}.png`),

@@ -232,6 +232,9 @@ class JwxkCourseItem(StrictModel):
     score_scale_code: str = ""
     score_scale: str = ""
     teaching_mode: str = ""
+    has_experiment: bool = False
+    experiment_hours: float | None = None
+    experiment_schedules: list[dict[str, Any]] = Field(default_factory=list)
     teacher_details: list[dict[str, str]] = Field(default_factory=list)
     teacher_titles: str = ""
     target_classes: list[str] = Field(default_factory=list)
@@ -421,9 +424,21 @@ class JwxkCourseDetail(StrictModel):
     description: str = ""
 
 
+class JwxkCourseProgram(StrictModel):
+    grade: str = ""
+    training_code: str = ""
+    program_name: str
+    module_name: str = ""
+    course_nature: str = ""
+    course_category: str = ""
+    direction_code: str = ""
+
+
 class JwxkCatalogDetailResponse(StrictModel):
     course: JwxkCourseDetail
     teaching_class: JwxkCourseItem
+    programs: list[JwxkCourseProgram] = Field(default_factory=list)
+    programs_loaded: bool = False
 
 
 class JwxkSelectionScheduleResponse(StrictModel):
@@ -455,6 +470,25 @@ class JwxkSavedPlanRequest(JwxkBatchRequest):
     term_code: str = Field(min_length=1, max_length=32)
     groups: list[JwxkPlanGroup] = Field(default_factory=list, max_length=20)
     items: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    experiment_selections: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_experiment_selections(self):
+        if len(self.experiment_selections) > 100:
+            raise ValueError("too many experiment selections")
+        for class_id, schedule_ids in self.experiment_selections.items():
+            if (
+                not class_id or len(class_id) > 64
+                or not class_id.replace("-", "").replace("_", "").isalnum()
+                or len(schedule_ids) > 30
+                or any(
+                    not value or len(value) > 64
+                    or not value.replace("-", "").replace("_", "").isalnum()
+                    for value in schedule_ids
+                )
+            ):
+                raise ValueError("invalid experiment selection")
+        return self
 
 
 class JwxkWeightPlanRequest(JwxkSavedPlanRequest):

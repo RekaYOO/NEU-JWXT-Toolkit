@@ -523,16 +523,44 @@ const mergeCatalogGroupsByCourse = groups => {
   return merged;
 };
 
+export const courseHasExperiment = course => Boolean(
+  course?.has_experiment
+  || course?.experiment_schedules?.length
+  || Number(course?.experiment_hours || 0) > 0
+  || String(course?.teaching_mode || '').includes('实验')
+);
+
+export const selectedExperimentSchedules = (course = {}, selectedIds = []) => {
+  const selected = new Set((selectedIds || []).map(String));
+  return (course.experiment_schedules || []).filter(item => (
+    selected.has(String(item.schedule_id || ''))
+  ));
+};
+
 export const catalogGroupsForDisplay = (groups = [], {
   availability = 'all',
   weekday = 'all',
+  specialFilters = [],
+  excludedTimeSlots = specialFilters,
 } = {}) => {
+  const activeSpecialFilters = specialFilters.length ? specialFilters : excludedTimeSlots;
+  const excludedSections = new Set((activeSpecialFilters || []).map(value => ({
+    no_first: 1,
+    no_twelfth: 12,
+  })[value]).filter(Boolean));
   return sortCatalogGroupsBySelectability(mergeCatalogGroupsByCourse((groups || []).map(group => {
     const classes = (group.classes || []).filter(course => {
       if (!matchesCatalogAvailability(course, availability)) return false;
+      if (activeSpecialFilters.includes('no_experiment') && courseHasExperiment(course)) return false;
       if (weekday !== 'all' && !(course.schedules || []).some(item => String(item.weekday) === String(weekday))) {
         return false;
       }
+      if (excludedSections.size && (course.schedules || []).some(item => {
+        const start = Number(item.start_section || 0);
+        const end = Number(item.end_section || item.start_section || 0);
+        if (start <= 0 || end < start) return false;
+        return [...excludedSections].some(section => start <= section && end >= section);
+      })) return false;
       return true;
     });
     return { ...group, classes, class_count: classes.length };
@@ -641,7 +669,34 @@ export const removeSelectionRecord = (records = [], target = {}) => (
 export const patchCatalogSelection = (groups = [], target = {}, {
   selected = false,
   devotedWeight = null,
+  selectedRecords = null,
 } = {}) => (groups || []).map(group => {
+  if (Array.isArray(selectedRecords)) {
+    const selectedByClass = new Map((selectedRecords || []).map(record => [
+      String(record?.class_id || '').trim(), record,
+    ]).filter(([classId]) => classId));
+    const selectedCodes = new Set((selectedRecords || []).map(record => (
+      String(record?.course_code || '').trim().toLocaleLowerCase()
+    )).filter(Boolean));
+    return {
+      ...group,
+      classes: (group.classes || []).map(course => {
+        const classId = String(course?.class_id || '').trim();
+        const exact = classId ? selectedByClass.get(classId) : null;
+        const fallback = exact || (selectedRecords || []).find(record => sameSelectionCourse(record, course));
+        const courseCode = String(course?.course_code || '').trim().toLocaleLowerCase();
+        return {
+          ...course,
+          selected: Boolean(exact || (!classId && fallback)),
+          course_already_selected: Boolean(
+            (courseCode && selectedCodes.has(courseCode)) || fallback,
+          ),
+          devoted_weight: exact?.devoted_weight ?? (fallback?.class_id === course?.class_id
+            ? fallback?.devoted_weight ?? null : null),
+        };
+      }),
+    };
+  }
   const groupMatches = sameSelectionCourse(group, target)
     || (group.classes || []).some(course => sameSelectionCourse(course, target));
   if (!groupMatches) return group;
@@ -747,15 +802,13 @@ export const removeCourseFromSelectionConflictMap = (conflictMap = {}, course = 
 
 export const immediateSelectionConflictMap = (personalCourses = [], candidateCourses = []) => Object.fromEntries(
   candidateCourses.map(candidate => {
-    const candidateComplete = (candidate.weeks || []).length && candidate.weekday
-      && candidate.start_section && candidate.end_section;
+    const candidateComplete = selectionMeetingHasReliableTime(candidate);
     let hasUnknownBaseline = !candidateComplete;
     const matches = mergeSelectionConflictMatches(personalCourses.flatMap(personal => {
       if (sameSelectionCourse(personal, candidate)) return [];
       if (personal.term_code && candidate.term_code && personal.term_code !== candidate.term_code) return [];
       const weeks = overlappingWeeks(personal, candidate);
-      const personalComplete = (personal.weeks || []).length && personal.weekday
-        && personal.start_section && personal.end_section;
+      const personalComplete = selectionMeetingHasReliableTime(personal);
       if (!personalComplete) {
         hasUnknownBaseline = true;
         return [];
@@ -786,6 +839,14 @@ export const immediateSelectionConflictMap = (personalCourses = [], candidateCou
 
 const conflictStatusRank = { clear: 0, unknown: 1, conflict: 2 };
 
+export const selectionMeetingHasReliableTime = (meeting = {}) => (
+  Array.isArray(meeting.weeks)
+  && meeting.weeks.length > 0
+  && Number(meeting.weekday || 0) > 0
+  && Number(meeting.start_section || 0) > 0
+  && Number(meeting.end_section || 0) >= Number(meeting.start_section || 0)
+);
+
 /**
  * 将逐课次冲突结果汇总到教学班。课程目录使用该结果常驻展示冲突状态，
  * 悬停只负责预览与展示详情，不能再作为开始计算的条件。
@@ -793,11 +854,24 @@ const conflictStatusRank = { clear: 0, unknown: 1, conflict: 2 };
 export const summarizeSelectionConflictsByClass = (
   courses = [], meetingConflicts = {}, { baselineReady = true } = {},
 ) => Object.fromEntries(courses.map(course => {
-  const meetings = course.meetings || course.schedules || [];
-  if (!baselineReady || !meetings.length) {
-    return [course.class_id, { status: 'unknown', matches: [] }];
+  const meetings = (
+    Array.isArray(course.meetings) && course.meetings.length
+      ? course.meetings
+      : course.schedules || []
+  );
+  if (!baselineReady) {
+    return [course.class_id, {
+      status: 'unknown', matches: [], reason: 'personal_schedule_pending',
+    }];
   }
-  const summary = meetings.reduce((result, meeting) => {
+  const reliableMeetings = meetings.filter(selectionMeetingHasReliableTime);
+  if (!reliableMeetings.length) {
+    return [course.class_id, {
+      status: 'unknown', matches: [], reason: 'course_schedule_missing',
+    }];
+  }
+  const hasIncompleteMeeting = reliableMeetings.length !== meetings.length;
+  const summary = reliableMeetings.reduce((result, meeting) => {
     const conflict = meetingConflicts[meeting.meeting_id || meeting.id] || {
       status: 'unknown', matches: [],
     };
@@ -808,6 +882,10 @@ export const summarizeSelectionConflictsByClass = (
         : result.status,
       matches: mergeSelectionConflictMatches(nextMatches),
     };
-  }, { status: 'clear', matches: [] });
+  }, {
+    status: hasIncompleteMeeting ? 'unknown' : 'clear',
+    matches: [],
+    ...(hasIncompleteMeeting ? { reason: 'course_schedule_missing' } : {}),
+  });
   return [course.class_id, summary];
 }));

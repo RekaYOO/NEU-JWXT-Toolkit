@@ -27,6 +27,7 @@ import {
   catalogAvailabilityRemoteFilters,
   catalogGroupLiveStats,
   catalogGroupsForDisplay,
+  courseHasExperiment,
   createCatalogDisplayLayout,
   extendCatalogDisplayLayout,
   filterAcademicPlanGapsForBatch,
@@ -51,6 +52,7 @@ import {
   selectionParticipantLabel,
   selectionTimeConflictStatus,
   selectionTimetableMetadata,
+  selectedExperimentSchedules,
   summarizeSelectionConflictsByClass,
   toggleCatalogPreviewCourse,
   reconcileUngroupedWeightPlan,
@@ -157,6 +159,13 @@ const invalidAutomationCourses = items => (items || []).filter(
   item => !isRealJwxkTeachingClassType(item.teaching_class_type),
 );
 
+export const clearExperimentSelectionsForClasses = (classIds, source = {}) => {
+  const removed = new Set((classIds || []).map(value => String(value)));
+  return Object.fromEntries(Object.entries(source || {}).filter(([classId]) => (
+    !removed.has(String(classId))
+  )));
+};
+
 const planItem = (group, course, scope, planGroup) => ({
   plan_group_id: planGroup.group_id,
   plan_group_name: planGroup.name,
@@ -183,36 +192,49 @@ const planItem = (group, course, scope, planGroup) => ({
   market_participant_count: course.market_participant_count,
   market_participant_label: course.market_participant_label,
   market_capacity_label: course.market_capacity_label,
+  has_experiment: courseHasExperiment(course),
+  experiment_hours: course.experiment_hours,
+  experiment_schedules: course.experiment_schedules || [],
   utility: 5,
   schedules: course.schedules || [],
 });
 
-export const scheduleOverlayForCourse = (item, layer, idPrefix, selectionTypeCode = '') => (item.schedules || []).map((meeting, index) => ({
-  ...meeting,
-  ...selectionTimetableMetadata(item),
-  id: `${idPrefix}-${item.class_id}-${index}`,
-  meeting_id: `${idPrefix}-${item.class_id}-${index}`,
-  source_id: item.class_id,
-  course_name: item.course_name,
-  course_code: item.course_code,
-  teaching_class_id: item.class_id,
-  teaching_class_type: item.teaching_class_type,
-  weekday: Number(meeting.weekday || 0),
-  start_section: Number(meeting.start_section || 0),
-  end_section: Number(meeting.end_section || meeting.start_section || 0),
-  weeks: Array.isArray(meeting.weeks) ? meeting.weeks.map(Number).filter(Number.isFinite) : [],
-  recurrence_unknown: Boolean(meeting.recurrence_unknown || !meeting.weeks?.length),
-  location: meeting.location || item.location || '',
-  campus: meeting.campus_name || item.campus_name || meeting.campus || item.campus || '',
-  teachers: item.teacher ? [item.teacher] : [],
-  classes: item.class_number ? [item.class_number] : [],
-  course_type: item.course_nature || '',
-  tags: [jwxkScheduleOverlayMeta(layer, selectionTypeCode).label],
-  title_details: [meeting.raw_text, item.official_schedule].filter(Boolean),
-  color: jwxkScheduleOverlayMeta(layer, selectionTypeCode).color,
-  layer,
-  selection_type_code: selectionTypeCode,
-}));
+export const scheduleOverlayForCourse = (item, layer, idPrefix, selectionTypeCode = '') => {
+  const experimentMeetings = selectedExperimentSchedules(
+    item, item.selected_experiment_schedule_ids,
+  ).map(meeting => ({ ...meeting, is_experiment_preview: true }));
+  return [...(item.schedules || []), ...experimentMeetings].map((meeting, index) => ({
+    ...meeting,
+    ...selectionTimetableMetadata(item),
+    id: `${idPrefix}-${item.class_id}-${meeting.schedule_id || index}`,
+    meeting_id: `${idPrefix}-${item.class_id}-${meeting.schedule_id || index}`,
+    source_id: item.class_id,
+    course_name: meeting.is_experiment_preview
+      ? `${item.course_name} · ${meeting.project_name || '实验'}`
+      : item.course_name,
+    course_code: item.course_code,
+    teaching_class_id: item.class_id,
+    teaching_class_type: item.teaching_class_type,
+    weekday: Number(meeting.weekday || 0),
+    start_section: Number(meeting.start_section || 0),
+    end_section: Number(meeting.end_section || meeting.start_section || 0),
+    weeks: Array.isArray(meeting.weeks) ? meeting.weeks.map(Number).filter(Number.isFinite) : [],
+    recurrence_unknown: Boolean(meeting.recurrence_unknown || !meeting.weeks?.length),
+    location: meeting.location || item.location || '',
+    campus: meeting.campus_name || item.campus_name || meeting.campus || item.campus || '',
+    teachers: (meeting.teacher || item.teacher) ? [meeting.teacher || item.teacher] : [],
+    classes: item.class_number ? [item.class_number] : [],
+    course_type: meeting.is_experiment_preview ? '实验' : item.course_nature || '',
+    tags: [
+      jwxkScheduleOverlayMeta(layer, selectionTypeCode).label,
+      ...(meeting.is_experiment_preview ? ['实验预览'] : []),
+    ],
+    title_details: [meeting.raw_text, item.official_schedule].filter(Boolean),
+    color: jwxkScheduleOverlayMeta(layer, selectionTypeCode).color,
+    layer,
+    selection_type_code: selectionTypeCode,
+  }));
+};
 
 const mergedFilterOptions = (loaded = [], values = []) => {
   const result = new Map((loaded || []).map(item => [String(item.value), item]));
@@ -258,6 +280,12 @@ const EMPTY_CATALOG_FILTERS = Object.freeze({
   courseNature: '', courseCategory: '', generalElectiveCategory: '',
   campus: '', department: '', startSection: '', endSection: '',
 });
+
+const CATALOG_SPECIAL_FILTER_OPTIONS = [
+  { label: '不上早八', description: '排除包含第 1 节的教学班', value: 'no_first' },
+  { label: '不上晚十', description: '排除包含第 12 节的教学班', value: 'no_twelfth' },
+  { label: '不上实验', description: '排除含实验教学或实验课表的课程', value: 'no_experiment' },
+];
 
 const cleanCatalogFilters = value => Object.fromEntries(
   Object.keys(EMPTY_CATALOG_FILTERS).map(key => [key, String(value?.[key] || '').trim()]),
@@ -367,6 +395,8 @@ const CourseSelectionWorkspacePage = () => {
   const [catalogFilters, setCatalogFilters] = useState({ ...EMPTY_CATALOG_FILTERS });
   const [planGapFilters, setPlanGapFilters] = useState({ ...EMPTY_CATALOG_FILTERS });
   const [filterDraft, setFilterDraft] = useState(catalogFilters);
+  const [specialFilters, setSpecialFilters] = useState([]);
+  const [specialFiltersDraft, setSpecialFiltersDraft] = useState([]);
   const [filterOptions, setFilterOptions] = useState(null);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterLoading, setFilterLoading] = useState(false);
@@ -384,8 +414,11 @@ const CourseSelectionWorkspacePage = () => {
   const [eligibilityLoading, setEligibilityLoading] = useState([]);
   const [plan, setPlan] = useState([]);
   const [planGroupConfigs, setPlanGroupConfigs] = useState([]);
+  const experimentSelectionsRef = useRef({});
+  const [experimentSelections, setExperimentSelections] = useState({});
   const [taskGroupIds, setTaskGroupIds] = useState([]);
   const [conflicts, setConflicts] = useState({});
+  const conflictPreviewGenerationRef = useRef(0);
   const [selected, setSelected] = useState([]);
   const [confirmedSelected, setConfirmedSelected] = useState([]);
   const [schedule, setSchedule] = useState(null);
@@ -508,16 +541,19 @@ const CourseSelectionWorkspacePage = () => {
   const catalogDisplaySignature = useMemo(() => JSON.stringify({
     batchCode, page, keyword, scope, availability, weekday, timeSlot,
     filters: effectiveCatalogFilters,
-  }), [availability, batchCode, effectiveCatalogFilters, keyword, page, scope, timeSlot, weekday]);
+    specialFilters,
+  }), [availability, batchCode, effectiveCatalogFilters, keyword, page, scope, specialFilters, timeSlot, weekday]);
   const visibleGroups = useMemo(() => {
-    const currentlyMatching = catalogGroupsForDisplay(groups, { availability, weekday });
+    const currentlyMatching = catalogGroupsForDisplay(groups, {
+      availability, weekday, specialFilters,
+    });
     const previousLayout = catalogDisplayLayoutRef.current;
     const layout = previousLayout.signature === catalogDisplaySignature
       ? extendCatalogDisplayLayout(previousLayout.layout, currentlyMatching)
       : createCatalogDisplayLayout(currentlyMatching);
     catalogDisplayLayoutRef.current = { signature: catalogDisplaySignature, layout };
     return applyCatalogDisplayLayout(groups, layout);
-  }, [availability, catalogDisplaySignature, groups, weekday]);
+  }, [availability, catalogDisplaySignature, groups, specialFilters, weekday]);
 
   const fetchEligibility = async (classIds, config = {}) => {
     const ids = [...new Set(classIds.filter(Boolean))];
@@ -666,21 +702,26 @@ const CourseSelectionWorkspacePage = () => {
   };
 
   const removeSelectedCourseLocally = course => {
-    commitSelectedRecords(removeSelectionRecord(selectedRef.current, course));
+    const nextSelected = removeSelectionRecord(selectedRef.current, course);
+    commitSelectedRecords(nextSelected);
     setConfirmedSelected(previous => removeSelectionRecord(previous, course));
-    setGroups(previous => patchCatalogSelection(previous, course, { selected: false }));
+    setGroups(previous => patchCatalogSelection(previous, course, {
+      selected: false, selectedRecords: nextSelected,
+    }));
     setPersonalCourses(previous => removeSelectionRecord(previous, course));
     setConflicts(previous => removeCourseFromSelectionConflictMap(previous, course));
   };
 
   const upsertSelectedCourseLocally = (record, { confirmed = false } = {}) => {
-    commitSelectedRecords(upsertSelectionRecord(selectedRef.current, record));
+    const nextSelected = upsertSelectionRecord(selectedRef.current, record);
+    commitSelectedRecords(nextSelected);
     setConfirmedSelected(previous => confirmed
       ? upsertSelectionRecord(previous, record)
       : removeSelectionRecord(previous, record));
     setGroups(previous => patchCatalogSelection(previous, record, {
       selected: true,
       devotedWeight: record.devoted_weight ?? null,
+      selectedRecords: nextSelected,
     }));
   };
 
@@ -710,6 +751,7 @@ const CourseSelectionWorkspacePage = () => {
       );
       setConfirmedSelected(confirmed);
       commitSelectedRecords(merged);
+      setGroups(previous => patchCatalogSelection(previous, {}, { selectedRecords: merged }));
       setSelectedLoaded(true);
       if (includeMarket) setMarketDataUpdatedAt(new Date());
       return merged;
@@ -834,6 +876,8 @@ const CourseSelectionWorkspacePage = () => {
     setSavedTermCode('');
     setPlan([]);
     setPlanGroupConfigs([]);
+    experimentSelectionsRef.current = {};
+    setExperimentSelections({});
     setTaskGroupIds([]);
     setSelected([]);
     selectedRef.current = [];
@@ -859,6 +903,7 @@ const CourseSelectionWorkspacePage = () => {
     campusDefaultAppliedRef.current = false;
     campusFilterTouchedRef.current = false;
     setCatalogFilters({ ...EMPTY_CATALOG_FILTERS });
+    setSpecialFilters([]);
     setPlanGapFilters({ ...EMPTY_CATALOG_FILTERS });
     setTotal(0);
     setPage(1);
@@ -910,6 +955,9 @@ const CourseSelectionWorkspacePage = () => {
         return result;
       }, {}));
       setPlan(savedItems); setPlanGroupConfigs(savedGroups);
+      const savedExperimentSelections = saved.experiment_selections || {};
+      experimentSelectionsRef.current = savedExperimentSelections;
+      setExperimentSelections(savedExperimentSelections);
       setTaskGroupIds(savedGroups.map(group => group.group_id).filter(
         groupId => groupId !== UNGROUPED_WEIGHT_GROUP_ID,
       ));
@@ -933,6 +981,7 @@ const CourseSelectionWorkspacePage = () => {
       );
       setConfirmedSelected(confirmed);
       commitSelectedRecords(merged);
+      setGroups(previous => patchCatalogSelection(previous, {}, { selectedRecords: merged }));
       setSelectedLoaded(true);
     }).catch(() => {
       // 已选结果暂不可用时仍允许浏览目录；后端提交前仍会执行同课程代码防重。
@@ -1003,6 +1052,7 @@ const CourseSelectionWorkspacePage = () => {
   const openCatalogFilters = async () => {
     setFilterDraft(catalogFilters);
     setWeekdayDraft(weekday);
+    setSpecialFiltersDraft(specialFilters);
     setFilterOpen(true);
     try { await ensureCatalogFilterOptions(); }
     catch (error) { message.error(error.message || '读取课程筛选项失败'); }
@@ -1080,20 +1130,33 @@ const CourseSelectionWorkspacePage = () => {
     return () => window.clearInterval(timer);
   }, [batch, view]);
 
-  const savePlan = async (next, nextGroups = planGroupConfigs) => {
+  const savePlan = async (
+    next,
+    nextGroups = planGroupConfigs,
+    nextExperimentSelections = experimentSelectionsRef.current,
+  ) => {
     const targetBatchCode = batchCode;
     const targetTermCode = termCode || 'unknown';
     setPlan(next); setPlanGroupConfigs(nextGroups);
+    experimentSelectionsRef.current = nextExperimentSelections;
+    setExperimentSelections(nextExperimentSelections);
     const operation = planSaveQueue.current.then(() => saveJwxkPlan({
       batch_code: targetBatchCode,
       term_code: targetTermCode,
       groups: nextGroups,
       items: next,
+      experiment_selections: nextExperimentSelections,
     }));
     planSaveQueue.current = operation.catch(() => undefined);
     try { await operation; return true; }
     catch (error) { message.error(error.message || '保存方案失败'); return false; }
   };
+
+  const savePlanAfterRemovingClasses = (next, nextGroups, removedClassIds) => savePlan(
+    next,
+    nextGroups,
+    clearExperimentSelectionsForClasses(removedClassIds),
+  );
 
   useEffect(() => {
     if (!selectedLoaded || !planLoaded || batch?.selection_type_code !== '04') return;
@@ -1256,6 +1319,7 @@ const CourseSelectionWorkspacePage = () => {
   ], [catalogPreviewClasses, plan]);
 
   const previewConflicts = async ({ silent = false } = {}) => {
+    const generation = ++conflictPreviewGenerationRef.current;
     const meetings = conflictCandidates.flatMap(item => (item.schedules || []).map((meeting, index) => ({
       ...meeting, candidate_id: `${item.class_id}:${index}`, source_id: item.class_id,
       course_code: item.course_code, course_name: item.course_name,
@@ -1263,11 +1327,12 @@ const CourseSelectionWorkspacePage = () => {
       campus: meeting.campus_name || item.campus_name || meeting.campus || item.campus,
     })));
     if (!meetings.length || !termCode) {
-      setConflicts({});
+      if (generation === conflictPreviewGenerationRef.current) setConflicts({});
       return;
     }
     try {
       const result = await previewJwxkPlan({ batch_code: batchCode, term_code: termCode, meetings });
+      if (generation !== conflictPreviewGenerationRef.current) return;
       const map = {};
       (result.results || []).forEach(item => {
         const classId = String(item.candidate_id).split(':')[0];
@@ -1287,7 +1352,7 @@ const CourseSelectionWorkspacePage = () => {
   useEffect(() => {
     const timer = window.setTimeout(() => previewConflicts({ silent: true }), 260);
     return () => window.clearTimeout(timer);
-  }, [conflictCandidates, termCode]);
+  }, [conflictCandidates, personalCourses, personalScheduleReady, termCode]);
 
   const manualSelect = (group, course) => {
     const duplicate = selectedByCourseCode.get(String(course.course_code || '').toUpperCase());
@@ -1488,7 +1553,11 @@ const CourseSelectionWorkspacePage = () => {
       && selectedRecord?.selection_record_type === 'volunteered'
       && isCurrentBatchSelectionRecord(selectedRecord, batch.selection_type_code);
     if (!isCurrentWeight) {
-      void savePlan(plan.filter(row => row.class_id !== item.class_id));
+      void savePlanAfterRemovingClasses(
+        plan.filter(row => row.class_id !== item.class_id),
+        planGroupConfigs,
+        [item.class_id],
+      );
       return;
     }
     setPlanRemoval({ item, selectedRecord });
@@ -1499,7 +1568,11 @@ const CourseSelectionWorkspacePage = () => {
     const { item } = planRemoval;
     setPlanRemovalAction('only');
     try {
-      const saved = await savePlan(plan.filter(row => row.class_id !== item.class_id));
+      const saved = await savePlanAfterRemovingClasses(
+        plan.filter(row => row.class_id !== item.class_id),
+        planGroupConfigs,
+        [item.class_id],
+      );
       if (!saved) return;
       message.success(`已将“${item.course_name}”移出当前方案组，官方投权保持不变`);
       setPlanRemoval(null);
@@ -1514,7 +1587,11 @@ const CourseSelectionWorkspacePage = () => {
     setPlanRemovalAction('deselect');
     try {
       const deselected = await performDeselect(selectedRecord);
-      const saved = await savePlan(plan.filter(row => row.class_id !== item.class_id));
+      const saved = await savePlanAfterRemovingClasses(
+        plan.filter(row => row.class_id !== item.class_id),
+        planGroupConfigs,
+        [item.class_id],
+      );
       if (!deselected) {
         message.warning(`“${item.course_name}”已移出当前方案组，但官方投权未撤回；课程将保留在“未分组”中`);
       } else if (!saved) {
@@ -1915,14 +1992,20 @@ const CourseSelectionWorkspacePage = () => {
         && selectedCourse.selection_record_type === 'selected'
         && sameSelectionCourse(selectedCourse, item)
       )))
-      .flatMap(item => scheduleOverlayForCourse(item, 'candidate', 'jwxk-plan', batch?.selection_type_code)),
-    [batch?.selection_type_code, plan, selected],
+      .flatMap(item => scheduleOverlayForCourse({
+        ...item,
+        selected_experiment_schedule_ids: experimentSelections[item.class_id] || [],
+      }, 'candidate', 'jwxk-plan', batch?.selection_type_code)),
+    [batch?.selection_type_code, experimentSelections, plan, selected],
   );
   const previewScheduleOverlay = useMemo(() => (
     catalogPreviewClasses
       .filter(preview => !plan.some(item => item.class_id === preview.class_id))
-      .flatMap(item => scheduleOverlayForCourse(item, 'preview', 'jwxk-preview', batch?.selection_type_code))
-  ), [batch?.selection_type_code, catalogPreviewClasses, plan]);
+      .flatMap(item => scheduleOverlayForCourse({
+        ...item,
+        selected_experiment_schedule_ids: experimentSelections[item.class_id] || [],
+      }, 'preview', 'jwxk-preview', batch?.selection_type_code))
+  ), [batch?.selection_type_code, catalogPreviewClasses, experimentSelections, plan]);
   const selectedScheduleOverlay = useMemo(() => (
     (schedule?.courses || [])
       .filter(item => (
@@ -1936,12 +2019,17 @@ const CourseSelectionWorkspacePage = () => {
         )
       ))
       .flatMap(item => scheduleOverlayForCourse(
-         item,
+         {
+           ...item,
+           experiment_schedules: plan.find(planItem => sameSelectionCourse(planItem, item))?.experiment_schedules
+             || item.experiment_schedules || [],
+           selected_experiment_schedule_ids: experimentSelections[item.class_id] || [],
+         },
          item.selection_record_type === 'volunteered' ? 'pending' : 'selected',
          'jwxk-selected',
          batch?.selection_type_code,
        ))
-  ), [batch?.selection_type_code, personalCourses, plan, schedule]);
+  ), [batch?.selection_type_code, experimentSelections, personalCourses, plan, schedule]);
   const candidateScheduleOverlay = useMemo(
     () => [...planScheduleOverlay, ...previewScheduleOverlay],
     [planScheduleOverlay, previewScheduleOverlay],
@@ -1954,9 +2042,26 @@ const CourseSelectionWorkspacePage = () => {
     }))
   )), [groups]);
   const catalogScheduleOverlay = useMemo(
-    () => catalogCourses.flatMap(item => scheduleOverlayForCourse(item, 'preview', 'jwxk-catalog', batch?.selection_type_code)),
-    [batch?.selection_type_code, catalogCourses],
+    () => catalogCourses.flatMap(item => scheduleOverlayForCourse({
+      ...item,
+      selected_experiment_schedule_ids: experimentSelections[item.class_id] || [],
+    }, 'preview', 'jwxk-catalog', batch?.selection_type_code)),
+    [batch?.selection_type_code, catalogCourses, experimentSelections],
   );
+  const savedExperimentPreviewOverlay = useMemo(() => catalogCourses
+    .filter(item => (
+      experimentSelections[item.class_id]?.length
+      && !plan.some(planItem => planItem.class_id === item.class_id)
+      && !catalogPreviewClasses.some(preview => preview.class_id === item.class_id)
+    ))
+    .flatMap(item => scheduleOverlayForCourse({
+      ...item,
+      schedules: [],
+      selected_experiment_schedule_ids: experimentSelections[item.class_id],
+    }, 'preview', 'jwxk-saved-experiment', batch?.selection_type_code)), [
+      batch?.selection_type_code, catalogCourses, catalogPreviewClasses,
+      experimentSelections, plan,
+    ]);
   const catalogMeetingConflictMap = useMemo(
     () => immediateSelectionConflictMap(
       [...personalCourses, ...planScheduleOverlay],
@@ -1975,13 +2080,61 @@ const CourseSelectionWorkspacePage = () => {
     ),
     [catalogCourses, catalogMeetingConflictMap, catalogScheduleOverlay, personalScheduleReady],
   );
+  const planMeetingConflictMap = useMemo(
+    () => immediateSelectionConflictMap(personalCourses, planScheduleOverlay),
+    [personalCourses, planScheduleOverlay],
+  );
+  const planClassConflictMap = useMemo(
+    () => summarizeSelectionConflictsByClass(
+      plan.map(item => ({
+        ...item,
+        meetings: planScheduleOverlay.filter(meeting => meeting.source_id === item.class_id),
+      })),
+      planMeetingConflictMap,
+      { baselineReady: personalScheduleReady },
+    ),
+    [personalScheduleReady, plan, planMeetingConflictMap, planScheduleOverlay],
+  );
+  const combinedPlanConflictMap = useMemo(() => {
+    const rank = { clear: 0, unknown: 1, conflict: 2 };
+    return Object.fromEntries(plan.map(item => {
+      const local = planClassConflictMap[item.class_id];
+      const remote = conflicts[item.class_id];
+      if (!local) return [item.class_id, remote];
+      if (!remote) return [item.class_id, local];
+      const localStatus = selectionTimeConflictStatus(local);
+      const remoteStatus = selectionTimeConflictStatus(remote);
+      const status = rank[localStatus] >= rank[remoteStatus] ? localStatus : remoteStatus;
+      return [item.class_id, {
+        ...local,
+        status,
+        reason: status === 'unknown'
+          ? (local.reason || remote.reason || '')
+          : '',
+        matches: mergeSelectionConflictMatches([
+          ...(local.matches || []), ...(remote.matches || []),
+        ]),
+      }];
+    }).filter(([, value]) => value));
+  }, [conflicts, plan, planClassConflictMap]);
+  const refreshCurrentWorkspace = () => {
+    if (view === 'catalog') {
+      // The catalog and the embedded personal timetable are separate cache
+      // resources. Refreshing only the catalog used to leave conflict badges
+      // stuck at their initial "pending" state.
+      setTimetableRefreshSignal(value => value + 1);
+      return loadCatalog(page);
+    }
+    if (view === 'selected') return loadSelected({ includeMarket: true });
+    return loadTasks();
+  };
   const catalogGroupLiveStatsMap = useMemo(() => new Map(groups.map(group => [
     group.group_id,
     catalogGroupLiveStats(group, catalogClassConflictMap, batch?.selection_type_code),
   ])), [batch?.selection_type_code, catalogClassConflictMap, groups]);
   const allScheduleOverlay = useMemo(
-    () => [...selectedScheduleOverlay, ...candidateScheduleOverlay],
-    [candidateScheduleOverlay, selectedScheduleOverlay],
+    () => [...selectedScheduleOverlay, ...candidateScheduleOverlay, ...savedExperimentPreviewOverlay],
+    [candidateScheduleOverlay, savedExperimentPreviewOverlay, selectedScheduleOverlay],
   );
   const immediateConflictMap = useMemo(() => {
     const displayedCourses = [...personalCourses, ...allScheduleOverlay];
@@ -2038,6 +2191,7 @@ const CourseSelectionWorkspacePage = () => {
     setWeekday('all');
     setTimeSlot(null);
     setCatalogFilters({ ...EMPTY_CATALOG_FILTERS });
+    setSpecialFilters([]);
     setPlanGapFilters({ ...EMPTY_CATALOG_FILTERS });
     setActivePlanGapId('');
     setActivePlanGapLabel('');
@@ -2198,13 +2352,23 @@ const CourseSelectionWorkspacePage = () => {
           value.class_id === classDetail.class_id ? { ...value, ...classDetail } : value
         )),
       } : item));
-      setCatalogDetail({ group, course, courseDetail, classDetail, loading: false, error: '' });
+      setCatalogDetail({
+        group, course, courseDetail, classDetail,
+        programs: detail.programs || [],
+        programsLoaded: Boolean(detail.programs_loaded),
+        loading: false, error: '',
+      });
     } catch (error) {
       if (catalogDetailGenerationRef.current !== generation) return;
       setCatalogDetail(previous => previous ? {
         ...previous, loading: false, error: error.message || '请稍后重试',
       } : previous);
     }
+  };
+
+  const openExperimentSelection = (group, course) => {
+    if (!courseHasExperiment(course)) return;
+    void showCatalogDetail(group, course);
   };
 
   const resolvePreviewDetail = useCallback(async meeting => {
@@ -2224,11 +2388,45 @@ const CourseSelectionWorkspacePage = () => {
     setCatalogDetailTab('detail');
   };
 
+  const updateExperimentSelection = async (projectName, scheduleId) => {
+    const classId = String(catalogDetail?.classDetail?.class_id || '');
+    if (!classId) return;
+    const schedules = catalogDetail.classDetail.experiment_schedules || [];
+    const projectScheduleIds = new Set(schedules
+      .filter(item => (item.project_name || '未命名实验') === projectName)
+      .map(item => String(item.schedule_id || '')));
+    const retained = (experimentSelectionsRef.current[classId] || [])
+      .filter(value => !projectScheduleIds.has(String(value)));
+    const selectedIds = scheduleId ? [...retained, String(scheduleId)] : retained;
+    const nextSelections = { ...experimentSelectionsRef.current };
+    if (selectedIds.length) nextSelections[classId] = selectedIds;
+    else delete nextSelections[classId];
+
+    const enrichedCourse = {
+      ...catalogDetail.group,
+      ...catalogDetail.course,
+      ...catalogDetail.courseDetail,
+      ...catalogDetail.classDetail,
+    };
+    const nextPlan = plan.map(item => item.class_id === classId
+      ? { ...item, ...enrichedCourse, plan_group_id: item.plan_group_id }
+      : item);
+    if (scheduleId) {
+      setCatalogPreviewClasses(previous => {
+        const exists = previous.some(item => item.class_id === classId);
+        return exists
+          ? previous.map(item => item.class_id === classId ? { ...item, ...enrichedCourse } : item)
+          : [...previous, enrichedCourse];
+      });
+    }
+    await savePlan(nextPlan, planGroupConfigs, nextSelections);
+  };
+
   const activeAdvancedFilters = Object.values(effectiveCatalogFilters).filter(Boolean).length
-    + (weekday !== 'all' ? 1 : 0);
+    + (weekday !== 'all' ? 1 : 0) + specialFilters.length;
   const moreFilterCount = Object.entries(effectiveCatalogFilters).filter(([key, value]) => (
     key !== 'campus' && Boolean(value)
-  )).length + (weekday !== 'all' ? 1 : 0);
+  )).length + (weekday !== 'all' ? 1 : 0) + specialFilters.length;
   const catalog = (
     <Spin spinning={loading || (availability === 'selectable' && eligibilityLoading.length > 0)}>
       <div className="jwxk-catalog-layout" ref={catalogRef}>
@@ -2272,6 +2470,10 @@ const CourseSelectionWorkspacePage = () => {
             <div className="jwxk-active-filters">
               {timeSlot && <Tag closable onClose={() => setTimeSlot(null)} color="blue">周{WEEKDAYS[timeSlot.weekday - 1]} · 覆盖第{timeSlot.section}节</Tag>}
               {weekday !== 'all' && <Tag closable onClose={() => setWeekday('all')}>星期 · 周{WEEKDAYS[Number(weekday) - 1]}</Tag>}
+              {specialFilters.map(value => {
+                const label = CATALOG_SPECIAL_FILTER_OPTIONS.find(option => option.value === value)?.label || value;
+                return <Tag key={`special-filter-${value}`} closable onClose={() => setSpecialFilters(previous => previous.filter(item => item !== value))}>特殊筛选 · {label}</Tag>;
+              })}
               {Object.entries(catalogFilters).filter(([, value]) => value).map(([key, value]) => (
                 <Tag key={`manual-${key}`} closable onClose={() => { if (key === 'campus') { campusFilterTouchedRef.current = true; campusDefaultAppliedRef.current = true; } setCatalogFilters(previous => ({ ...previous, [key]: '' })); }}>{FILTER_LABELS[key]} · {filterValueLabel(key, value)}</Tag>
               ))}
@@ -2292,7 +2494,7 @@ const CourseSelectionWorkspacePage = () => {
                   description="当前只能按下方显示的上级条件检索；如果课程列表为空，表示本轮没有提供对应课程，不是筛选加载失败。"
                 />
               )}
-              <Button type="link" size="small" onClick={() => { campusFilterTouchedRef.current = true; campusDefaultAppliedRef.current = true; setActivePlanGapId(''); setActivePlanGapLabel(''); setActivePlanGapCategoryMatched(true); setPlanGapFilters({ ...EMPTY_CATALOG_FILTERS }); setTimeSlot(null); setWeekday('all'); setCatalogFilters({ ...EMPTY_CATALOG_FILTERS }); }}>清除筛选</Button>
+              <Button type="link" size="small" onClick={() => { campusFilterTouchedRef.current = true; campusDefaultAppliedRef.current = true; setActivePlanGapId(''); setActivePlanGapLabel(''); setActivePlanGapCategoryMatched(true); setPlanGapFilters({ ...EMPTY_CATALOG_FILTERS }); setTimeSlot(null); setWeekday('all'); setSpecialFilters([]); setCatalogFilters({ ...EMPTY_CATALOG_FILTERS }); }}>清除筛选</Button>
             </div>
           )}
           <div className="jwxk-group-list">
@@ -2311,6 +2513,8 @@ const CourseSelectionWorkspacePage = () => {
                   String(course.course_code || '').trim().toUpperCase(),
                 )
               ));
+              const groupHasExperiment = courseHasExperiment(group)
+                || (group.classes || []).some(courseHasExperiment);
               return (
                 <Card
                   key={group.group_id}
@@ -2338,6 +2542,7 @@ const CourseSelectionWorkspacePage = () => {
                         ))}
                         {(group.normalized_course_category || group.course_category) && <Tag color="geekblue">类别 · {group.normalized_course_category || group.course_category}</Tag>}
                         {group.course_nature && <Tag>性质 · {group.course_nature}</Tag>}
+                        {groupHasExperiment && <Tag color="purple">含实验</Tag>}
                       </Space>
                       <div className="jwxk-course-group__title-row">
                         <Title level={4}>{group.course_name}</Title>
@@ -2362,8 +2567,12 @@ const CourseSelectionWorkspacePage = () => {
                   {expanded && (
                     <div className="jwxk-inline-classes" onClick={event => event.stopPropagation()}>
                       {(group.classes || []).map(course => {
-                        const conflict = conflicts[course.class_id] || catalogClassConflictMap[course.class_id];
+                        // The local map is built from the embedded, current-term
+                        // personal timetable. A stale server preview must not
+                        // hide a completed local time check.
+                        const conflict = catalogClassConflictMap[course.class_id] || conflicts[course.class_id];
                         const conflictStatus = selectionTimeConflictStatus(conflict);
+                        const scheduleMissing = conflict?.reason === 'course_schedule_missing';
                         const crossCampus = courseIsCrossCampus(course);
                         const officialConflictUnclassified = Boolean(
                           course.conflict && conflictStatus !== 'conflict' && !crossCampus,
@@ -2407,7 +2616,7 @@ const CourseSelectionWorkspacePage = () => {
                               {conflictStatus === 'conflict' && <Tag color="error">时间冲突</Tag>}
                               {crossCampus && <Tooltip title={`你的校区为${status?.current_campus_name || '当前校区'}；该教学班在${courseCampusLabel(course)}上课。`}><Tag color="orange">跨校区</Tag></Tooltip>}
                               {officialConflictUnclassified && <Tooltip title={course.conflict_description || '官方只返回了冲突标记，未说明是时间、校区还是其他选课限制；本地时间核验不会因此标红。'}><Tag color="warning">官方冲突待确认</Tag></Tooltip>}
-                              {conflictStatus === 'unknown' && <Tag color="warning">时间待核验</Tag>}
+                              {conflictStatus === 'unknown' && <Tag color="warning">{scheduleMissing ? '未提供上课时间' : '时间待核验'}</Tag>}
                               {conflictStatus === 'clear' && <Tag color="success">时间无冲突</Tag>}
                             </Space>
                             <Space wrap className="jwxk-inline-class__actions">
@@ -2417,6 +2626,9 @@ const CourseSelectionWorkspacePage = () => {
                                 disabled={inPlan}
                                 onClick={() => toggleCatalogPreview(group, course)}
                               >{inPlan ? '已在方案课表中' : manuallyPreviewed ? '取消课表预览' : '在课表中预览'}</Button>
+                              {courseHasExperiment(course) && <Button size="small" onClick={() => openExperimentSelection(group, course)}>
+                                {experimentSelections[course.class_id]?.length ? '调整实验时间' : '选择实验时间'}
+                              </Button>}
                               <Button size="small" onClick={() => openPlanAssignment(group, course)} icon={<ShoppingCartOutlined />}>加入方案组</Button>
                               {batch?.selection_type_code === '02' && course.full && !duplicate && <Button size="small" icon={<SwapOutlined />} onClick={() => openVacancySwap({ ...course, course_name: group.course_name, course_code: group.course_code })}>追踪空位换课</Button>}
                               {selectedRecord && selectedRecordIsCurrent && batch?.selection_type_code === '04' && selectedRecord.selection_record_type === 'volunteered' && (
@@ -2495,7 +2707,7 @@ const CourseSelectionWorkspacePage = () => {
             {academicReportResource.updateAvailable && <Button size="small" type="link" onClick={academicReportResource.applyAvailable}>使用刚更新的培养计划</Button>}
           </section>
           <div><ShoppingCartOutlined /><b>我的方案</b><Tag>{planGroups.length} 组 / {plan.length} 个备选</Tag></div>
-          {planGroups.map(group => {
+        {planGroups.map(group => {
             const ungrouped = group.group_id === UNGROUPED_WEIGHT_GROUP_ID;
             return <div className="jwxk-plan-aside-group" key={group.id}><strong>{ungrouped ? `${group.name} · ${group.items.length} 门已投课程` : `${group.name} · 目标 ${group.target_count} 门`}</strong>{group.items.map(item => <button type="button" className="jwxk-plan-course-link" key={item.class_id} onClick={() => focusPlanCourse(item)}>{item.course_name} · {item.teacher || '教师待定'} · 意愿 {item.utility || 5}</button>)}</div>;
           })}
@@ -2519,16 +2731,17 @@ const CourseSelectionWorkspacePage = () => {
       const title = ungrouped
         ? `${group.name} · ${group.items.length} 门已投课程`
         : `${group.name} · 目标 ${group.target_count} 门 · ${group.items.length} 个候选`;
-      const extra = ungrouped
-        ? <Button size="small" onClick={openWeightImport}>整理到其他方案组</Button>
-        : <Space><Button size="small" onClick={() => setGroupEditor({ group_id: group.group_id, name: group.name, target_count: group.target_count })}>编辑目标</Button><Button size="small" danger onClick={() => Modal.confirm({ title: `删除方案组“${group.name}”？`, content: '组内候选课程也会一起移除。', okButtonProps: { danger: true }, okText: '删除', onOk: () => { setTaskGroupIds(previous => previous.filter(groupId => groupId !== group.group_id)); return savePlan(plan.filter(item => item.plan_group_id !== group.group_id), planGroupConfigs.filter(item => item.group_id !== group.group_id)); } })}>删除组</Button></Space>;
+       const extra = ungrouped
+         ? <Button size="small" onClick={openWeightImport}>整理到其他方案组</Button>
+         : <Space><Button size="small" onClick={() => setGroupEditor({ group_id: group.group_id, name: group.name, target_count: group.target_count })}>编辑目标</Button><Button size="small" danger onClick={() => Modal.confirm({ title: `删除方案组“${group.name}”？`, content: '组内候选课程也会一起移除。', okButtonProps: { danger: true }, okText: '删除', onOk: () => { const removedClassIds = group.items.map(item => item.class_id); setTaskGroupIds(previous => previous.filter(groupId => groupId !== group.group_id)); return savePlanAfterRemovingClasses(plan.filter(item => item.plan_group_id !== group.group_id), planGroupConfigs.filter(item => item.group_id !== group.group_id), removedClassIds); } })}>删除组</Button></Space>;
       return <Card key={group.id} title={title} extra={extra} className="jwxk-plan-group">
         {ungrouped && <Alert type="info" showIcon message="当前已投、但尚未整理进普通方案组的课程" description="这些课程已进入统一课表与冲突链路。策略投权时可以手动选择本组，但默认不会勾选。" />}
         {group.items.map(item => {
-          const conflict = conflicts[item.class_id];
+          const conflict = combinedPlanConflictMap[item.class_id];
           const conflictStatus = selectionTimeConflictStatus(conflict);
+          const scheduleMissing = conflict?.reason === 'course_schedule_missing';
           const crossCampus = courseIsCrossCampus(item);
-          return <div className="jwxk-plan-alternative" key={item.class_id}><div><div className="jwxk-plan-alternative__title"><button type="button" className="jwxk-plan-course-link is-primary" onClick={() => focusPlanCourse(item)}>{item.course_name || item.course_code || '未命名课程'}</button>{conflict && <Tag color={conflictStatus === 'conflict' ? 'error' : conflictStatus === 'unknown' ? 'warning' : 'success'}>{conflictStatus === 'conflict' ? '时间冲突' : conflictStatus === 'unknown' ? '时间待核验' : '时间无冲突'}</Tag>}{crossCampus && <Tag color="orange">跨校区</Tag>}</div><strong>{item.course_code || '课程代码待定'} · {item.teacher || '教师待定'} · {item.class_number || item.class_id}</strong><span>{item.location || '地点待定'} · {classScheduleText(item)}</span></div><Space wrap className="jwxk-plan-alternative__actions">{ungrouped ? <Button onClick={openWeightImport}>分配方案组</Button> : <><InputNumber min={1} max={10} value={item.utility || 5} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, utility: value || 5 } : row))} addonBefore="意愿值" title="1–10 分，分数越高表示越重视这门课" /><Button danger onClick={() => requestPlanItemRemoval(item)}>移出方案组</Button></>}</Space></div>;
+           return <div className="jwxk-plan-alternative" key={item.class_id}><div><div className="jwxk-plan-alternative__title"><button type="button" className="jwxk-plan-course-link is-primary" onClick={() => focusPlanCourse(item)}>{item.course_name || item.course_code || '未命名课程'}</button>{conflict && <Tag color={conflictStatus === 'conflict' ? 'error' : conflictStatus === 'unknown' ? 'warning' : 'success'}>{conflictStatus === 'conflict' ? '时间冲突' : conflictStatus === 'unknown' ? (scheduleMissing ? '未提供上课时间' : '时间待核验') : '时间无冲突'}</Tag>}{courseHasExperiment(item) && <Tag color="purple">含实验</Tag>}{experimentSelections[item.class_id]?.length > 0 && <Tag color="purple">已选实验时间</Tag>}{crossCampus && <Tag color="orange">跨校区</Tag>}</div><strong>{item.course_code || '课程代码待定'} · {item.teacher || '教师待定'} · {item.class_number || item.class_id}</strong><span>{item.location || '地点待定'} · {classScheduleText(item)}</span></div><Space wrap className="jwxk-plan-alternative__actions">{courseHasExperiment(item) && <Button onClick={() => openExperimentSelection({ group_id: item.group_id, course_code: item.course_code, course_name: item.course_name }, item)}>{experimentSelections[item.class_id]?.length ? '调整实验时间' : '选择实验时间'}</Button>}{ungrouped ? <Button onClick={openWeightImport}>分配方案组</Button> : <><InputNumber min={1} max={10} value={item.utility || 5} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, utility: value || 5 } : row))} addonBefore="意愿值" title="1–10 分，分数越高表示越重视这门课" /><Button danger onClick={() => requestPlanItemRemoval(item)}>移出方案组</Button></>}</Space></div>;
         })}
       </Card>;
     })}
@@ -2707,6 +2920,16 @@ const CourseSelectionWorkspacePage = () => {
     || catalogDetail?.course?.course_code || '';
   const detailCourseName = detailCourse.course_name || detailGroup.course_name
     || catalogDetail?.course?.course_name || '课程详情';
+  const detailPrograms = catalogDetail?.programs || [];
+  const detailExperimentGroups = Object.values((detailClass.experiment_schedules || []).reduce(
+    (result, item) => {
+      const name = item.project_name || '未命名实验';
+      if (!result[name]) result[name] = { name, schedules: [] };
+      result[name].schedules.push(item);
+      return result;
+    },
+    {},
+  ));
   const catalogDetailView = catalogDetail?.loading
     ? <div className="jwxk-detail-loading"><Spin /><span>正在读取课程与教学班详情…</span></div>
     : catalogDetail?.error
@@ -2724,6 +2947,11 @@ const CourseSelectionWorkspacePage = () => {
             {(detailClass.campus_name || detailClass.campus) && <Descriptions.Item label="校区">{campusLabel(detailClass.campus_name || detailClass.campus)}</Descriptions.Item>}
             <Descriptions.Item label="考试类型">{detailCourse.exam_type || detailGroup.exam_type || '-'}</Descriptions.Item>
             <Descriptions.Item label="成绩分制">{detailCourse.score_scale || detailGroup.score_scale || '-'}</Descriptions.Item>
+            <Descriptions.Item label="所属方案" span={2}>
+              {detailPrograms.length > 0
+                ? <div className="jwxk-program-list">{detailPrograms.map(program => <span key={`${program.training_code}:${program.grade}:${program.program_name}:${program.module_name}`}><strong>{program.program_name}</strong><small>{[program.grade ? `${program.grade}级` : '', program.module_name, program.course_category, program.course_nature].filter(Boolean).join(' · ')}</small></span>)}</div>
+                : catalogDetail?.programsLoaded ? '未返回所属方案' : '暂时无法读取所属方案'}
+            </Descriptions.Item>
             {detailCourse.description && <Descriptions.Item label="课程简介" span={2}>{detailCourse.description}</Descriptions.Item>}
           </Descriptions>
           <Descriptions size="small" column={{ xs: 1, sm: 2 }} bordered title="教学班信息">
@@ -2737,13 +2965,22 @@ const CourseSelectionWorkspacePage = () => {
             {detailClass.notice && <Descriptions.Item label="选课说明" span={2}>{detailClass.notice}</Descriptions.Item>}
             <Descriptions.Item label="官方完整安排" span={2}>{detailClass.official_schedule || '未提供'}</Descriptions.Item>
           </Descriptions>
+          {(courseHasExperiment(detailClass) || detailExperimentGroups.length > 0) && <section className="jwxk-experiment-schedule">
+            <div className="jwxk-experiment-schedule__head"><Text strong>实验课表</Text><Text type="secondary">所选时间会保存在当前轮次，并加入上方课表预览与冲突判断；这不会代替学校的正式实验选班。</Text></div>
+            {detailExperimentGroups.length > 0 ? detailExperimentGroups.map(project => {
+              const selectedId = (experimentSelections[detailClass.class_id] || []).find(id => (
+                project.schedules.some(item => String(item.schedule_id) === String(id))
+              ));
+              return <label className="jwxk-experiment-project" key={project.name}><span><strong>{project.name}</strong><small>{project.schedules.length} 个可选时间</small></span><Select allowClear value={selectedId || undefined} placeholder="选择要预览的实验时间" onChange={value => void updateExperimentSelection(project.name, value)} options={project.schedules.map(item => ({ value: item.schedule_id, label: [item.raw_text || item.week_text, item.location, item.group_name, item.teacher].filter(Boolean).join(' · ') }))} /></label>;
+            }) : <Alert type="info" showIcon message="学校标记了实验教学，但暂未提供可选择的实验时间。" />}
+          </section>}
         </div>
       );
 
   if (!batch && status) return <main className="course-selection-page"><Alert type="error" showIcon message="该轮次不存在或当前账号不可见" action={<Button onClick={() => navigate('/course-selection')}>返回批次</Button>} /></main>;
 
   return <main className="course-selection-page jwxk-workspace">
-    <header className="jwxk-workspace-header"><Button className="jwxk-header-action jwxk-header-back" aria-label="返回选课轮次" icon={<ArrowLeftOutlined />} onClick={() => navigate('/course-selection')}>返回轮次</Button><div><Title level={3}>{batch?.name || '选课工作台'}</Title><Space wrap><Text type="secondary">{batch?.term_name} · {batch?.selection_type || '选课'} · 官方实时数据</Text>{batch?.allow_cross_campus && <Tag color="blue">允许跨校区选课</Tag>}</Space></div><Button className="jwxk-header-action jwxk-header-refresh" aria-label="刷新当前页面和动态人数" icon={<ReloadOutlined />} loading={view === 'catalog' ? capacityRefreshing : view === 'selected' ? selectedRefreshing : tasksRefreshing} onClick={() => view === 'catalog' ? loadCatalog(page) : view === 'selected' ? loadSelected({ includeMarket: true }) : loadTasks()}>{marketDataUpdatedAt ? `刷新 · ${marketDataUpdatedAt.toLocaleTimeString('zh-CN', { hour12: false })}` : '刷新 · 待更新'}</Button></header>
+    <header className="jwxk-workspace-header"><Button className="jwxk-header-action jwxk-header-back" aria-label="返回选课轮次" icon={<ArrowLeftOutlined />} onClick={() => navigate('/course-selection')}>返回轮次</Button><div><Title level={3}>{batch?.name || '选课工作台'}</Title><Space wrap><Text type="secondary">{batch?.term_name} · {batch?.selection_type || '选课'} · 官方实时数据</Text>{batch?.allow_cross_campus && <Tag color="blue">允许跨校区选课</Tag>}</Space></div><Button className="jwxk-header-action jwxk-header-refresh" aria-label="刷新当前页面和动态人数" icon={<ReloadOutlined />} loading={view === 'catalog' ? capacityRefreshing : view === 'selected' ? selectedRefreshing : tasksRefreshing} onClick={refreshCurrentWorkspace}>{marketDataUpdatedAt ? `刷新 · ${marketDataUpdatedAt.toLocaleTimeString('zh-CN', { hour12: false })}` : '刷新 · 待更新'}</Button></header>
     <Alert type="info" showIcon message="提交后请在“已选结果”中确认最终状态。" />
     <section className="jwxk-live-schedule" ref={scheduleRef}>
       <div className="jwxk-live-schedule__head">
@@ -2764,7 +3001,11 @@ const CourseSelectionWorkspacePage = () => {
         externalConflictMap={overlayConflictMap}
         refreshSignal={timetableRefreshSignal}
         onSlotSelect={handleSlotSelect}
-        onPersonalCoursesChange={courses => {
+        onPersonalCoursesChange={(courses, metadata = {}) => {
+          // Ignore the last callback from a previously mounted term. Without
+          // this guard, switching rounds can mark the new term as ready using
+          // the old term's courses.
+          if (!metadata.ready || metadata.termCode !== termCode) return;
           setPersonalCourses(courses);
           setPersonalScheduleReady(true);
         }}
@@ -2812,9 +3053,10 @@ const CourseSelectionWorkspacePage = () => {
         }
         setCatalogFilters(nextFilters);
         setWeekday(weekdayDraft);
+        setSpecialFilters(specialFiltersDraft);
         setFilterOpen(false);
       }}
-      footer={(_, { OkBtn, CancelBtn }) => <><Button onClick={() => setFilterDraft({ ...EMPTY_CATALOG_FILTERS })}>重置</Button><CancelBtn /><OkBtn /></>}
+      footer={(_, { OkBtn, CancelBtn }) => <><Button onClick={() => { setFilterDraft({ ...EMPTY_CATALOG_FILTERS }); setWeekdayDraft('all'); setSpecialFiltersDraft([]); }}>重置</Button><CancelBtn /><OkBtn /></>}
     >
       <div className="jwxk-filter-grid">
         <label><span>课程性质</span><Select allowClear value={filterDraft.courseNature || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, courseNature: value || '' }))} options={effectiveFilterOptions.course_natures} placeholder={filterLoading ? '正在加载' : '全部性质'} /></label>
@@ -2824,6 +3066,7 @@ const CourseSelectionWorkspacePage = () => {
         <label><span>开课单位</span><Select showSearch allowClear optionFilterProp="label" value={filterDraft.department || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, department: value || '' }))} options={effectiveFilterOptions.departments} placeholder={filterLoading ? '正在加载' : '全部单位'} /></label>
         <label><span>开始节次</span><Select allowClear value={filterDraft.startSection || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, startSection: value || '' }))} options={effectiveFilterOptions.sections} placeholder="不限" /></label>
         <label><span>结束节次</span><Select allowClear value={filterDraft.endSection || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, endSection: value || '' }))} options={effectiveFilterOptions.sections} placeholder="不限" /></label>
+        <label className="jwxk-filter-grid__wide"><span>特殊筛选</span><Checkbox.Group className="jwxk-special-filter-group" value={specialFiltersDraft} onChange={setSpecialFiltersDraft}>{CATALOG_SPECIAL_FILTER_OPTIONS.map(option => <Checkbox key={option.value} value={option.value}><strong>{option.label}</strong><small>{option.description}</small></Checkbox>)}</Checkbox.Group></label>
       </div>
     </Modal>
     <Modal
@@ -2950,7 +3193,9 @@ const CourseSelectionWorkspacePage = () => {
                 <small>组内严格按意愿值从高到低处理；数据未知、登录恢复、限流或提交待核验时不会降级。</small>
               </div>
               {group.items.map(item => {
-                const conflict = selectionTimeConflictStatus(conflicts[item.class_id]);
+                const conflictResult = combinedPlanConflictMap[item.class_id];
+                const conflict = selectionTimeConflictStatus(conflictResult);
+                const scheduleMissing = conflictResult?.reason === 'course_schedule_missing';
                 const typeValid = isRealJwxkTeachingClassType(item.teaching_class_type);
                 const participants = selectionParticipantCount(item, batch?.selection_type_code);
                 return <div className="jwxk-weight-import-row" key={item.class_id}>
@@ -2965,7 +3210,7 @@ const CourseSelectionWorkspacePage = () => {
                     {item.eligibility_status === 'unavailable' && <Tag color="error">官方不可选</Tag>}
                     {item.eligibility_status === 'unknown' && <Tag color="warning">可选性待核验</Tag>}
                     {conflict === 'conflict' && <Tag color="error">时间冲突</Tag>}
-                    {conflict === 'unknown' && <Tag color="warning">时间待核验</Tag>}
+                    {conflict === 'unknown' && <Tag color="warning">{scheduleMissing ? '未提供上课时间' : '时间待核验'}</Tag>}
                     {courseIsCrossCampus(item) && <Tag color="orange">跨校区</Tag>}
                   </Space>
                 </div>;

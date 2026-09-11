@@ -4,7 +4,6 @@ import {
   Alert,
   Button,
   Card,
-  Checkbox,
   Descriptions,
   Empty,
   Grid,
@@ -76,10 +75,6 @@ const MODE_LABELS = Object.fromEntries(TIMETABLE_MODES.map(item => [item.key, it
 const WEEKDAY_NAMES = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'];
 const SHORT_WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
 export const TIMETABLE_DAY_ORDER = [7, 1, 2, 3, 4, 5, 6];
-export const TIMETABLE_TIME_FILTER_OPTIONS = [
-  { label: '不上早八', value: 'no_first' },
-  { label: '不上晚十', value: 'no_twelfth' },
-];
 const DETAIL_LABELS = {
   campus: '校区',
   building: '教学楼',
@@ -488,37 +483,6 @@ export const mergeScheduleWithSelectionOverlays = (scheduleCourses = [], overlay
     || !visibleBaseline.some(course => sameSelectionCourse(course, overlay))
   ));
   return [...visibleBaseline, ...overlays];
-};
-
-const timetableCourseIdentity = course => {
-  const classId = String(course?.teaching_class_id || course?.class_id || '').trim();
-  if (classId) return `class:${classId}`;
-  const code = String(course?.course_code || '').trim().toLocaleLowerCase();
-  if (code) return `code:${code}`;
-  const name = String(course?.course_name || '').replace(/\s+/g, '').trim().toLocaleLowerCase();
-  return name ? `name:${name}` : `meeting:${course?.meeting_id || course?.id || ''}`;
-};
-
-const courseIncludesSection = (course, section) => {
-  const start = Number(course?.start_section || 0);
-  const end = Number(course?.end_section || course?.start_section || 0);
-  return start > 0 && end >= start && start <= section && end >= section;
-};
-
-export const filterTimetableCoursesByTime = (courses = [], filters = [], referenceCourses = courses) => {
-  const selected = new Set(Array.isArray(filters) ? filters : []);
-  const excludedSections = [
-    selected.has('no_first') ? 1 : 0,
-    selected.has('no_twelfth') ? 12 : 0,
-  ].filter(Boolean);
-  if (!excludedSections.length) return Array.isArray(courses) ? courses : [];
-
-  const excludedCourses = new Set(
-    (referenceCourses || [])
-      .filter(course => excludedSections.some(section => courseIncludesSection(course, section)))
-      .map(timetableCourseIdentity),
-  );
-  return (courses || []).filter(course => !excludedCourses.has(timetableCourseIdentity(course)));
 };
 
 export const clusterLayoutMetrics = (
@@ -1377,18 +1341,13 @@ export const timetableMobileContextText = ({
   viewMode,
   selectedWeekName,
   selectedCampusName,
-  timeFilters = [],
 }) => {
   if (mode !== 'personal' && !target) {
     const label = (MODE_LABELS[mode] || '查询课表').replace('课表', '');
     return `选择${label}后读取教学周和校区`;
   }
   const range = viewMode === 'week' ? (selectedWeekName || '正在识别教学周') : '全学期';
-  const timeFilterText = TIMETABLE_TIME_FILTER_OPTIONS
-    .filter(option => timeFilters.includes(option.value))
-    .map(option => option.label)
-    .join('、');
-  return `${range}${selectedCampusName ? ` · ${selectedCampusName}` : ''}${timeFilterText ? ` · ${timeFilterText}` : ''}`;
+  return `${range}${selectedCampusName ? ` · ${selectedCampusName}` : ''}`;
 };
 
 const targetDescription = target => Object.entries(target?.details || {})
@@ -1600,9 +1559,8 @@ function TimetablePage({
   const [personalConflictMap, setPersonalConflictMap] = useState({});
   const [mobileDay, setMobileDay] = useState(todayWeekday());
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
-  const [timeFilters, setTimeFilters] = useState([]);
   const [filterDraft, setFilterDraft] = useState({
-    termCode: '', campusCode: '', viewMode: 'week', timeFilters: [],
+    termCode: '', campusCode: '', viewMode: 'week',
   });
   const filterDraftRef = useRef(filterDraft);
   filterDraftRef.current = filterDraft;
@@ -2085,7 +2043,15 @@ function TimetablePage({
     appliedRefreshSignal.current = refreshSignal;
     let cancelled = false;
     getPersonalTimetable(termCode, true).then(payload => {
-      if (!cancelled && timetableViewState.current.termCode === termCode) {
+      if (
+        !cancelled
+        && payload?.term_code === termCode
+        && timetableViewState.current.termCode === termCode
+      ) {
+        // The parent explicitly requested a refresh (for example after the
+        // course catalog refresh button was pressed). Apply this successful
+        // snapshot even when its revision is unchanged: the parent may still
+        // be waiting to rebuild its personal-timetable conflict baseline.
         applyUpdatedPersonalPayload(payload);
       }
     }).catch(() => {
@@ -2893,7 +2859,7 @@ function TimetablePage({
   };
 
   const openMobileFilters = () => {
-    const nextDraft = { termCode, campusCode, viewMode, timeFilters };
+    const nextDraft = { termCode, campusCode, viewMode };
     filterDraftRef.current = nextDraft;
     setFilterDraft(nextDraft);
     setMobileFilterOpen(true);
@@ -2904,7 +2870,6 @@ function TimetablePage({
       termCode: currentTermCode || selectDefaultTerm(terms),
       campusCode: context?.campuses?.[0]?.code || '',
       viewMode: 'week',
-      timeFilters: [],
     };
     filterDraftRef.current = nextDraft;
     setFilterDraft(nextDraft);
@@ -2919,7 +2884,6 @@ function TimetablePage({
   const applyMobileFilters = () => {
     const nextDraft = filterDraftRef.current;
     setMobileFilterOpen(false);
-    setTimeFilters(nextDraft.timeFilters || []);
     if (nextDraft.termCode !== termCode) {
       if (nextDraft.viewMode !== viewMode) setViewMode(nextDraft.viewMode);
       switchTerm(nextDraft.termCode);
@@ -2957,19 +2921,11 @@ function TimetablePage({
     const mergedCourses = mergeScheduleWithSelectionOverlays(
       schedule?.courses || [], visibleOverlayCourses,
     );
-    const referenceCourses = mode === 'personal' && personalPayload
-      ? mergeScheduleWithSelectionOverlays(
-        (personalPayload.courses || []).filter(course => (
-          courseMatchesCampus(course, campusCode, personalPayload.campuses || [])
-        )),
-        termCode === preferredTermCode ? (overlayCourses || []) : [],
-      )
-      : mergedCourses;
-    filterTimetableCoursesByTime(mergedCourses, timeFilters, referenceCourses).forEach(course => {
+    mergedCourses.forEach(course => {
       if (result[course.weekday]) result[course.weekday].push(course);
     });
     return result;
-  }, [campusCode, displayedViewMode, displayedWeekNumber, mode, overlayCourses, personalPayload, preferredTermCode, schedule, termCode, timeFilters]);
+  }, [displayedViewMode, displayedWeekNumber, overlayCourses, preferredTermCode, schedule, termCode]);
   const resolvedSections = useMemo(() => resolveTimetableSections({
     sections,
     sectionsByCampus: mode === 'personal' ? (personalPayload?.sections_by_campus || {}) : {},
@@ -2984,11 +2940,11 @@ function TimetablePage({
     const campusCourses = (personalPayload.courses || []).filter(course => (
       courseMatchesCampus(course, campusCode, personalPayload.campuses || [])
     ));
-    return filterTimetableCoursesByTime(mergeScheduleWithSelectionOverlays(
+    return mergeScheduleWithSelectionOverlays(
       campusCourses,
       visibleOverlayCourses,
-    ), timeFilters);
-  }, [campusCode, mode, overlayCourses, personalPayload, preferredTermCode, termCode, timeFilters]);
+    );
+  }, [campusCode, mode, overlayCourses, personalPayload, preferredTermCode, termCode]);
   const conflictCourseScheduleMap = useMemo(() => buildConflictCourseScheduleMap([
     ...(personalPayload?.courses || schedule?.courses || []),
     ...(overlayCourses || []),
@@ -2999,11 +2955,17 @@ function TimetablePage({
   );
 
   useEffect(() => {
-    if (mode !== 'personal' || !schedule || typeof onPersonalCoursesChange !== 'function') return;
+    if (
+      mode !== 'personal'
+      || !schedule
+      || personalPayload?.term_code !== termCode
+      || typeof onPersonalCoursesChange !== 'function'
+    ) return;
     onPersonalCoursesChange(personalPayload?.courses || schedule.courses || [], {
       termCode,
       weekNumber,
       viewMode,
+      ready: true,
     });
   }, [mode, onPersonalCoursesChange, personalPayload, schedule, termCode, viewMode, weekNumber]);
 
@@ -3290,13 +3252,6 @@ function TimetablePage({
         }))}
         placeholder={mode !== 'personal' && !target ? '选择查询对象后识别' : '选择周次'}
       /></label>}
-      <label className="timetable-time-filter-field"><span>不上时间</span><Checkbox.Group
-        className="timetable-time-filter-group"
-        value={timeFilters}
-        onChange={setTimeFilters}
-        options={TIMETABLE_TIME_FILTER_OPTIONS}
-        aria-label="不上时间"
-      /></label>
       <Space className="timetable-control-actions">
         {mode === 'personal' && !embedded && <label className="timetable-default-open-toggle"><Switch size="small" checked={defaultTimetableOnOpen} onChange={toggleDefaultTimetable} /> <span>打开时默认课表</span></label>}
         {mode !== 'personal' && <Tooltip title={conflictDetectionEnabled
@@ -3317,7 +3272,6 @@ function TimetablePage({
   );
 
   const overlayVisibleForTerm = termCode === preferredTermCode && Boolean(overlayCourses?.length);
-  const hasArrangedCourses = Boolean(schedule?.courses?.length || overlayVisibleForTerm);
   const hasVisibleArrangedCourses = Object.values(coursesByDay).some(courses => courses.length > 0);
   const hasOtherCourses = Boolean(schedule?.unscheduled?.length || schedule?.practices?.length);
   const queryTimetablePending = shouldShowQueryTimetablePending({
@@ -3391,7 +3345,6 @@ function TimetablePage({
                     viewMode,
                     selectedWeekName: selectedWeek?.name,
                     selectedCampusName: selectedCampus?.name,
-                    timeFilters,
                   })}
                 </span>
               </button>
@@ -3555,9 +3508,7 @@ function TimetablePage({
           ) : (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={timeFilters.length && hasArrangedCourses
-                ? '当前课表中的课程均已被“不上时间”筛选排除'
-                : hasOtherCourses ? '当前范围内没有按节次安排的课程' : '当前条件下暂无课程安排'}
+              description={hasOtherCourses ? '当前范围内没有按节次安排的课程' : '当前条件下暂无课程安排'}
             />
           )}
           <OtherCourses schedule={schedule} />
@@ -3778,13 +3729,6 @@ function TimetablePage({
           value={filterDraft.viewMode}
           onChange={value => updateMobileFilterDraft({ viewMode: value })}
           options={[{ label: '按周', value: 'week' }, { label: '全学期', value: 'term' }]}
-        /></label>
-        <label className="timetable-filter-field"><span>不上时间</span><Checkbox.Group
-          className="timetable-time-filter-group"
-          value={filterDraft.timeFilters || []}
-          onChange={value => updateMobileFilterDraft({ timeFilters: value })}
-          options={TIMETABLE_TIME_FILTER_OPTIONS}
-          aria-label="不上时间"
         /></label>
       </MobileFilterDrawer>
     </div>

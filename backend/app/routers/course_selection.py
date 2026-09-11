@@ -490,12 +490,22 @@ def get_jwxk_selected(
     result = _run_jwxk_read(
         storage, lambda client: client.get_selected(batch_code=request.batch_code),
     )
+    snapshot_complete = bool(result.pop("_complete", True))
     rows = [
         item for key in ("selected", "volunteered", "withdrawal")
         for item in result.get(key) or [] if isinstance(item, dict)
     ]
     account = str(getattr(peek_auth_client(), "username", "") or "")
-    archive = get_course_selection_automation_service().get_catalog_archive_view(
+    automation = get_course_selection_automation_service()
+    sync_selection = getattr(automation, "sync_catalog_selection_from_official", None)
+    if account and callable(sync_selection):
+        sync_selection(
+            account,
+            batch_code=request.batch_code,
+            official=result,
+            complete=snapshot_complete,
+        )
+    archive = automation.get_catalog_archive_view(
         account, request.batch_code,
     ) if account else None
     live_by_class = {
@@ -992,6 +1002,32 @@ def _plan_config(storage: Storage) -> dict:
     return dict(config) if isinstance(config, dict) else {}
 
 
+def _normalize_experiment_selections(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, list[str]] = {}
+    for raw_class_id, raw_schedule_ids in list(value.items())[:100]:
+        class_id = str(raw_class_id or "")
+        if (
+            not class_id or len(class_id) > 64
+            or not class_id.replace("-", "").replace("_", "").isalnum()
+            or not isinstance(raw_schedule_ids, list)
+        ):
+            continue
+        schedule_ids = []
+        for raw_schedule_id in raw_schedule_ids[:30]:
+            schedule_id = str(raw_schedule_id or "")
+            if (
+                schedule_id and len(schedule_id) <= 64
+                and schedule_id.replace("-", "").replace("_", "").isalnum()
+                and schedule_id not in schedule_ids
+            ):
+                schedule_ids.append(schedule_id)
+        if schedule_ids:
+            result[class_id] = schedule_ids
+    return result
+
+
 def _archived_batch_snapshot(batch_code: str, archive: dict | None) -> dict | None:
     if not isinstance(archive, dict):
         return None
@@ -1025,6 +1061,7 @@ def read_jwxk_plan(
         "term_code": str((archive or {}).get("term_code") or ""),
         "groups": [],
         "items": [],
+        "experiment_selections": {},
     }
     # A payload written by an older frontend race must never leak into another
     # round merely because it happens to sit under the wrong config key.
@@ -1035,6 +1072,7 @@ def read_jwxk_plan(
             "batch": batch_snapshot,
             "groups": [],
             "items": [],
+            "experiment_selections": {},
         }
     return {
         **payload,
@@ -1043,6 +1081,9 @@ def read_jwxk_plan(
         "batch": batch_snapshot,
         "groups": payload.get("groups") if isinstance(payload.get("groups"), list) else [],
         "items": normalize_saved_plan_items(payload.get("items")),
+        "experiment_selections": _normalize_experiment_selections(
+            payload.get("experiment_selections")
+        ),
     }
 
 
@@ -1057,6 +1098,9 @@ def save_jwxk_plan(
     key = f"{auth.username}:{request.batch_code}"
     plans[key] = request.model_dump()
     plans[key]["items"] = normalize_saved_plan_items(plans[key].get("items"))
+    plans[key]["experiment_selections"] = _normalize_experiment_selections(
+        plans[key].get("experiment_selections")
+    )
     config["course_selection_plans"] = plans
     storage.save_config(config)
     get_course_selection_automation_service().sync_bound_plan(
@@ -1230,15 +1274,38 @@ def _weight_grade_sizes(storage: Storage) -> tuple[dict, dict]:
     return config, values
 
 
+_DEFAULT_JWXK_WEIGHT_GRADE_SIZE = 5000
+_LEGACY_DEFAULT_JWXK_WEIGHT_GRADE_SIZE = 360
+
+
+def _effective_weight_grade_size(value: Any) -> int:
+    """Return the current default while keeping valid custom settings."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_JWXK_WEIGHT_GRADE_SIZE
+    if parsed == _LEGACY_DEFAULT_JWXK_WEIGHT_GRADE_SIZE:
+        # 360 was the historical implicit value before the model default was
+        # standardized at 5000. Treat it as legacy data, not a new choice.
+        return _DEFAULT_JWXK_WEIGHT_GRADE_SIZE
+    return parsed if 1 <= parsed <= 100_000 else _DEFAULT_JWXK_WEIGHT_GRADE_SIZE
+
+
 @router.get("/jwxk/weights/config", response_model=JwxkWeightConfigResponse)
 def get_jwxk_weight_config(
     term_code: str = Query(min_length=1, max_length=32),
     auth: NEUAuthClient = Depends(require_cached_auth_identity),
     storage: Storage = Depends(get_storage),
 ):
-    _, values = _weight_grade_sizes(storage)
-    value = values.get(f"{auth.username}:{term_code}")
-    return JwxkWeightConfigResponse(term_code=term_code, grade_size=int(value) if value else 5000)
+    config, values = _weight_grade_sizes(storage)
+    key = f"{auth.username}:{term_code}"
+    raw_value = values.get(key)
+    value = _effective_weight_grade_size(raw_value)
+    if raw_value is not None and raw_value != value:
+        values[key] = value
+        config["course_selection_weight_grade_sizes"] = values
+        storage.save_config(config)
+    return JwxkWeightConfigResponse(term_code=term_code, grade_size=value)
 
 
 def _weight_market_archive(account: str, batch_code: str) -> dict:
@@ -1654,6 +1721,12 @@ def select_jwxk_course(
         )
         term_code = str(result.pop("_term_code", ""))
         if result.get("success"):
+            if not result.get("queued"):
+                get_course_selection_automation_service().update_catalog_selection_state(
+                    str(auth.username), batch_code=request.batch_code,
+                    class_id=request.class_id, selected=True,
+                    devoted_weight=request.weight,
+                )
             _invalidate_jwxk_timetable(auth, term_code, "jwxk.select")
         return JwxkMutationResponse.model_validate(result)
     except JwxkError as error:
@@ -1682,6 +1755,11 @@ def deselect_jwxk_course(
         )
         term_code = str(result.pop("_term_code", ""))
         if result.get("success"):
+            if not result.get("queued"):
+                get_course_selection_automation_service().update_catalog_selection_state(
+                    str(auth.username), batch_code=request.batch_code,
+                    class_id=request.class_id, selected=False,
+                )
             _invalidate_jwxk_timetable(auth, term_code, "jwxk.deselect")
         return JwxkMutationResponse.model_validate(result)
     except JwxkError as error:

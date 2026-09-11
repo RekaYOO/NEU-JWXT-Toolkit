@@ -6,6 +6,7 @@ import {
   changedOfficialBatchTimes,
   catalogGroupLiveStats,
   catalogGroupsForDisplay,
+  courseHasExperiment,
   courseCampusLabels,
   createCatalogDisplayLayout,
   extendCatalogDisplayLayout,
@@ -32,8 +33,10 @@ import {
   selectionParticipantLabel,
   selectionCapacityLabel,
   selectionTimeConflictStatus,
+  selectedExperimentSchedules,
   sortCatalogGroupsBySelectability,
   summarizeSelectionConflictsByClass,
+  selectionMeetingHasReliableTime,
   uniqueDisplayLabels,
   toggleCatalogPreviewCourse,
   unplannedCurrentWeightSelections,
@@ -241,6 +244,25 @@ test('red time-conflict state requires a concrete non-official overlap', () => {
   })).toBe('conflict');
 });
 
+test('catalog distinguishes a pending personal timetable from an absent class schedule', () => {
+  const course = { class_id: 'class-1', schedules: [] };
+  expect(summarizeSelectionConflictsByClass([course], {}, { baselineReady: false })['class-1'])
+    .toMatchObject({ status: 'unknown', reason: 'personal_schedule_pending' });
+  expect(summarizeSelectionConflictsByClass([course], {}, { baselineReady: true })['class-1'])
+    .toMatchObject({ status: 'unknown', reason: 'course_schedule_missing' });
+});
+
+test('incomplete schedule objects are treated as missing class time, not pending personal data', () => {
+  expect(selectionMeetingHasReliableTime({ weeks: [1], weekday: 2, start_section: 1, end_section: 2 })).toBe(true);
+  expect(selectionMeetingHasReliableTime({ weekday: 2, start_section: 1, end_section: 2 })).toBe(false);
+  expect(summarizeSelectionConflictsByClass([{
+    class_id: 'class-1',
+    schedules: [{ location: '教学楼A101', weekday: 2 }],
+  }], {}, { baselineReady: true })['class-1']).toMatchObject({
+    status: 'unknown', reason: 'course_schedule_missing',
+  });
+});
+
 test('cross-campus detection compares normalized student and teaching campuses', () => {
   expect(isCrossCampusCourse({ campus: '00', campus_name: '南湖校区' }, '01', '浑南校区')).toBe(true);
   expect(isCrossCampusCourse({ schedules: [{ campus_name: '浑南校区' }] }, '01')).toBe(false);
@@ -318,6 +340,73 @@ test('zero-participant zero-capacity records are non-operable in both round mode
   expect(isCurrentBatchSelectionRecord({
     selected_count: 0, capacity: 0,
   }, '02')).toBe(false);
+});
+
+test('catalog excluded-time filters remove only teaching classes containing the selected sections', () => {
+  const groups = [{
+    group_id: 'course-a', course_code: 'A1',
+    classes: [
+      { class_id: 'early', schedules: [{ start_section: 1, end_section: 2 }] },
+      { class_id: 'middle', schedules: [{ start_section: 3, end_section: 4 }] },
+      { class_id: 'late', schedules: [{ start_section: 11, end_section: 12 }] },
+      { class_id: 'unknown', schedules: [] },
+    ],
+  }];
+
+  expect(catalogGroupsForDisplay(groups, { excludedTimeSlots: ['no_first'] })[0]
+    .classes.map(course => course.class_id)).toEqual(['middle', 'late', 'unknown']);
+  expect(catalogGroupsForDisplay(groups, { excludedTimeSlots: ['no_twelfth'] })[0]
+    .classes.map(course => course.class_id)).toEqual(['early', 'middle', 'unknown']);
+  expect(catalogGroupsForDisplay(groups, { excludedTimeSlots: ['no_first', 'no_twelfth'] })[0]
+    .classes.map(course => course.class_id)).toEqual(['middle', 'unknown']);
+});
+
+test('catalog excluded-time filters keep unknown schedules and remove a group only when every class matches', () => {
+  const groups = [{
+    group_id: 'mixed', course_code: 'A1',
+    classes: [
+      { class_id: 'early', schedules: [{ start_section: 1, end_section: 1 }] },
+      { class_id: 'later', schedules: [{ start_section: 5, end_section: 6 }] },
+    ],
+  }, {
+    group_id: 'all-early', course_code: 'B1',
+    classes: [{ class_id: 'only', schedules: [{ start_section: 1, end_section: 2 }] }],
+  }, {
+    group_id: 'unknown', course_code: 'C1',
+    classes: [{ class_id: 'unknown-time', schedules: [{ start_section: 0, end_section: 0 }] }],
+  }];
+
+  const visible = catalogGroupsForDisplay(groups, { excludedTimeSlots: ['no_first'] });
+  expect(visible.map(group => group.group_id)).toEqual(expect.arrayContaining(['mixed', 'unknown']));
+  expect(visible.map(group => group.group_id)).not.toContain('all-early');
+  expect(visible.find(group => group.group_id === 'mixed').classes.map(course => course.class_id))
+    .toEqual(['later']);
+});
+
+test('special experiment filter recognizes every official experiment signal', () => {
+  const groups = [{
+    group_id: 'experiments', course_code: 'E1', classes: [
+      { class_id: 'mode', teaching_mode: '理论,实验', schedules: [] },
+      { class_id: 'hours', experiment_hours: 8, schedules: [] },
+      { class_id: 'table', experiment_schedules: [{ schedule_id: 'exp-1' }], schedules: [] },
+      { class_id: 'plain', teaching_mode: '理论', experiment_hours: 0, schedules: [] },
+    ],
+  }];
+
+  expect(catalogGroupsForDisplay(groups, { specialFilters: ['no_experiment'] })[0]
+    .classes.map(course => course.class_id)).toEqual(['plain']);
+  expect(courseHasExperiment(groups[0].classes[0])).toBe(true);
+  expect(courseHasExperiment(groups[0].classes[3])).toBe(false);
+});
+
+test('experiment preview keeps only explicitly selected official schedule ids', () => {
+  const course = { experiment_schedules: [
+    { schedule_id: 'first', project_name: '实验一' },
+    { schedule_id: 'second', project_name: '实验二' },
+  ] };
+  expect(selectedExperimentSchedules(course, ['second'])).toEqual([
+    { schedule_id: 'second', project_name: '实验二' },
+  ]);
 });
 
 test('current result feed must match the active round mode', () => {
@@ -534,6 +623,22 @@ test('manual mutations patch only the affected selected record and course group'
   expect(groups[1].classes[0].course_already_selected).toBeUndefined();
 });
 
+test('catalog reconciliation clears deselected class without clearing another class of the same course', () => {
+  const groups = patchCatalogSelection([{
+    group_id: 'A', course_code: 'A', classes: [
+      { class_id: 'A-1', course_code: 'A', selected: true, course_already_selected: true, devoted_weight: 20 },
+      { class_id: 'A-2', course_code: 'A', selected: false, course_already_selected: true },
+    ],
+  }], {}, { selectedRecords: [
+    { class_id: 'A-2', course_code: 'A', devoted_weight: 15 },
+  ] });
+
+  expect(groups[0].classes).toEqual([
+    expect.objectContaining({ class_id: 'A-1', selected: false, course_already_selected: true, devoted_weight: null }),
+    expect.objectContaining({ class_id: 'A-2', selected: true, course_already_selected: true, devoted_weight: 15 }),
+  ]);
+});
+
 test('selection mutation is only confirmed by the official selected record', () => {
   const records = [
     { class_id: 'A113494', course_code: 'A1442000170', course_name: '物流与供应链管理' },
@@ -608,7 +713,9 @@ test('meeting conflicts are summarized for every class without requiring hover',
   });
   expect(result['class-a']).toMatchObject({ status: 'conflict' });
   expect(result['class-b']).toEqual({ status: 'clear', matches: [] });
-  expect(result['class-c']).toEqual({ status: 'unknown', matches: [] });
+  expect(result['class-c']).toMatchObject({
+    status: 'unknown', matches: [], reason: 'course_schedule_missing',
+  });
   expect(summarizeSelectionConflictsByClass(courses, {}, { baselineReady: false })['class-b'].status).toBe('unknown');
 });
 

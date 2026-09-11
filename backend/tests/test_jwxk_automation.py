@@ -676,6 +676,71 @@ def test_catalog_archives_are_account_scoped_and_only_deleted_explicitly(tmp_pat
     assert service.list_catalog_archives("student-a") == []
 
 
+def test_official_selection_snapshot_reconciles_archive_and_query_cache(tmp_path):
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student", batch={"code": "batch", "name": "轮次", "selection_type_code": "04"},
+        scope="FANKC", groups=[{
+            "group_id": "course-a", "classes": [
+                {"class_id": "class-a", "course_code": "A", "selected": True,
+                 "course_already_selected": True, "devoted_weight": 20},
+                {"class_id": "class-b", "course_code": "A", "selected": False,
+                 "course_already_selected": True, "devoted_weight": None},
+                {"class_id": "class-c", "course_code": "C", "selected": True,
+                 "course_already_selected": True, "devoted_weight": 10},
+            ],
+        }], query_key="page", query_result={"courses": [{
+            "class_id": "class-a", "course_code": "A", "selected": True,
+            "course_already_selected": True, "devoted_weight": 20,
+        }], "groups": [{"classes": [{
+            "class_id": "class-a", "course_code": "A", "selected": True,
+            "course_already_selected": True, "devoted_weight": 20,
+        }]}]},
+    )
+
+    changed = service.sync_catalog_selection_from_official(
+        "student", batch_code="batch", official={
+            "selected": [],
+            "volunteered": [{"class_id": "class-b", "course_code": "A", "devoted_weight": 15}],
+        },
+    )
+
+    assert changed is True
+    courses = service.get_catalog_archive_view("student", "batch")["courses"]
+    by_id = {item["class_id"]: item for item in courses}
+    assert by_id["class-a"]["selected"] is False
+    assert by_id["class-a"]["course_already_selected"] is True
+    assert by_id["class-a"]["devoted_weight"] is None
+    assert by_id["class-b"]["selected"] is True
+    assert by_id["class-b"]["devoted_weight"] == 15
+    assert by_id["class-c"]["selected"] is False
+    assert by_id["class-c"]["course_already_selected"] is False
+    cached = service.get_catalog_query("student", batch_code="batch", query_key="page")
+    assert cached["courses"][0]["selected"] is False
+    assert cached["groups"][0]["classes"][0]["course_already_selected"] is True
+
+
+def test_incomplete_official_selection_snapshot_does_not_clear_archive(tmp_path):
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student", batch={"code": "batch", "name": "轮次"}, scope="FANKC",
+        groups=[{"group_id": "course", "classes": [{
+            "class_id": "class-a", "course_code": "A", "selected": True,
+            "course_already_selected": True,
+        }]}],
+    )
+
+    changed = service.sync_catalog_selection_from_official(
+        "student", batch_code="batch", official={"selected": [], "volunteered": []},
+        complete=False,
+    )
+
+    assert changed is False
+    course = service.get_catalog_archive_view("student", "batch")["courses"][0]
+    assert course["selected"] is True
+    assert course["course_already_selected"] is True
+
+
 def test_complete_catalog_sync_excludes_global_directory_scope(tmp_path):
     batch = SimpleNamespace(
         code="batch",

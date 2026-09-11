@@ -11,7 +11,13 @@ const term = { code: '2026-2027-1', name: '测试学期', current: true };
 const batch = { code: 'fixture', name: '测试轮次', state: 'ended', term_code: term.code, selection_type_code: '02' };
 const course = { class_id: 'class-fixture', course_code: 'C1', course_name: '测试数据分析课程',
   teaching_class_type: 'XGKC', teacher: '测试教师', location: '教学楼101',
-  schedules: [{ weekday: 7, start_section: 1, end_section: 2, weeks: [1, 2], location: '教学楼101' }] };
+  schedules: [{ weekday: 7, start_section: 1, end_section: 2, weeks: [1, 2], location: '教学楼101' }],
+  has_experiment: true, experiment_hours: 8,
+  experiment_schedules: [{
+    schedule_id: 'exp-fixture', project_name: '体验测试实验',
+    raw_text: '13周 星期四 第七节-第八节', weekday: 4, start_section: 7, end_section: 8,
+    weeks: [13], location: '实验中心A101', teacher: '测试教师', group_name: '实验组 1',
+  }] };
 const metadata = { course_nature: '通识选修', exam_type: '考查', score_scale: '百分制' };
 const group = { group_id: 'C1', course_code: 'C1', course_name: course.course_name, class_count: 1, classes: [course] };
 const personal = { term_code: term.code, campuses: [{ code: '00', name: '南湖校区' }],
@@ -41,6 +47,9 @@ const personal = { term_code: term.code, campuses: [{ code: '00', name: '南湖�
       const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' });
       const errors = [];
       let detailCalls = 0;
+      const planSaves = [];
+      let resolvePlanSave;
+      const planSaveObserved = new Promise(resolve => { resolvePlanSave = resolve; });
       let release;
       page.on('pageerror', error => errors.push(error.message));
       await page.addInitScript(() => history.replaceState(null, '', '/course-selection/fixture'));
@@ -58,18 +67,43 @@ const personal = { term_code: term.code, campuses: [{ code: '00', name: '南湖�
         else if (url.pathname.startsWith('/api/timetable/')) data = url.pathname.endsWith('/personal')
           ? personal : { terms: [term], current: term.code, personal: [personal], jobs: [] };
         else if (url.pathname.endsWith('/jwxk/status')) data = { batches: [batch], service_authenticated: true };
-        else if (url.pathname.endsWith('/plan/read')) data = { batch, batch_code: 'fixture', items: [], groups: [] };
+        else if (url.pathname.endsWith('/plan/read')) data = {
+          batch, batch_code: 'fixture', items: [], groups: [], experiment_selections: {},
+        };
+        else if (url.pathname.endsWith('/plan/save')) {
+          planSaves.push(route.request().postDataJSON());
+          resolvePlanSave();
+          data = { batch_code: 'fixture', items: [], groups: [], experiment_selections: planSaves.at(-1).experiment_selections };
+        }
         else if (url.pathname.endsWith('/selected')) data = { selected: [], volunteered: [] };
         else if (url.pathname.endsWith('/catalog/search')) data = { groups: [group], total: 1, cache_hit: true, scope: 'ALL' };
         else if (url.pathname.endsWith('/catalog/detail')) {
           detailCalls += 1;
           assert.equal(route.request().postDataJSON().class_id, course.class_id);
-          await new Promise(resolve => { release = resolve; });
-          data = { course: { ...course, ...metadata }, teaching_class: course };
+          if (detailCalls === 1) await new Promise(resolve => { release = resolve; });
+          data = {
+            course: { ...course, ...metadata }, teaching_class: course,
+            programs: [{
+              training_code: 'fixture-program', grade: '2024', program_name: '2024 测试方案',
+              module_name: '通识选修模块', course_category: '通识选修', course_nature: '选修',
+            }],
+            programs_loaded: true,
+          };
         }
         return route.fulfill({ json: data });
       });
       await page.goto(origin);
+      await page.locator('.jwxk-course-group').first().waitFor();
+      if (width >= 992) {
+        const controls = page.locator('.timetable-desktop-controls');
+        await controls.getByText('全学期', { exact: true }).click();
+        const actionGap = await controls.evaluate(element => {
+          const bounds = element.getBoundingClientRect();
+          const refresh = element.querySelector('.timetable-refresh-button').getBoundingClientRect();
+          return bounds.right - refresh.right;
+        });
+        assert(Math.abs(actionGap) < 2, `embedded timetable refresh is not right-aligned (${actionGap}px)`);
+      }
       await page.locator('.jwxk-course-group').first().click();
       await page.getByRole('button', { name: '在课表中预览', exact: true }).click();
       const preview = page.locator('.timetable-query-results .is-selection-preview:visible').first();
@@ -85,12 +119,26 @@ const personal = { term_code: term.code, campuses: [{ code: '00', name: '南湖�
       assert((await property('课程性质').innerText()).includes('通识选修'));
       assert((await property('成绩类型').innerText()).includes('百分制'));
       assert.equal(await page.locator('.timetable-course-detail:visible').getByText('正在预览', { exact: true }).count(), 1);
+      const lazyDetailContainer = page.locator('.ant-modal:has(.timetable-course-detail):visible, .ant-drawer:has(.timetable-course-detail):visible');
+      await lazyDetailContainer.locator('.ant-modal-close, .ant-drawer-close').click();
+      await page.locator('.timetable-course-detail:visible').waitFor({ state: 'hidden' });
+      await page.getByRole('button', { name: '查看详情', exact: true }).click();
+      const courseDetail = page.locator('.jwxk-catalog-detail-modal:visible');
+      await courseDetail.getByText('所属方案', { exact: true }).waitFor();
+      assert.equal(await courseDetail.getByText('2024 测试方案', { exact: true }).count(), 1);
+      await courseDetail.getByText('实验课表', { exact: true }).waitFor();
+      const experimentSelect = courseDetail.locator('.jwxk-experiment-project .ant-select').first();
+      await experimentSelect.click();
+      await page.locator('.ant-select-dropdown:visible').getByText(/13周 星期四 第七节-第八节/).click();
+      await page.getByText('测试数据分析课程 · 体验测试实验', { exact: true }).first().waitFor();
+      await planSaveObserved;
+      assert(planSaves.some(payload => JSON.stringify(payload.experiment_selections) === JSON.stringify({ 'class-fixture': ['exp-fixture'] })), 'experiment selection was not persisted');
       await page.screenshot({ path: path.join(screenshots, `${width}-detail.png`), animations: 'disabled' });
       const bounds = await page.locator('.timetable-course-detail:visible').boundingBox();
       assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1);
       assert.deepEqual(errors, []);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
-      console.log(`PASS ${width}: preview metadata, lazy detail, separate status, no overflow`);
+      console.log(`PASS ${width}: preview metadata, catalog detail, programs, experiment save, no overflow`);
       await page.close();
     }
     console.log(`Screenshots: ${screenshots}`);

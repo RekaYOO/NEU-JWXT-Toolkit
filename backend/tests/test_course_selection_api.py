@@ -273,6 +273,39 @@ def test_jwxk_weight_plan_uses_official_budget_and_group_optimizer(monkeypatch):
     assert storage.value["course_selection_weight_grade_sizes"]["student:2026-2027-1"] == 126
 
 
+@pytest.mark.parametrize(
+    "stored_value, expected_value, migrated",
+    [(None, 5000, False), (360, 5000, True), (126, 126, False)],
+)
+def test_jwxk_weight_config_uses_5000_default_and_migrates_legacy_default(
+    stored_value, expected_value, migrated,
+):
+    class FakeStorage:
+        def __init__(self):
+            self.value = (
+                {"course_selection_weight_grade_sizes": {"student:term": stored_value}}
+                if stored_value is not None else {}
+            )
+            self.saved = False
+
+        def load_config(self):
+            return self.value
+
+        def save_config(self, value):
+            self.value = value
+            self.saved = True
+
+    storage = FakeStorage()
+    result = course_selection.get_jwxk_weight_config(
+        "term", auth=type("Auth", (), {"username": "student"})(), storage=storage,
+    )
+
+    assert result.grade_size == expected_value
+    assert storage.saved is migrated
+    if migrated:
+        assert storage.value["course_selection_weight_grade_sizes"]["student:term"] == 5000
+
+
 def test_jwxk_weight_plan_includes_existing_volunteer_as_reapply_target(monkeypatch):
     class FakeClient:
         def get_selected(self, **_kwargs):
@@ -941,6 +974,13 @@ def test_jwxk_catalog_detail_route_returns_sanitized_course_and_class(monkeypatc
                     "teacher_details": [{"name": "教师甲", "teacher_id": "T1", "title": "教授"}],
                     "target_classes": ["班级一"],
                 },
+                "programs": [{
+                    "grade": "2024", "training_code": "4145",
+                    "program_name": "2024 工业设计", "module_name": "选修",
+                    "course_nature": "选修", "course_category": "专业方向类",
+                    "direction_code": "",
+                }],
+                "programs_loaded": True,
             }
 
     monkeypatch.setattr(
@@ -962,6 +1002,8 @@ def test_jwxk_catalog_detail_route_returns_sanitized_course_and_class(monkeypatc
     assert result.course.exam_type == "考试"
     assert result.course.score_scale == "百分制"
     assert result.teaching_class.teacher_details[0]["title"] == "教授"
+    assert result.programs[0].program_name == "2024 工业设计"
+    assert result.programs_loaded is True
     assert response.headers["cache-control"] == "no-store"
 
 
@@ -1151,3 +1193,43 @@ def test_jwxk_plan_read_returns_archived_batch_snapshot_without_remote_status(mo
         "begin_time": "2026-08-15 13:00:00",
         "end_time": "2026-08-17 00:00:00",
     }
+    assert result["experiment_selections"] == {}
+
+
+def test_jwxk_plan_persists_sanitized_experiment_schedule_choices(monkeypatch):
+    class Storage:
+        saved = None
+
+        def load_config(self):
+            return {}
+
+        def save_config(self, value):
+            self.saved = value
+
+    class Automation:
+        def sync_bound_plan(self, *_args, **_kwargs):
+            return None
+
+    storage = Storage()
+    monkeypatch.setattr(
+        course_selection, "get_course_selection_automation_service", lambda: Automation(),
+    )
+    result = course_selection.save_jwxk_plan(
+        JwxkSavedPlanRequest(
+            batch_code="BATCH-1", term_code="2026-2027-1",
+            experiment_selections={"CLASS-1": ["schedule_1", "schedule_1", "schedule_2"]},
+        ),
+        type("Auth", (), {"username": "student"})(),
+        storage,
+    )
+
+    assert result["experiment_selections"] == {
+        "CLASS-1": ["schedule_1", "schedule_2"],
+    }
+    assert storage.saved["course_selection_plans"]["student:BATCH-1"] == result
+
+    with pytest.raises(ValidationError):
+        JwxkSavedPlanRequest(
+            batch_code="BATCH-1", term_code="2026-2027-1",
+            experiment_selections={"CLASS-1": ["../unsafe"]},
+        )

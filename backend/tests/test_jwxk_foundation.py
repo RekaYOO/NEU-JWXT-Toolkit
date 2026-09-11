@@ -12,6 +12,7 @@ from backend.core.course_selection import (
     group_course_rows,
     normalize_course_category,
     normalize_course_rows,
+    normalize_course_programs,
     normalize_saved_plan_items,
     parse_course_eligibility,
     parse_course_detail_html,
@@ -374,6 +375,91 @@ def test_course_and_teaching_class_details_are_normalized_for_users():
     assert course["campus_name"] == "浑南校区"
     assert course["teacher_details"] == [{"name": "教师甲", "teacher_id": "T1", "title": "教授"}]
     assert course["target_classes"] == ["班级一", "班级二"]
+
+
+def test_experiment_schedule_and_program_membership_are_normalized():
+    [course] = normalize_course_rows([{
+        "KCH": "COURSE-EXP", "KCM": "用户体验",
+        "tcList": [{
+            "JXBID": "CLASS-EXP", "XSXLX": "理论,实验", "SYXS": 8,
+            "hasTest": "0", "SKSJ": [],
+            "SYPKSJ": [{
+                "pklcwid": "schedule_1", "xmmc": "体验测试实验",
+                "sksj": "13周 星期四 第七节-第八节", "skddmc": "实验中心A101",
+                "skjsxm": "教师甲", "xsfzwid": "group_1", "xsfz": "实验一组",
+                "xqdm": "01", "syxs": 2,
+            }],
+        }],
+    }])
+
+    assert course["has_test"] is False
+    assert course["has_experiment"] is True
+    assert course["experiment_hours"] == 8
+    assert course["experiment_schedules"] == [{
+        "schedule_id": "schedule_1",
+        "meeting_id": "jwxk-exp-schedule_1",
+        "project_name": "体验测试实验",
+        "week_text": "13周",
+        "weeks": [13],
+        "recurrence_unknown": False,
+        "parse_status": "parsed",
+        "weekday": 4,
+        "start_section": 7,
+        "end_section": 8,
+        "location": "实验中心A101",
+        "campus": "01",
+        "campus_name": "浑南校区",
+        "teacher": "教师甲",
+        "group_id": "group_1",
+        "group_name": "实验一组",
+        "target_classes": "",
+        "hours": 2.0,
+        "raw_text": "13周 星期四 第七节-第八节",
+    }]
+
+
+def test_catalog_detail_loads_program_membership_without_hiding_core_detail():
+    calls = []
+
+    class Auth:
+        timeout = 10
+
+    class Client(JwxkSessionClient):
+        def _find_raw_class(self, **_kwargs):
+            return {"KCH": "COURSE-1", "KCM": "课程", "JXBID": "CLASS-1"}
+
+        def _request(self, method, path, **kwargs):
+            calls.append((method, path, kwargs.get("data")))
+            response = __import__("requests").Response()
+            response.status_code = 200
+            response.headers["Content-Type"] = "text/html; charset=utf-8"
+            response._content = "<table><tr><th>课程名称</th><td>课程</td></tr></table>".encode()
+            return response
+
+        def _post_form(self, path, data=None, **_kwargs):
+            calls.append(("POST", path, data))
+            return {"code": 200, "data": [{
+                "NJ": "2024", "trainingCode": "4145", "FA": "2024 工业设计",
+                "parentCode": "选修", "KCXZ": "选修", "KCLB": "专业方向类",
+            }]}
+
+    result = Client(Auth()).get_catalog_detail(
+        batch_code="batch", teaching_class_type="FAWKC",
+        course_code="COURSE-1", class_id="CLASS-1",
+    )
+
+    assert calls[-1] == ("POST", "/xsxk/elective/ssfa", {"kch": "COURSE-1"})
+    assert result["programs_loaded"] is True
+    assert result["programs"][0]["program_name"] == "2024 工业设计"
+
+    assert normalize_course_programs([{
+        "NJ": "2024", "trainingCode": "4145", "FA": "2024 工业设计",
+        "parentCode": "选修", "KCXZ": "选修", "KCLB": "专业方向类",
+    }]) == [{
+        "grade": "2024", "training_code": "4145", "program_name": "2024 工业设计",
+        "module_name": "选修", "course_nature": "选修", "course_category": "专业方向类",
+        "direction_code": "",
+    }]
 
 
 def test_round_market_semantics_distinguish_selected_and_weight_participants():
@@ -2300,6 +2386,38 @@ def test_jwxk_schedule_normalization_marks_mask_text_mismatch():
 
     assert course["schedules"][0]["weeks"] == [2, 4]
     assert course["schedules"][0]["parse_status"] == "mismatch"
+
+
+def test_jwxk_schedule_normalization_falls_back_to_complete_official_arrangements():
+    [course] = normalize_course_rows([{
+        "KCH": "IE004",
+        "KCM": "无SKSJ课程",
+        "JXBID": "CLASS-4",
+        "YPSJDD": "10-12周[理论]/星期二/第一节-第二节/张老师/生命B101",
+        "SKSJ": [],
+    }])
+
+    assert len(course["schedules"]) == 1
+    meeting = course["schedules"][0]
+    assert meeting["weeks"] == [10, 11, 12]
+    assert meeting["weekday"] == 2
+    assert meeting["start_section"] == 1
+    assert meeting["end_section"] == 2
+    assert meeting["location"] == "生命B101"
+    assert meeting["parse_status"] == "official_schedule"
+    assert meeting["schedule_source"] == "official_schedule"
+
+
+def test_jwxk_schedule_normalization_does_not_invent_time_from_location_only():
+    [course] = normalize_course_rows([{
+        "KCH": "IE005",
+        "KCM": "仅地点课程",
+        "JXBID": "CLASS-5",
+        "YPSJDD": "生命B101",
+        "SKSJ": [],
+    }])
+
+    assert course["schedules"] == []
 
 
 def test_saved_plan_migration_restores_structured_meetings_and_drops_legacy_location():

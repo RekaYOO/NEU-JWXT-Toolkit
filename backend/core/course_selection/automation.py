@@ -600,12 +600,14 @@ class CourseSelectionAutomationService:
             "normalized_course_category", "general_elective_category_code",
             "general_elective_category", "exam_type_code", "exam_type",
             "score_scale_code", "score_scale", "teaching_mode", "teacher_details",
+            "has_experiment", "experiment_hours", "experiment_schedules",
             "teacher_titles", "target_classes", "total_capacity", "capacity",
             "selected_count", "first_choice_count", "weight_participant_count", "devoted_weight",
             "selection_type_code", "market_participant_count", "market_participant_label",
             "market_capacity_label",
             "conflict", "conflict_description", "restricted", "eligibility_status",
-            "eligibility_reason", "full", "selected", "has_test", "has_book", "notice", "schedules",
+            "eligibility_reason", "full", "selected", "course_already_selected", "has_test", "has_book",
+            "notice", "schedules",
         }
         value = {key: copy.deepcopy(course.get(key)) for key in allowed if key in course}
         effective_scope = str(course.get("teaching_class_type") or scope)
@@ -799,6 +801,169 @@ class CourseSelectionAutomationService:
                     course["eligibility_reason"] = result.get("reason") or ""
             archive["updated_at"] = datetime.now().astimezone().isoformat()
             self._write_archives()
+
+    @staticmethod
+    def _selection_status_sets(
+        courses: list[dict[str, Any]],
+    ) -> tuple[set[str], set[str], dict[str, Any]]:
+        selected_classes: set[str] = set()
+        selected_codes: set[str] = set()
+        weights: dict[str, Any] = {}
+        for course in courses:
+            if not isinstance(course, dict):
+                continue
+            class_id = str(course.get("class_id") or "").strip()
+            course_code = str(course.get("course_code") or "").strip().casefold()
+            if class_id:
+                selected_classes.add(class_id)
+                if course.get("devoted_weight") is not None:
+                    weights[class_id] = course.get("devoted_weight")
+            if course_code:
+                selected_codes.add(course_code)
+        return selected_classes, selected_codes, weights
+
+    @classmethod
+    def _apply_selection_status(
+        cls,
+        courses: list[dict[str, Any]],
+        selected_classes: set[str],
+        selected_codes: set[str],
+        weights: dict[str, Any],
+    ) -> bool:
+        changed = False
+        for course in courses:
+            if not isinstance(course, dict):
+                continue
+            class_id = str(course.get("class_id") or "").strip()
+            course_code = str(course.get("course_code") or "").strip().casefold()
+            next_selected = class_id in selected_classes
+            next_already_selected = course_code in selected_codes if course_code else False
+            next_weight = weights.get(class_id) if class_id in selected_classes else None
+            if course.get("selected") != next_selected:
+                course["selected"] = next_selected
+                changed = True
+            if course.get("course_already_selected") != next_already_selected:
+                course["course_already_selected"] = next_already_selected
+                changed = True
+            if course.get("devoted_weight") != next_weight:
+                course["devoted_weight"] = next_weight
+                changed = True
+        return changed
+
+    def sync_catalog_selection_from_official(
+        self,
+        account: str,
+        *,
+        batch_code: str,
+        official: dict[str, Any],
+        complete: bool = True,
+    ) -> bool:
+        """Reconcile durable catalog selection flags with one official snapshot.
+
+        The catalog itself is retained as rebuildable data.  Only the mutable
+        selection fields are corrected, and only after every required result
+        feed has been read successfully.
+        """
+        if not account or not batch_code or not complete:
+            return False
+        official_rows = [
+            item for key in ("selected", "volunteered")
+            for item in official.get(key) or []
+            if isinstance(item, dict)
+        ]
+        selected_classes, selected_codes, weights = self._selection_status_sets(official_rows)
+        changed = False
+        with self._lock:
+            archive = next((item for item in self._archives if (
+                item.get("account") == account and item.get("batch_code") == batch_code
+            )), None)
+            if archive is None:
+                return False
+            changed = self._apply_selection_status(
+                archive.get("courses") or [], selected_classes, selected_codes, weights,
+            )
+            query_cache = archive.get("query_cache")
+            if isinstance(query_cache, dict):
+                for cached in query_cache.values():
+                    payload = cached.get("payload") if isinstance(cached, dict) else None
+                    if not isinstance(payload, dict):
+                        continue
+                    changed = self._apply_selection_status(
+                        payload.get("courses") or [], selected_classes, selected_codes, weights,
+                    ) or changed
+                    for group in payload.get("groups") or []:
+                        if isinstance(group, dict):
+                            changed = self._apply_selection_status(
+                                group.get("classes") or [],
+                                selected_classes, selected_codes, weights,
+                            ) or changed
+            if changed:
+                archive["updated_at"] = datetime.now().astimezone().isoformat()
+                self._write_archives()
+        return changed
+
+    def update_catalog_selection_state(
+        self,
+        account: str,
+        *,
+        batch_code: str,
+        class_id: str,
+        selected: bool,
+        devoted_weight: Any = None,
+    ) -> bool:
+        """Apply a confirmed local mutation without guessing another class."""
+        if not account or not batch_code or not class_id:
+            return False
+        with self._lock:
+            archive = next((item for item in self._archives if (
+                item.get("account") == account and item.get("batch_code") == batch_code
+            )), None)
+            if archive is None:
+                return False
+            target = next((item for item in archive.get("courses") or [] if (
+                str(item.get("class_id") or "") == str(class_id)
+            )), None)
+            if target is None:
+                return False
+            target["selected"] = bool(selected)
+            target["devoted_weight"] = devoted_weight if selected else None
+            archive_courses = archive.get("courses") or []
+            selected_classes = {
+                str(item.get("class_id") or "") for item in archive_courses
+                if item.get("selected") and item.get("class_id")
+            }
+            selected_codes = {
+                str(item.get("course_code") or "").strip().casefold()
+                for item in archive_courses
+                if item.get("selected") or item.get("devoted_weight") is not None
+            }
+            weights = {
+                str(item.get("class_id") or ""): item.get("devoted_weight")
+                for item in archive_courses
+                if item.get("devoted_weight") is not None and item.get("class_id")
+            }
+            changed = self._apply_selection_status(
+                archive_courses, selected_classes, selected_codes, weights,
+            )
+            query_cache = archive.get("query_cache")
+            if isinstance(query_cache, dict):
+                for cached in query_cache.values():
+                    payload = cached.get("payload") if isinstance(cached, dict) else None
+                    if not isinstance(payload, dict):
+                        continue
+                    changed = self._apply_selection_status(
+                        payload.get("courses") or [], selected_classes, selected_codes, weights,
+                    ) or changed
+                    for group in payload.get("groups") or []:
+                        if isinstance(group, dict):
+                            changed = self._apply_selection_status(
+                                group.get("classes") or [],
+                                selected_classes, selected_codes, weights,
+                            ) or changed
+            if changed:
+                archive["updated_at"] = datetime.now().astimezone().isoformat()
+                self._write_archives()
+            return changed
 
     def list_catalog_archives(self, account: str) -> list[dict[str, Any]]:
         with self._lock:

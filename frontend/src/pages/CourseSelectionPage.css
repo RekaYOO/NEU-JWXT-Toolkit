@@ -272,6 +272,15 @@
 .jwxk-filter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .jwxk-filter-grid label { display: grid; gap: 6px; color: var(--color-muted); font-size: 12px; font-weight: 600; }
 .jwxk-filter-grid .ant-select { width: 100%; }
+.jwxk-filter-grid__wide { grid-column: 1 / -1; }
+.jwxk-filter-grid .jwxk-special-filter-group { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.jwxk-special-filter-group .ant-checkbox-wrapper { min-width: 0; min-height: 58px; margin-inline-start: 0; padding: 9px 10px; align-items: flex-start; color: var(--color-ink); background: var(--color-surface-soft); border: 1px solid var(--color-line); border-radius: var(--radius-md); font-size: 13px; font-weight: 500; transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease; }
+.jwxk-special-filter-group .ant-checkbox-wrapper:hover,
+.jwxk-special-filter-group .ant-checkbox-wrapper:has(.ant-checkbox-checked) { border-color: color-mix(in srgb, var(--color-brand) 55%, var(--color-line)); background: color-mix(in srgb, var(--color-brand) 6%, var(--color-surface)); }
+.jwxk-special-filter-group .ant-checkbox-wrapper:has(.ant-checkbox-input:focus-visible) { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-brand) 16%, transparent); }
+.jwxk-special-filter-group .ant-checkbox + span { display: grid; min-width: 0; gap: 2px; padding-inline-start: 8px; }
+.jwxk-special-filter-group strong { font-size: 13px; }
+.jwxk-special-filter-group small { color: var(--color-muted); font-size: 11px; font-weight: 400; line-height: 1.35; }
 .jwxk-archive-filter-grid { margin-top: 16px; }
 .jwxk-plan-aside { position: sticky; top: 76px; align-self: start; max-height: calc(100vh - 92px); overflow: auto; display: grid; gap: 10px; padding: 16px; border: 1px solid var(--color-line); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-card); }
 .jwxk-plan-aside > div { display: flex; gap: 8px; align-items: center; }
@@ -310,6 +319,16 @@
 .jwxk-class-detail { display: grid; gap: 8px; }
 .jwxk-class-detail p { margin: 0; }
 .jwxk-class-detail .ant-descriptions-title { margin: 4px 0 8px; font-size: 14px; }
+.jwxk-program-list { display: grid; gap: 7px; }
+.jwxk-program-list > span { display: grid; gap: 1px; }
+.jwxk-program-list small { color: var(--color-muted); font-size: 11px; }
+.jwxk-experiment-schedule { display: grid; gap: 10px; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--color-line-soft); }
+.jwxk-experiment-schedule__head { display: grid; gap: 2px; }
+.jwxk-experiment-schedule__head .ant-typography-secondary { font-size: 12px; }
+.jwxk-experiment-project { display: grid; grid-template-columns: minmax(150px, .45fr) minmax(0, 1fr); align-items: center; gap: 12px; padding: 9px 10px; background: var(--color-surface-soft); border-radius: var(--radius-md); }
+.jwxk-experiment-project > span { display: grid; gap: 2px; }
+.jwxk-experiment-project small { color: var(--color-muted); font-size: 11px; }
+.jwxk-experiment-project .ant-select { width: 100%; }
 .jwxk-detail-loading { display: flex; min-height: 150px; align-items: center; justify-content: center; gap: 10px; color: var(--color-muted); }
 .jwxk-catalog-detail-modal .ant-modal-body { max-height: min(76vh, 820px); overflow-y: auto; }
 .jwxk-catalog-detail-modal .ant-tabs-nav { position: sticky; z-index: 6; top: 0; margin-bottom: 16px; background: var(--color-surface); }
@@ -449,6 +468,8 @@
   .jwxk-inline-class { grid-template-columns: 1fr; }
   .jwxk-inline-class__states, .jwxk-inline-class__actions { justify-content: flex-start; }
   .jwxk-filter-grid { grid-template-columns: 1fr; }
+  .jwxk-filter-grid .jwxk-special-filter-group { grid-template-columns: 1fr; }
+  .jwxk-experiment-project { grid-template-columns: 1fr; }
   .jwxk-task-runtime { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .jwxk-task-group-summary { grid-template-columns: 1fr auto auto; }
   .jwxk-task-group-summary small { grid-column: 1 / -1; }
