@@ -247,6 +247,105 @@ def test_task_course_refresh_prefers_archived_real_scope_and_records_live_counts
     assert task["course_states"]["class-1"]["market_participant_count"] == 12
 
 
+def test_weight_task_refresh_requires_live_participants_and_capacity(tmp_path):
+    class Client:
+        def search_courses(self, **_kwargs):
+            return {"courses": [{
+                "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+                "capacity": 1,
+            }]}
+
+    service = _service(tmp_path)
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "实时策略",
+        "task_type": "weight_strategy", "items": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC",
+        }],
+    })
+
+    with pytest.raises(JwxkError, match="最新已投注人数和可选容量"):
+        service._refresh_task_course_states(Client(), task)
+
+    assert task["course_states"]["class-1"]["candidate_status"] == "data_unknown"
+    assert "已投注人数" in task["course_states"]["class-1"]["state_error"]
+
+
+def test_strategy_notification_uses_task_market_snapshot_over_legacy_archive(tmp_path):
+    service = _service(tmp_path)
+    archive = service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "name": "权重轮次", "selection_type_code": "04"},
+        scope="TJKC",
+        groups=[{"group_id": "catalog", "classes": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC", "total_capacity": 150,
+            "capacity": 150, "selected_count": 0,
+            "weight_participant_count": 3,
+        }]}],
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "实时策略",
+        "task_type": "weight_strategy", "items": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC", "capacity": 150,
+        }],
+    })
+    task["course_states"] = {
+        "class-1": {
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "total_capacity": 150, "capacity": 1, "selected_count": 149,
+            "weight_participant_count": 7, "market_participant_count": 7,
+            "market_participant_label": "已投注人数", "market_capacity_label": "可选容量",
+            "capacity_updated_at": "2026-08-17T20:00:00+08:00",
+        },
+    }
+    task["weight_status"]["recommendation"] = [{
+        "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+        "capacity": 150, "weight_participant_count": 3,
+        "scenario_success_rates": {"neutral": 0.707}, "weight": 45,
+    }]
+
+    audience = service._notification_audience(
+        "student", "batch", archive, task_snapshot=task,
+    )
+    body, _ = service._notification_content(
+        archive, heading="策略结果", reason="已完成", courses=audience,
+    )
+
+    assert "已投注人数：7 / 可选容量：1" in body
+    assert "可选容量：150" not in body
+
+
+def test_task_snapshot_overlays_latest_archive_market_capacity(tmp_path):
+    service = _service(tmp_path)
+    service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "name": "权重轮次", "selection_type_code": "04"},
+        scope="TJKC",
+        groups=[{"group_id": "catalog", "classes": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC", "total_capacity": 150,
+            "capacity": 1, "selected_count": 149,
+            "weight_participant_count": 7,
+            "market_participant_label": "已投注人数", "market_capacity_label": "可选容量",
+        }]}],
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "实时策略",
+        "task_type": "weight_strategy", "items": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC", "capacity": 150,
+        }],
+    })
+
+    snapshot = service.list("student", "batch")[0]
+
+    assert snapshot["items"][0]["capacity"] == 1
+    assert snapshot["items"][0]["weight_participant_count"] == 7
+    assert snapshot["items"][0]["market_capacity_label"] == "可选容量"
+
+
 def test_weight_strategy_reuses_just_completed_market_snapshot_without_duplicate_queries(tmp_path):
     class Client:
         def search_courses(self, **_kwargs):
@@ -1397,6 +1496,116 @@ def test_final_check_without_running_task_is_read_only_and_reports_proxy(tmp_pat
     assert "只读检查" in messages[0][1]
     assert "100.0%（模型代理值）" in messages[0][1]
     assert "市场课程" not in messages[0][1]
+
+
+def test_scheduled_weight_notification_does_not_fallback_to_stale_market_data(tmp_path):
+    messages = []
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+
+    class FakeClient:
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": []}
+
+        def get_weight_budget(self, **_kwargs):
+            return {"remaining": 100, "minimum": 5, "step": 1}
+
+        def search_courses(self, **_kwargs):
+            return {"courses": []}
+
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: auth,
+        client_builder=lambda _auth: FakeClient(),
+        notification_provider=lambda subject, body, key, html_body: messages.append(
+            (subject, body, key, html_body)
+        ) or True,
+    )
+    archive = service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "name": "权重轮次", "selection_type_code": "04"},
+        scope="TJKC",
+        groups=[{"group_id": "catalog", "classes": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC", "capacity": 150,
+            "weight_participant_count": 3,
+        }]}],
+    )
+    service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "实时策略",
+        "task_type": "weight_strategy", "grade_size": 5000, "items": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC",
+        }],
+    })
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True, "notify_final_rebalance": True,
+    })
+
+    service._notify_scheduled_snapshot(
+        "student", archive, auth, event="final_notice",
+    )
+
+    assert messages == []
+    assert not service._notification_state.get("student:batch:final_notice_notification_sent")
+
+
+def test_scheduled_weight_notification_persists_fresh_market_capacity(tmp_path):
+    messages = []
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+
+    class FakeClient:
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": [{
+                "class_id": "class-1", "course_code": "A",
+                "course_name": "课程A", "devoted_weight": 45,
+            }]}
+
+        def get_weight_budget(self, **_kwargs):
+            return {"remaining": 100, "minimum": 5, "step": 1}
+
+        def search_courses(self, **_kwargs):
+            return {"courses": [{
+                "class_id": "class-1", "course_code": "A",
+                "course_name": "课程A", "teaching_class_type": "TJKC",
+                "total_capacity": 150, "capacity": 1, "selected_count": 149,
+                "weight_participant_count": 7, "market_participant_count": 7,
+                "market_participant_label": "已投注人数",
+                "market_capacity_label": "可选容量",
+            }]}
+
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: auth,
+        client_builder=lambda _auth: FakeClient(),
+        notification_provider=lambda subject, body, key, html_body: messages.append(
+            (subject, body, key, html_body)
+        ) or True,
+    )
+    archive = service.merge_catalog_archive(
+        "student",
+        batch={"code": "batch", "name": "权重轮次", "selection_type_code": "04"},
+        scope="TJKC",
+        groups=[{"group_id": "catalog", "classes": [{
+            "class_id": "class-1", "course_code": "A", "course_name": "课程A",
+            "teaching_class_type": "TJKC", "total_capacity": 150,
+            "capacity": 150, "selected_count": 0,
+            "weight_participant_count": 3,
+        }]}],
+    )
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True, "notify_final_rebalance": True,
+    })
+
+    service._notify_scheduled_snapshot(
+        "student", archive, auth, event="final_notice",
+    )
+
+    assert len(messages) == 1
+    assert "已投注人数：7 / 可选容量：1" in messages[0][1]
+    current = service.get_catalog_archive_view("student", "batch")
+    assert current["courses"][0]["capacity"] == 1
+    assert current["courses"][0]["weight_participant_count"] == 7
+    assert current["courses"][0]["capacity_updated_at"]
 
 
 def test_capacity_notifications_rearm_after_falling_below_each_threshold(tmp_path):

@@ -58,7 +58,11 @@ class CourseSelectionAutomationService:
     _CATALOG_DYNAMIC_FIELDS = (
         "total_capacity", "capacity", "selected_count", "full",
         "first_choice_count", "weight_participant_count", "market_participant_count",
-        "market_capacity_label",
+        "market_participant_label", "market_capacity_label",
+    )
+    _MARKET_SNAPSHOT_FIELDS = (
+        *_CATALOG_DYNAMIC_FIELDS,
+        "capacity_updated_at",
     )
 
     def __init__(
@@ -261,6 +265,70 @@ class CourseSelectionAutomationService:
             course.get("class_id") or course.get("course_code") or ""
         ).strip().casefold()
 
+    @classmethod
+    def _market_snapshot_fields(cls, course: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(course, dict):
+            return {}
+        return {
+            key: copy.deepcopy(course[key])
+            for key in cls._MARKET_SNAPSHOT_FIELDS
+            if key in course
+        }
+
+    @classmethod
+    def _latest_market_snapshot(
+        cls, *courses: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        candidates = [
+            (index, course) for index, course in enumerate(courses)
+            if isinstance(course, dict) and cls._market_snapshot_fields(course)
+        ]
+        if not candidates:
+            return {}
+
+        def rank(candidate: tuple[int, dict[str, Any]]) -> tuple[int, float, int, int]:
+            index, course = candidate
+            stamp = str(course.get("capacity_updated_at") or "")
+            try:
+                timestamp = datetime.fromisoformat(stamp).timestamp()
+                has_timestamp = 1
+            except (TypeError, ValueError, OSError):
+                timestamp = 0.0
+                has_timestamp = 0
+            completeness = sum(
+                course.get(key) is not None
+                for key in cls._MARKET_SNAPSHOT_FIELDS
+                if key != "capacity_updated_at"
+            )
+            # Later arguments win when old data has no timestamp.  A stamped
+            # source always outranks an unstamped legacy task/archive row.
+            return has_timestamp, timestamp, completeness, index
+
+        _, latest = max(candidates, key=rank)
+        return cls._market_snapshot_fields(latest)
+
+    @staticmethod
+    def _task_course_state(
+        task: dict[str, Any] | None, course: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(task, dict):
+            return {}
+        states = task.get("course_states")
+        if not isinstance(states, dict):
+            return {}
+        class_id = str(course.get("class_id") or "")
+        state = states.get(class_id) if class_id else None
+        if isinstance(state, dict):
+            return state
+        course_code = str(course.get("course_code") or "").strip().casefold()
+        if not course_code:
+            return {}
+        return next((
+            value for value in states.values()
+            if isinstance(value, dict)
+            and str(value.get("course_code") or "").strip().casefold() == course_code
+        ), {})
+
     def _notification_audience(
         self,
         account: str,
@@ -269,6 +337,7 @@ class CourseSelectionAutomationService:
         *,
         official: dict[str, Any] | None = None,
         task: dict[str, Any] | None = None,
+        task_snapshot: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Return only user-owned bids, saved-plan rows and task rows.
 
@@ -362,6 +431,13 @@ class CourseSelectionAutomationService:
             for item in audience_task.get("items") or []:
                 if not isinstance(item, dict):
                     continue
+                snapshot_source = (
+                    task_snapshot
+                    if task_snapshot is not None
+                    and str(task_snapshot.get("task_id") or "")
+                    == str(audience_task.get("task_id") or "")
+                    else audience_task
+                )
                 enriched = {
                     **item,
                     **(
@@ -370,6 +446,23 @@ class CourseSelectionAutomationService:
                         or {}
                     ),
                 }
+                class_key = str(item.get("class_id") or "").casefold()
+                code_key = str(item.get("course_code") or "").casefold()
+                market_snapshot = self._latest_market_snapshot(
+                    archive_by_class.get(class_key),
+                    archive_by_code.get(code_key),
+                    item,
+                    self._task_course_state(snapshot_source, item),
+                )
+                # A strategy notification is built immediately after the
+                # candidate refresh.  Its in-memory task snapshot is the
+                # authoritative observation for this notification, even when
+                # the durable archive has a newer-looking legacy timestamp.
+                if snapshot_source is task_snapshot:
+                    market_snapshot.update(self._market_snapshot_fields(
+                        self._task_course_state(task_snapshot, item)
+                    ))
+                enriched.update(market_snapshot)
                 add(enriched, "自动任务课程", task_name=str(audience_task.get("name") or "自动任务"))
             for swap_group in audience_task.get("swap_groups") or []:
                 target = swap_group.get("target")
@@ -1250,7 +1343,8 @@ class CourseSelectionAutomationService:
             "teaching_class_type", "teacher", "utility",
             "total_capacity", "capacity", "selected_count", "first_choice_count",
             "weight_participant_count", "market_participant_count",
-            "market_participant_label", "market_capacity_label", "devoted_weight", "weight",
+            "market_participant_label", "market_capacity_label", "capacity_updated_at",
+            "devoted_weight", "weight",
             "current_weight", "action", "classification", "selected",
             "scenario_success_rates", "forecast_participants", "forecast_status",
             "recommendation_reason",
@@ -1259,12 +1353,66 @@ class CourseSelectionAutomationService:
             {key: value for key, value in item.items() if key in public_course_fields}
             for item in snapshot.get("items") or [] if isinstance(item, dict)
         ]
+        task_class_ids = {
+            str(item.get("class_id") or "")
+            for item in snapshot.get("items") or []
+            if isinstance(item, dict) and str(item.get("class_id") or "")
+        }
+        task_course_codes = {
+            str(item.get("course_code") or "").casefold()
+            for item in snapshot.get("items") or []
+            if isinstance(item, dict) and str(item.get("course_code") or "")
+        }
+        with self._lock:
+            archive = next((
+                item for item in self._archives
+                if item.get("account") == task.get("account")
+                and item.get("batch_code") == task.get("batch_code")
+            ), None)
+            archive_courses = [
+                item for item in (archive or {}).get("courses") or []
+                if isinstance(item, dict) and (
+                    str(item.get("class_id") or "") in task_class_ids
+                    or str(item.get("course_code") or "").casefold() in task_course_codes
+                )
+            ]
+        archive_by_class = {
+            str(item.get("class_id") or ""): item
+            for item in archive_courses if str(item.get("class_id") or "")
+        }
+        archive_by_code = {
+            str(item.get("course_code") or "").casefold(): item
+            for item in archive_courses if str(item.get("course_code") or "")
+        }
+        state_map = snapshot.get("course_states")
+        if not isinstance(state_map, dict):
+            state_map = {}
+            snapshot["course_states"] = state_map
+
+        def apply_latest_market_data(item: dict[str, Any]) -> None:
+            class_id = str(item.get("class_id") or "")
+            course_code = str(item.get("course_code") or "").casefold()
+            state = state_map.get(class_id) if class_id else None
+            latest = self._latest_market_snapshot(
+                item,
+                archive_by_class.get(class_id),
+                archive_by_code.get(course_code),
+                state if isinstance(state, dict) else None,
+            )
+            item.update(latest)
+            if isinstance(state, dict):
+                state.update(latest)
+
+        for item in snapshot["items"]:
+            apply_latest_market_data(item)
         weight_status = snapshot.get("weight_status")
         if isinstance(weight_status, dict):
             weight_status["recommendation"] = [
                 {key: value for key, value in item.items() if key in public_course_fields}
                 for item in weight_status.get("recommendation") or [] if isinstance(item, dict)
             ]
+            for item in weight_status["recommendation"]:
+                apply_latest_market_data(item)
         snapshot["results"] = list(snapshot.get("results") or [])[-20:]
         interval = self._poll_interval(task)
         if task.get("task_type") == "weight_strategy":
@@ -1987,6 +2135,11 @@ class CourseSelectionAutomationService:
     def _refresh_task_course_states(
         self, client: JwxkSessionClient, task: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
+        def weight_market_data_complete(course: dict[str, Any]) -> bool:
+            if not isinstance(course, dict) or course.get("capacity") is None:
+                return False
+            return course.get("weight_participant_count") is not None
+
         live_by_class: dict[str, dict[str, Any]] = {}
         state_errors: dict[str, str] = {}
         with self._lock:
@@ -2018,6 +2171,7 @@ class CourseSelectionAutomationService:
                 class_id: archived_by_class[class_id]
                 for class_id in expected_task_ids
                 if class_id in archived_by_class
+                and weight_market_data_complete(archived_by_class[class_id])
             })
             self._append_execution_event(
                 task,
@@ -2100,8 +2254,16 @@ class CourseSelectionAutomationService:
                 # valid model inputs; never let an unrelated result enter the
                 # live snapshot.
                 if class_id and class_id in expected_ids:
-                    live_by_class[class_id] = row
                     matched_ids.add(class_id)
+                    if (
+                        task.get("task_type") == "weight_strategy"
+                        and not weight_market_data_complete(row)
+                    ):
+                        state_errors[class_id] = (
+                            "官方未同时返回最新已投注人数和可选容量，暂不计算策略"
+                        )
+                        continue
+                    live_by_class[class_id] = row
             missing_ids = sorted(expected_ids - matched_ids)
             elapsed_ms = round((time.monotonic() - started) * 1000)
             self._append_execution_event(
@@ -2122,11 +2284,24 @@ class CourseSelectionAutomationService:
                         f"刷新“{course_label}”人数时未找到方案中的教学班（{len(missing_ids)} 个），已停止本轮计算"
                     )
         now = datetime.now().astimezone().isoformat()
+        if task.get("task_type") == "weight_strategy":
+            for class_id in expected_task_ids - set(live_by_class):
+                state_errors.setdefault(
+                    class_id,
+                    "官方未返回可用于策略计算的最新人数和可选容量",
+                )
+            for class_id, live in list(live_by_class.items()):
+                if not live.get("capacity_updated_at"):
+                    live_by_class[class_id] = {
+                        **live,
+                        "capacity_updated_at": now,
+                    }
         previous = task.get("course_states") if isinstance(task.get("course_states"), dict) else {}
         fields = (
             "class_id", "course_code", "course_name", "teacher", "total_capacity", "capacity",
             "selected_count", "first_choice_count", "weight_participant_count",
-            "market_participant_count", "market_participant_label", "market_capacity_label", "full",
+            "market_participant_count", "market_participant_label", "market_capacity_label",
+            "capacity_updated_at", "full",
             "restricted", "eligibility_status", "eligibility_reason",
         )
         task["course_states"] = {
@@ -2151,7 +2326,89 @@ class CourseSelectionAutomationService:
             if str(item.get("class_id") or "")
         }
         task["course_state_errors"] = state_errors
+        self._persist_task_market_snapshot(task, live_by_class)
+        if task.get("task_type") == "weight_strategy" and state_errors:
+            raise JwxkError(
+                "最新已投注人数和可选容量尚未完整取得，已停止本轮策略计算并等待下次刷新"
+            )
         return live_by_class
+
+    def _persist_task_market_snapshot(
+        self, task: dict[str, Any], live_by_class: dict[str, dict[str, Any]],
+    ) -> None:
+        """Keep the durable catalog aligned with a task's verified live rows."""
+        if not live_by_class:
+            return
+        now = datetime.now().astimezone().isoformat()
+        changed = False
+
+        def overlay(course: dict[str, Any]) -> None:
+            nonlocal changed
+            class_id = str(course.get("class_id") or "")
+            latest = live_by_class.get(class_id)
+            if not latest:
+                return
+            for field in self._MARKET_SNAPSHOT_FIELDS:
+                if field not in latest:
+                    continue
+                if course.get(field) != latest.get(field):
+                    course[field] = copy.deepcopy(latest.get(field))
+                    changed = True
+            if not course.get("capacity_updated_at"):
+                course["capacity_updated_at"] = now
+                changed = True
+
+        def refresh_group_available_count(group: dict[str, Any]) -> None:
+            nonlocal changed
+            classes = group.get("classes")
+            if not isinstance(classes, list):
+                return
+            available_count = 0
+            for course in classes:
+                if not isinstance(course, dict):
+                    continue
+                try:
+                    available = (
+                        course.get("capacity") is not None
+                        and course.get("market_participant_count") is not None
+                        and int(course["capacity"]) > int(course["market_participant_count"])
+                    )
+                except (TypeError, ValueError):
+                    available = False
+                available_count += int(available)
+            if group.get("available_count") != available_count:
+                group["available_count"] = available_count
+                changed = True
+
+        with self._lock:
+            archive = next((item for item in self._archives if (
+                item.get("account") == task.get("account")
+                and item.get("batch_code") == task.get("batch_code")
+            )), None)
+            if archive is None:
+                return
+            for course in archive.get("courses") or []:
+                if isinstance(course, dict):
+                    overlay(course)
+            query_cache = archive.get("query_cache")
+            if isinstance(query_cache, dict):
+                for cached in query_cache.values():
+                    payload = cached.get("payload") if isinstance(cached, dict) else None
+                    if not isinstance(payload, dict):
+                        continue
+                    for course in payload.get("courses") or []:
+                        if isinstance(course, dict):
+                            overlay(course)
+                    for group in payload.get("groups") or []:
+                        if not isinstance(group, dict):
+                            continue
+                        for course in group.get("classes") or []:
+                            if isinstance(course, dict):
+                                overlay(course)
+                        refresh_group_available_count(group)
+            if changed:
+                archive["updated_at"] = now
+                self._write_archives()
 
     def _wait_for_auth(self, task: dict[str, Any], message: str = "正在自动恢复登录，恢复后继续任务") -> None:
         new_episode = not bool(task.get("auth_waiting"))
@@ -2560,11 +2817,18 @@ class CourseSelectionAutomationService:
             account, batch_code, archive, official=official,
         )
         refreshed = []
+        live_updates: dict[str, dict[str, Any]] = {}
+        now = datetime.now().astimezone().isoformat()
+        is_weight = str(archive.get("selection_type_code") or "") == "04"
         for course in audience:
             class_id = str(course.get("class_id") or "")
             course_code = str(course.get("course_code") or "")
             scope = str(course.get("teaching_class_type") or "")
             if not class_id or not course_code or scope in {"", "ALL", "ROUND", "ALLKC"}:
+                if is_weight:
+                    raise JwxkError(
+                        f"“{course.get('course_name') or course_code}”缺少可核验的真实课程范围，暂不发送策略通知"
+                    )
                 refreshed.append(course)
                 continue
             with self.remote_guard():
@@ -2577,7 +2841,24 @@ class CourseSelectionAutomationService:
             latest = next((item for item in result.get("courses") or [] if (
                 str(item.get("class_id") or "") == class_id
             )), None)
-            refreshed.append({**course, **(latest or {})})
+            if is_weight and (
+                latest is None
+                or latest.get("capacity") is None
+                or latest.get("weight_participant_count") is None
+            ):
+                raise JwxkError(
+                    f"“{course.get('course_name') or course_code}”的最新已投注人数和可选容量尚未取得，暂不发送策略通知"
+                )
+            merged = {**course, **(latest or {})}
+            if latest is not None and class_id:
+                merged.setdefault("capacity_updated_at", now)
+                live_updates[class_id] = merged
+            refreshed.append(merged)
+        if live_updates:
+            self._persist_task_market_snapshot(
+                {"account": account, "batch_code": batch_code},
+                live_updates,
+            )
         current_weight = sum(
             int(item.get("devoted_weight") or 0) for item in official.get("volunteered") or []
         )
@@ -3957,6 +4238,17 @@ class CourseSelectionAutomationService:
 
                 self._set_execution_stage(task, "market_refresh", "正在刷新方案组全部候选课程的已投注人数和容量")
                 live_by_class = self._refresh_task_course_states(client, task)
+                # _refresh_task_course_states also updates the durable archive
+                # and query caches.  Re-read it before building the market
+                # model; the copy used for the preflight check may still carry
+                # the previous total/selectable capacity pair.
+                with self._lock:
+                    archive = next((copy.deepcopy(item) for item in self._archives if (
+                        item.get("account") == task.get("account")
+                        and item.get("batch_code") == task.get("batch_code")
+                    )), None)
+                if not archive:
+                    raise JwxkError("策略课程市场快照写入后无法读取，请稍后重试")
                 for row in (*volunteered, *confirmed):
                     class_id = str(row.get("class_id") or "")
                     if class_id in task.get("course_states", {}):
@@ -4088,8 +4380,12 @@ class CourseSelectionAutomationService:
                         action = "alternative"
                     else:
                         action = "out"
+                    live_snapshot = self._market_snapshot_fields(
+                        live_by_class.get(class_id)
+                    )
                     recommendation.append({
                         **item,
+                        **live_snapshot,
                         "weight": recommended_weight if class_id == target_class_id else 0,
                         "current_weight": current_weight if current_class_id == class_id else None,
                         "action": action,
@@ -4121,7 +4417,7 @@ class CourseSelectionAutomationService:
                 if settings.get("mail_enabled") and settings.get("notify_final_rebalance"):
                     audience = self._notification_audience(
                         str(task.get("account") or ""), str(task.get("batch_code") or ""),
-                        archive, official=official,
+                        archive, official=official, task_snapshot=task,
                     )
                     rec_by_class = {
                         str(item.get("class_id") or ""): item for item in recommendation
@@ -4157,7 +4453,7 @@ class CourseSelectionAutomationService:
                 if settings.get("mail_enabled") and settings.get("notify_final_rebalance"):
                     audience = self._notification_audience(
                         str(task.get("account") or ""), str(task.get("batch_code") or ""),
-                        archive, official=official,
+                        archive, official=official, task_snapshot=task,
                     )
                     rec_by_class = {
                         str(item.get("class_id") or ""): item for item in recommendation
