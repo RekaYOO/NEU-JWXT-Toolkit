@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 from backend.core.course_selection import CourseSelectionAutomationService, JwxkError
 from backend.core.course_selection.jwxk import JwxkRateLimitError
@@ -700,8 +701,27 @@ def test_inflight_write_after_restart_is_reconciled_not_replayed(tmp_path):
 
     service._tick(task)
 
-    assert task["status"] == "needs_review"
+    assert task["status"] == "waiting"
+    assert task["inflight_mutation"]["group_id"] == "group"
     assert client.selected_calls == 0
+
+
+def test_legacy_needs_review_grab_task_can_be_started_again(tmp_path):
+    service = _service(tmp_path)
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "历史待核验",
+        "groups": [{"group_id": "g", "name": "目标", "target_count": 1}],
+        "items": [{
+            "plan_group_id": "g", "course_code": "C", "class_id": "c",
+            "teaching_class_type": "TJKC",
+        }],
+    })
+    task.update({"status": "needs_review", "desired_state": "paused"})
+
+    resumed = service.action("student", task["task_id"], "start")
+
+    assert resumed["status"] == "running"
+    assert resumed["desired_state"] == "running"
 
 
 def test_legacy_cancelled_tasks_are_removed_on_restart(tmp_path):
@@ -1946,7 +1966,9 @@ def test_missing_high_utility_candidate_never_falls_back(tmp_path):
     assert task["group_results"]["g"]["current_class_id"] == "high"
 
 
-def test_unknown_submission_failure_stops_group_without_fallback(tmp_path):
+def test_unknown_submission_failure_keeps_task_running_without_fallback_and_notifies(tmp_path):
+    messages = []
+
     class FakeClient:
         submitted = []
 
@@ -1971,7 +1993,13 @@ def test_unknown_submission_failure_stops_group_without_fallback(tmp_path):
     auth = SimpleNamespace(is_logged_in=True, username="student")
     service = CourseSelectionAutomationService(
         tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: client,
+        notification_provider=lambda subject, body, key, html_body: messages.append(
+            (subject, body, key, html_body)
+        ) or True,
     )
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True, "notify_grab_result": True,
+    })
     task = service.create("student", {
         "batch_code": "batch", "term_code": "2026-2027-1", "name": "保守失败",
         "groups": [{"group_id": "g", "name": "目标", "target_count": 1}],
@@ -1991,8 +2019,132 @@ def test_unknown_submission_failure_stops_group_without_fallback(tmp_path):
     service._tick(task)
 
     assert client.submitted == ["high"]
-    assert task["status"] == "needs_review"
+    assert task["status"] == "running"
+    assert task["desired_state"] == "running"
     assert task["group_results"]["g"]["current_class_id"] == "high"
+    assert task["group_results"]["g"]["candidate_status"] == "response_unknown"
+    assert len(messages) == 1
+    assert "系统处理失败" in messages[0][1]
+    assert "仍在运行" in messages[0][1]
+    assert "系统处理失败" in messages[0][3]
+
+    paused = service.action("student", task["task_id"], "pause")
+    resumed = service.action("student", task["task_id"], "start")
+    assert paused["status"] == "paused"
+    assert resumed["status"] == "running"
+
+
+def test_grab_issue_notifications_are_deduplicated_across_polling_ticks(tmp_path):
+    messages = []
+    service = CourseSelectionAutomationService(
+        tmp_path,
+        auth_provider=lambda: None,
+        client_builder=lambda _auth: None,
+        notification_provider=lambda *args: messages.append(args) or True,
+    )
+    service.update_automation_settings("student", "batch", {
+        "mail_enabled": True, "notify_grab_result": True,
+    })
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "稳定通知",
+        "groups": [{"group_id": "g", "name": "目标", "target_count": 1}],
+        "items": [{"class_id": "class-1", "course_code": "C1", "course_name": "目标课程"}],
+    })
+    task["group_results"]["g"].update({
+        "current_class_id": "class-1", "candidate_status": "response_unknown",
+    })
+
+    service._notify_grab_issue(task, issue_kind="unknown_response", message="官方返回：系统处理失败")
+    service._notify_grab_issue(task, issue_kind="unknown_response", message="官方返回：系统处理失败")
+    assert len(messages) == 1
+
+    service._notify_grab_issue(task, issue_kind="unknown_response", message="官方返回：参数校验失败")
+    assert len(messages) == 2
+
+
+def test_course_module_limit_keeps_current_candidate_and_task_running(tmp_path):
+    class FakeClient:
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": []}
+
+        def search_courses(self, **_kwargs):
+            return {"courses": [{"class_id": "class-1", "full": False}]}
+
+        def check_course_eligibility(self, *, class_ids, **_kwargs):
+            return {"results": [{"class_id": class_ids[0], "status": "selectable"}]}
+
+        def select_course(self, **_kwargs):
+            return {
+                "success": False,
+                "code": "500",
+                "message": "已选课程超过选课模块门数或学分",
+                "failure_class": "MODULE_LIMIT",
+            }
+
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: FakeClient(),
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "模块上限",
+        "groups": [{"group_id": "g", "name": "目标", "target_count": 1}],
+        "items": [{
+            "plan_group_id": "g", "course_code": "C1", "course_name": "目标课程",
+            "class_id": "class-1", "teaching_class_type": "TJKC",
+        }],
+    })
+    task.update({"status": "running", "desired_state": "running"})
+
+    service._tick(task)
+
+    assert task["status"] == "running"
+    assert task["group_results"]["g"]["candidate_status"] == "module_limit"
+    assert "继续监测" in task["group_results"]["g"]["message"]
+
+
+def test_selection_timeout_keeps_inflight_write_for_read_only_reconciliation(tmp_path):
+    class FakeClient:
+        submitted = 0
+
+        def get_selected(self, **_kwargs):
+            return {"selected": [], "volunteered": []}
+
+        def search_courses(self, **_kwargs):
+            return {"courses": [{"class_id": "class-1", "full": False}]}
+
+        def check_course_eligibility(self, *, class_ids, **_kwargs):
+            return {"results": [{"class_id": class_ids[0], "status": "selectable"}]}
+
+        def select_course(self, **_kwargs):
+            self.submitted += 1
+            raise requests.Timeout("official request timed out")
+
+    client = FakeClient()
+    auth = SimpleNamespace(is_logged_in=True, username="student")
+    service = CourseSelectionAutomationService(
+        tmp_path, auth_provider=lambda: auth, client_builder=lambda _auth: client,
+    )
+    task = service.create("student", {
+        "batch_code": "batch", "term_code": "2026-2027-1", "name": "超时核验",
+        "groups": [{"group_id": "g", "name": "目标", "target_count": 1}],
+        "items": [{
+            "plan_group_id": "g", "course_code": "C1", "course_name": "目标课程",
+            "class_id": "class-1", "teaching_class_type": "TJKC",
+        }],
+    })
+    task.update({"status": "running", "desired_state": "running"})
+
+    service._tick(task)
+    assert client.submitted == 1
+    assert task["status"] == "waiting"
+    assert task["desired_state"] == "running"
+    assert task["inflight_mutation"]["class_id"] == "class-1"
+
+    task["last_attempt_at"] = None
+    service._tick(task)
+    assert client.submitted == 1
+    assert task["status"] == "waiting"
+    assert task["group_results"]["g"]["candidate_status"] == "mutation_uncertain"
 
 
 @pytest.mark.parametrize(

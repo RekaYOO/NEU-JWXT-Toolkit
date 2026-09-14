@@ -93,7 +93,9 @@ def test_research_training_queries_batch_topics_and_eligibility():
 
     assert batch.batch_id == "batch-1"
     assert batch.max_topics == 1
+    assert batch.rank_limit_percent == 50
     assert eligibility.available is True
+    assert eligibility.major_rank == "12.00"
     assert result["total"] == 1
     assert result["topics"][0]["topic_id"] == "topic-1"
     assert result["topics"][0]["can_enroll"] is True
@@ -106,6 +108,25 @@ def test_research_training_queries_batch_topics_and_eligibility():
         ("KYXMMC", "include"),
         ("DSXM", "include"),
     ]
+
+
+def test_fractional_rank_values_are_normalized_to_percent():
+    client = FakeResearchClient()
+    original_post = client.post
+
+    def post(url, data, headers):
+        response = original_post(url, data, headers)
+        if url.endswith("/cxdqxnxqpc.do"):
+            response._body["datas"]["cxdqxnxqpc"]["ZYPM"] = ".2593"
+        if url.endswith("/cxxsjdjzypm.do"):
+            response._body["datas"]["cxxsjdjzypm"]["rows"][0]["ZYPM"] = ".2593"
+        return response
+
+    client.post = post
+    api = ResearchTrainingAPI(client)
+
+    assert api.get_current_batch().rank_limit_percent == pytest.approx(25.93)
+    assert api.get_eligibility("batch-1").major_rank == "25.93"
 
 
 def test_enrollment_stops_with_visible_error_when_official_rank_data_is_empty():

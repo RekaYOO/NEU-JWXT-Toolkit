@@ -71,7 +71,9 @@ def classify_selection_record(
     Missing batch metadata is not treated as proof that a row belongs to
     another round because some JWXK deployments omit it.  The active endpoint,
     result feed and the 0/0 sentinel are then the strongest available evidence.
-    Explicit mismatches always win.
+    An operation material returned by the currently activated result endpoint
+    is stronger evidence than the row's original batch.  JWXK can allow a
+    course selected in an earlier batch to be withdrawn in the active batch.
     """
 
     mode = selection_mode(selection_type_code)
@@ -90,24 +92,27 @@ def classify_selection_record(
 
     reason = ""
     current = True
-    if feed and feed not in mode["current_result_feeds"]:
+    official_operation_available = bool(record.get("official_operation_available"))
+    try:
+        zero_zero = float(participants) == 0 and float(capacity) == 0
+    except (TypeError, ValueError):
+        zero_zero = False
+    if zero_zero:
+        # The official UI uses 0 / 0 as a sentinel for rows from another
+        # round or a non-operable placeholder. It overrides stale metadata.
+        current = False
+        reason = "人数和容量均为 0，属于其他轮次或不可操作记录"
+    elif feed and feed not in mode["current_result_feeds"]:
         current = False
         reason = "结果来源不属于当前轮次类型"
+    elif official_operation_available:
+        current = True
     elif record_batch and batch_code and record_batch != batch_code:
         current = False
         reason = "记录属于其他选课批次"
     elif record_term and term_code and record_term != term_code:
         current = False
         reason = "记录属于其他学期"
-    else:
-        try:
-            zero_zero = float(participants) == 0 and float(capacity) == 0
-        except (TypeError, ValueError):
-            zero_zero = False
-        if zero_zero:
-            current = False
-            reason = "人数和容量均为 0，属于其他轮次或不可操作记录"
-
     return {
         "current_batch_record": current,
         "operation_allowed": current,

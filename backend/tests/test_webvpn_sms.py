@@ -9,11 +9,33 @@ from backend.core.auth.client import (
     NEUAuthClient,
     NEULoginError,
     WebVPNLoginError,
+    WEBVPN_ERR_CAMPUS_NETWORK,
     _public_login_error_message,
 )
 
 
 class WebVPNSMSLoginTests(unittest.TestCase):
+    def test_silent_webvpn_recovery_switches_to_direct_on_campus_network(self):
+        client = NEUAuthClient(
+            "20250001", "synthetic-password",
+            network_mode="webvpn", restore_session=False,
+        )
+        campus_error = WebVPNLoginError(
+            "campus network", error_code=WEBVPN_ERR_CAMPUS_NETWORK,
+        )
+        with (
+            patch.object(client, "_webvpn_health_check", return_value=False),
+            patch.object(
+                client, "start_webvpn_password_login",
+                side_effect=campus_error,
+            ),
+            patch.object(client, "login", return_value=True) as direct_login,
+        ):
+            self.assertTrue(client.ensure_login())
+
+        self.assertEqual(client.active_mode, "direct")
+        direct_login.assert_called_once_with(client.target)
+
     def _response(self, url, text="", json_data=None, content=None, content_type=None):
         response = Mock()
         response.url = url

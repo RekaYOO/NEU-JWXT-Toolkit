@@ -250,6 +250,7 @@ class JwxkCourseItem(StrictModel):
     capacity_updated_at: str = ""
     devoted_weight: int | None = None
     selection_source: str = ""
+    official_operation_available: bool = False
     selection_record_type: str = ""
     record_batch_code: str = ""
     record_term_code: str = ""

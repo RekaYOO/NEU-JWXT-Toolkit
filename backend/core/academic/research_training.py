@@ -99,6 +99,12 @@ class ResearchTrainingAPI:
             return default
 
     @staticmethod
+    def _percent(value: Any, default: float = 0) -> float:
+        """Normalize official rank ratios such as '.2593' to 25.93 percent."""
+        number = ResearchTrainingAPI._number(value, default)
+        return number * 100 if 0 < abs(number) <= 1 else number
+
+    @staticmethod
     def _integer(value: Any, default: int = 0) -> int:
         try:
             return int(float(value))
@@ -148,7 +154,7 @@ class ResearchTrainingAPI:
             term_code=str(row.get("XNXQDM") or ""),
             term_name=str(row.get("XNXQDM_DISPLAY") or ""),
             max_topics=self._integer(row.get("XSKXKTS")),
-            rank_limit_percent=self._number(row.get("ZYPM")),
+            rank_limit_percent=self._percent(row.get("ZYPM")),
             minimum_gpa=self._number(minimum_gpa) if minimum_gpa not in (None, "") else None,
             allow_failed_courses=str(row.get("SFYXYBJGCJ") or "") == "1",
             allow_failed_courses_display=str(row.get("SFYXYBJGCJ_DISPLAY") or ""),
@@ -172,7 +178,7 @@ class ResearchTrainingAPI:
         return ResearchEligibility(
             available=True,
             gpa=str(row.get("PJJD") or ""),
-            major_rank=str(row.get("ZYPM") or ""),
+            major_rank=self._normalize_rank(row.get("ZYPM") or ""),
         )
 
     @staticmethod
@@ -341,7 +347,10 @@ class ResearchTrainingAPI:
     @staticmethod
     def _normalize_rank(value: str) -> str:
         try:
-            return f"{float(value):.2f}"
+            number = float(value)
+            if 0 < abs(number) <= 1:
+                number *= 100
+            return f"{number:.2f}"
         except (TypeError, ValueError):
             return str(value or "")
 

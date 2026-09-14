@@ -781,6 +781,10 @@ def _normalize_class(row: dict[str, Any], parent: dict[str, Any]) -> dict[str, A
         "weight_participant_count": _number(course.get("QZXKRS")),
         "devoted_weight": _number(course.get("TRQZ")),
         "selection_source": _text(course.get("_selection_source")),
+        # The current result feed includes a short-lived withdrawal material
+        # for rows the official UI currently allows the user to remove.  Only
+        # expose that boolean evidence; never return the material itself.
+        "official_operation_available": bool(course.get("_official_operation_available")),
         "record_batch_code": _text(
             course.get("electiveBatchCode") or course.get("batchCode")
             or parent.get("electiveBatchCode") or parent.get("batchCode")
@@ -1743,6 +1747,10 @@ class JwxkSessionClient:
         )):
             return "RATE_LIMITED"
         if any(value in normalized for value in (
+            "已选课程超过选课模块门数或学分", "超过选课模块门数或学分",
+        )):
+            return "MODULE_LIMIT"
+        if any(value in normalized for value in (
             "课程已满", "教学班已满", "容量已满", "人数已满", "没有余量", "无剩余名额",
         )):
             return "FULL"
@@ -2084,7 +2092,11 @@ class JwxkSessionClient:
         withdrawal = rows_by_feed.get("withdrawal", [])
         def tagged(rows, source):
             return [
-                {**row, "_selection_source": source}
+                {
+                    **row,
+                    "_selection_source": source,
+                    "_official_operation_available": bool(_text(row.get("secretVal"))),
+                }
                 for row in rows if isinstance(row, dict)
             ]
         return {

@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import CourseSelectionWorkspacePage, {
   clearExperimentSelectionsForClasses, scheduleOverlayForCourse,
+  filterCatalogGroupsByOnlineMode, isHumanitiesElectiveSelectionBatch,
+  selectionRecordsFromResponse, taskStartActionLabel,
 } from './CourseSelectionWorkspacePage';
 import { useCachedResource } from '../resources/ResourceStore';
 import {
@@ -42,6 +44,56 @@ test('selected experiment time is added to the timetable overlay without adding 
     course_name: '用户体验 · 实验一', weekday: 5, course_type: '实验',
   });
   expect(overlay[0].tags).toContain('实验预览');
+});
+
+test('duplicate official feeds keep the record authoritative for the active round', () => {
+  const duplicate = {
+    class_id: 'class', course_code: 'C1', course_name: '重复结果',
+    record_batch_code: 'batch', record_term_code: '2026-2027-1',
+    selected_count: 59, capacity: 60,
+  };
+  const grab = selectionRecordsFromResponse({
+    selected: [{ ...duplicate, current_batch_record: true }],
+    volunteered: [{ ...duplicate, current_batch_record: false }],
+  }, '02');
+  const weight = selectionRecordsFromResponse({
+    selected: [{ ...duplicate, current_batch_record: false }],
+    volunteered: [{ ...duplicate, current_batch_record: true, devoted_weight: 20 }],
+  }, '04');
+
+  expect(grab.merged).toHaveLength(1);
+  expect(grab.merged[0].selection_record_type).toBe('selected');
+  expect(weight.merged).toHaveLength(1);
+  expect(weight.merged[0].selection_record_type).toBe('volunteered');
+});
+
+test('paused automation tasks expose a clear continue action', () => {
+  expect(taskStartActionLabel({ status: 'paused', task_type: 'selection' }))
+    .toBe('继续抢课任务');
+  expect(taskStartActionLabel({ status: 'paused', task_type: 'vacancy_swap' }))
+    .toBe('继续追踪空位');
+  expect(taskStartActionLabel({ status: 'paused', task_type: 'weight_strategy' }))
+    .toBe('继续实时策略');
+  expect(taskStartActionLabel({ status: 'needs_review', task_type: 'selection' }))
+    .toBe('继续抢课任务');
+});
+
+test('humanities elective rounds expose a local online-course filter', () => {
+  expect(isHumanitiesElectiveSelectionBatch({
+    name: '轮次23 2022-2025级人文类选修课程选课',
+  })).toBe(true);
+  expect(isHumanitiesElectiveSelectionBatch({ name: '轮次23 专业选修课程选课' })).toBe(false);
+  const groups = [{
+    group_id: 'g', course_name: '人文课', classes: [
+      { class_id: 'online', course_name: '大学英语在线式' },
+      { class_id: 'offline', course_name: '大学英语' },
+    ],
+  }];
+  expect(filterCatalogGroupsByOnlineMode(groups, 'online')[0].classes.map(item => item.class_id))
+    .toEqual(['online']);
+  expect(filterCatalogGroupsByOnlineMode(groups, 'offline')[0].classes.map(item => item.class_id))
+    .toEqual(['offline']);
+  expect(filterCatalogGroupsByOnlineMode(groups, 'all')).toBe(groups);
 });
 
 describe('selection workspace independent resource loading', () => {

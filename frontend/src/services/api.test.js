@@ -356,6 +356,104 @@ describe('API silent authentication recovery', () => {
     expect(client.request).not.toHaveBeenCalled();
   });
 
+  test('恢复进行期间手动登录成功时废弃旧失败并重试原请求', async () => {
+    let finishRecovery;
+    const { client, rejectResponse, apiModule } = loadApiWithAxios();
+    client.get.mockReturnValue(new Promise(resolve => {
+      finishRecovery = resolve;
+    }));
+    client.request.mockResolvedValue({ data: { ok: true } });
+    const events = [];
+    const listener = event => events.push(event.type);
+    window.addEventListener('neu-auth-required', listener);
+    const error = {
+      response: { status: 401, data: {} },
+      config: { url: '/api/scores/cache', method: 'get' },
+    };
+
+    const pending = rejectResponse(error);
+    apiModule.markAuthSessionAuthenticated();
+    finishRecovery({ data: { is_logged_in: false, recovery: { status: 'manual_required' } } });
+
+    await expect(pending).resolves.toEqual({ data: { ok: true } });
+    expect(client.request).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([]);
+    window.removeEventListener('neu-auth-required', listener);
+  });
+
+  test('并发 401 共享同一条静默恢复链', async () => {
+    let finishRecovery;
+    const { client, rejectResponse } = loadApiWithAxios();
+    client.get.mockReturnValue(new Promise(resolve => {
+      finishRecovery = resolve;
+    }));
+    client.request.mockResolvedValue({ data: { ok: true } });
+    const firstError = {
+      response: { status: 401, data: {} },
+      config: { url: '/api/scores/cache', method: 'get' },
+    };
+    const secondError = {
+      response: { status: 401, data: {} },
+      config: { url: '/api/academic-report/cache', method: 'get' },
+    };
+
+    const first = rejectResponse(firstError);
+    const second = rejectResponse(secondError);
+    finishRecovery({ data: { is_logged_in: true } });
+
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(client.get).toHaveBeenCalledTimes(1);
+    expect(client.request).toHaveBeenCalledTimes(2);
+  });
+
+  test('短暂失败进入退避后继续轮询并恢复原请求', async () => {
+    const { client, rejectResponse } = loadApiWithAxios();
+    client.get
+      .mockResolvedValueOnce({ data: {
+        is_logged_in: false,
+        recovery: { status: 'retry_wait', retry_after_seconds: 0 },
+      } })
+      .mockResolvedValueOnce({ data: {
+        is_logged_in: true,
+        recovery: { status: 'authenticated' },
+      } });
+    client.request.mockResolvedValue({ data: { ok: true } });
+
+    await expect(rejectResponse({
+      response: { status: 401, data: {} },
+      config: { url: '/api/scores/cache', method: 'get' },
+    })).resolves.toEqual({ data: { ok: true } });
+
+    expect(client.get).toHaveBeenCalledTimes(2);
+    expect(client.request).toHaveBeenCalledTimes(1);
+  });
+
+  test('需要 WebVPN 人工验证时接管现有挑战且不误报全局登出', async () => {
+    const { client, rejectResponse } = loadApiWithAxios();
+    const events = [];
+    const pending = event => events.push([event.type, event.detail]);
+    const required = event => events.push([event.type, event.detail]);
+    window.addEventListener('neu-auth-pending', pending);
+    window.addEventListener('neu-auth-required', required);
+    client.get.mockResolvedValue({ data: {
+      is_logged_in: false,
+      recovery: { status: 'interaction_required' },
+      pending_auth: { required: true, flow_id: 'flow-1' },
+    } });
+    const error = {
+      response: { status: 401, data: {} },
+      config: { url: '/api/scores/cache', method: 'get' },
+    };
+
+    await expect(rejectResponse(error)).rejects.toBe(error);
+
+    expect(events).toEqual([[
+      'neu-auth-pending', { required: true, flow_id: 'flow-1' },
+    ]]);
+    window.removeEventListener('neu-auth-pending', pending);
+    window.removeEventListener('neu-auth-required', required);
+  });
+
   test('JWXK 401 使用选课子会话状态恢复而不是主教务状态', async () => {
     const { client, rejectResponse } = loadApiWithAxios();
     const dispatch = jest.spyOn(window, 'dispatchEvent');

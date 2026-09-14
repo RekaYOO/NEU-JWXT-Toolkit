@@ -59,6 +59,43 @@ def test_current_grab_results_only_use_matching_selected_rows():
     assert [row["class_id"] for row in rows] == ["current"]
 
 
+def test_official_withdrawal_material_allows_cross_batch_current_result():
+    classified = classify_selection_record(
+        {
+            "selection_record_type": "selected",
+            "official_operation_available": True,
+            "record_batch_code": "earlier-batch",
+            "record_term_code": "term",
+            "selected_count": 2,
+            "capacity": 30,
+        },
+        selection_type_code="02",
+        batch_code="active-batch",
+        term_code="term",
+        record_type="selected",
+    )
+
+    assert classified["current_batch_record"] is True
+    assert classified["operation_allowed"] is True
+
+
+def test_zero_zero_overrides_stale_official_withdrawal_material():
+    classified = classify_selection_record(
+        {
+            "selection_record_type": "selected",
+            "official_operation_available": True,
+            "selected_count": 0,
+            "capacity": 0,
+        },
+        selection_type_code="02",
+        batch_code="active-batch",
+        record_type="selected",
+    )
+
+    assert classified["current_batch_record"] is False
+    assert classified["operation_allowed"] is False
+
+
 @pytest.mark.parametrize(
     "selection_type_code,record_type,participant_field",
     [
@@ -95,6 +132,7 @@ def test_catalog_scopes_are_not_mutation_types(value):
         ("409", "名额已被抢", "RACE_LOST"),
         ("401", "请重新登录", "AUTH_REQUIRED"),
         ("429", "请求过快", "RATE_LIMITED"),
+        ("500", "已选课程超过选课模块门数或学分", "MODULE_LIMIT"),
         ("500", "系统处理失败", "UNKNOWN"),
     ],
 )

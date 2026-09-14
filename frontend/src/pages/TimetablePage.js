@@ -22,9 +22,12 @@ import {
 } from 'antd';
 import {
   DownOutlined,
+  DeleteOutlined,
   EnvironmentOutlined,
   FilterOutlined,
+  PlusOutlined,
   ReloadOutlined,
+  SearchOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 
@@ -43,6 +46,7 @@ import {
   getTimetableBootstrap,
   syncTimetable,
   searchTimetableTargets,
+  getRoomAvailability,
 } from '../services/api';
 import {
   useResourceMemory,
@@ -75,6 +79,67 @@ const MODE_LABELS = Object.fromEntries(TIMETABLE_MODES.map(item => [item.key, it
 const WEEKDAY_NAMES = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'];
 const SHORT_WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
 export const TIMETABLE_DAY_ORDER = [7, 1, 2, 3, 4, 5, 6];
+export const ROOM_AVAILABILITY_WEEKDAY_OPTIONS = [
+  { value: 'any', label: '不限' },
+  ...TIMETABLE_DAY_ORDER.map(value => ({
+    value,
+    label: `周${'一二三四五六日'[value - 1]}`,
+  })),
+];
+
+export const availabilityRangeEndOptions = (options, startValue) => {
+  if (startValue === 'any' || startValue == null) return options;
+  const startIndex = options.findIndex(option => option.value === startValue);
+  return startIndex < 0 ? options : [options[0], ...options.slice(startIndex)];
+};
+
+export const updateAvailabilityRangeStart = (
+  slot, startKey, endKey, value, options,
+) => {
+  const allowedEnds = availabilityRangeEndOptions(options, value);
+  const currentEnd = slot[endKey];
+  return {
+    ...slot,
+    [startKey]: value,
+    [endKey]: allowedEnds.some(option => option.value === currentEnd)
+      ? currentEnd
+      : value,
+  };
+};
+
+export const roomAvailabilityWeekChoices = (
+  personalWeekContext, contextWeeks, termCode,
+) => {
+  const personalWeeks = personalWeekContext?.term_code === termCode
+    ? personalWeekContext.weeks : null;
+  const source = personalWeeks?.length
+    ? personalWeeks
+    : contextWeeks?.length
+      ? contextWeeks
+      : Array.from({ length: 30 }, (_, index) => ({
+        number: index + 1, name: `第${index + 1}周`,
+      }));
+  const ordered = [...source].sort(
+    (left, right) => Number(left.number) - Number(right.number),
+  );
+  return [{ value: 'any', label: '不限' }, ...ordered.map(item => ({
+    value: Number(item.number),
+    label: item.name || `第${item.number}周`,
+  }))];
+};
+
+export const roomAvailabilityDefaultWeek = (
+  personalWeekContext, contextWeeks, termCode, effectiveCurrentWeek,
+) => {
+  const choices = roomAvailabilityWeekChoices(
+    personalWeekContext, contextWeeks, termCode,
+  );
+  const personalCurrent = personalWeekContext?.term_code === termCode
+    ? personalWeekContext.weeks?.find(item => item.current)?.number
+    : null;
+  const candidate = Number(personalCurrent || effectiveCurrentWeek || 1);
+  return choices.some(item => item.value === candidate) ? candidate : 1;
+};
 const DETAIL_LABELS = {
   campus: '校区',
   building: '教学楼',
@@ -1246,6 +1311,17 @@ export const personalScheduleView = (payload, campusCode, viewMode, weekNumber) 
   cache: payload.cache,
 });
 
+export const selectPersonalOpeningWeek = ({
+  weeks = [], savedWeek = null, viewMode = 'week', currentTerm = false,
+} = {}) => {
+  if (viewMode === 'week' && currentTerm) {
+    return selectDefaultWeek(weeks, { currentTerm: true });
+  }
+  return weeks.some(item => item.number === savedWeek)
+    ? savedWeek
+    : selectDefaultWeek(weeks, { currentTerm });
+};
+
 export const restorePersonalTimetableMemory = (memory, requestedTerm = '') => {
   const payload = memory?.payload;
   const currentTermCode = memory?.currentTermCode || payload?.term_code || '';
@@ -1263,9 +1339,12 @@ export const restorePersonalTimetableMemory = (memory, requestedTerm = '') => {
   const viewMode = memory.viewMode === 'term' ? 'term' : 'week';
   const weeks = payload.weeks || [];
   const isCurrentTerm = payload.term_code === currentTermCode;
-  const weekNumber = weeks.some(item => item.number === memory.weekNumber)
-    ? memory.weekNumber
-    : selectDefaultWeek(weeks, { currentTerm: isCurrentTerm });
+  const weekNumber = selectPersonalOpeningWeek({
+    weeks,
+    savedWeek: memory.weekNumber,
+    viewMode,
+    currentTerm: isCurrentTerm,
+  });
   const sectionsByCampus = payload.sections_by_campus || {};
   const sections = sectionsByCampus[campusCode]
     || Object.values(sectionsByCampus).find(rows => Array.isArray(rows) && rows.length)
@@ -1562,6 +1641,26 @@ function TimetablePage({
   const [filterDraft, setFilterDraft] = useState({
     termCode: '', campusCode: '', viewMode: 'week',
   });
+  const [roomAvailabilitySlots, setRoomAvailabilitySlots] = useState([
+    { week_start: null, week_end: null, weekday_start: 'any', weekday_end: 'any', start_section: 1, end_section: 2, joiner: 'and' },
+  ]);
+  const [roomAvailabilityResult, setRoomAvailabilityResult] = useState(null);
+  const [roomAvailabilityLoading, setRoomAvailabilityLoading] = useState(false);
+  const roomAvailabilityGeneration = useRef(0);
+  const [availabilityPersonalWeekContext, setAvailabilityPersonalWeekContext] = useState(
+    () => restored?.personalPayload?.term_code ? {
+      term_code: restored.personalPayload.term_code,
+      weeks: restored.personalPayload.weeks || [],
+    } : null,
+  );
+  const changeRoomAvailabilitySlots = useCallback(updater => {
+    roomAvailabilityGeneration.current += 1;
+    setRoomAvailabilityLoading(false);
+    setRoomAvailabilityResult(null);
+    setTargetPreviewOptions([]);
+    setTargetPreviewTotal(0);
+    setRoomAvailabilitySlots(updater);
+  }, []);
   const filterDraftRef = useRef(filterDraft);
   filterDraftRef.current = filterDraft;
   const [mobileFocusPadding, setMobileFocusPadding] = useState(0);
@@ -1718,6 +1817,10 @@ function TimetablePage({
   useEffect(() => { loadTerms(); }, [loadTerms]);
 
   const setPersonalContext = useCallback((payload, nextCampusCode, nextWeek) => {
+    setAvailabilityPersonalWeekContext({
+      term_code: payload.term_code,
+      weeks: payload.weeks || [],
+    });
     if (modeRef.current !== 'personal') return;
     const sectionsByCampus = payload.sections_by_campus || {};
     const sections = sectionsByCampus[nextCampusCode]
@@ -1828,8 +1931,17 @@ function TimetablePage({
       }
       const desiredTerm = requestedTerm || browser.current || browser.personal?.[0]?.term_code || '';
       const candidate = browser.personal?.find(item => item.term_code === desiredTerm) || browser.personal?.[0];
+      if (candidate?.term_code) {
+        setAvailabilityPersonalWeekContext({
+          term_code: candidate.term_code,
+          weeks: candidate.weeks || [],
+        });
+      }
       if (candidate && !personalPayload && modeRef.current === 'personal') {
         const saved = browser.viewState || {};
+        const savedViewMode = saved.viewMode === 'term' ? 'term' : 'week';
+        const browserCurrentTerm = browser.current
+          || selectEffectiveCurrentTerm(browser.terms || [], currentTermCodeRef.current);
         browserPreferredTerm.current = saved.termCode || candidate.term_code || '';
         if (!embedded && (saved.termCode || candidate.term_code)) {
           setTermCode(saved.termCode || candidate.term_code);
@@ -1839,9 +1951,12 @@ function TimetablePage({
         if (saved.campusCode && candidate.campuses?.some(item => item.code === saved.campusCode)) {
           setCampusCode(saved.campusCode);
         }
-        if (Number.isInteger(saved.weekNumber) && candidate.weeks?.some(item => item.number === saved.weekNumber)) {
-          setWeekNumber(saved.weekNumber);
-        }
+        setWeekNumber(selectPersonalOpeningWeek({
+          weeks: candidate.weeks || [],
+          savedWeek: saved.weekNumber,
+          viewMode: savedViewMode,
+          currentTerm: candidate.term_code === browserCurrentTerm,
+        }));
       }
 
       if (recoveryMode) return;
@@ -1855,6 +1970,12 @@ function TimetablePage({
         const selected = requestedTerm || bootstrap.current || desiredTerm;
         const serverCandidate = bootstrap.personal?.find(item => item.term_code === selected)
           || bootstrap.personal?.[0];
+        if (serverCandidate?.term_code) {
+          setAvailabilityPersonalWeekContext({
+            term_code: serverCandidate.term_code,
+            weeks: serverCandidate.weeks || [],
+          });
+        }
         const currentDisplayed = personalPayloadRef.current || candidate;
         if (serverCandidate && timetableSnapshotIsNewer(serverCandidate, currentDisplayed)) {
           offerPersonalPayloadUpdate(serverCandidate, 'server');
@@ -1882,6 +2003,12 @@ function TimetablePage({
         browserCacheRef.current = next;
         const selected = requestedTerm || next.current || termCodeRef.current;
         const candidate = next.personal?.find(item => item.term_code === selected);
+        if (candidate?.term_code) {
+          setAvailabilityPersonalWeekContext({
+            term_code: candidate.term_code,
+            weeks: candidate.weeks || [],
+          });
+        }
         if (candidate && timetableSnapshotIsNewer(candidate, personalPayloadRef.current)) {
           offerPersonalPayloadUpdate(candidate, 'browser');
         }
@@ -1904,6 +2031,12 @@ function TimetablePage({
         if (!active) return;
         const selected = requestedTerm || bootstrap.current || termCode;
         const candidate = bootstrap.personal?.find(item => item.term_code === selected);
+        if (candidate?.term_code) {
+          setAvailabilityPersonalWeekContext({
+            term_code: candidate.term_code,
+            weeks: candidate.weeks || [],
+          });
+        }
         if (candidate && timetableSnapshotIsNewer(candidate, personalPayloadRef.current)) {
           offerPersonalPayloadUpdate(candidate, 'server');
         }
@@ -2621,6 +2754,9 @@ function TimetablePage({
   const invalidateTargetPreview = () => {
     clearTimeout(targetFilterTimer.current);
     targetPreviewGeneration.current += 1;
+    roomAvailabilityGeneration.current += 1;
+    setRoomAvailabilityLoading(false);
+    setRoomAvailabilityResult(null);
     setTargetPreviewOptions([]);
     setTargetPreviewPage(0);
     setTargetPreviewTotal(0);
@@ -2902,6 +3038,31 @@ function TimetablePage({
       end_time: '',
     }));
   }, [context]);
+  const effectiveCurrentWeekNumber = termCode === currentTermCode
+    ? selectDefaultWeek(context?.weeks || [], { currentTerm: true })
+    : null;
+  const availabilityWeekOptions = useMemo(() => {
+    return roomAvailabilityWeekChoices(
+      availabilityPersonalWeekContext, context?.weeks || [], termCode,
+    );
+  }, [availabilityPersonalWeekContext, context?.weeks, termCode]);
+  const availabilityWeekDefault = useMemo(() => {
+    return roomAvailabilityDefaultWeek(
+      availabilityPersonalWeekContext, context?.weeks || [], termCode,
+      effectiveCurrentWeekNumber,
+    );
+  }, [availabilityPersonalWeekContext, context?.weeks, effectiveCurrentWeekNumber, termCode]);
+  const availabilitySectionOptions = useMemo(() => [
+    { value: 'any', label: '不限' },
+    ...Array.from({ length: Math.max(12, sections.length || 0) }, (_, i) => ({ value: i + 1, label: `第${i + 1}节` })),
+  ], [sections.length]);
+  useEffect(() => {
+    changeRoomAvailabilitySlots(previous => previous.map((slot, index) => (
+      index === 0 && slot.week_start == null && slot.week_end == null
+        ? { ...slot, week_start: availabilityWeekDefault, week_end: availabilityWeekDefault }
+        : slot
+    )));
+  }, [availabilityWeekDefault, changeRoomAvailabilitySlots]);
 
   // Keep the retained query's layout and overlays on its actual range until
   // the new response arrives; controls already show the requested range.
@@ -2990,9 +3151,6 @@ function TimetablePage({
       : schedule?.last_update
       ? `最后保存: ${new Date(schedule.last_update).toLocaleString('zh-CN', { hour12: false })}`
       : '点击刷新课表');
-  const effectiveCurrentWeekNumber = termCode === currentTermCode
-    ? selectDefaultWeek(context?.weeks || [], { currentTerm: true })
-    : null;
   const queryScheduleMatches = !usesPersonalTimetableEndpoint && queryTimetableScheduleMatches({
     mode,
     schedule,
@@ -3214,6 +3372,48 @@ function TimetablePage({
       return;
     }
     loadSchedule();
+  };
+
+  const scanRoomAvailability = async ({ reset = false } = {}) => {
+    if (mode !== 'room' || !termCode || !roomAvailabilitySlots.length) return;
+    const generation = ++roomAvailabilityGeneration.current;
+    const isFresh = () => generation === roomAvailabilityGeneration.current;
+    const filters = Object.fromEntries(Object.entries(targetFilterDraft)
+      .filter(([, value]) => value !== '' && value != null));
+    let cursor = reset ? 0 : (roomAvailabilityResult?.cursor || 0);
+    let items = reset ? [] : (roomAvailabilityResult?.items || []);
+    let scanned = reset ? 0 : (roomAvailabilityResult?.scanned || 0);
+    let candidateTotal = reset ? 0 : (roomAvailabilityResult?.candidate_total || 0);
+    let seenRoomIds = reset ? [] : (roomAvailabilityResult?.seen_room_ids || []);
+    setRoomAvailabilityLoading(true);
+    setRoomAvailabilityResult(previous => ({ ...(previous || {}), items, scanned, cursor, candidate_total: candidateTotal, seen_room_ids: seenRoomIds, complete: false, paused: false, error: '' }));
+    try {
+      let foundThisRun = 0;
+      while (isFresh() && foundThisRun < 3) {
+        const slots = roomAvailabilitySlots.map(slot => Object.fromEntries(Object.entries(slot).map(([key, value]) => [key, value === 'any' ? null : value])));
+        const result = await getRoomAvailability({ term_code: termCode, campus_code: campusCode || 'all', filters, slots, cursor, scan_limit: 1, seen_room_ids: seenRoomIds, keyword: targetKeyword || '' });
+        if (!isFresh()) return;
+        const nextItems = [...items, ...(result.items || []).filter(item => !items.some(existing => existing.id === item.id))];
+        foundThisRun += nextItems.length - items.length;
+        items = nextItems;
+        setTargetPreviewOptions(items);
+        setTargetPreviewTotal(items.length);
+        cursor = result.cursor ?? cursor;
+        scanned += result.scanned || 0;
+        seenRoomIds = [...new Set([
+          ...seenRoomIds,
+          ...(result.scanned_room_ids || []),
+        ])];
+        candidateTotal = result.candidate_total ?? candidateTotal;
+        setRoomAvailabilityResult({ items, scanned, cursor, candidate_total: candidateTotal, seen_room_ids: seenRoomIds, complete: Boolean(result.complete), paused: false });
+        if (result.complete || !(result.scanned > 0)) break;
+      }
+      if (isFresh()) setRoomAvailabilityResult(previous => ({ ...previous, paused: !previous.complete && foundThisRun >= 3 }));
+    } catch (scanError) {
+      if (isFresh()) setRoomAvailabilityResult(previous => ({ ...(previous || {}), error: scanError.message || '空教室扫描失败，请重试', paused: true }));
+    } finally {
+      if (isFresh()) setRoomAvailabilityLoading(false);
+    }
   };
   const refreshDisabled = refreshesTargetList ? !termCode : (!context || (!campusCode && !queryContextEmpty));
   const refreshLoading = refreshesTargetList ? targetLoading : loading;
@@ -3665,6 +3865,43 @@ function TimetablePage({
             />
           </label>
         </div>
+        {mode === 'room' && (
+          <fieldset className="timetable-room-availability-filter">
+            <legend>特殊空闲时间</legend>
+            <p className="timetable-room-availability-help">先按上方普通筛选限定教室，再逐间检查这些时间是否无课。每行条件可选择“且/或”。</p>
+            <div className="timetable-room-availability-table" role="table" aria-label="特殊空闲时间条件">
+              <div className="timetable-room-availability-header" role="row"><span>周次</span><span>周内</span><span>节次</span><span aria-hidden="true" /></div>
+              {roomAvailabilitySlots.map((slot, index) => (
+                <React.Fragment key={`availability-${index}`}>
+                  {index > 0 && <div className="timetable-room-availability-joiner"><Select size="small" value={slot.joiner || 'and'} onChange={value => changeRoomAvailabilitySlots(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, joiner: value } : item))} options={[{ value: 'and', label: '且' }, { value: 'or', label: '或' }]} aria-label={`第${index + 1}行与上一行的关系`} /></div>}
+                  <div className="timetable-room-availability-row" role="row">
+                    {[
+                      ['week_start', 'week_end', availabilityWeekOptions],
+                      ['weekday_start', 'weekday_end', ROOM_AVAILABILITY_WEEKDAY_OPTIONS],
+                      ['start_section', 'end_section', availabilitySectionOptions],
+                    ].map(([startKey, endKey, options]) => (
+                      <div className="timetable-room-availability-range" key={startKey}>
+                        <Select value={slot[startKey]} onChange={value => changeRoomAvailabilitySlots(items => items.map((item, itemIndex) => itemIndex === index ? updateAvailabilityRangeStart(item, startKey, endKey, value, options) : item))} options={options} aria-label={startKey} />
+                        <span>至</span>
+                        <Select value={slot[endKey]} onChange={value => changeRoomAvailabilitySlots(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, [endKey]: value } : item))} options={availabilityRangeEndOptions(options, slot[startKey])} aria-label={endKey} />
+                      </div>
+                    ))}
+                    <div className="timetable-room-availability-delete"><Tooltip title="删除条件"><Button type="text" danger icon={<DeleteOutlined />} onClick={() => changeRoomAvailabilitySlots(items => items.filter((_, itemIndex) => itemIndex !== index))} disabled={roomAvailabilitySlots.length === 1} aria-label="删除条件" /></Tooltip></div>
+                  </div>
+                </React.Fragment>
+              ))}
+            </div>
+            <div className="timetable-room-availability-actions">
+              <Tooltip title="添加一行条件"><Button type="dashed" shape="circle" icon={<PlusOutlined />} onClick={() => changeRoomAvailabilitySlots(items => [...items, { week_start: 'any', week_end: 'any', weekday_start: 'any', weekday_end: 'any', start_section: 1, end_section: 2, joiner: 'and' }])} aria-label="添加空闲时间条件" /></Tooltip>
+              <Button type="primary" icon={<SearchOutlined />} loading={roomAvailabilityLoading} onClick={() => { setTargetPreviewOptions([]); setTargetPreviewTotal(0); scanRoomAvailability({ reset: true }); }}>开始扫描</Button>
+              {roomAvailabilityLoading && <Button onClick={() => { roomAvailabilityGeneration.current += 1; setRoomAvailabilityLoading(false); setRoomAvailabilityResult(previous => ({ ...(previous || {}), paused: true })); }}>停止</Button>}
+              {roomAvailabilityResult?.paused && !roomAvailabilityResult?.complete && <Button onClick={() => scanRoomAvailability()}>继续查找</Button>}
+            </div>
+            {roomAvailabilityLoading && <div className="timetable-room-availability-progress"><span className="timetable-inline-spinner" />正在逐间检查教室… 已检查 {roomAvailabilityResult?.scanned || 0} 间</div>}
+            {roomAvailabilityResult && !roomAvailabilityResult.error && <Alert type="info" showIcon message={roomAvailabilityResult.complete ? `已完成：共检查 ${roomAvailabilityResult.scanned} 间教室` : `已找到 ${roomAvailabilityResult.items?.length || 0} 间，已检查 ${roomAvailabilityResult.scanned} 间`} description={(roomAvailabilityResult.items || []).map(item => item.name).join('、') || '暂未找到符合条件的教室'} />}
+            {roomAvailabilityResult?.error && <Alert type="warning" showIcon message={roomAvailabilityResult.error} action={<Button size="small" onClick={() => scanRoomAvailability()}>重试</Button>} />}
+          </fieldset>
+        )}
         {targetPreviewError && (
           <Alert
             type="warning"

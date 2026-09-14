@@ -11,6 +11,7 @@ from backend.app.schemas.auth import (
     WebVPNQRStartRequest,
 )
 from backend.core.auth.client import (
+    DirectAccessError,
     LOGIN_ERR_WRONG_PWD,
     NEULoginError,
     WEBVPN_ERR_CAMPUS_NETWORK,
@@ -21,6 +22,64 @@ from backend.core.auth.session_manager import AuthSessionManager
 
 
 class AuthRouteTests(unittest.TestCase):
+    def test_direct_recovery_falls_back_to_webvpn_with_saved_credentials(self):
+        manager = AuthSessionManager()
+        active = SimpleNamespace(
+            username="20250001", password="saved-password",
+            is_logged_in=False, active_mode="direct",
+            _webvpn_qr_flow=None, _webvpn_sms_flow=None,
+            ensure_login=Mock(side_effect=DirectAccessError("unreachable")),
+        )
+        manager.set_client(active)
+        webvpn = SimpleNamespace(
+            username="20250001", password="saved-password",
+            is_logged_in=True, active_mode="webvpn",
+            _webvpn_qr_flow=None, _webvpn_sms_flow=None,
+            start_webvpn_password_login=Mock(return_value={"status": "authenticated"}),
+        )
+        storage = Mock()
+        storage.load_credentials.return_value = ("20250001", "saved-password")
+
+        with (
+            patch.object(dependencies, "_auth_sessions", manager),
+            patch.object(dependencies, "_storage", storage),
+            patch.object(dependencies, "NEUAuthClient", return_value=webvpn) as builder,
+            patch.object(dependencies, "schedule_login_bootstrap"),
+            patch.object(dependencies, "log_security_event"),
+        ):
+            resolved = dependencies._get_auth_client_unlocked()
+
+        self.assertIs(resolved, webvpn)
+        self.assertIs(manager.peek_client(), webvpn)
+        self.assertEqual(builder.call_args.kwargs["network_mode"], "webvpn")
+        webvpn.start_webvpn_password_login.assert_called_once_with()
+
+    def test_wrong_saved_password_is_terminal_without_route_fallback(self):
+        manager = AuthSessionManager()
+        active = SimpleNamespace(
+            username="20250001", password="bad-password",
+            is_logged_in=False, active_mode="direct",
+            _webvpn_qr_flow=None, _webvpn_sms_flow=None,
+            ensure_login=Mock(side_effect=NEULoginError(
+                "wrong", error_type=LOGIN_ERR_WRONG_PWD,
+            )),
+        )
+        manager.set_client(active)
+        storage = Mock()
+        storage.load_credentials.return_value = ("20250001", "bad-password")
+
+        with (
+            patch.object(dependencies, "_auth_sessions", manager),
+            patch.object(dependencies, "_storage", storage),
+            patch.object(dependencies, "NEUAuthClient") as builder,
+        ):
+            self.assertIsNone(dependencies._get_auth_client_unlocked())
+
+        builder.assert_not_called()
+        self.assertEqual(
+            manager.auth_recovery_status()["status"], "credentials_invalid",
+        )
+
     def test_auth_recovery_qr_candidate_stays_memory_only_until_commit(self):
         candidate = Mock()
         candidate.start_webvpn_qr_login.return_value = {"flow_id": "flow"}

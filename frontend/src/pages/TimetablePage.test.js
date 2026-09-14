@@ -60,11 +60,17 @@ import {
   requestErrorText,
   TIMETABLE_LOGIN_ERROR_TEXT,
   restorePersonalTimetableMemory,
+  selectPersonalOpeningWeek,
   timetableSnapshotIsNewer,
   timetableContentSignature,
   timetableContentChanged,
   usableTargetFilterDefinitions,
   TIMETABLE_DAY_ORDER,
+  ROOM_AVAILABILITY_WEEKDAY_OPTIONS,
+  availabilityRangeEndOptions,
+  updateAvailabilityRangeStart,
+  roomAvailabilityWeekChoices,
+  roomAvailabilityDefaultWeek,
   TIMETABLE_MODES,
   MobileTimetable,
   MobileCompactWeekTimetable,
@@ -623,6 +629,59 @@ describe('TimetablePage helpers', () => {
       { currentTermCode: '2026-2027-1', payload },
       '2025-2026-2',
     )).toBeNull();
+  });
+
+  test('opens the current-term weekly timetable on this week instead of the saved week', () => {
+    const weeks = [1, 2, 3].map(number => ({
+      number, name: `第${number}周`, current: number === 2,
+    }));
+
+    expect(selectPersonalOpeningWeek({
+      weeks, savedWeek: 3, viewMode: 'week', currentTerm: true,
+    })).toBe(2);
+    expect(selectPersonalOpeningWeek({
+      weeks, savedWeek: 3, viewMode: 'term', currentTerm: true,
+    })).toBe(3);
+    expect(selectPersonalOpeningWeek({
+      weeks, savedWeek: 3, viewMode: 'week', currentTerm: false,
+    })).toBe(3);
+  });
+
+  test('orders and constrains room availability range selectors', () => {
+    expect(ROOM_AVAILABILITY_WEEKDAY_OPTIONS.map(option => option.value))
+      .toEqual(['any', 7, 1, 2, 3, 4, 5, 6]);
+    expect(availabilityRangeEndOptions(ROOM_AVAILABILITY_WEEKDAY_OPTIONS, 2)
+      .map(option => option.value)).toEqual(['any', 2, 3, 4, 5, 6]);
+
+    const weeks = [
+      { value: 'any', label: '不限' },
+      ...[1, 2, 3, 4].map(value => ({ value, label: String(value) })),
+    ];
+    expect(updateAvailabilityRangeStart(
+      { week_start: 1, week_end: 2 }, 'week_start', 'week_end', 3, weeks,
+    )).toEqual({ week_start: 3, week_end: 3 });
+    expect(updateAvailabilityRangeStart(
+      { week_start: 1, week_end: 'any' }, 'week_start', 'week_end', 3, weeks,
+    )).toEqual({ week_start: 3, week_end: 'any' });
+  });
+
+  test('uses personal timetable weeks independently for room availability defaults', () => {
+    const personal = {
+      term_code: '2026-2027-1',
+      weeks: [
+        { number: 3, name: '第3周' },
+        { number: 2, name: '第2周', current: true },
+      ],
+    };
+    expect(roomAvailabilityWeekChoices(
+      personal, [], '2026-2027-1',
+    ).map(item => item.value)).toEqual(['any', 2, 3]);
+    expect(roomAvailabilityDefaultWeek(
+      personal, [], '2026-2027-1', null,
+    )).toBe(2);
+    expect(roomAvailabilityWeekChoices(
+      personal, [], 'different-term',
+    )).toHaveLength(31);
   });
 
   test('groups same-slot courses vertically without widening the seven-day grid', () => {

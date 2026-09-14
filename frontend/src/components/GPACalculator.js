@@ -10,7 +10,8 @@ import {
   DeleteOutlined, EditOutlined, BookOutlined, TrophyOutlined,
   ReloadOutlined, CheckCircleOutlined, WarningOutlined, CloseOutlined,
   SaveOutlined, CloudUploadOutlined, CloudDownloadOutlined, SearchOutlined,
-  FileTextOutlined, FolderOutlined, FileOutlined, FilterOutlined, MoreOutlined
+  FileTextOutlined, FolderOutlined, FileOutlined, FilterOutlined, MoreOutlined,
+  EyeOutlined, EyeInvisibleOutlined
 } from '@ant-design/icons';
 import { 
   getCachedAcademicReport,
@@ -126,6 +127,20 @@ const stableCourseKey = (course) => [
   course?.term_code || course?.originalData?.term || course?.term || '',
 ].join('\u001f');
 
+export const isGpaCoursePending = (course) => {
+  const credit = Number(course?.credit);
+  const hasCredit = course?.credit !== null
+    && course?.credit !== undefined
+    && course?.credit !== ''
+    && Number.isFinite(credit)
+    && credit > 0;
+  const hasGpa = course?.gpa !== null
+    && course?.gpa !== undefined
+    && course?.gpa !== ''
+    && Number.isFinite(Number(course.gpa));
+  return !hasCredit || !hasGpa;
+};
+
 const simulationCourseFromScore = (score) => ({
   key: `real_${stableCourseKey(score)}`,
   name: score.name,
@@ -186,6 +201,7 @@ const GPACalculator = forwardRef(({
   // ===== 状态管理 =====
   const [courses, setCourses] = useState([]);
   const [editingKey, setEditingKey] = useState(null);
+  const [tableFilteredKeys, setTableFilteredKeys] = useState(null);
   const [activeTab, setActiveTab] = useState('all');
   const [isSimulating, setIsSimulating] = useState(false);
   const [courseTablePagination, setCourseTablePagination] = useState({
@@ -264,6 +280,7 @@ const GPACalculator = forwardRef(({
       setHistory([]);
       setHistoryIndex(-1);
       setHasUnsavedChanges(false);
+      setTableFilteredKeys(null);
       
       // 直接使用真实成绩初始化
       if (realScores.length > 0) {
@@ -423,21 +440,39 @@ const GPACalculator = forwardRef(({
       customCount: 0,
     };
 
-    const validCourses = courses.filter(c => c.gpa > 0);
+    const scopedCourses = courses.filter(course => (
+      (!tableFilteredKeys || tableFilteredKeys.has(course.key))
+      && !course.hidden
+    ));
+    const validCourses = scopedCourses.filter(c => !isGpaCoursePending(c) && c.gpa > 0);
     const totalCredits = validCourses.reduce((sum, c) => sum + (c.credit || 0), 0);
-    const weightedGPA = gpaPolicy ? summarizeGpa(courses.map(course => ({
+    const weightedGPA = gpaPolicy ? summarizeGpa(scopedCourses.map(course => ({
       ...course, gradingScale: gpaCourseGradingScale(course, outlineMetadata),
     })), gpaPolicy).average || 0 : null;
 
     return {
-      totalCourses: courses.length,
+      totalCourses: scopedCourses.length,
       totalCredits,
       weightedGPA,
       passedCount: validCourses.filter(c => c.gpa > 0).length,
-      realCount: courses.filter(c => c.isReal).length,
-      customCount: courses.filter(c => !c.isReal).length,
+      realCount: scopedCourses.filter(c => c.isReal).length,
+      customCount: scopedCourses.filter(c => !c.isReal).length,
     };
-  }, [courses, gpaPolicy, outlineMetadata]);
+  }, [courses, gpaPolicy, outlineMetadata, tableFilteredKeys]);
+
+  const isPartialCalculation = useMemo(() => (
+    courses.some(course => course.hidden)
+    || Boolean(tableFilteredKeys && tableFilteredKeys.size < courses.length)
+  ), [courses, tableFilteredKeys]);
+
+  // 标签页是课程视图，不是统计筛选条件；其数量始终反映完整模拟课程集。
+  const tabStats = useMemo(() => ({
+    total: courses.length,
+    real: courses.filter(course => course.isReal).length,
+    custom: courses.filter(course => !course.isReal).length,
+    passed: courses.filter(course => course.gpa > 0).length,
+    pending: courses.filter(isGpaCoursePending).length,
+  }), [courses]);
 
   // ===== 课程操作 =====
   // 使用 ref 暂存编辑中的值，避免频繁更新状态
@@ -445,7 +480,9 @@ const GPACalculator = forwardRef(({
   
   // 处理输入框失焦或按回车时才保存
   const handleInputBlur = (key, field, value) => {
-    if (field === 'gpa') {
+    if (field === 'name') {
+      handleNameChange(key, value);
+    } else if (field === 'gpa') {
       handleGPAChange(key, value);
     } else if (field === 'credit') {
       handleCreditChange(key, value);
@@ -496,6 +533,18 @@ const GPACalculator = forwardRef(({
     saveToHistory(newCourses);
   };
 
+  const handleNameChange = (key, newName) => {
+    const name = String(newName ?? '').trim();
+    if (!name) return;
+    const current = courses.find(course => course.key === key);
+    if (!current || current.name === name) return;
+    const newCourses = courses.map(course => (
+      course.key === key ? { ...course, name } : course
+    ));
+    setCourses(newCourses);
+    saveToHistory(newCourses);
+  };
+
   const deleteCourse = (key) => {
     const newCourses = courses.filter(c => c.key !== key);
     setCourses(newCourses);
@@ -535,16 +584,22 @@ const GPACalculator = forwardRef(({
   const saveEdit = (key) => {
     const newCourses = courses.map(c => {
       if (c.key === key) {
-        const newCredit = parseFloat(editForm.credit) || 0;
-        const newGPA = editForm.gpa === null || editForm.gpa === '' ? null : parseFloat(editForm.gpa) || 0;
+        const nextName = editForm.name === undefined ? c.name : editForm.name;
+        const nextCode = editForm.code === undefined ? c.code : editForm.code;
+        const nextCreditValue = editForm.credit === undefined ? c.credit : editForm.credit;
+        const nextGpaValue = editForm.gpa === undefined ? c.gpa : editForm.gpa;
+        const newCredit = nextCreditValue === null || nextCreditValue === ''
+          ? 0 : parseFloat(nextCreditValue) || 0;
+        const newGPA = nextGpaValue === null || nextGpaValue === ''
+          ? null : parseFloat(nextGpaValue) || 0;
         
         // 检查真实课程是否被修改
         let isModified = false;
         if (c.isReal && c.originalData) {
           const origCredit = parseFloat(c.originalData.credit) || 0;
           const origGPA = parseFloat(c.originalData.gpa) || 0;
-          if (c.originalData.name !== (editForm.name || c.name) ||
-              c.originalData.code !== editForm.code ||
+          if (c.originalData.name !== (nextName || c.name) ||
+              c.originalData.code !== nextCode ||
               Math.abs(origCredit - newCredit) > 0.01 ||
               Math.abs(origGPA - newGPA) > 0.01) {
             isModified = true;
@@ -553,8 +608,8 @@ const GPACalculator = forwardRef(({
         
         return {
           ...c,
-          name: editForm.name || c.name,
-          code: editForm.code,
+          name: nextName || c.name,
+          code: nextCode,
           credit: newCredit,
           gpa: newGPA,
           isReal: isModified ? false : c.isReal,
@@ -581,6 +636,14 @@ const GPACalculator = forwardRef(({
       score: record.score,
       gpa: record.gpa,
     });
+  };
+
+  const toggleCourseHidden = (key) => {
+    const newCourses = courses.map(course => (
+      course.key === key ? { ...course, hidden: !course.hidden } : course
+    ));
+    setCourses(newCourses);
+    saveToHistory(newCourses);
   };
 
   // ===== 培养计划导入 =====
@@ -1080,6 +1143,7 @@ const GPACalculator = forwardRef(({
       const imported = data.courses.map((c, idx) => ({
         key: `imported_${Date.now()}_${idx}`,
         ...c,
+        hidden: false,
         // 保留原始isReal状态（如果没有则默认为模拟课程）
         isReal: c.isReal !== undefined ? c.isReal : false,
         originalData: c.originalData || null,
@@ -1205,7 +1269,7 @@ const GPACalculator = forwardRef(({
       version: '2.0',
       timestamp: new Date().toISOString(),
       stats,
-      courses,
+      courses: courses.map(({ hidden, ...course }) => course),
       base_scores_revision: baseScoresRevision,
       base_report_revision: baseReportRevision,
       base_real_scores: baseRealScores,
@@ -1308,10 +1372,36 @@ const GPACalculator = forwardRef(({
             <Input
               value={editForm.name}
               onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+              onBlur={() => saveEdit(record.key)}
+              onPressEnter={() => saveEdit(record.key)}
               size="small"
               placeholder="课程名称"
               autoFocus
             />
+          );
+        }
+        if (isSimulating && record.isCustom) {
+          return (
+            <div className="course-name gpa-course-name-editor">
+              <Badge status="warning" style={{ marginRight: 4 }} />
+              <Input
+                key={`${record.key}-name-${text}`}
+                defaultValue={text || ''}
+                onChange={event => handleInputChange(record.key, 'name', event.target.value)}
+                onBlur={() => handleInputBlur(
+                  record.key,
+                  'name',
+                  pendingInput(record.key, 'name', text || ''),
+                )}
+                onPressEnter={event => {
+                  event.currentTarget.blur();
+                }}
+                size="small"
+                variant="borderless"
+                placeholder="课程名称"
+                aria-label="编辑课程名称"
+              />
+            </div>
           );
         }
         return (
@@ -1579,6 +1669,15 @@ const GPACalculator = forwardRef(({
               {record.isCustom && (
                 <Button type="text" size="small" icon={<EditOutlined />} onClick={() => startEdit(record)} />
               )}
+              <Tooltip title={record.hidden ? '取消隐藏并计入 GPA' : '隐藏课程，不计入 GPA'}>
+                <Button
+                  type="text"
+                  size="small"
+                  aria-label={record.hidden ? '取消隐藏课程' : '隐藏课程'}
+                  icon={record.hidden ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                  onClick={() => toggleCourseHidden(record.key)}
+                />
+              </Tooltip>
               <Popconfirm title="确认删除？" onConfirm={() => deleteCourse(record.key)} okText="删除" cancelText="取消">
                 <Button type="text" size="small" danger icon={<DeleteOutlined />} />
               </Popconfirm>
@@ -1597,7 +1696,7 @@ const GPACalculator = forwardRef(({
       case 'real': result = calculationCourses.filter(c => c.isReal); break;
       case 'custom': result = calculationCourses.filter(c => !c.isReal); break;
       case 'passed': result = calculationCourses.filter(c => c.gpa > 0); break;
-      case 'pending': result = calculationCourses.filter(c => c.gpa === null || c.gpa === undefined || c.gpa === ''); break;
+      case 'pending': result = calculationCourses.filter(isGpaCoursePending); break;
       default: result = calculationCourses;
     }
     return [...result].sort((left, right) => (
@@ -1618,7 +1717,11 @@ const GPACalculator = forwardRef(({
         <section className="gpa-mobile-summary" aria-label="GPA 模拟统计">
           <div className="gpa-mobile-summary__primary">
             <span>模拟加权平均绩点</span>
-            <strong>{stats.weightedGPA === null ? '--' : stats.weightedGPA.toFixed(4)}</strong>
+            <Tooltip title={isPartialCalculation ? `此平均绩点由当前筛选结果和未隐藏课程中的 ${stats.totalCourses} 门课程按“绩点 × 学分”加权计算。` : undefined}>
+              <strong className={isPartialCalculation ? 'filtered-gpa-value' : undefined}>
+                {stats.weightedGPA === null ? '--' : stats.weightedGPA.toFixed(4)}
+              </strong>
+            </Tooltip>
           </div>
           <dl>
             <div><dt>课程</dt><dd>{stats.totalCourses} 门</dd></div>
@@ -1636,7 +1739,20 @@ const GPACalculator = forwardRef(({
         </Col>
         <Col xs={12} sm={8} md={6}>
           <Card size="small" className="stat-card highlight">
-            <Statistic title="加权平均绩点" value={stats.weightedGPA ?? '--'} precision={4} prefix={<TrophyOutlined />} valueStyle={{ color: '#1890ff', fontWeight: 'bold' }} />
+            <Statistic
+              title="加权平均绩点"
+              value={stats.weightedGPA ?? '--'}
+              precision={4}
+              prefix={<TrophyOutlined />}
+              valueStyle={{ color: '#1890ff', fontWeight: 'bold' }}
+              formatter={value => (
+                <Tooltip title={isPartialCalculation ? `此平均绩点由当前筛选结果和未隐藏课程中的 ${stats.totalCourses} 门课程按“绩点 × 学分”加权计算。` : undefined}>
+                  <span className={isPartialCalculation ? 'filtered-gpa-value' : undefined}>
+                    {value === '--' ? value : Number(value).toFixed(4)}
+                  </span>
+                </Tooltip>
+              )}
+            />
           </Card>
         </Col>
         <Col xs={12} sm={8} md={5}>
@@ -1742,16 +1858,18 @@ const GPACalculator = forwardRef(({
         activeKey={activeTab}
         onChange={(key) => {
           setActiveTab(key);
+          // 标签页切换只改变视图，清除上一视图由分页/空结果写入的行集合。
+          setTableFilteredKeys(null);
           setCourseTablePagination((previous) => ({ ...previous, current: 1 }));
         }}
         size="small"
         className="gpa-tabs"
         items={[
-          { label: `全部 ${courses.length}`, key: 'all' },
-          { label: `真实 ${stats.realCount}`, key: 'real' },
-          { label: `模拟 ${stats.customCount}`, key: 'custom' },
-          { label: `有绩点 ${stats.passedCount}`, key: 'passed' },
-          { label: `待输入 ${courses.filter(c => c.gpa === null || c.gpa === undefined || c.gpa === '').length}`, key: 'pending' },
+          { label: `全部 ${tabStats.total}`, key: 'all' },
+          { label: `真实 ${tabStats.real}`, key: 'real' },
+          { label: `模拟 ${tabStats.custom}`, key: 'custom' },
+          { label: `有绩点 ${tabStats.passed}`, key: 'passed' },
+          { label: `待输入 ${tabStats.pending}`, key: 'pending' },
         ]}
       />
 
@@ -1760,13 +1878,20 @@ const GPACalculator = forwardRef(({
         columns={columns}
         dataSource={filteredCourses}
         rowKey="key"
+        rowClassName={record => (record.hidden ? 'gpa-course-hidden' : '')}
         size="small"
         pagination={courseTablePagination}
-        onChange={(pagination) => setCourseTablePagination(prev => ({
+        onChange={(pagination, _filters, _sorter, extra) => {
+          if (extra?.action === 'filter' || extra?.action === 'sort') {
+            const rows = extra?.currentDataSource || [];
+            setTableFilteredKeys(new Set(rows.map(row => row.key)));
+          }
+          setCourseTablePagination(prev => ({
           ...prev,
           current: pagination.current,
           pageSize: pagination.pageSize,
-        }))}
+          }));
+        }}
         scroll={{ x: 'max-content' }}
         className="gpa-table"
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无课程，请添加或导入" /> }}
@@ -1821,7 +1946,25 @@ const GPACalculator = forwardRef(({
               <>
                 <div className="gpa-mobile-course__header">
                   <div>
-                    <strong>{course.name || '未命名课程'}</strong>
+                    {course.isCustom ? (
+                      <Input
+                        key={`${course.key}-mobile-name-${course.name}`}
+                        defaultValue={course.name || ''}
+                        onChange={event => handleInputChange(course.key, 'name', event.target.value)}
+                        onBlur={() => handleInputBlur(
+                          course.key,
+                          'name',
+                          pendingInput(course.key, 'name', course.name || ''),
+                        )}
+                        onPressEnter={event => event.currentTarget.blur()}
+                        size="small"
+                        variant="borderless"
+                        placeholder="课程名称"
+                        aria-label="编辑课程名称"
+                      />
+                    ) : (
+                      <strong>{course.name || '未命名课程'}</strong>
+                    )}
                     <span>{course.code || course.term || '未填写课程代码'}</span>
                   </div>
                   <Tag color={course.isReal ? 'success' : course.fromPlan ? 'processing' : 'warning'}>
@@ -1872,6 +2015,13 @@ const GPACalculator = forwardRef(({
                         编辑
                       </Button>
                     )}
+                    <Tooltip title={course.hidden ? '取消隐藏并计入 GPA' : '隐藏课程，不计入 GPA'}>
+                      <Button
+                        aria-label={course.hidden ? '取消隐藏课程' : '隐藏课程'}
+                        icon={course.hidden ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                        onClick={() => toggleCourseHidden(course.key)}
+                      />
+                    </Tooltip>
                     <Popconfirm
                       title="确认删除？"
                       onConfirm={() => deleteCourse(course.key)}
@@ -2312,7 +2462,7 @@ const GPACalculator = forwardRef(({
                     <Space direction="vertical" size={0}>
                       <Typography.Text type="secondary">修改时间: {new Date(item.modified_time).toLocaleString()}</Typography.Text>
                       {item.stats && (
-                        <Typography.Text type="secondary">课程: {item.stats.totalCourses}门 | GPA: {item.stats.weightedGPA?.toFixed(3)}</Typography.Text>
+                        <Typography.Text type="secondary">课程: {item.stats.totalCourses}门 | GPA: {item.stats.weightedGPA?.toFixed(4)}</Typography.Text>
                       )}
                     </Space>
                   }

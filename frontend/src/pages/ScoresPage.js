@@ -1101,7 +1101,7 @@ const ScoresPage = ({ offlineMode = false }) => {
             <Statistic
               title="平均绩点"
               value={filteredGpaSummary.average ?? '--'}
-              precision={filteredGpaSummary.average === null ? undefined : 3}
+              precision={filteredGpaSummary.average === null ? undefined : 4}
               prefix={<TrophyOutlined />}
               formatter={(value) => (
                 <Tooltip
@@ -1140,7 +1140,7 @@ const ScoresPage = ({ offlineMode = false }) => {
                   >
                     {filteredGpaSummary.average === null
                       ? '--'
-                      : Number(value).toFixed(3)}
+                      : Number(value).toFixed(4)}
                   </span>
                 </Tooltip>
               )}

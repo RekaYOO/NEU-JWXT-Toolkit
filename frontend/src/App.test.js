@@ -10,6 +10,7 @@ jest.mock('./services/api', () => ({
   getClientBootstrap: jest.fn(),
   getHealth: jest.fn(),
   getOfflineStatus: jest.fn(),
+  markAuthSessionAuthenticated: jest.fn(),
 }));
 
 test('keeps a deep link behind the auth loading gate while status recovery is pending', async () => {

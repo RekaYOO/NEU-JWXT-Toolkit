@@ -18,6 +18,7 @@ from backend.app.schemas.timetable import (
     TimetableContextResponse,
     TimetableScheduleRequest,
     TimetableScheduleResponse,
+    TimetableRoomAvailabilityRequest,
     TimetableTargetSearchRequest,
     TimetableTargetSearchResponse,
     TimetableTargetFilterOptionsRequest,
@@ -35,6 +36,7 @@ from backend.core.log import log_application_error
 from backend.core.cache.resources import personal_timetable_variant
 from backend.core.scheduling import meeting_extension, normalize_meeting
 from backend.core.timetable import TimetableError
+from backend.core.timetable.api import room_is_free_for_slots
 from backend.app.client_snapshot import timetable_bootstrap_snapshot
 
 
@@ -446,3 +448,92 @@ def get_timetable_schedule(
         raise _authentication_failure() from error
     except TimetableError as error:
         raise _remote_failure("schedule", error) from error
+
+
+@router.post("/rooms/availability")
+def get_room_availability(
+    request: TimetableRoomAvailabilityRequest,
+    auth: NEUAuthClient = Depends(require_serialized_auth),
+):
+    """Scan a bounded slice of the filtered room catalog.
+
+    The cursor lets the UI stream results and resume after a short match batch,
+    rather than holding one request open while every room is queried.
+    """
+    try:
+        filters = request.filters.model_dump(exclude_none=True, exclude_defaults=True)
+        page_size = 20
+        start_page = request.cursor // page_size + 1
+        start_offset = request.cursor % page_size
+        seen_room_ids = set(request.seen_room_ids)
+        available = []
+        scanned = 0
+        scanned_room_ids = []
+        candidate_total = 0
+        next_cursor = request.cursor
+        exhausted_catalog = False
+
+        def scan_pages(first_page: int, last_page: int | None, *, first_offset: int = 0):
+            nonlocal candidate_total, next_cursor, scanned, exhausted_catalog
+            page = max(1, first_page)
+            while last_page is None or page <= last_page:
+                result = auth.timetable.search_targets(
+                    "room", request.term_code, page=page, page_size=page_size,
+                    keyword=request.keyword, filters=filters,
+                )
+                rooms = result.get("items") or []
+                candidate_total = int(result.get("total") or candidate_total or 0)
+                page_count = max(1, (candidate_total + page_size - 1) // page_size)
+                if page > page_count or not rooms:
+                    exhausted_catalog = True
+                    return False
+                offset = first_offset if page == first_page else 0
+                for index, room in enumerate(rooms[offset:], start=offset):
+                    room_id = str(room.get("id") or "")
+                    if not room_id or room_id in seen_room_ids:
+                        continue
+                    schedule = auth.timetable.get_schedule(
+                        mode="room", term_code=request.term_code,
+                        campus_code=request.campus_code, target_id=room_id, week=None,
+                    )
+                    seen_room_ids.add(room_id)
+                    scanned_room_ids.append(room_id)
+                    scanned += 1
+                    next_cursor = (page - 1) * page_size + index + 1
+                    if room_is_free_for_slots(
+                        schedule.get("courses") or [],
+                        [slot.model_dump() for slot in request.slots],
+                    ):
+                        available.append(room)
+                    if scanned >= request.scan_limit:
+                        return True
+                if page >= page_count:
+                    exhausted_catalog = True
+                    return False
+                page += 1
+            return False
+
+        reached_limit = scan_pages(start_page, None, first_offset=start_offset)
+        if (
+            not reached_limit
+            and (start_page > 1 or start_offset > 0)
+            and len(seen_room_ids) < candidate_total
+        ):
+            exhausted_catalog = False
+            reached_limit = scan_pages(1, start_page, first_offset=0)
+
+        complete = (
+            candidate_total == 0
+            or len(seen_room_ids) >= candidate_total
+            or (not request.seen_room_ids and next_cursor >= candidate_total)
+            or (not reached_limit and exhausted_catalog)
+        )
+        return {
+            "items": available, "total": len(available), "scanned": scanned,
+            "cursor": next_cursor, "candidate_total": candidate_total, "complete": complete,
+            "scanned_room_ids": scanned_room_ids,
+        }
+    except NEULoginError as error:
+        raise _authentication_failure() from error
+    except TimetableError as error:
+        raise _remote_failure("room_availability", error) from error

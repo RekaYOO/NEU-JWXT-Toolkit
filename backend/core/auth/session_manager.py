@@ -22,9 +22,13 @@ _REMOTE_PRIORITIES = {
     "tracking": 4,
 }
 
-_AUTH_RECOVERY_BASE_DELAY_SECONDS = 30.0
-_AUTH_RECOVERY_MAX_DELAY_SECONDS = 300.0
+_AUTH_RECOVERY_BASE_DELAY_SECONDS = 5.0
+_AUTH_RECOVERY_MAX_DELAY_SECONDS = 120.0
 _MAX_PARALLEL_REMOTE_READS = 4
+
+
+class RemoteSessionQueueTimeout(TimeoutError):
+    """The caller could not enter the shared remote-session boundary in time."""
 
 # A request that is inside a shared remote-read slot may use a private
 # requests.Session snapshot.  This keeps network I/O concurrent without
@@ -94,6 +98,10 @@ class AuthSessionManager:
         self._recovery_failures = 0
         self._recovery_retry_at = 0.0
         self._recovery_error_code = ""
+        self._recovery_status = "idle"
+        self._recovery_phase = ""
+        self._recovery_modes: tuple[str, ...] = ()
+        self._recovery_message = ""
 
     @contextmanager
     def remote_guard(
@@ -104,6 +112,7 @@ class AuthSessionManager:
         on_queued: Callable[[], None] | None = None,
         shared: bool = False,
         mark_read_context: bool = True,
+        queue_timeout: float | None = None,
     ) -> Iterator[dict[str, float | str]]:
         """Coordinate exclusive operations and bounded shared remote reads.
 
@@ -134,8 +143,21 @@ class AuthSessionManager:
                 self._remote_condition.notify_all()
             raise
         with self._remote_condition:
+            deadline = (
+                time.monotonic() + max(0.0, float(queue_timeout))
+                if queue_timeout is not None else None
+            )
             while not self._remote_capacity_available(shared) or not self._remote_turn(priority, ticket):
-                self._remote_condition.wait()
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    queue = self._remote_waiting[priority]
+                    if ticket in queue:
+                        queue.remove(ticket)
+                    self._remote_condition.notify_all()
+                    raise RemoteSessionQueueTimeout(
+                        f"remote session queue timed out: {label}"
+                    )
+                self._remote_condition.wait(timeout=remaining)
             self._remote_waiting[priority].pop(0)
             if shared:
                 self._remote_readers += 1
@@ -318,7 +340,41 @@ class AuthSessionManager:
             )
             self._recovery_retry_at = time.monotonic() + delay
             self._recovery_error_code = str(error_code or "")
+            self._recovery_status = "retry_wait"
             return delay
+
+    def set_auth_recovery_state(
+        self,
+        status: str,
+        *,
+        subject: str | None = None,
+        phase: str = "",
+        modes: tuple[str, ...] | list[str] = (),
+        error_code: str = "",
+        message: str = "",
+    ) -> None:
+        """Publish a non-sensitive snapshot of the process-wide recovery chain."""
+        with self._state_lock:
+            if subject is not None:
+                self._recovery_subject = str(subject or "")
+            self._recovery_status = str(status or "idle")
+            self._recovery_phase = str(phase or "")
+            self._recovery_modes = tuple(str(mode) for mode in modes if mode)
+            self._recovery_error_code = str(error_code or "")
+            self._recovery_message = str(message or "")
+
+    def auth_recovery_status(self) -> dict[str, object]:
+        with self._state_lock:
+            remaining = max(0.0, self._recovery_retry_at - time.monotonic())
+            return {
+                "status": self._recovery_status,
+                "phase": self._recovery_phase,
+                "attempted_modes": list(self._recovery_modes),
+                "error_code": self._recovery_error_code or None,
+                "message": self._recovery_message or None,
+                "retry_after_seconds": remaining,
+                "failures": self._recovery_failures,
+            }
 
     def clear_auth_recovery_backoff(self) -> None:
         with self._state_lock:
@@ -340,6 +396,10 @@ class AuthSessionManager:
         self._recovery_failures = 0
         self._recovery_retry_at = 0.0
         self._recovery_error_code = ""
+        self._recovery_status = "idle"
+        self._recovery_phase = ""
+        self._recovery_modes = ()
+        self._recovery_message = ""
 
     def is_current(self, epoch: int, account: str | None = None) -> bool:
         with self._state_lock:

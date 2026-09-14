@@ -1,8 +1,36 @@
 .timetable-page {
+  container-name: timetable-page;
+  container-type: inline-size;
   width: 100%;
   max-width: var(--content-max);
   min-width: 0;
   margin-inline: auto;
+}
+
+@container timetable-page (max-width: 1199px) {
+  .timetable-controls,
+  .timetable-controls:has(.timetable-target-field) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .timetable-control-actions {
+    justify-self: stretch;
+  }
+
+  .timetable-target-field {
+    grid-column: span 2;
+  }
+}
+
+@container timetable-page (max-width: 760px) {
+  .timetable-controls,
+  .timetable-controls:has(.timetable-target-field) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .timetable-target-field {
+    grid-column: 1 / -1;
+  }
 }
 
 .timetable-page.is-embedded {
@@ -73,7 +101,7 @@
 
 .timetable-controls {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(150px, .72fr) auto minmax(165px, .85fr) minmax(170px, .85fr) auto;
+  grid-template-columns: minmax(180px, 1.15fr) minmax(145px, .9fr) minmax(130px, .85fr) minmax(150px, .9fr) auto;
   gap: var(--space-3);
   align-items: end;
   margin-bottom: var(--space-4);
@@ -81,13 +109,18 @@
   border-bottom: 1px solid var(--color-line);
 }
 
+.timetable-controls > * {
+  min-width: 0;
+}
+
 .timetable-controls:has(.timetable-target-field) {
-  grid-template-columns: minmax(165px, .8fr) minmax(230px, 1.25fr) minmax(145px, .65fr) auto minmax(160px, .75fr) minmax(165px, .75fr) auto;
+  grid-template-columns: minmax(180px, 1.15fr) minmax(250px, 1.8fr) minmax(135px, .9fr) minmax(130px, .8fr) minmax(145px, .9fr) auto;
 }
 
 .timetable-controls label,
 .timetable-filter-field {
   min-width: 0;
+  overflow: hidden;
   display: grid;
   gap: var(--space-1);
   color: var(--color-muted);
@@ -95,18 +128,51 @@
   font-weight: 600;
 }
 
+.timetable-target-field,
+.timetable-control-actions {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .timetable-controls label > .ant-select,
 .timetable-controls label > .ant-segmented,
 .timetable-target-select,
 .timetable-filter-field .ant-select {
+  min-width: 0;
   width: 100%;
+}
+
+.timetable-controls .ant-select-selection-item,
+.timetable-controls .ant-segmented-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .timetable-target-search-row {
   min-width: 0;
+  width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-2);
+}
+
+.timetable-target-search-row > * {
+  min-width: 0;
+}
+
+.timetable-target-search-row > .ant-btn {
+  min-width: 40px;
+  max-width: 100%;
+}
+
+.timetable-target-search-row > .ant-select,
+.timetable-target-search-row .ant-select-selector,
+.timetable-controls .ant-select-selector {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .timetable-target-search-row > .ant-btn.is-active {
@@ -174,6 +240,52 @@
   font-size: 11px;
 }
 
+.timetable-room-availability-filter {
+  container-type: inline-size;
+  grid-column: 1 / -1;
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-surface-subtle, #f8fafc);
+}
+
+@container (max-width: 680px) {
+  .timetable-room-availability-header {
+    display: none;
+  }
+
+  .timetable-room-availability-row {
+    grid-template-columns: minmax(0, 1fr) 36px;
+    gap: 8px;
+  }
+
+  .timetable-room-availability-row .timetable-room-availability-range {
+    grid-column: 1;
+  }
+
+  .timetable-room-availability-delete {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    align-self: center;
+  }
+}
+.timetable-room-availability-filter legend { padding: 0 6px; font-weight: 700; color: var(--color-ink); }
+.timetable-room-availability-help { margin: 0 0 12px; color: var(--color-muted); font-size: 12px; }
+.timetable-room-availability-table { display: grid; gap: 8px; }
+.timetable-room-availability-header,
+.timetable-room-availability-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 40px; gap: 10px; align-items: center; }
+.timetable-room-availability-header { color: var(--color-muted); font-size: 12px; font-weight: 600; }
+.timetable-room-availability-range { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; align-items: center; }
+.timetable-room-availability-range > span { color: var(--color-muted); font-size: 12px; }
+.timetable-room-availability-row .ant-select { min-width: 0; width: 100%; }
+.timetable-room-availability-delete { display: flex; justify-content: center; }
+.timetable-room-availability-joiner { display: flex; justify-content: center; margin: -2px 0; }
+.timetable-room-availability-actions { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.timetable-room-availability-progress { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--color-muted); font-size: 12px; }
+.timetable-inline-spinner { width: 14px; height: 14px; border: 2px solid var(--color-line); border-top-color: var(--color-brand); border-radius: 50%; animation: timetable-spin .8s linear infinite; }
+@keyframes timetable-spin { to { transform: rotate(360deg); } }
+
 .timetable-target-filter-actions {
   display: flex;
   align-items: center;
@@ -209,13 +321,22 @@
 }
 
 .timetable-control-actions {
-  grid-column: -2 / -1;
-  justify-self: end;
+  grid-column: 1 / -1;
+  justify-self: stretch;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-2);
   padding-bottom: 1px;
+  flex-wrap: wrap;
+}
+
+@container timetable-page (min-width: 1200px) {
+  .timetable-control-actions {
+    grid-column: -2 / -1;
+    justify-self: end;
+    flex-wrap: nowrap;
+  }
 }
 
 .timetable-default-open-toggle {
@@ -1243,10 +1364,27 @@
 
   .timetable-control-actions {
     justify-self: stretch;
+    grid-column: 1 / -1;
+    flex-wrap: wrap;
+  }
+
+  .timetable-target-field {
+    grid-column: span 2;
+  }
+}
+
+@container timetable-page (max-width: 1199px) {
+  .timetable-control-actions {
+    grid-column: 1 / -1;
+    flex-wrap: wrap;
   }
 }
 
 @media (max-width: 991.98px) {
+  .timetable-target-field {
+    grid-column: 1 / -1;
+  }
+
   .timetable-target-result-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2051,7 +2189,33 @@
 
 }
 
+@container timetable-page (max-width: 760px) {
+  .timetable-target-search-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .timetable-target-search-row > .ant-btn {
+    width: 100%;
+  }
+}
+
 @media (max-width: 575.98px) {
+  .timetable-room-availability-filter {
+    display: grid;
+    gap: 8px;
+  }
+
+  .timetable-room-availability-filter .ant-space {
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .timetable-room-availability-filter .ant-select,
+  .timetable-room-availability-filter .ant-input-number,
+  .timetable-room-availability-filter .ant-btn {
+    min-height: 40px;
+  }
+
   .timetable-target-filter-modal .ant-modal {
     margin: 0 auto;
   }
@@ -2075,6 +2239,14 @@
   .timetable-target-filter-grid {
     grid-template-columns: 1fr;
   }
+
+  .timetable-room-availability-header { display: none; }
+  .timetable-room-availability-row { grid-template-columns: minmax(0, 1fr) 32px; gap: 8px; }
+  .timetable-room-availability-range { min-width: 0; }
+  .timetable-room-availability-row .timetable-room-availability-range:nth-child(1),
+  .timetable-room-availability-row .timetable-room-availability-range:nth-child(2),
+  .timetable-room-availability-row .timetable-room-availability-range:nth-child(3) { grid-column: 1; }
+  .timetable-room-availability-delete { grid-column: 2; grid-row: 1 / span 3; align-self: center; }
 }
 
 @media (max-width: 359px) {

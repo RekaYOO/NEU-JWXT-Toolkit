@@ -111,3 +111,51 @@ def test_wrong_password_never_triggers_network_or_key_retries(monkeypatch):
     assert failure.value.error_type == auth_module.LOGIN_ERR_WRONG_PWD
     submit.assert_called_once()
     refresh_key.assert_not_called()
+
+
+def test_generic_login_failure_is_not_misclassified_as_wrong_password():
+    assert auth_module._classify_login_error("统一认证失败，请稍后重试") == auth_module.LOGIN_ERR_UNKNOWN
+
+
+def test_http_200_login_form_triggers_session_recovery(monkeypatch):
+    client = NEUAuthClient("20240001", "synthetic-password", restore_session=False)
+    client._logged_in = True
+    login_html = Mock(
+        status_code=200,
+        url="https://jwxt.neu.edu.cn/jwapp/sys/student/home.do",
+        headers={"Content-Type": "text/html; charset=utf-8"},
+        history=[],
+        text=(
+            '<html>统一身份认证 pass.neu.edu.cn'
+            '<form action="https://pass.neu.edu.cn/tpass/login">'
+            '<input name="un"><input name="pd"></form></html>'
+        ),
+    )
+    business = Mock(
+        status_code=200,
+        url="https://jwxt.neu.edu.cn/jwapp/sys/student/home.do",
+        headers={"Content-Type": "application/json"},
+        history=[],
+        text='{"code":"0"}',
+    )
+    request = Mock(side_effect=[login_html, business])
+    monkeypatch.setattr(client, "_session_request", request)
+    monkeypatch.setattr(client, "ensure_login", Mock(return_value=True))
+
+    assert client.get("https://jwxt.neu.edu.cn/jwapp/sys/student/home.do") is business
+    assert request.call_count == 2
+    client.ensure_login.assert_called_once()
+
+
+def test_silent_direct_recovery_switches_to_webvpn(monkeypatch):
+    client = NEUAuthClient("20240001", "synthetic-password", restore_session=False)
+    monkeypatch.setattr(
+        client, "_try_refresh_ticket",
+        Mock(side_effect=DirectAccessError("direct unavailable")),
+    )
+    webvpn = Mock(return_value={"status": "authenticated"})
+    monkeypatch.setattr(client, "start_webvpn_password_login", webvpn)
+
+    assert client.ensure_login()
+    assert client.active_mode == "webvpn"
+    webvpn.assert_called_once_with()

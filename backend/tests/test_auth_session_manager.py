@@ -3,12 +3,14 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import backend.app.dependencies as dependencies
 from backend.core.auth.session_manager import (
     AuthSessionManager,
+    RemoteSessionQueueTimeout,
     is_remote_read_context,
     remote_read_context,
 )
@@ -28,6 +30,30 @@ def test_pending_login_candidate_does_not_replace_active_identity():
     assert manager.epoch() == epoch
     assert manager.clear_pending_client(candidate) is candidate
     assert manager.peek_client() is active
+
+
+def test_remote_guard_queue_timeout_removes_waiter_cleanly():
+    manager = AuthSessionManager()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hold_remote_slot():
+        with manager.remote_guard(label="holder"):
+            entered.set()
+            release.wait(timeout=2)
+
+    holder = threading.Thread(target=hold_remote_slot)
+    holder.start()
+    assert entered.wait(timeout=1)
+    started = time.monotonic()
+    with pytest.raises(RemoteSessionQueueTimeout):
+        with manager.remote_guard(label="bounded", queue_timeout=0.05):
+            pass
+    assert time.monotonic() - started < 0.5
+    release.set()
+    holder.join(timeout=1)
+    with manager.remote_guard(label="after-timeout", queue_timeout=0.2):
+        pass
 
 
 def test_remote_guard_prioritizes_mutation_over_queued_background_work():

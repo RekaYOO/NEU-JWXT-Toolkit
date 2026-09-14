@@ -1,4 +1,4 @@
-import { gpaCourseGradingScale, selectGpaBusinessColumnKeys } from './GPACalculator';
+import { gpaCourseGradingScale, isGpaCoursePending, selectGpaBusinessColumnKeys } from './GPACalculator';
 
 jest.mock('../services/api', () => ({}));
 
@@ -37,4 +37,11 @@ test('培养计划课程的成绩分制优先使用导入快照并兼容元数�
     A100: { grading_scale: '百分制' },
   })).toBe('百分制');
   expect(gpaCourseGradingScale({ code: 'A200' }, {})).toBe('分制待定');
+});
+
+test('待输入课程必须同时填写有效学分和绩点', () => {
+  expect(isGpaCoursePending({ credit: 2, gpa: null })).toBe(true);
+  expect(isGpaCoursePending({ credit: 0, gpa: 3.5 })).toBe(true);
+  expect(isGpaCoursePending({ credit: 2, gpa: 0 })).toBe(false);
+  expect(isGpaCoursePending({ credit: 2, gpa: 3.5 })).toBe(false);
 });

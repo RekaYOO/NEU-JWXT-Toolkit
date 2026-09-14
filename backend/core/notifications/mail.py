@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import smtplib
 import ssl
 import threading
@@ -336,9 +337,11 @@ class SystemMailService:
         try:
             self._validate(config, require_complete=True)
             if rendered.get("html_body"):
-                self._send_email(
-                    config, rendered["subject"], rendered["body"], rendered["html_body"],
-                )
+                sender = self._send_email
+                if len(inspect.signature(sender).parameters) >= 4:
+                    sender(config, rendered["subject"], rendered["body"], rendered["html_body"])
+                else:
+                    sender(config, rendered["subject"], rendered["body"])
             else:
                 self._send_email(config, rendered["subject"], rendered["body"])
         except Exception as error:

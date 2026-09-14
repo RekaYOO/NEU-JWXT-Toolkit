@@ -327,6 +327,27 @@ select {
 }
 
 @media (max-width: 767px) {
+  .ant-space-wrap,
+  .timetable-control-actions,
+  .gpa-mobile-toolbar-actions {
+    row-gap: 8px !important;
+  }
+
+  .ant-space-wrap > .ant-space-item,
+  .timetable-control-actions > .ant-space-item,
+  .gpa-mobile-toolbar-actions > * {
+    min-width: 0;
+  }
+
+  .ant-space-wrap .ant-btn,
+  .timetable-control-actions .ant-btn,
+  .gpa-mobile-toolbar-actions .ant-btn {
+    min-height: 40px;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .stats-row {
     row-gap: var(--space-3);
   }

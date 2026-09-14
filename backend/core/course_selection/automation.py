@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import copy
+import hashlib
 import html
 import logging
+import re
 import threading
 import time
 import uuid
@@ -572,6 +574,114 @@ class CourseSelectionAutomationService:
         footer = "预测值是策略模型代理值，不是官方录取承诺。邮件发送失败不会触发或重放选课写操作。" if is_weight else "邮件发送失败不会触发或重放选课写操作。"
         html_body = f'''<!doctype html><html><body style="margin:0;background:#f3f6fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;color:#25324b"><div style="max-width:760px;margin:0 auto;padding:24px 12px"><div style="background:linear-gradient(135deg,#1769e0,#6b8cff);padding:24px;border-radius:16px 16px 0 0;color:white"><div style="font-size:12px;opacity:.85">NEU JWXT TOOLKIT · 选课通知</div><h1 style="margin:8px 0 0;font-size:22px">{html.escape(heading)}</h1></div><div style="background:white;padding:20px;border-radius:0 0 16px 16px;box-shadow:0 8px 28px rgba(31,53,90,.08)"><div style="padding:12px 14px;background:#f7f9fc;border-radius:10px;line-height:1.8"><b>{html.escape(str(archive.get('batch_name') or archive.get('batch_code') or '选课轮次'))}</b><br>{html.escape(str(archive.get('term_name') or archive.get('term_code') or '学期待定'))}<br><span style="color:#667085">{html.escape(reason)}</span></div><div style="overflow-x:auto;margin-top:18px"><table style="width:100%;border-collapse:collapse;min-width:620px"><thead><tr style="background:#f7f9fc;color:#475467"><th style="padding:10px 12px;text-align:left">课程与来源</th><th style="padding:10px 12px">{html.escape(count_label)} / {html.escape(capacity_label)}</th>{extra_headers}</tr></thead><tbody>{''.join(html_rows) or f'<tr><td colspan="{column_count}" style="padding:24px;text-align:center;color:#667085">当前没有需要通知的课程</td></tr>'}</tbody></table></div><p style="margin:18px 0 0;color:#98a2b3;font-size:12px;line-height:1.6">{html.escape(footer)}</p></div></div></body></html>'''
         return plain, html_body
+
+    def _notify_grab_issue(
+        self,
+        task: dict[str, Any],
+        *,
+        issue_kind: str,
+        message: str,
+    ) -> None:
+        """Send one task-scoped notice while leaving the grab task active."""
+
+        settings = self.get_automation_settings(
+            str(task.get("account") or ""), str(task.get("batch_code") or ""),
+        )
+        if not settings.get("mail_enabled") or not settings.get("notify_grab_result"):
+            return
+        inflight = task.get("inflight_mutation") or {}
+        candidate_ids = [str(inflight.get("class_id") or "").strip()]
+        group_ids = [str(inflight.get("group_id") or "").strip()]
+        stage_values = []
+        for group_id, result in (task.get("group_results") or {}).items():
+            if not isinstance(result, dict):
+                continue
+            stage = str(result.get("candidate_status") or result.get("status") or "").strip()
+            if stage:
+                stage_values.append(stage)
+            current_class_id = str(
+                result.get("current_class_id") or result.get("pending_class_id") or ""
+            ).strip()
+            if current_class_id:
+                candidate_ids.append(current_class_id)
+                group_ids.append(str(group_id).strip())
+        candidate_key = ",".join(sorted({value for value in candidate_ids if value}))
+        group_key = ",".join(sorted({value for value in group_ids if value}))
+        stage_key = ",".join(sorted({value for value in stage_values if value}))
+        # Timeout messages may contain changing durations or timestamps. Keep
+        # the original message in the email while deduplicating by a stable
+        # normalized fingerprint during repeated scheduler ticks.
+        normalized_message = re.sub(
+            r"\b\d{4}-\d{2}-\d{2}[T ][^\s]+|\b\d+(?:\.\d+)?\s*(?:ms|毫秒|秒)\b",
+            "<volatile>", str(message), flags=re.IGNORECASE,
+        )
+        normalized_message = re.sub(r"\s+", " ", normalized_message).strip()
+        signature = hashlib.sha256(
+            f"{issue_kind}|{candidate_key}|{group_key}|{stage_key}|{normalized_message}".encode("utf-8")
+        ).hexdigest()[:16]
+        state_key = (
+            f"{task.get('account')}:{task.get('batch_code')}:{task.get('task_id')}:"
+            f"grab-issue:{issue_kind}:{candidate_key or 'none'}:{group_key or 'none'}:{stage_key or 'none'}"
+        )
+        with self._lock:
+            previous = self._notification_state.get(state_key)
+            if isinstance(previous, dict) and previous.get("fingerprint") == signature:
+                return
+            if isinstance(previous, str) and previous:
+                return
+            # Reserve before enqueueing so overlapping ticks cannot enqueue
+            # the same logical alert twice.
+            self._notification_state[state_key] = {
+                "fingerprint": signature,
+                "status": "pending",
+                "at": datetime.now().astimezone().isoformat(),
+            }
+            self._write_json_map(self.notification_state_path, self._notification_state)
+            archive = next((copy.deepcopy(item) for item in self._archives if (
+                item.get("account") == task.get("account")
+                and item.get("batch_code") == task.get("batch_code")
+            )), None)
+        archive = archive or {
+            "batch_code": task.get("batch_code"),
+            "batch_name": task.get("name"),
+            "term_code": task.get("term_code"),
+            "selection_type_code": "02",
+        }
+        courses = self._notification_audience(
+            str(task.get("account") or ""), str(task.get("batch_code") or ""),
+            archive, task=task,
+        )
+        heading = (
+            "抢课任务继续监测"
+            if issue_kind == "module_limit"
+            else "抢课任务需要核验"
+        )
+        reason = (
+            f"任务“{task.get('name') or task.get('task_id')}”：{message}。"
+            "任务仍在运行，并停留在当前候选；不会因此切换到低优先级课程。"
+        )
+        body, html_body = self._notification_content(
+            archive, heading=heading, reason=reason, courses=courses,
+        )
+        if self._queue_notification(
+            str(task.get("account") or ""), str(task.get("batch_code") or ""),
+            f"JWXK {heading} · {task.get('name') or task.get('task_id')}",
+            body, f"grab-issue:{task.get('task_id')}:{signature}",
+            html_body=html_body,
+        ):
+            with self._lock:
+                self._notification_state[state_key] = {
+                    "fingerprint": signature,
+                    "status": "sent",
+                    "at": datetime.now().astimezone().isoformat(),
+                }
+                self._write_json_map(self.notification_state_path, self._notification_state)
+        else:
+            with self._lock:
+                current = self._notification_state.get(state_key)
+                if isinstance(current, dict) and current.get("fingerprint") == signature:
+                    self._notification_state.pop(state_key, None)
+                    self._write_json_map(self.notification_state_path, self._notification_state)
 
     def _write(self) -> None:
         serialized = json.dumps(self._tasks, ensure_ascii=False, indent=2)
@@ -3425,10 +3535,26 @@ class CourseSelectionAutomationService:
                     class_id = str(inflight.get("class_id") or "")
                     group_id = str(inflight.get("group_id") or "")
                     if not group_id or group_id not in grouped:
-                        self._set_state(
-                            task, "needs_review",
-                            "发现无法归属到方案组的历史提交记录，请人工核验官方已选结果",
+                        matching_groups = [
+                            candidate_group_id
+                            for candidate_group_id, items in grouped.items()
+                            if any(
+                                str(item.get("class_id") or "") == class_id
+                                for item in items
+                            )
+                        ]
+                        if len(matching_groups) == 1:
+                            group_id = matching_groups[0]
+                            inflight["group_id"] = group_id
+                    if not group_id or group_id not in grouped:
+                        issue = "发现无法归属到方案组的历史提交记录，正在等待方案同步并持续只读核验"
+                        self._notify_grab_issue(
+                            task, issue_kind="unassigned_inflight", message=issue,
                         )
+                        task["status"] = "waiting"
+                        task["message"] = issue
+                        task["last_attempt_at"] = datetime.now().astimezone().isoformat()
+                        self._persist_task(task)
                         return
                     result = group_results.get(group_id) or {}
                     if class_id in confirmed_by_class:
@@ -3457,14 +3583,17 @@ class CourseSelectionAutomationService:
                             result, minimum_seconds=self._poll_interval(task),
                         )
                         if self._confirmation_window_expired(result):
-                            result["status"] = "needs_review"
-                            self._set_state(
-                                task, "needs_review",
-                                "程序重启或登录恢复前有一项提交结果仍未确认，请人工核验官方已选结果",
+                            issue = "写操作已经发出，但官方已选结果长时间仍未出现，请人工核验"
+                            self._notify_grab_issue(
+                                task, issue_kind="mutation_uncertain", message=issue,
                             )
-                            return
+                            result["confirmation_deadline"] = None
+                            self._start_confirmation_window(
+                                result, minimum_seconds=self._poll_interval(task),
+                            )
                         task["last_attempt_at"] = datetime.now().astimezone().isoformat()
-                        task["message"] = "上一项抢选提交正在等待官方结果确认，不会重复提交"
+                        task["status"] = "waiting"
+                        task["message"] = "上一项抢选提交仍在只读核验中，不会重复提交"
                         self._persist_task(task)
                         return
                 self._set_execution_stage(task, "candidate_refresh", "正在刷新方案组候选的已选人数和容量")
@@ -3531,9 +3660,14 @@ class CourseSelectionAutomationService:
                             result, minimum_seconds=self._poll_interval(task),
                         )
                         if self._confirmation_window_expired(result):
-                            result["status"] = "needs_review"
-                            self._set_state(task, "needs_review", f"方案组“{spec['name']}”的提交长时间未确认，请人工核验")
-                            return
+                            issue = f"方案组“{spec['name']}”的提交长时间未从官方已选结果确认"
+                            self._notify_grab_issue(
+                                task, issue_kind="confirmation_pending", message=issue,
+                            )
+                            result["confirmation_deadline"] = None
+                            self._start_confirmation_window(
+                                result, minimum_seconds=self._poll_interval(task),
+                            )
                         continue
                     result["pending_checks"] = 0
                     result["pending_since"] = None
@@ -3575,12 +3709,14 @@ class CourseSelectionAutomationService:
                                 result, minimum_seconds=self._poll_interval(task),
                             )
                             if self._confirmation_window_expired(result):
-                                result["status"] = "needs_review"
-                                self._set_state(
-                                    task, "needs_review",
-                                    f"方案组“{spec['name']}”的高意愿候选长时间无法确认",
+                                issue = f"方案组“{spec['name']}”的高意愿候选长时间无法确认"
+                                self._notify_grab_issue(
+                                    task, issue_kind="candidate_data_unknown", message=issue,
                                 )
-                                return
+                                result["confirmation_deadline"] = None
+                                self._start_confirmation_window(
+                                    result, minimum_seconds=self._poll_interval(task),
+                                )
                             break
                         if candidate.get("full"):
                             reason = "官方人数已达到容量"
@@ -3635,9 +3771,14 @@ class CourseSelectionAutomationService:
                                 result, minimum_seconds=self._poll_interval(task),
                             )
                             if self._confirmation_window_expired(result):
-                                result["status"] = "needs_review"
-                                self._set_state(task, "needs_review", f"方案组“{spec['name']}”的教学班可选性长时间无法确认")
-                                return
+                                issue = f"方案组“{spec['name']}”的教学班可选性长时间无法确认"
+                                self._notify_grab_issue(
+                                    task, issue_kind="eligibility_unknown", message=issue,
+                                )
+                                result["confirmation_deadline"] = None
+                                self._start_confirmation_window(
+                                    result, minimum_seconds=self._poll_interval(task),
+                                )
                             break
                         if not is_real_teaching_class_type(item.get("teaching_class_type")):
                             reason = "缺少真实可提交课程类型，ALLKC 仅能用于目录查询"
@@ -3645,9 +3786,16 @@ class CourseSelectionAutomationService:
                                 result, item, index, "data_unknown",
                                 reason=reason, live=candidate,
                             )
-                            result.update({"status": "needs_review", "message": reason})
-                            self._set_state(task, "needs_review", f"方案组“{spec['name']}”包含不可提交的课程来源")
-                            return
+                            result.update({
+                                "status": "monitoring",
+                                "message": f"{reason}；等待方案数据同步后继续",
+                            })
+                            self._notify_grab_issue(
+                                task,
+                                issue_kind="invalid_candidate_source",
+                                message=f"方案组“{spec['name']}”包含不可提交的课程来源：{reason}",
+                            )
+                            break
                         if task.get("status") != "running":
                             return
                         self._set_group_candidate(
@@ -3670,6 +3818,7 @@ class CourseSelectionAutomationService:
                             class_id=item["class_id"], course_code=item["course_code"],
                             weight=item.get("weight"), confirm_risk=False,
                         )
+                        mutation_started = False
                         record = {
                             "group_id": group_id, "class_id": item["class_id"],
                             "course_code": item.get("course_code") or "",
@@ -3728,17 +3877,35 @@ class CourseSelectionAutomationService:
                             task["message"] = f"方案组“{spec['name']}”暂缓：{reason}"
                             self._switch_to_vacancy_watch(task)
                             break
+                        if failure_class == "MODULE_LIMIT":
+                            reason = mutation.get("message") or "已达到本选课模块的门数或学分上限"
+                            self._set_group_candidate(
+                                result, item, index, "module_limit", reason=reason, live=candidate,
+                            )
+                            result.update({
+                                "status": "monitoring",
+                                "message": f"{reason}；任务继续监测当前候选",
+                            })
+                            self._notify_grab_issue(
+                                task, issue_kind="module_limit", message=f"官方返回：{reason}",
+                            )
+                            break
+                        reason = mutation.get("message") or "官方返回未分类错误"
                         self._set_group_candidate(
-                            result, item, index, "needs_review",
-                            reason=mutation.get("message") or "官方返回未分类错误",
+                            result, item, index, "response_unknown",
+                            reason=reason,
                             live=candidate,
                         )
                         result.update({
-                            "status": "needs_review",
-                            "message": mutation.get("message") or "提交结果需要核验",
+                            "status": "monitoring",
+                            "message": f"官方返回“{reason}”；任务继续监测当前候选，不会降级",
                         })
-                        self._set_state(task, "needs_review", f"方案组“{spec['name']}”的提交结果无法安全分类")
-                        return
+                        self._notify_grab_issue(
+                            task,
+                            issue_kind="unknown_response",
+                            message=f"方案组“{spec['name']}”提交失败，官方返回：{reason}",
+                        )
+                        break
                     else:
                         result.update({
                             "status": "monitoring",
@@ -3763,14 +3930,28 @@ class CourseSelectionAutomationService:
         except NEULoginError as error:
             execution_failed = True
             if mutation_started:
-                self._set_state(task, "needs_review", "提交期间登录状态变化，结果不明确，请核验官方已选结果")
+                task["status"] = "waiting"
+                task["message"] = "提交期间登录状态变化，正在只读核验官方结果，不会重复提交"
+                self._notify_grab_issue(
+                    task,
+                    issue_kind="mutation_uncertain",
+                    message="提交期间登录状态发生变化，结果不明确",
+                )
+                self._persist_task(task)
             else:
                 self._wait_for_auth(task)
             self._fail_execution(task, error)
         except (requests.RequestException, JwxkError) as error:
             execution_failed = True
             if mutation_started:
-                self._set_state(task, "needs_review", f"提交结果不明确，请核验官方已选结果：{error}")
+                task["status"] = "waiting"
+                task["message"] = "提交结果不明确，正在只读核验官方结果，不会重复提交"
+                self._notify_grab_issue(
+                    task,
+                    issue_kind="mutation_uncertain",
+                    message=f"提交请求异常：{error}",
+                )
+                self._persist_task(task)
             else:
                 task["status"] = "waiting"
                 task["message"] = f"读取选课状态失败，将自动重试：{error}"

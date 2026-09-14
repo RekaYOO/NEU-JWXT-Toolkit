@@ -7,6 +7,7 @@ from backend.app.dependencies import (
     _storage, _auto_login, _api_logger, COOKIE_FILE,
     clear_pending_auth_client, get_auth_client, peek_auth_client,
     peek_pending_auth_client, remote_session_guard, set_pending_auth_client,
+    get_auth_recovery_status, request_auth_recovery,
     logout_auth_client, schedule_login_bootstrap, set_auth_client,
 )
 from backend.app.schemas import (
@@ -72,7 +73,12 @@ def _webvpn_sms_client(flow_id: str):
 @router.get("/api/status")
 def get_status():
     """获取登录状态和存储信息"""
-    client = get_auth_client()
+    # Status is intentionally local-only: a browser heartbeat must observe an
+    # in-flight recovery rather than start a second network probe or wait on
+    # the shared Session lock. The keepalive worker owns recovery.
+    client = peek_auth_client()
+    if client is None:
+        request_auth_recovery()
 
     storage_info = _storage.get_storage_info()
     has_credentials = _storage.load_credentials() is not None
@@ -115,6 +121,10 @@ def get_status():
         "network_mode": status_client.active_mode if status_client else "direct",
         "auth_error_code": auth_error_code or None,
         "auth_error_message": auth_error_message or None,
+        "recovery": get_auth_recovery_status(),
+        "pending_auth": pending_auth_challenge_snapshot(
+            (peek_pending_auth_client(), peek_auth_client())
+        ),
     }
 
 

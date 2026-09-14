@@ -299,9 +299,11 @@ def _classify_login_error(error_msg: str) -> str:
     
     # 明确是密码/账号错误
     pwd_keywords = [
-        "密码", "password", "wrong", "incorrect",
-        "账号", "用户名", "不存在", "学号",
-        "登录失败", "认证失败",
+        "密码错误", "密码不正确", "密码有误", "用户名或密码",
+        "账号或密码", "wrong password", "incorrect password",
+        "password is incorrect", "invalid password",
+        "账号不存在", "用户不存在", "学号不存在",
+        "invalid username", "bad credentials", "account does not exist",
     ]
     if any(kw in msg for kw in pwd_keywords):
         # 排除同时含有关键词的情况（优先判定为密钥问题）
@@ -1713,13 +1715,20 @@ class NEUAuthClient:
             try:
                 result = self.start_webvpn_password_login()
             except NEULoginError as error:
-                if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
-                    raise
+                if (
+                    getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK
+                    and self.username
+                    and self.password
+                ):
+                    logger.info("WebVPN 被校园网拒绝，静默切换校内直连恢复...")
+                    self.active_mode = "direct"
+                    self.network_mode = "direct"
+                    return self.login(self.target)
                 logger.warning(
                     "WebVPN 账号密码静默恢复失败，错误类型: %s",
                     getattr(error, "error_type", LOGIN_ERR_UNKNOWN),
                 )
-                return False
+                raise
 
             if result.get("status") == "authenticated":
                 self._logged_in = True
@@ -1762,16 +1771,25 @@ class NEUAuthClient:
             logger.info("业务系统 Session 失效，尝试恢复...")
             self._logged_in = False
         
-        # 第2步：尝试用 CAS Cookie 刷新票据（免密）
-        if self._try_refresh_ticket(self.target):
-            return True
+        try:
+            # 第2步：尝试用 CAS Cookie 刷新票据（免密）
+            if self._try_refresh_ticket(self.target):
+                return True
 
-        if not self.username or not self.password:
-            return False
-        
-        # 第3步：用账号密码重新登录（会自动处理密钥刷新）
-        logger.info("Cookie 失效，使用账号密码登录...")
-        return self.login(self.target)
+            if not self.username or not self.password:
+                return False
+
+            # 第3步：用账号密码重新登录（会自动处理密钥刷新）
+            logger.info("Cookie 失效，使用账号密码登录...")
+            return self.login(self.target)
+        except (DirectAccessError, WebVPNRequiredError):
+            if not self.username or not self.password:
+                raise
+            logger.info("校内直连不可用，静默切换 WebVPN 恢复...")
+            self.active_mode = "webvpn"
+            self.network_mode = "webvpn"
+            result = self.start_webvpn_password_login()
+            return result.get("status") == "authenticated"
 
     def request(self, method: str, url: str, **kwargs) -> requests.Response:
         """
@@ -1823,8 +1841,23 @@ class NEUAuthClient:
             if not _redirected_to_cas and self._is_auth_redirect(resp.url):
                 _redirected_to_cas = True
         
+        # Some JWXT deployments return the CAS login form with HTTP 200 while
+        # keeping the original business URL. Treat that as authentication
+        # expiry before a business parser turns it into a misleading data
+        # error.
+        login_html = self._looks_like_login_html(resp)
+        if login_html:
+            _redirected_to_cas = True
+
         if _redirected_to_cas:
             logger.info("检测到票据失效（重定向到认证页），重新登录...")
+            if is_remote_read_context():
+                # Visible shared reads must not hold their HTTP response open
+                # while a multi-route login chain runs. The application-level
+                # recovery worker will repair the same process identity and
+                # the browser will replay this read once.
+                self._logged_in = False
+                raise NEULoginError("统一认证会话已过期，正在自动恢复")
             with self._auth_operation_lock:
                 # Another concurrent read may already have repaired the same
                 # client while this response was in flight.
@@ -1845,8 +1878,39 @@ class NEUAuthClient:
                 raise NEULoginError("统一认证会话已过期")
             # 重试原请求（含协议回退）
             resp = self._session_request(method, url, **kwargs)
+            if self._looks_like_login_html(resp) or self._is_auth_redirect(resp.url):
+                self._logged_in = False
+                raise NEULoginError("统一认证恢复后仍返回登录页面")
         
         return resp
+
+    @staticmethod
+    def _looks_like_login_html(response: requests.Response) -> bool:
+        """Detect a trusted CAS/WebVPN login form returned with status 200."""
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        text = str(getattr(response, "text", "") or "")
+        if len(text) > 200_000:
+            text = text[:200_000]
+        if "html" not in content_type and not text.lstrip().lower().startswith(("<!doctype html", "<html", "<form")):
+            return False
+        lowered = text.lower()
+        if not any(marker in lowered for marker in ("pass.neu.edu.cn", "统一身份认证", "cas")):
+            return False
+        soup = BeautifulSoup(text, "lxml")
+        forms = soup.find_all("form")
+        for form in forms:
+            action = str(form.get("action") or "").lower()
+            fields = {
+                str(item.get("name") or "").lower()
+                for item in form.find_all("input")
+            }
+            if (
+                ("login" in action or "cas" in action or "pass.neu.edu.cn" in action)
+                and (fields & {"un", "username", "j_username"})
+                and (fields & {"pd", "password", "j_password"})
+            ):
+                return True
+        return False
 
     def _is_auth_redirect(self, url: str) -> bool:
         parsed = urlparse(url)
@@ -2927,8 +2991,18 @@ class NEUAuthClient:
                 logger.debug("CAS Cookie 已失效，需要重新登录")
                 return False
                 
-        except Exception as e:
-            logger.warning("票据刷新失败: %s", type(e).__name__)
+        except requests.exceptions.Timeout as e:
+            logger.warning("票据刷新超时: %s", type(e).__name__)
+            raise DirectAccessError(
+                "直连票据刷新超时，请检查校园网络；校外请切换 WebVPN"
+            ) from e
+        except requests.exceptions.RequestException as e:
+            logger.warning("票据刷新网络失败: %s", type(e).__name__)
+            raise DirectAccessError(
+                "直连票据刷新失败，请检查校园网络；校外请切换 WebVPN"
+            ) from e
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.warning("票据刷新响应不可用: %s", type(e).__name__)
             return False
 
     # ── 内部方法 ───────────────────────────────────────────────────────────────

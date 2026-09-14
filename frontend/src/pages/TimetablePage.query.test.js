@@ -148,6 +148,29 @@ describe('query timetable request lifecycle', () => {
     },
   );
 
+  test('browser weekly view returns to the current week on every page mount', async () => {
+    const currentWeeks = [1, 2, 3].map(number => ({
+      number, name: `第${number}周`, current: number === 2,
+    }));
+    const cached = { ...personal, weeks: currentWeeks };
+    readBrowserTimetableCache.mockResolvedValue({
+      terms: [{ code: termCode, name: '测试学期', current: true }],
+      current: termCode,
+      personal: [cached],
+      viewState: { termCode, campusCode: '00', weekNumber: 3, viewMode: 'week' },
+    });
+
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+
+    expect(week(2)?.classList.contains('is-selected')).toBe(true);
+    expect(week(3)?.classList.contains('is-selected')).toBe(false);
+  });
+
   test.each(['week', 'term'])(
     'small-screen cached %s timetable retains its initial auto-focus',
     async viewMode => {

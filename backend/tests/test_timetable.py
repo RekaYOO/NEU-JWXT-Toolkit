@@ -12,7 +12,95 @@ from backend.app.schemas.timetable import (
 )
 from backend.core.auth.client import NEULoginError
 from backend.core.timetable import TimetableAPI, TimetableError
+from backend.core.timetable.api import room_is_free_for_slots
+from backend.app.schemas.timetable import TimetableRoomAvailabilityRequest
 from backend.app.routers import timetable as timetable_router
+
+
+def test_room_availability_ranges_overlap_and_open_bounds():
+    courses = [{"weekday": 2, "weeks": [2, 3], "start_section": 3, "end_section": 5}]
+    assert not room_is_free_for_slots(courses, [{"week_start": 2, "week_end": 2, "weekday_start": 2, "weekday_end": 2, "start_section": 4, "end_section": 4}])
+    assert room_is_free_for_slots(courses, [{"week_start": 4, "week_end": None, "weekday_start": 2, "weekday_end": 2, "start_section": 4, "end_section": 4}])
+    assert room_is_free_for_slots(courses, [{"week_start": None, "week_end": None, "weekday_start": 1, "weekday_end": 1, "start_section": 1, "end_section": 12}])
+
+
+def test_room_availability_weekday_ranges_start_on_sunday():
+    sunday_course = [{"weekday": 7, "weeks": [2], "start_section": 1, "end_section": 2}]
+    assert not room_is_free_for_slots(sunday_course, [{"week_start": 2, "week_end": 2, "weekday_start": 7, "weekday_end": 2, "start_section": 1, "end_section": 2}])
+    assert room_is_free_for_slots(sunday_course, [{"week_start": 2, "week_end": 2, "weekday_start": 1, "weekday_end": 2, "start_section": 1, "end_section": 2}])
+
+
+def test_room_availability_unknown_course_is_never_assumed_free():
+    assert not room_is_free_for_slots([{"weekday": 2, "weeks": [], "start_section": 1, "end_section": 2}], [{"start_section": 1, "end_section": 2}])
+
+
+def test_room_availability_request_accepts_range_and_legacy_fields():
+    request = TimetableRoomAvailabilityRequest(term_code="2025-2026-1", campus_code="all", slots=[{"week": 2, "weekday": 1, "start_section": 1, "end_section": 2}])
+    slot = request.slots[0]
+    assert (slot.week_start, slot.week_end, slot.weekday_start, slot.weekday_end) == (2, 2, 1, 1)
+
+
+def test_room_availability_endpoint_advances_one_room_cursor():
+    from types import SimpleNamespace
+
+    calls = []
+    timetable = SimpleNamespace(
+        search_targets=lambda *args, **kwargs: {
+            "items": [{"id": "r1", "name": "A101"}, {"id": "r2", "name": "A102"}],
+            "total": 2,
+        },
+        get_schedule=lambda **kwargs: calls.append(kwargs) or {"courses": []},
+    )
+    request = TimetableRoomAvailabilityRequest(
+        term_code="2025-2026-1", campus_code="00", cursor=1, scan_limit=1,
+        slots=[{"week_start": 2, "week_end": 2, "weekday_start": 1, "weekday_end": 1, "start_section": 1, "end_section": 2}],
+    )
+
+    result = timetable_router.get_room_availability(request, SimpleNamespace(timetable=timetable))
+
+    assert result == {
+        "items": [{"id": "r2", "name": "A102"}],
+        "total": 1,
+        "scanned": 1,
+        "cursor": 2,
+        "candidate_total": 2,
+        "complete": True,
+        "scanned_room_ids": ["r2"],
+    }
+    assert calls[0]["target_id"] == "r2"
+
+
+def test_room_availability_seen_ids_prevent_rescan_when_catalog_order_changes():
+    from types import SimpleNamespace
+
+    scheduled = []
+    timetable = SimpleNamespace(
+        search_targets=lambda *args, **kwargs: {
+            "items": [{"id": "r2", "name": "A102"}, {"id": "r1", "name": "A101"}],
+            "total": 2,
+        },
+        get_schedule=lambda **kwargs: scheduled.append(kwargs["target_id"]) or {"courses": []},
+    )
+    request = TimetableRoomAvailabilityRequest(
+        term_code="2025-2026-1",
+        campus_code="00",
+        cursor=1,
+        seen_room_ids=["r1"],
+        scan_limit=1,
+        slots=[{
+            "week_start": 2, "week_end": 2,
+            "weekday_start": 1, "weekday_end": 1,
+            "start_section": 1, "end_section": 2,
+        }],
+    )
+
+    result = timetable_router.get_room_availability(
+        request, SimpleNamespace(timetable=timetable),
+    )
+
+    assert scheduled == ["r2"]
+    assert result["scanned_room_ids"] == ["r2"]
+    assert result["complete"] is True
 
 
 @pytest.mark.parametrize("mode", ["room", "teacher", "class"])

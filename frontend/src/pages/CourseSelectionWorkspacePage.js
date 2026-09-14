@@ -105,6 +105,8 @@ const candidateStatusMeta = status => ({
   submitting: { label: '正在提交', color: 'processing' },
   verifying: { label: '等待官方确认', color: 'processing' },
   mutation_uncertain: { label: '提交待核验', color: 'warning' },
+  response_unknown: { label: '官方结果待识别', color: 'warning' },
+  module_limit: { label: '模块门数或学分已达上限', color: 'warning' },
   auth_required: { label: '等待登录恢复', color: 'warning' },
   rate_limited: { label: '请求退避中', color: 'warning' },
   needs_review: { label: '需要人工核验', color: 'warning' },
@@ -116,6 +118,14 @@ const pollingModeLabel = mode => ({
   vacancy_watch: '空位追踪（≥15 秒）',
   weight_rebalance: '权重重算',
 }[mode] || mode || '等待启动');
+export const taskStartActionLabel = (task = {}) => {
+  const isSwap = task.task_type === 'vacancy_swap';
+  const isWeight = task.task_type === 'weight_strategy';
+  if (['paused', 'needs_review'].includes(task.status)) {
+    return isWeight ? '继续实时策略' : isSwap ? '继续追踪空位' : '继续抢课任务';
+  }
+  return isWeight ? '启动实时策略' : isSwap ? '开始追踪空位' : '同时启动全部方案组';
+};
 const modelForecastText = item => {
   if (item?.forecast_status === 'scope_mismatch') return '市场口径与年级人数不匹配，三种终局人数暂不可区分';
   if (item?.forecast_status === 'flat_current') return '当前数据下三种情景均回落为实时人数';
@@ -274,6 +284,27 @@ const batchScopeOptions = batch => {
     return [code, { code, name: officialName || courseScopeLabel(code) }];
   }).filter(([code]) => code)).values()];
 };
+export const isHumanitiesElectiveSelectionBatch = (batch = {}) => {
+  const name = String(batch?.name || batch?.batch_name || '').trim();
+  return name.includes('人文类选修课程选课');
+};
+
+export const filterCatalogGroupsByOnlineMode = (groups = [], mode = 'all') => {
+  if (!mode || mode === 'all') return groups;
+  const isOnline = course => String(course?.course_name || '').includes('在线式');
+  return (groups || []).map(group => {
+    const classes = Array.isArray(group.classes) ? group.classes : [];
+    if (!classes.length) {
+      return (mode === 'online') === isOnline(group) ? group : null;
+    }
+    const matches = classes.filter(course => (mode === 'online') === isOnline({
+      ...group,
+      ...course,
+      course_name: course.course_name || group.course_name,
+    }));
+    return matches.length ? { ...group, classes: matches, class_count: matches.length } : null;
+  }).filter(Boolean);
+};
 const displayCampusName = value => (/^[A-Za-z0-9_-]+$/.test(String(value || '')) ? '其他校区' : value);
 
 const EMPTY_CATALOG_FILTERS = Object.freeze({
@@ -341,16 +372,26 @@ const selectionScheduleFromRecords = (courses, selectionTypeCode) => {
   };
 };
 
-const selectionRecordsFromResponse = (result, selectionTypeCode = '') => {
+export const selectionRecordsFromResponse = (result, selectionTypeCode = '') => {
   const confirmed = (result?.selected || []).map(item => ({
     ...item, selection_record_type: 'selected',
   }));
   const volunteered = (result?.volunteered || []).map(item => ({
     ...item, selection_record_type: 'volunteered',
   }));
-  const merged = [...new Map([...confirmed, ...volunteered].map(item => [
-    item.class_id || `${item.course_code}:${item.course_name}`, item,
-  ])).values()];
+  const mergedByIdentity = new Map();
+  [...confirmed, ...volunteered].forEach(item => {
+    const identity = item.class_id || `${item.course_code}:${item.course_name}`;
+    const previous = mergedByIdentity.get(identity);
+    if (
+      !previous
+      || (!isCurrentBatchSelectionRecord(previous, selectionTypeCode)
+        && isCurrentBatchSelectionRecord(item, selectionTypeCode))
+    ) {
+      mergedByIdentity.set(identity, item);
+    }
+  });
+  const merged = [...mergedByIdentity.values()];
   return {
     confirmed: confirmed.filter(item => isCurrentBatchSelectionRecord(item, selectionTypeCode)),
     volunteered: volunteered.filter(item => isCurrentBatchSelectionRecord(item, selectionTypeCode)),
@@ -397,6 +438,8 @@ const CourseSelectionWorkspacePage = () => {
   const [filterDraft, setFilterDraft] = useState(catalogFilters);
   const [specialFilters, setSpecialFilters] = useState([]);
   const [specialFiltersDraft, setSpecialFiltersDraft] = useState([]);
+  const [onlineMode, setOnlineMode] = useState('all');
+  const [onlineModeDraft, setOnlineModeDraft] = useState('all');
   const [filterOptions, setFilterOptions] = useState(null);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterLoading, setFilterLoading] = useState(false);
@@ -468,6 +511,11 @@ const CourseSelectionWorkspacePage = () => {
     [status, batchCode],
   );
   const batch = remoteBatch || localBatch;
+  useEffect(() => {
+    if (isHumanitiesElectiveSelectionBatch(batch)) return;
+    setOnlineMode('all');
+    setOnlineModeDraft('all');
+  }, [batch?.batch_name, batch?.code, batch?.name]);
   const academicPlanSelected = useMemo(() => academicPlanSelectionRecords(
     selected, batch?.selection_type_code,
   ), [batch?.selection_type_code, selected]);
@@ -539,12 +587,15 @@ const CourseSelectionWorkspacePage = () => {
     - Number(isCurrentBatchSelectionRecord(left, batch?.selection_type_code))
   )), [selected, batch?.selection_type_code]);
   const catalogDisplaySignature = useMemo(() => JSON.stringify({
-    batchCode, page, keyword, scope, availability, weekday, timeSlot,
+    batchCode, page, keyword, scope, availability, weekday, timeSlot, onlineMode,
     filters: effectiveCatalogFilters,
     specialFilters,
-  }), [availability, batchCode, effectiveCatalogFilters, keyword, page, scope, specialFilters, timeSlot, weekday]);
+  }), [availability, batchCode, effectiveCatalogFilters, keyword, onlineMode, page, scope, specialFilters, timeSlot, weekday]);
   const visibleGroups = useMemo(() => {
-    const currentlyMatching = catalogGroupsForDisplay(groups, {
+    const onlineFilteredGroups = isHumanitiesElectiveSelectionBatch(batch)
+      ? filterCatalogGroupsByOnlineMode(groups, onlineMode)
+      : groups;
+    const currentlyMatching = catalogGroupsForDisplay(onlineFilteredGroups, {
       availability, weekday, specialFilters,
     });
     const previousLayout = catalogDisplayLayoutRef.current;
@@ -552,8 +603,8 @@ const CourseSelectionWorkspacePage = () => {
       ? extendCatalogDisplayLayout(previousLayout.layout, currentlyMatching)
       : createCatalogDisplayLayout(currentlyMatching);
     catalogDisplayLayoutRef.current = { signature: catalogDisplaySignature, layout };
-    return applyCatalogDisplayLayout(groups, layout);
-  }, [availability, catalogDisplaySignature, groups, specialFilters, weekday]);
+    return applyCatalogDisplayLayout(onlineFilteredGroups, layout);
+  }, [availability, batch, catalogDisplaySignature, groups, onlineMode, specialFilters, weekday]);
 
   const fetchEligibility = async (classIds, config = {}) => {
     const ids = [...new Set(classIds.filter(Boolean))];
@@ -1053,6 +1104,7 @@ const CourseSelectionWorkspacePage = () => {
     setFilterDraft(catalogFilters);
     setWeekdayDraft(weekday);
     setSpecialFiltersDraft(specialFilters);
+    setOnlineModeDraft(onlineMode);
     setFilterOpen(true);
     try { await ensureCatalogFilterOptions(); }
     catch (error) { message.error(error.message || '读取课程筛选项失败'); }
@@ -2128,10 +2180,15 @@ const CourseSelectionWorkspacePage = () => {
     if (view === 'selected') return loadSelected({ includeMarket: true });
     return loadTasks();
   };
-  const catalogGroupLiveStatsMap = useMemo(() => new Map(groups.map(group => [
+  const catalogStatsGroups = useMemo(() => (
+    isHumanitiesElectiveSelectionBatch(batch)
+      ? filterCatalogGroupsByOnlineMode(groups, onlineMode)
+      : groups
+  ), [batch, groups, onlineMode]);
+  const catalogGroupLiveStatsMap = useMemo(() => new Map(catalogStatsGroups.map(group => [
     group.group_id,
     catalogGroupLiveStats(group, catalogClassConflictMap, batch?.selection_type_code),
-  ])), [batch?.selection_type_code, catalogClassConflictMap, groups]);
+  ])), [batch?.selection_type_code, catalogClassConflictMap, catalogStatsGroups]);
   const allScheduleOverlay = useMemo(
     () => [...selectedScheduleOverlay, ...candidateScheduleOverlay, ...savedExperimentPreviewOverlay],
     [candidateScheduleOverlay, savedExperimentPreviewOverlay, selectedScheduleOverlay],
@@ -2422,11 +2479,12 @@ const CourseSelectionWorkspacePage = () => {
     await savePlan(nextPlan, planGroupConfigs, nextSelections);
   };
 
+  const onlineFilterActive = isHumanitiesElectiveSelectionBatch(batch) && onlineMode !== 'all';
   const activeAdvancedFilters = Object.values(effectiveCatalogFilters).filter(Boolean).length
-    + (weekday !== 'all' ? 1 : 0) + specialFilters.length;
+    + (weekday !== 'all' ? 1 : 0) + specialFilters.length + Number(onlineFilterActive);
   const moreFilterCount = Object.entries(effectiveCatalogFilters).filter(([key, value]) => (
     key !== 'campus' && Boolean(value)
-  )).length + (weekday !== 'all' ? 1 : 0) + specialFilters.length;
+  )).length + (weekday !== 'all' ? 1 : 0) + specialFilters.length + Number(onlineFilterActive);
   const catalog = (
     <Spin spinning={loading || (availability === 'selectable' && eligibilityLoading.length > 0)}>
       <div className="jwxk-catalog-layout" ref={catalogRef}>
@@ -2474,6 +2532,7 @@ const CourseSelectionWorkspacePage = () => {
                 const label = CATALOG_SPECIAL_FILTER_OPTIONS.find(option => option.value === value)?.label || value;
                 return <Tag key={`special-filter-${value}`} closable onClose={() => setSpecialFilters(previous => previous.filter(item => item !== value))}>特殊筛选 · {label}</Tag>;
               })}
+              {onlineFilterActive && <Tag closable onClose={() => setOnlineMode('all')}>在线课 · {onlineMode === 'online' ? '在线式' : '线下课'}</Tag>}
               {Object.entries(catalogFilters).filter(([, value]) => value).map(([key, value]) => (
                 <Tag key={`manual-${key}`} closable onClose={() => { if (key === 'campus') { campusFilterTouchedRef.current = true; campusDefaultAppliedRef.current = true; } setCatalogFilters(previous => ({ ...previous, [key]: '' })); }}>{FILTER_LABELS[key]} · {filterValueLabel(key, value)}</Tag>
               ))}
@@ -2906,7 +2965,7 @@ const CourseSelectionWorkspacePage = () => {
     })}</div>
         {isWeight && <Text type="secondary">最近计算 {formatTaskTimestamp(task.weight_status?.last_calculated_at)} · 最近调整 {task.weight_status?.last_adjusted_at ? formatTaskTimestamp(task.weight_status.last_adjusted_at) : '暂无'}</Text>}
         {(task.results || []).length > 0 && <div className="jwxk-task-history"><Text strong>最近操作</Text>{[...(task.results || [])].slice(-5).reverse().map((result, index) => <div key={`${result.at || index}:${result.class_id || ''}`}><span>{result.action === 'weight_drop' ? '撤回权重' : result.action === 'weight_add' ? `投放 ${result.weight || ''} 点权重` : result.action === 'drop' ? '自动退选' : '提交选课'} · {historyCourseLabel(result)}</span><small>{result.message || `官方代码 ${result.code || '-'}`} · {formatTaskTimestamp(result.at)}</small></div>)}</div>}
-        <Space wrap className="jwxk-task-actions"><Button type={isWeight && attentionTaskId === task.task_id ? 'primary' : 'default'} className={isWeight && attentionTaskId === task.task_id ? 'jwxk-start-strategy-attention' : ''} icon={<PlayCircleOutlined />} loading={taskActionLoading === `${task.task_id}:start`} disabled={active || ['success', 'failed', 'needs_review', 'cancelled'].includes(task.status)} onClick={() => runTaskAction(task, 'start')}>{isWeight ? '启动实时策略' : isSwap ? '开始追踪空位' : '同时启动全部方案组'}</Button><Button type="primary" ghost icon={<ReloadOutlined />} loading={taskActionLoading === `${task.task_id}:check_now`} disabled={!active} onClick={() => runTaskAction(task, 'check_now')}>{isWeight ? '立即检查并执行策略' : isSwap ? '立即检查空位' : '立即检查'}</Button><Button icon={<PauseCircleOutlined />} loading={taskActionLoading === `${task.task_id}:pause`} disabled={!active} onClick={() => runTaskAction(task, 'pause')}>暂停</Button><Button danger loading={taskActionLoading === `${task.task_id}:cancel`} onClick={() => Modal.confirm({ title: '取消并删除这个任务？', content: '任务会立即停止，并从任务列表中移除。', okText: '取消任务', okButtonProps: { danger: true }, onOk: () => runTaskAction(task, 'cancel') })}>取消任务</Button></Space>
+        <Space wrap className="jwxk-task-actions"><Button type={isWeight && attentionTaskId === task.task_id ? 'primary' : 'default'} className={isWeight && attentionTaskId === task.task_id ? 'jwxk-start-strategy-attention' : ''} icon={<PlayCircleOutlined />} loading={taskActionLoading === `${task.task_id}:start`} disabled={active || ['success', 'failed', 'cancelled'].includes(task.status)} onClick={() => runTaskAction(task, 'start')}>{taskStartActionLabel(task)}</Button><Button type="primary" ghost icon={<ReloadOutlined />} loading={taskActionLoading === `${task.task_id}:check_now`} disabled={!active} onClick={() => runTaskAction(task, 'check_now')}>{isWeight ? '立即检查并执行策略' : isSwap ? '立即检查空位' : '立即检查'}</Button><Button icon={<PauseCircleOutlined />} loading={taskActionLoading === `${task.task_id}:pause`} disabled={!active} onClick={() => runTaskAction(task, 'pause')}>暂停</Button><Button danger loading={taskActionLoading === `${task.task_id}:cancel`} onClick={() => Modal.confirm({ title: '取消并删除这个任务？', content: '任务会立即停止，并从任务列表中移除。', okText: '取消任务', okButtonProps: { danger: true }, onOk: () => runTaskAction(task, 'cancel') })}>取消任务</Button></Space>
       </Card>;
   })}{!tasks.length && <Empty description={jwxkSelectionMode(batch?.selection_type_code).taskEmptyText} />}</div>;
 
@@ -3054,14 +3113,16 @@ const CourseSelectionWorkspacePage = () => {
         setCatalogFilters(nextFilters);
         setWeekday(weekdayDraft);
         setSpecialFilters(specialFiltersDraft);
+        setOnlineMode(isHumanitiesElectiveSelectionBatch(batch) ? onlineModeDraft : 'all');
         setFilterOpen(false);
       }}
-      footer={(_, { OkBtn, CancelBtn }) => <><Button onClick={() => { setFilterDraft({ ...EMPTY_CATALOG_FILTERS }); setWeekdayDraft('all'); setSpecialFiltersDraft([]); }}>重置</Button><CancelBtn /><OkBtn /></>}
+      footer={(_, { OkBtn, CancelBtn }) => <><Button onClick={() => { setFilterDraft({ ...EMPTY_CATALOG_FILTERS }); setWeekdayDraft('all'); setSpecialFiltersDraft([]); setOnlineModeDraft('all'); }}>重置</Button><CancelBtn /><OkBtn /></>}
     >
       <div className="jwxk-filter-grid">
         <label><span>课程性质</span><Select allowClear value={filterDraft.courseNature || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, courseNature: value || '' }))} options={effectiveFilterOptions.course_natures} placeholder={filterLoading ? '正在加载' : '全部性质'} /></label>
         <label><span>课程类别</span><Select allowClear value={filterDraft.courseCategory || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, courseCategory: value || '', generalElectiveCategory: isGeneralElectiveCategory(value) ? previous.generalElectiveCategory : '' }))} options={effectiveFilterOptions.course_categories} placeholder={filterLoading ? '正在加载' : '全部类别'} /></label>
         {isGeneralElectiveCategory(filterDraft.courseCategory) && <label><span>通识选修课类别</span><Select showSearch allowClear optionFilterProp="label" value={filterDraft.generalElectiveCategory || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, generalElectiveCategory: value || '' }))} options={effectiveFilterOptions.general_elective_categories} placeholder={filterLoading ? '正在加载' : '全部通识类别'} /></label>}
+        {isHumanitiesElectiveSelectionBatch(batch) && <label><span>在线课</span><Select value={onlineModeDraft} onChange={setOnlineModeDraft} options={[{ value: 'all', label: '不限' }, { value: 'online', label: '在线式' }, { value: 'offline', label: '线下课' }]} /></label>}
         <label><span>星期</span><Select value={weekdayDraft} onChange={setWeekdayDraft} options={[{ value: 'all', label: '全部星期' }, ...WEEKDAYS.map((label, index) => ({ value: String(index + 1), label: `周${label}` }))]} /></label>
         <label><span>开课单位</span><Select showSearch allowClear optionFilterProp="label" value={filterDraft.department || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, department: value || '' }))} options={effectiveFilterOptions.departments} placeholder={filterLoading ? '正在加载' : '全部单位'} /></label>
         <label><span>开始节次</span><Select allowClear value={filterDraft.startSection || undefined} onChange={value => setFilterDraft(previous => ({ ...previous, startSection: value || '' }))} options={effectiveFilterOptions.sections} placeholder="不限" /></label>

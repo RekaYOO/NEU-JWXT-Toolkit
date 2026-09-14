@@ -19,6 +19,61 @@ class TimetableError(RuntimeError):
     """The official timetable service returned an unusable response."""
 
 
+def room_is_free_for_slots(courses: Iterable[Mapping[str, Any]], slots: Iterable[Mapping[str, Any]]) -> bool:
+    """Conservatively validate inclusive availability ranges."""
+    rows = list(courses)
+    conditions = list(slots)
+    if not conditions:
+        return True
+
+    def condition_free(condition):
+        ws = condition.get("week_start", condition.get("week"))
+        we = condition.get("week_end", condition.get("week"))
+        ds = condition.get("weekday_start", condition.get("weekday"))
+        de = condition.get("weekday_end", condition.get("weekday"))
+        ss = condition.get("start_section") or 1
+        se = condition.get("end_section") or 30
+        weekday_order = {7: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
+        for course in rows:
+            cday, cstart, cend = course.get("weekday"), course.get("start_section"), course.get("end_section")
+            try:
+                cday, cstart, cend = int(cday), int(cstart), int(cend)
+            except (TypeError, ValueError):
+                return False
+            if cday < 1 or cstart < 1 or cend < cstart:
+                return False
+            day_rank = weekday_order[cday]
+            if (
+                (ds is not None and day_rank < weekday_order[int(ds)])
+                or (de is not None and day_rank > weekday_order[int(de)])
+            ):
+                continue
+            weeks = course.get("weeks")
+            try:
+                normalized_weeks = {int(value) for value in (weeks or [])}
+            except (TypeError, ValueError):
+                return False
+            # Unknown recurrence cannot prove a requested interval is empty.
+            if not normalized_weeks:
+                return False
+            if ws is not None or we is not None:
+                if not any((ws is None or week >= int(ws)) and (we is None or week <= int(we)) for week in normalized_weeks):
+                    continue
+            if cstart <= int(se) and cend >= int(ss):
+                return False
+        return True
+
+    results = [condition_free(condition) for condition in conditions]
+    return all(results) if all(condition.get("joiner", "and") != "or" for condition in conditions[1:]) else _combine_slot_results(results, conditions)
+
+
+def _combine_slot_results(results, conditions):
+    value = results[0]
+    for result, condition in zip(results[1:], conditions[1:]):
+        value = (value and result) if condition.get("joiner", "and") == "and" else (value or result)
+    return value
+
+
 @dataclass(frozen=True)
 class TimetableTerm:
     code: str

@@ -57,6 +57,9 @@
 
 .score-detail-trigger {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
   padding: 2px;
   background: transparent;
   border: 0;
@@ -66,6 +69,12 @@
 
 .score-detail-trigger .ant-tag {
   margin-inline-end: 0;
+  min-width: 42px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 20px;
 }
 
 .score-detail-trigger:hover .ant-tag {

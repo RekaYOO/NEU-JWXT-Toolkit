@@ -33,6 +33,7 @@ import {
   refreshWebVPNCaptcha, sendWebVPNSMSCode,
   verifyWebVPNSMSCode, cancelWebVPNSMSLogin,
   getWebVPNErrorMessage, isWebVPNFlowInvalid, isWebVPNCampusNetworkBlocked,
+  markAuthSessionAuthenticated,
 } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
 import { isExportToolAvailable } from './export/exportTools';
@@ -338,6 +339,8 @@ function App() {
   );
   const authRecoveryPromptRef = useRef(false);
   const authRecoveryModalRef = useRef(null);
+  const authSuccessNoticeRef = useRef({ username: '', at: 0 });
+  const authSuccessGenerationRef = useRef(0);
   const [pendingAuthFlow, setPendingAuthFlow] = useState(null);
   const [pendingCaptchaCode, setPendingCaptchaCode] = useState('');
   const [pendingSmsCode, setPendingSmsCode] = useState('');
@@ -464,6 +467,8 @@ function App() {
 
   useEffect(() => {
     const finishAsLoggedOut = () => {
+      const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (currentPath && currentPath !== '/login') sessionStorage.setItem('neu_auth_return_path', currentPath);
       sessionStorage.removeItem(OFFLINE_SESSION_KEY);
       setOfflineMode(false);
       setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
@@ -473,10 +478,13 @@ function App() {
 
     const requireAuthentication = async () => {
       if (
+        isLoggedIn
+        ||
         offlineMode
         || isManualLogoutActive()
         || authRecoveryPromptRef.current
       ) return;
+      const startedBeforeLoginGeneration = authSuccessGenerationRef.current;
       authRecoveryPromptRef.current = true;
 
       let localStatus = null;
@@ -486,10 +494,31 @@ function App() {
         console.warn('读取离线能力失败', error);
       }
 
-      if (!localStatus?.available) {
+      // A foreground login may complete while the offline-capability request
+      // is in flight. The old 401 is then obsolete and must not open a modal.
+      if (startedBeforeLoginGeneration !== authSuccessGenerationRef.current) {
         authRecoveryPromptRef.current = false;
+        return;
+      }
+
+      if (!localStatus?.available) {
         finishAsLoggedOut();
-        message.warning('教务会话已失效，自动恢复未成功，请重新登录');
+        authRecoveryModalRef.current = Modal.confirm({
+          title: '教务会话已失效',
+          content: '自动恢复未成功，请重新登录。登录成功后将返回当前页面。',
+          okText: '重新登录',
+          cancelText: '关闭',
+          onOk: () => {
+            window.history.pushState({}, '', '/login');
+            window.dispatchEvent(new PopStateEvent('popstate'));
+            authRecoveryPromptRef.current = false;
+            authRecoveryModalRef.current = null;
+          },
+          onCancel: () => {
+            authRecoveryPromptRef.current = false;
+            authRecoveryModalRef.current = null;
+          },
+        });
         return;
       }
 
@@ -521,7 +550,7 @@ function App() {
       authRecoveryModalRef.current = null;
       authRecoveryPromptRef.current = false;
     };
-  }, [offlineMode]);
+  }, [isLoggedIn, offlineMode]);
 
   useEffect(() => {
     const handleCampusBlock = event => {
@@ -689,15 +718,32 @@ function App() {
   };
 
   const handleLoginSuccess = useCallback((username) => {
+    const normalizedUsername = String(username || '已登录');
+    const now = Date.now();
+    const previousSuccess = authSuccessNoticeRef.current;
+    const duplicate = previousSuccess.username === normalizedUsername
+      && now - previousSuccess.at < 5000;
+    authSuccessNoticeRef.current = { username: normalizedUsername, at: now };
+    authSuccessGenerationRef.current += 1;
+    markAuthSessionAuthenticated();
+    authRecoveryModalRef.current?.destroy();
+    authRecoveryModalRef.current = null;
+    authRecoveryPromptRef.current = false;
     clearManualLogout();
     sessionStorage.removeItem(OFFLINE_SESSION_KEY);
     setOfflineMode(false);
     setOfflineCapabilities(EMPTY_OFFLINE_CAPABILITIES);
     setIsLoggedIn(true);
-    setUserInfo(username);
+    setUserInfo(normalizedUsername);
     setTimetableRecoveryActive(false);
     setTimetableRecoveryNotice('');
-    message.success('登录成功');
+    const returnPath = sessionStorage.getItem('neu_auth_return_path');
+    sessionStorage.removeItem('neu_auth_return_path');
+    if (returnPath && returnPath !== '/login') {
+      window.history.pushState({}, '', returnPath);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
+    if (!duplicate) message.success({ key: 'neu-login-success', content: '登录成功' });
   }, []);
 
   const handleLogout = useCallback(() => {

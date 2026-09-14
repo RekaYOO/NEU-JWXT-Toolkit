@@ -16,8 +16,15 @@ from typing import Callable, Optional
 from fastapi.concurrency import contextmanager_in_threadpool
 
 from backend.core.auth import AuthSessionManager, NEUAuthClient
-from backend.core.auth.client import NEULoginError, WEBVPN_ERR_CAMPUS_NETWORK
+from backend.core.auth.client import (
+    DirectAccessError,
+    LOGIN_ERR_WRONG_PWD,
+    NEULoginError,
+    WEBVPN_ERR_CAMPUS_NETWORK,
+    WebVPNRequiredError,
+)
 from backend.core.auth.session_manager import remote_read_context
+from backend.core.auth.keepalive import AuthKeepaliveService
 from backend.core.storage import (
     AcademicReportStorage,
     AutoLoginManager,
@@ -94,12 +101,14 @@ def remote_session_guard(
     priority: str = "foreground",
     label: str = "remote-route",
     on_queued: Callable[[], None] | None = None,
+    queue_timeout: float | None = None,
 ):
     """Serialize every operation that may touch the shared remote session."""
     with _auth_sessions.remote_guard(
         priority=priority,
         label=label,
         on_queued=on_queued,
+        queue_timeout=queue_timeout,
     ) as timing:
         yield timing
 
@@ -142,9 +151,13 @@ def tracking_remote_session_guard():
 
 
 @contextmanager
-def foreground_auth_session_guard():
+def foreground_auth_session_guard(*, queue_timeout: float | None = None):
     """Prioritize foreground authentication recovery ahead of queued reads."""
-    with remote_session_guard(priority="foreground_auth", label="auth-recovery") as timing:
+    with remote_session_guard(
+        priority="foreground_auth",
+        label="auth-recovery",
+        queue_timeout=queue_timeout,
+    ) as timing:
         yield timing
 
 
@@ -779,191 +792,241 @@ def auth_generation_is_current(
 # ── 依赖函数 ──────────────────────────────────────────────────────────────────
 
 def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
-    """
-    获取当前认证客户端
-
-    恢复优先级：
-    1. 内存中的客户端（如果有效）
-    2. 尝试用保存的 Cookie 恢复（免密）
-    3. 尝试用保存的密码重新登录
-    """
+    """Resolve one process-wide identity through a bounded recovery chain."""
     global _last_auth_recovery_error_code
-    # An interactive candidate owns its requests.Session until it succeeds,
-    # expires or is cancelled.  Do not create another password-login client
-    # behind it: doing so replaces the CAPTCHA every few seconds and makes the
-    # challenge impossible for the user to complete.  A separately active and
-    # already authenticated identity may continue serving its existing pages.
     pending_client = peek_pending_auth_client()
     active_client = _auth_sessions.peek_client()
     if pending_client is not None:
+        _auth_sessions.set_auth_recovery_state(
+            "interaction_required",
+            subject=getattr(pending_client, "username", ""),
+            phase="webvpn_second_auth",
+            modes=("webvpn",),
+            error_code="INTERACTION_REQUIRED",
+            message="WebVPN 登录需要完成验证码或短信认证",
+        )
         return active_client if active_client is not None and active_client.is_logged_in else None
 
-    # Resolve only local identity data before touching the school systems.
-    # Once one request exhausts the recovery chain, all page/status/cache
-    # callers share the manager cooldown instead of replaying the same Cookie
-    # and password login serially every few seconds.
-    saved_credentials = None
-    recovery_subject = str(getattr(active_client, "username", "") or "")
-    if not recovery_subject:
-        try:
-            saved_credentials = _storage.load_credentials()
-        except (OSError, ValueError, TypeError):
-            saved_credentials = None
-        if saved_credentials:
-            recovery_subject = str(saved_credentials[0] or "")
+    try:
+        saved_credentials = _storage.load_credentials()
+    except (OSError, ValueError, TypeError):
+        saved_credentials = None
+    recovery_subject = str(
+        getattr(active_client, "username", "")
+        or (saved_credentials[0] if saved_credentials else "")
+        or ""
+    )
     if not _auth_sessions.auth_recovery_allowed(recovery_subject):
         return active_client if active_client is not None and active_client.is_logged_in else None
 
-    recovery_error_code = ""
-
-    def remember_failure(error: Exception) -> None:
-        nonlocal recovery_error_code
-        recovery_error_code = str(
-            getattr(error, "error_code", None) or recovery_error_code
-        )
-
-    # 1. 检查内存中的客户端
-    if active_client is not None:
-        # 二维码或短信流程必须继续使用原 Session。状态查询不能在流程尚未
-        # 完成时触发另一轮静默账密登录并覆盖 flow。
-        if active_client._webvpn_qr_flow or active_client._webvpn_sms_flow:
-            return active_client if active_client.is_logged_in else None
-
-        # Cookie 恢复的客户端可能没有内存密码；同账号保存过凭据时补齐，
-        # 让 WebVPN 及其他业务子会话可以继续静默恢复。
-        attach_saved_auth_credentials(active_client)
-        # 尝试确保登录（内部会优先用 Cookie 刷新）
-        try:
-            if active_client.ensure_login():
-                _last_auth_recovery_error_code = ""
-                return active_client
-        except Exception as error:
-            remember_failure(error)
-            _api_logger.warning(
-                "[Auth] 当前会话自动恢复失败: %s",
-                type(error).__name__,
-            )
-            log_security_event(
-                "neu_session_restore",
-                "failure",
-                subject=getattr(active_client, "username", ""),
-                reason="active_session_restore_failed",
-                auth_method="session_cookie",
-                error_type=type(error).__name__,
-            )
-            if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
-                # The gateway explicitly rejects campus-network clients.  Do
-                # not create more cookie/password clients in this same status
-                # check and repeat a request that cannot succeed.
-                _last_auth_recovery_error_code = WEBVPN_ERR_CAMPUS_NETWORK
-                _auth_sessions.note_auth_recovery_failure(
-                    recovery_subject,
-                    error_code=WEBVPN_ERR_CAMPUS_NETWORK,
-                )
-                return None
-        # Do not clear the process-wide identity yet.  A transient probe or a
-        # polluted requests.Session can still be repaired by a clean client
-        # below.  Clearing here used to advance the identity epoch before the
-        # replacement was ready, cancelling freshly submitted cache work with
-        # ``identity_changed``.  Commit a successful replacement atomically,
-        # and expose a logged-out state only after every recovery path fails.
-
-    # 2. 先尝试恢复二维码/WebVPN Cookie 会话，不要求保存密码
-    session_client = NEUAuthClient(cookie_file=COOKIE_FILE)
-    try:
-        if session_client.ensure_login():
-            _last_auth_recovery_error_code = ""
-            attach_saved_auth_credentials(session_client)
-            set_auth_client(session_client)
-            schedule_login_bootstrap(session_client)
-            log_security_event(
-                "neu_session_restore",
-                "success",
-                subject=getattr(session_client, "username", ""),
-                auth_method="session_cookie",
-                network_mode=getattr(session_client, "active_mode", ""),
-            )
-            return session_client
-    except Exception as error:
-        remember_failure(error)
-        _api_logger.warning(
-            "[Auth] Cookie 会话自动恢复失败: %s",
-            type(error).__name__,
-        )
-        log_security_event(
-            "neu_session_restore",
-            "failure",
-            reason="stored_session_restore_failed",
-            auth_method="session_cookie",
-            error_type=type(error).__name__,
-        )
-        if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
-            _last_auth_recovery_error_code = WEBVPN_ERR_CAMPUS_NETWORK
-            _auth_sessions.note_auth_recovery_failure(
-                recovery_subject,
-                error_code=WEBVPN_ERR_CAMPUS_NETWORK,
-            )
-            return None
-
-    # 3. 尝试加载保存的凭证并创建客户端
-    creds = saved_credentials if saved_credentials is not None else _storage.load_credentials()
-    if creds:
-        username, password = creds
-        # 创建客户端时会自动尝试从 Cookie 文件恢复
-        client = NEUAuthClient(
+    username, password = saved_credentials or (recovery_subject, "")
+    candidate = active_client
+    if candidate is None:
+        candidate = NEUAuthClient(
             username=username,
             password=password,
-            cookie_file=COOKIE_FILE
+            cookie_file=COOKIE_FILE,
+            timeout=8,
         )
-        # 尝试登录（内部会优先用 Cookie 刷新票据）
+        recovery_subject = str(candidate.username or username or "")
+    else:
+        attach_saved_auth_credentials(candidate)
+
+    preferred_mode = str(getattr(candidate, "active_mode", "direct") or "direct")
+    attempted_modes: list[str] = []
+    last_error: Exception | None = None
+    credential_candidate_attempted = False
+
+    def error_code(error: Exception | None) -> str:
+        if error is None:
+            return "REQUEST_ERROR"
+        if getattr(error, "error_type", "") == LOGIN_ERR_WRONG_PWD:
+            return "WRONG_PASSWORD"
+        if isinstance(error, (DirectAccessError, WebVPNRequiredError)):
+            return "DIRECT_ACCESS_FAILED"
+        return str(getattr(error, "error_code", None) or "REQUEST_ERROR")
+
+    def commit(client: NEUAuthClient, method: str) -> NEUAuthClient:
+        global _last_auth_recovery_error_code
+        nonlocal recovery_subject
+        recovery_subject = str(client.username or recovery_subject)
+        _last_auth_recovery_error_code = ""
+        if client is not active_client:
+            set_auth_client(client)
+            schedule_login_bootstrap(client)
+        else:
+            _auth_sessions.clear_auth_recovery_backoff()
+        _auth_sessions.set_auth_recovery_state(
+            "authenticated", subject=recovery_subject,
+            phase="complete", modes=tuple(attempted_modes),
+        )
+        log_security_event(
+            "neu_session_restore", "success", subject=recovery_subject,
+            auth_method=method, network_mode=getattr(client, "active_mode", "direct"),
+        )
+        return client
+
+    def run_existing(client: NEUAuthClient) -> Optional[NEUAuthClient]:
+        nonlocal last_error
+        mode = str(getattr(client, "active_mode", "direct") or "direct")
+        attempted_modes.append(mode)
+        _auth_sessions.set_auth_recovery_state(
+            "recovering", subject=recovery_subject,
+            phase="session_and_cookie", modes=tuple(attempted_modes),
+        )
+        original_timeout = getattr(client, "timeout", 8)
+        try:
+            client.timeout = min(float(original_timeout), 8)
+        except (TypeError, ValueError):
+            client.timeout = 8
         try:
             if client.ensure_login():
-                _last_auth_recovery_error_code = ""
-                set_auth_client(client)
-                schedule_login_bootstrap(client)
-                log_security_event(
-                    "neu_session_restore",
-                    "success",
-                    subject=username,
-                    auth_method="stored_credentials",
-                    network_mode=getattr(client, "active_mode", ""),
-                )
-                return client
-            if _has_live_interactive_auth_flow(client):
-                # Saved-credential recovery reached the school's SMS page.
-                # Keep this exact Session as the foreground candidate so
-                # subsequent readers wait instead of restarting login.
-                set_pending_auth_client(client)
-                return None
+                return commit(client, "session_cookie")
         except Exception as error:
-            remember_failure(error)
-            _api_logger.warning(
-                "[Auth] 已保存账号密码自动恢复失败: %s",
-                type(error).__name__,
+            last_error = error
+        finally:
+            try:
+                client.timeout = original_timeout
+            except Exception:
+                pass
+        if _has_live_interactive_auth_flow(client):
+            client._webvpn_sms_flow["remember"] = True
+            set_pending_auth_client(client)
+            _auth_sessions.set_auth_recovery_state(
+                "interaction_required", subject=recovery_subject,
+                phase="webvpn_second_auth", modes=tuple(attempted_modes),
+                error_code="INTERACTION_REQUIRED",
+                message="WebVPN 登录需要完成验证码或短信认证",
             )
-            log_security_event(
-                "neu_session_restore",
-                "failure",
-                subject=username,
-                reason="stored_credentials_restore_failed",
-                auth_method="stored_credentials",
-                error_type=type(error).__name__,
-            )
-            if getattr(error, "error_code", None) == WEBVPN_ERR_CAMPUS_NETWORK:
-                _last_auth_recovery_error_code = WEBVPN_ERR_CAMPUS_NETWORK
-                _auth_sessions.note_auth_recovery_failure(
-                    recovery_subject or username,
-                    error_code=WEBVPN_ERR_CAMPUS_NETWORK,
-                )
-                return None
+        return None
 
-    if active_client is not None:
-        set_auth_client(None)
+    def run_clean_mode(mode: str) -> Optional[NEUAuthClient]:
+        nonlocal last_error
+        if not username or not password:
+            return None
+        attempted_modes.append(mode)
+        _auth_sessions.set_auth_recovery_state(
+            "recovering", subject=username,
+            phase=f"{mode}_credentials", modes=tuple(attempted_modes),
+        )
+        clean = NEUAuthClient(
+            username=username, password=password, cookie_file=COOKIE_FILE,
+            network_mode=mode, restore_session=False, timeout=8,
+        )
+        try:
+            if mode == "direct":
+                login_method = getattr(clean, "login", None)
+                success = (
+                    login_method() if callable(login_method)
+                    else bool(clean.ensure_login())
+                )
+                if success:
+                    return commit(clean, "stored_credentials")
+            else:
+                result = clean.start_webvpn_password_login()
+                if result.get("status") == "authenticated":
+                    return commit(clean, "stored_credentials_route_fallback")
+                if result.get("status") == "sms_required":
+                    clean._webvpn_sms_flow["remember"] = True
+                    set_pending_auth_client(clean)
+                    _auth_sessions.set_auth_recovery_state(
+                        "interaction_required", subject=username,
+                        phase="webvpn_second_auth", modes=tuple(attempted_modes),
+                        error_code="INTERACTION_REQUIRED",
+                        message="WebVPN 登录需要完成验证码或短信认证",
+                    )
+                    return None
+        except Exception as error:
+            last_error = error
+        return None
+
+    recovered = run_existing(candidate)
+    if recovered is not None:
+        return recovered
+    if peek_pending_auth_client() is not None:
+        return None
+
+    # A cookie-only client may not carry an account or password. Once that
+    # session probe is exhausted, create exactly one credential-backed
+    # candidate so legacy cookie-then-password recovery remains intact.
+    if saved_credentials and not str(getattr(candidate, "username", "") or ""):
+        preferred = preferred_mode
+        candidate = NEUAuthClient(
+            username=username,
+            password=password,
+            cookie_file=COOKIE_FILE,
+            network_mode=preferred,
+            restore_session=False,
+            timeout=8,
+        )
+        credential_candidate_attempted = True
+        recovered = run_existing(candidate)
+        if recovered is not None:
+            return recovered
+        if peek_pending_auth_client() is not None:
+            return None
+
+    code = error_code(last_error)
+    if code == "WRONG_PASSWORD":
+        _last_auth_recovery_error_code = code
+        _auth_sessions.set_auth_recovery_state(
+            "credentials_invalid", subject=recovery_subject,
+            phase="credentials", modes=tuple(attempted_modes),
+            error_code=code, message="已保存的账号或密码已失效",
+        )
+        return None
+
+    fallback_mode = None
+    if preferred_mode == "direct" and code == "DIRECT_ACCESS_FAILED":
+        fallback_mode = "webvpn"
+    elif preferred_mode == "webvpn" and code == WEBVPN_ERR_CAMPUS_NETWORK:
+        fallback_mode = "direct"
+
+    if fallback_mode:
+        recovered = run_clean_mode(fallback_mode)
+        if recovered is not None or peek_pending_auth_client() is not None:
+            return recovered
+        code = error_code(last_error)
+    elif (
+        saved_credentials
+        and not credential_candidate_attempted
+        and last_error is None
+    ):
+        recovered = run_clean_mode(preferred_mode)
+        if recovered is not None or peek_pending_auth_client() is not None:
+            return recovered
+        code = error_code(last_error)
+
+    if not saved_credentials:
+        _last_auth_recovery_error_code = "NO_SAVED_CREDENTIALS"
+        _auth_sessions.set_auth_recovery_state(
+            "manual_required", subject=recovery_subject,
+            phase="credentials", modes=tuple(attempted_modes),
+            error_code="NO_SAVED_CREDENTIALS",
+            message="本机未保存登录凭据",
+        )
+        return None
+
+    if code == "WRONG_PASSWORD":
+        _last_auth_recovery_error_code = code
+        _auth_sessions.set_auth_recovery_state(
+            "credentials_invalid", subject=recovery_subject,
+            phase="credentials", modes=tuple(attempted_modes),
+            error_code=code, message="已保存的账号或密码已失效",
+        )
+        return None
+
     delay = _auth_sessions.note_auth_recovery_failure(
         recovery_subject,
-        error_code=recovery_error_code,
+        error_code=code,
     )
-    _last_auth_recovery_error_code = recovery_error_code
+    _last_auth_recovery_error_code = code
+    _auth_sessions.set_auth_recovery_state(
+        "retry_wait", subject=recovery_subject,
+        phase="transient_failure", modes=tuple(attempted_modes),
+        error_code=code,
+        message=f"自动恢复暂未成功，将在约 {max(1, round(delay))} 秒后重试",
+    )
     _api_logger.info(
         "[Auth] 自动恢复进入退避，%.0f 秒内不再重复登录",
         delay,
@@ -971,10 +1034,34 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
     return None
 
 
-def get_auth_client() -> Optional[NEUAuthClient]:
+def get_auth_client(*, queue_timeout: float | None = None) -> Optional[NEUAuthClient]:
     """Resolve the current client while holding the shared session boundary."""
-    with foreground_auth_session_guard():
+    with foreground_auth_session_guard(queue_timeout=queue_timeout):
         return _get_auth_client_unlocked()
+
+
+def get_auth_recovery_status() -> dict[str, object]:
+    """Return the local automatic-recovery snapshot without remote I/O."""
+    return _auth_sessions.auth_recovery_status()
+
+
+def request_auth_recovery() -> None:
+    """Wake the process-wide automatic recovery worker."""
+    keepalive = globals().get("_auth_keepalive")
+    if keepalive is not None:
+        state = _auth_sessions.auth_recovery_status()
+        available = globals().get("_automatic_auth_recovery_available")
+        if (
+            state.get("status") in {"idle", "authenticated"}
+            and callable(available)
+            and available()
+        ):
+            _auth_sessions.set_auth_recovery_state(
+                "recovering",
+                phase="queued",
+                message="正在自动恢复教务登录",
+            )
+        keepalive.wake()
 
 
 def _get_tracking_auth_client() -> Optional[NEUAuthClient]:
@@ -1155,6 +1242,29 @@ _grade_tracker = GradeTrackingService(
     score_refresher=_tracking_score_refresh,
     score_detail_lookup=_tracking_score_detail_lookup,
     gpa_summary_provider=_gpa_policy.summarize,
+)
+
+
+def _automatic_auth_recovery_available() -> bool:
+    """Check only local state before scheduling a keepalive attempt."""
+    state = _auth_sessions.auth_recovery_status()
+    if state.get("status") == "credentials_invalid":
+        return False
+    if peek_pending_auth_client() is not None:
+        return False
+    if peek_auth_client() is not None:
+        return True
+    try:
+        return _storage.load_credentials() is not None
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+_auth_keepalive = AuthKeepaliveService(
+    recover=get_auth_client,
+    should_attempt=_automatic_auth_recovery_available,
+    recovery_status=get_auth_recovery_status,
+    logger=_api_logger,
 )
 
 _course_selection_automation = CourseSelectionAutomationService(
@@ -1369,11 +1479,14 @@ class ApplicationServices:
     gpa_policy: GpaPolicyService | None = None
     course_outline_sync: CourseOutlineMetadataSyncService | None = None
     course_selection_automation: CourseSelectionAutomationService | None = None
+    auth_keepalive: AuthKeepaliveService | None = None
 
     def start(self) -> None:
         self.cache_coordinator.start()
         try:
             self.system_mail.start()
+            if self.auth_keepalive is not None:
+                self.auth_keepalive.start()
             self.grade_tracker.start()
             if self.course_selection_automation is not None:
                 self.course_selection_automation.start()
@@ -1383,6 +1496,7 @@ class ApplicationServices:
                 rollback_steps.append(getattr(self.course_selection_automation, "stop", None))
             rollback_steps.extend((
                 getattr(self.grade_tracker, "stop", None),
+                getattr(self.auth_keepalive, "stop", None),
                 getattr(self.auth_recovery, "stop", None),
                 getattr(self.system_mail, "stop", None),
             ))
@@ -1410,6 +1524,7 @@ class ApplicationServices:
             shutdown_steps.append(self.course_selection_automation.stop)
         shutdown_steps.extend((
             self.grade_tracker.stop,
+            getattr(self.auth_keepalive, "stop", lambda: None),
             self.auth_recovery.stop,
             self.system_mail.stop,
         ))
@@ -1449,6 +1564,7 @@ _application_services = ApplicationServices(
     gpa_policy=_gpa_policy,
     course_outline_sync=_course_outline_sync,
     course_selection_automation=_course_selection_automation,
+    auth_keepalive=_auth_keepalive,
 )
 
 
@@ -1526,8 +1642,7 @@ async def require_serialized_auth():
     """
     client = peek_auth_client()
     if client is None or not getattr(client, "is_logged_in", False):
-        client = get_auth_client()
-    if client is None:
+        request_auth_recovery()
         from fastapi import HTTPException
         raise HTTPException(status_code=401, detail="未登录或登录已过期")
     guard = remote_read_session_guard(mark_read_context=False)
@@ -1572,6 +1687,7 @@ def require_cached_auth_identity() -> NEUAuthClient:
         or not getattr(client, "username", None)
         or not getattr(client, "is_logged_in", False)
     ):
+        request_auth_recovery()
         from fastapi import HTTPException
         raise HTTPException(status_code=401, detail="未登录或无法确认当前账号")
     return client

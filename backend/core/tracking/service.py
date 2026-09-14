@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import html
 import threading
 import time
 import uuid
@@ -632,12 +633,14 @@ class GradeTrackingService:
                     opening="成绩追踪已开启，并完成本次初始成绩同步。",
                 ),
                 f"activation:{activation_id}",
+                self._initial_email_html(snapshot, "成绩追踪已开启"),
             )
         elif should_notify and not previous:
             notification = (
                 "[NEU 成绩追踪] 首次成绩同步完成",
                 self._initial_email(snapshot),
                 f"revision:{revision}",
+                self._initial_email_html(snapshot, "首次成绩同步完成"),
             )
         elif should_notify and previous and (
             additions or changes or removals or overall_gpa_changed
@@ -671,6 +674,9 @@ class GradeTrackingService:
                     overall_gpa_changed,
                 ),
                 f"revision:{revision}",
+                self._change_email_html(
+                    previous, snapshot, additions, changes, removals, overall_gpa_changed,
+                ),
             )
 
         self._write_json(self.snapshot_path, snapshot)
@@ -781,6 +787,50 @@ class GradeTrackingService:
             f"{self._calculated_gpa_text(snapshot)}"
             f"{rows}\n\n检查时间：{snapshot['updated_at']}"
         )
+
+    @staticmethod
+    def _email_shell(title: str, summary: str, table_html: str, footer: str) -> str:
+        return (
+            '<!doctype html><html><body style="margin:0;background:#f3f6fb;'
+            'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif;color:#25324b">'
+            '<div style="max-width:760px;margin:0 auto;padding:24px 12px">'
+            '<div style="background:#2563eb;padding:24px;color:#fff;border-radius:12px 12px 0 0">'
+            '<div style="font-size:12px;opacity:.85">NEU JWXT TOOLKIT · 成绩追踪</div>'
+            f'<h1 style="margin:8px 0 0;font-size:22px">{html.escape(title)}</h1></div>'
+            '<div style="background:#fff;padding:20px;border-radius:0 0 12px 12px;box-shadow:0 8px 28px rgba(31,53,90,.08)">'
+            f'<div style="padding:12px 14px;background:#f7f9fc;border-radius:8px;line-height:1.8">{summary}</div>'
+            f'<div style="overflow-x:auto;margin-top:18px">{table_html}</div>'
+            f'<p style="margin:18px 0 0;color:#98a2b3;font-size:12px;line-height:1.6">{html.escape(footer)}</p>'
+            '</div></div></body></html>'
+        )
+
+    def _initial_email_html(self, snapshot: dict[str, Any], title: str) -> str:
+        summary = (
+            f"<b>课程数：</b>{len(snapshot['courses'])}<br>"
+            f"<b>总 GPA：</b>{html.escape(str(snapshot.get('overall_gpa') if snapshot.get('overall_gpa') is not None else '未知'))}<br>"
+            f"<b>{html.escape(self._calculated_gpa_text(snapshot).strip())}</b>"
+        )
+        rows = ''.join(
+            f"<tr><td style='padding:10px 12px;border-bottom:1px solid #eef2f6'>{html.escape(str(item.get('name') or item.get('code') or '未命名课程'))}</td>"
+            f"<td style='padding:10px 12px;border-bottom:1px solid #eef2f6'>{html.escape(str(item.get('gpa') or '暂无'))}</td>"
+            f"<td style='padding:10px 12px;border-bottom:1px solid #eef2f6'>{html.escape(str(item.get('credit') or '暂无'))}</td></tr>"
+            for item in snapshot['courses']
+        ) or "<tr><td colspan='3' style='padding:20px;text-align:center;color:#667085'>暂无课程</td></tr>"
+        table = "<table style='width:100%;border-collapse:collapse;min-width:420px'><thead><tr style='background:#f7f9fc;text-align:left'><th style='padding:10px 12px'>课程名称</th><th style='padding:10px 12px'>绩点</th><th style='padding:10px 12px'>学分</th></tr></thead><tbody>" + rows + "</tbody></table>"
+        return self._email_shell(title, summary, table, f"检查时间：{snapshot['updated_at']}")
+
+    def _change_email_html(self, previous, current, additions, changes, removals, overall_gpa_changed) -> str:
+        sections = []
+        for heading, items in (("新增课程", additions), ("成绩修正", [item['after'] for item in changes]), ("移除课程", removals)):
+            rows = ''.join(
+                f"<tr><td style='padding:10px 12px;border-bottom:1px solid #eef2f6'>{html.escape(str(item.get('name') or item.get('code') or '未命名课程'))}</td>"
+                f"<td style='padding:10px 12px;border-bottom:1px solid #eef2f6'>{html.escape(str(item.get('gpa') or '暂无'))}</td>"
+                f"<td style='padding:10px 12px;border-bottom:1px solid #eef2f6'>{html.escape(str(item.get('credit') or '暂无'))}</td></tr>"
+                for item in items
+            ) or f"<tr><td colspan='3' style='padding:14px;color:#667085'>无</td></tr>"
+            sections.append(f"<h3 style='margin:18px 0 8px'>{heading}</h3><table style='width:100%;border-collapse:collapse;min-width:420px'><thead><tr style='background:#f7f9fc;text-align:left'><th style='padding:10px 12px'>课程名称</th><th style='padding:10px 12px'>绩点</th><th style='padding:10px 12px'>学分</th></tr></thead><tbody>{rows}</tbody></table>")
+        summary = f"<b>原总 GPA：</b>{html.escape(str(previous.get('overall_gpa', '未知')))}<br><b>新总 GPA：</b>{html.escape(str(current.get('overall_gpa', '未知')))}<br><b>总 GPA 是否变化：</b>{'是' if overall_gpa_changed else '否'}"
+        return self._email_shell('检测到成绩变化', summary, ''.join(sections), f"检查时间：{current['updated_at']}")
 
     def _change_email(
         self,

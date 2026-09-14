@@ -12,6 +12,7 @@ from backend.app.dependencies import (
     _cache_coordinator,
     _cache_store,
     get_auth_generation,
+    get_auth_recovery_status,
     peek_auth_client,
 )
 from backend.app.client_snapshot import (
@@ -49,6 +50,7 @@ def _auth_snapshot(client, account: str) -> dict:
         "identity_epoch": get_auth_generation(),
         "error_code": getattr(source, "_last_webvpn_error_code", None) or None,
         "error_message": getattr(source, "_last_webvpn_error_message", None) or None,
+        "recovery": get_auth_recovery_status(),
     }
 
 

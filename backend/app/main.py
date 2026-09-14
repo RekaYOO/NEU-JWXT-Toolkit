@@ -22,19 +22,21 @@ if _PROJECT_ROOT not in sys.path:
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, JSONResponse
 
 from backend.core.log.access_logger import FastAPILogMiddleware
 from backend.app.dependencies import (
     get_application_services,
     get_log_config,
     peek_auth_client,
+    request_auth_recovery,
 )
 from backend.app.routers import auth, auth_recovery, cache, client, logs, mobile, system_settings, scores, report, experiment, user, gpa, evaluation, exam, offline, research, runtime, tracking, festival_activities, course_selection, timetable, scheduling, course_outline, academic_documents
 from backend.core.runtime import get_runtime_config, resource_path
 from backend.core.runtime.access import AccessGatewayMiddleware
 from backend.core.runtime.static import PrecompressedStaticFiles, REVALIDATE_CACHE_CONTROL
 from backend.core.runtime.performance import observe_performance
+from backend.core.auth.client import NEULoginError, ServiceAccessError
 
 runtime_config = get_runtime_config()
 application_services = get_application_services()
@@ -65,6 +67,20 @@ app = FastAPI(
     openapi_url="/openapi.json" if runtime_config.profile == "development" else None,
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(NEULoginError)
+def handle_expired_neu_session(_request, error: NEULoginError):
+    """Turn primary authentication loss into the shared recovery protocol."""
+    if not isinstance(error, ServiceAccessError):
+        request_auth_recovery()
+    return JSONResponse(
+        status_code=401,
+        content={
+            "detail": str(error) or "教务登录状态已失效",
+            "code": "SERVICE_AUTH_REQUIRED" if isinstance(error, ServiceAccessError) else "AUTH_RECOVERY_PENDING",
+        },
+    )
 
 def _current_account() -> str | None:
     client = peek_auth_client()

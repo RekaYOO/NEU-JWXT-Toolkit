@@ -30,6 +30,14 @@ const serviceRecoveryUrls = {
 const singleFlightRequests = new Map();
 const cacheJobWatchers = new Map();
 let clientBootstrapSnapshot = null;
+// Incremented whenever a foreground login commits a new session. A request
+// that started recovery against an older session must not emit stale auth UI.
+let authSessionGeneration = 0;
+
+export const markAuthSessionAuthenticated = () => {
+  authSessionGeneration += 1;
+  return authSessionGeneration;
+};
 
 const singleFlight = (key, factory) => {
   if (!singleFlightRequests.has(key)) {
@@ -52,16 +60,29 @@ const takeBootstrapResource = (key) => {
 const trySilentAuthRecovery = async (scope = 'primary') => {
   if (!authRecoveryPromises.has(scope)) {
     const statusUrl = serviceRecoveryUrls[scope] || '/api/status';
-    const recovery = api.get(statusUrl, {
-      skipAuthRedirect: true,
-    }).then(response => ({
-      recovered: Boolean(
-        serviceRecoveryUrls[scope]
-          ? response.data?.service_authenticated
-          : response.data?.is_logged_in
-      ),
-      status: response.data || {},
-    }))
+    const recovery = (async () => {
+      const deadline = Date.now() + 65000;
+      let latest = {};
+      while (Date.now() < deadline) {
+        const response = await api.get(statusUrl, {
+          skipAuthRedirect: true,
+        });
+        latest = response.data || {};
+        const recovered = Boolean(
+          serviceRecoveryUrls[scope]
+            ? latest?.service_authenticated
+            : latest?.is_logged_in
+        );
+        if (recovered) return { recovered: true, status: latest };
+        const recoveryState = latest?.recovery?.status;
+        if (!recoveryState || !['recovering', 'retry_wait'].includes(recoveryState)) {
+          return { recovered: false, status: latest };
+        }
+        const retryAfter = Number(latest?.recovery?.retry_after_seconds || 0);
+        await new Promise(resolve => setTimeout(resolve, Math.min(1500, Math.max(300, retryAfter * 1000))));
+      }
+      return { recovered: false, status: latest };
+    })()
       .catch(() => ({ recovered: false, status: {} }))
       .finally(() => {
         authRecoveryPromises.delete(scope);
@@ -87,8 +108,15 @@ api.interceptors.response.use(
         && !error.config?.url?.startsWith('/api/offline/')
       ) {
         if (!error.config?._silentAuthRecoveryRetried && error.config?.authRecoveryRetry !== false) {
+          const requestGeneration = authSessionGeneration;
           const recoveryScope = error.config?.authRecoveryScope || 'primary';
           const recovery = await trySilentAuthRecovery(recoveryScope);
+          if (requestGeneration !== authSessionGeneration && !isManualLogoutActive()) {
+            return api.request({
+              ...error.config,
+              _silentAuthRecoveryRetried: true,
+            });
+          }
           if (recovery.recovered && !isManualLogoutActive()) {
             return api.request({
               ...error.config,
@@ -100,6 +128,15 @@ api.interceptors.response.use(
             window.dispatchEvent(new CustomEvent('neu-webvpn-campus-blocked', {
               detail: recovery.status,
             }));
+            return Promise.reject(error);
+          }
+          if (recovery.status?.recovery?.status === 'interaction_required') {
+            window.dispatchEvent(new CustomEvent('neu-auth-pending', {
+              detail: recovery.status.pending_auth || {},
+            }));
+            return Promise.reject(error);
+          }
+          if (['retry_wait', 'recovering'].includes(recovery.status?.recovery?.status)) {
             return Promise.reject(error);
           }
         }
@@ -242,8 +279,8 @@ export const cancelAllRequests = () => {
 
 // 状态检查
 export const checkStatus = async () => {
-  const response = await api.get('/api/status');
-  return response.data;
+  const result = await trySilentAuthRecovery('primary');
+  return result.status;
 };
 
 export const getPendingAuthChallenge = async () => {
@@ -1151,6 +1188,13 @@ export const getTimetableTargetFilterOptions = async (data) => {
 
 export const getTimetableSchedule = async (data) => {
   const response = await api.post('/api/timetable/schedule', data);
+  return response.data;
+};
+
+export const getRoomAvailability = async (data) => {
+  // A scan request checks only one room; allow a slow official schedule
+  // response without making the UI wait for a whole catalog.
+  const response = await api.post('/api/timetable/rooms/availability', data, { timeout: 90000 });
   return response.data;
 };
 
