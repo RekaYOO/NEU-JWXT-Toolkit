@@ -6,6 +6,7 @@ import {
   getTimetableTerms, getPersonalTimetable, getTimetableContext,
   getTimetableSchedule, searchTimetableTargets, getTimetableBootstrap, syncTimetable,
   getRoomAvailability,
+  getTimetableAgenda, saveTimetableAgenda,
 } from '../services/api';
 import {
   readBrowserTimetableCache, writeBrowserTimetableCache, subscribeBrowserTimetableCache,
@@ -20,6 +21,8 @@ jest.mock('../services/api', () => ({
   getTimetableBootstrap: jest.fn(),
   syncTimetable: jest.fn().mockResolvedValue({ jobs: [] }),
   getRoomAvailability: jest.fn(),
+  getTimetableAgenda: jest.fn().mockResolvedValue({ revision: 0, events: [], moves: [] }),
+  saveTimetableAgenda: jest.fn(),
   getTimetableTargetFilterOptions: jest.fn(),
   checkScheduleConflicts: jest.fn(),
 }));
@@ -94,6 +97,8 @@ describe('query timetable request lifecycle', () => {
     subscribeBrowserTimetableCache.mockImplementation(() => () => {});
     getTimetableContext.mockResolvedValue(context);
     getRoomAvailability.mockResolvedValue({ items: [], scanned: 0, complete: true });
+    getTimetableAgenda.mockResolvedValue({ revision: 0, events: [], moves: [] });
+    saveTimetableAgenda.mockImplementation(async (_, document) => ({ ...document, revision: document.revision + 1 }));
     getTimetableSchedule.mockImplementation(async request => empty(request));
     searchTimetableTargets.mockImplementation(async request => ({
       items: [{ id: `${request.mode}-fixture`, name: '测试查询对象', details: {} }], total: 1, page: 1,
@@ -126,6 +131,100 @@ describe('query timetable request lifecycle', () => {
     await click(container.querySelector('.timetable-target-result-card'));
   };
   const week = number => container.querySelector(`[data-week="${number}"]`);
+
+  test('weekly day headings open a dated agenda and persist a custom event across page mounts', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-16T08:00:00'));
+    const datedWeeks = [{ number: 2, name: '第2周', current: true, start_date: '2026-09-13', end_date: '2026-09-19' }];
+    const cached = { ...personal, weeks: datedWeeks, courses: [] };
+    mockTimetableMemory.data = {
+      payload: cached, terms: [{ code: termCode, name: '测试学期', current: true }],
+      currentTermCode: termCode, campusCode: '00', weekNumber: 2, viewMode: 'week',
+    };
+    getPersonalTimetable.mockResolvedValue(cached);
+    const renderPage = () => <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><TimetablePage /></MemoryRouter>;
+    await act(async () => root.render(renderPage()));
+    await flush();
+    await click(container.querySelector('[aria-label="查看星期四当日日程"]'));
+    let modal = document.querySelector('.timetable-day-agenda-modal');
+    expect(modal.textContent).toContain('2026年9月17日 · 星期四');
+    await click([...modal.querySelectorAll('button')].find(button => button.textContent === '添加日程'));
+    await act(async () => {
+      const input = modal.querySelector('input[id="title"]');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '讨论会议');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click([...modal.querySelectorAll('button')].find(button => button.textContent === '保存日程'));
+    expect(saveTimetableAgenda).toHaveBeenCalledWith(termCode, expect.objectContaining({ events: [expect.objectContaining({ title: '讨论会议', date: '2026-09-17', start_time: '08:00', end_time: '09:00' })] }));
+    const saved = await saveTimetableAgenda.mock.results[0].value;
+    getTimetableAgenda.mockResolvedValue(saved);
+    await act(async () => root.render(null));
+    await act(async () => root.render(renderPage()));
+    await flush();
+    expect(container.querySelector('.timetable-grid').textContent).toContain('讨论会议');
+    await click(container.querySelector('[aria-label="查看星期四当日日程"]'));
+    modal = document.querySelector('.timetable-day-agenda-modal');
+    expect(modal.textContent).toContain('讨论会议');
+    expect(modal.querySelector('[aria-label="编辑讨论会议"]')).not.toBeNull();
+  });
+
+  test('copied courses appear only at their added date and leave the original week untouched', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-16T08:00:00'));
+    const datedWeeks = [2, 3].map((number, index) => ({ number, name: `第${number}周`, current: number === 2, start_date: `2026-09-${13 + 7 * index}`, end_date: `2026-09-${19 + 7 * index}` }));
+    const cached = { ...personal, weeks: datedWeeks, courses: [{ ...course, weeks: [3] }] };
+    mockTimetableMemory.data = { payload: cached, terms: [{ code: termCode, name: '测试学期', current: true }], currentTermCode: termCode, campusCode: '00', weekNumber: 2, viewMode: 'week' };
+    getPersonalTimetable.mockResolvedValue(cached);
+    getTimetableAgenda.mockResolvedValue({ revision: 1, events: [], moves: [{ source: '2026-09-20', target: '2026-09-17' }] });
+    await act(async () => root.render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><TimetablePage /></MemoryRouter>));
+    await flush();
+    expect(container.querySelector('.timetable-grid [aria-label="星期四"]').textContent).toContain('查询课程');
+    await click(week(3));
+    expect(container.querySelector('.timetable-grid [aria-label="星期日"]').textContent).toContain('查询课程');
+    expect(cached.courses[0].weeks).toEqual([3]);
+  });
+
+  test('agenda loading does not block official courses or reset a manually previewed week', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-16T08:00:00'));
+    const datedWeeks = [2, 3].map((number, index) => ({ number, name: `第${number}周`, current: number === 2,
+      start_date: `2026-09-${13 + 7 * index}`, end_date: `2026-09-${19 + 7 * index}` }));
+    const cached = { ...personal, weeks: datedWeeks, courses: [{ ...course, weeks: [2, 3] }] };
+    mockTimetableMemory.data = { payload: cached, terms: [{ code: termCode, name: '测试学期', current: true }], currentTermCode: termCode, campusCode: '00', weekNumber: 2, viewMode: 'week' };
+    getPersonalTimetable.mockResolvedValue(cached);
+    const pending = deferred();
+    getTimetableAgenda.mockReturnValue(pending.promise);
+    await act(async () => root.render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><TimetablePage /></MemoryRouter>));
+    await flush();
+    expect(container.querySelector('.timetable-grid').textContent).toContain('查询课程');
+    expect(container.querySelector('.timetable-loading')).toBeNull();
+    await click(week(3));
+    await act(async () => pending.resolve({ revision: 1, events: [], moves: [{ source: '2026-09-20', target: '2026-09-17' }] }));
+    await flush();
+    expect(week(3).classList.contains('is-selected')).toBe(true);
+    expect(cached.courses[0].weeks).toEqual([2, 3]);
+    expect(container.querySelector('.timetable-grid [aria-label="星期日"]').textContent).toContain('查询课程');
+  });
+
+  test('ended semesters keep official courses but do not inject personal data or offer editing', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-16T08:00:00'));
+    const datedWeeks = [{ number: 2, name: '第2周', current: true, start_date: '2026-09-13', end_date: '2026-09-19' }];
+    const cached = { ...personal, weeks: datedWeeks, courses: [{ ...course, weeks: [2] }] };
+    mockTimetableMemory.data = { payload: cached, terms: [{ code: termCode, name: '测试学期', current: true }], currentTermCode: termCode, campusCode: '00', weekNumber: 2, viewMode: 'week' };
+    getPersonalTimetable.mockResolvedValue(cached);
+    getTimetableAgenda.mockResolvedValue({ revision: 2, semester_ended: true, events: [{ id: 'old', date: '2026-09-17', title: '旧日程', start_time: '08:00', end_time: '09:00' }], moves: [] });
+    await act(async () => root.render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><TimetablePage /></MemoryRouter>));
+    await flush();
+    expect(container.querySelector('.timetable-grid').textContent).toContain('查询课程');
+    expect(container.querySelector('.timetable-grid').textContent).not.toContain('旧日程');
+    await click(container.querySelector('[aria-label="查看星期四当日日程"]'));
+    const modal = document.querySelector('.timetable-day-agenda-modal');
+    expect(modal.textContent).toContain('该学期已结束');
+    expect(modal.textContent).not.toContain('旧日程');
+    expect(modal.textContent).not.toContain('添加日程');
+    expect(saveTimetableAgenda).not.toHaveBeenCalled();
+  });
 
   test('keeps the current weekday fresh after midnight without overriding a manually selected day', async () => {
     jest.useFakeTimers();

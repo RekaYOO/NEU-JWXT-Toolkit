@@ -92,6 +92,8 @@ jest.mock('../services/api', () => ({
   syncTimetable: jest.fn().mockResolvedValue({ jobs: [] }),
   searchTimetableTargets: jest.fn(),
   checkScheduleConflicts: jest.fn(),
+  getTimetableAgenda: jest.fn().mockResolvedValue({ revision: 0, events: [], moves: [] }),
+  saveTimetableAgenda: jest.fn(),
 }));
 
 
@@ -1454,6 +1456,61 @@ describe('TimetablePage helpers', () => {
       const dayAnchor = document.createElement('div');
       expect(mobileInitialFocusAnchor('week', weekAnchor, dayAnchor)).toBe(weekAnchor);
       expect(mobileInitialFocusAnchor('term', weekAnchor, dayAnchor)).toBe(dayAnchor);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
+  test('selects mobile weekdays first and opens agendas only when clicking the selected day', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onDayChange = jest.fn();
+    const onDayAgenda = jest.fn();
+    const props = {
+      coursesByDay: Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []])),
+      selectedDay: 1,
+      onDayChange,
+      onDayAgenda,
+      onCourseClick: () => {},
+    };
+    const render = async overrides => {
+      await act(async () => root.render(<MobileTimetable {...props} viewMode="week" {...overrides} />));
+    };
+    const weekday = day => container.querySelector(`[data-agenda-day="${day}"]`).closest('.ant-segmented-item');
+    try {
+      await render();
+      expect(container.querySelector('.timetable-mobile-agenda-action')).toBeNull();
+      expect(Array.from(container.querySelectorAll('button')).some(button => button.textContent === '当日日程')).toBe(false);
+      await act(async () => weekday(4).click());
+      expect(onDayChange).toHaveBeenLastCalledWith(4);
+      expect(onDayAgenda).not.toHaveBeenCalled();
+      await render({ selectedDay: 4 });
+      onDayChange.mockClear();
+      await act(async () => weekday(4).querySelector('[data-agenda-day]').click());
+      expect(onDayAgenda.mock.calls).toEqual([[4]]);
+      expect(onDayChange).not.toHaveBeenCalled();
+      await act(async () => weekday(4).click());
+      expect(onDayAgenda.mock.calls).toEqual([[4], [4]]);
+      for (const key of ['Enter', ' ']) {
+        await act(async () => weekday(4).querySelector('input').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key })));
+      }
+      expect(onDayAgenda.mock.calls).toEqual([[4], [4], [4], [4]]);
+      await act(async () => weekday(4).querySelector('input').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' })));
+      expect(onDayChange).toHaveBeenLastCalledWith(5);
+      expect(onDayAgenda).toHaveBeenCalledTimes(4);
+      await render({ viewMode: 'term' });
+      await act(async () => weekday(2).click());
+      expect(onDayChange).toHaveBeenLastCalledWith(2);
+      expect(onDayAgenda).toHaveBeenCalledTimes(4);
+      await render({ onDayAgenda: undefined });
+      await act(async () => weekday(3).click());
+      expect(onDayChange).toHaveBeenLastCalledWith(3);
+      expect(onDayAgenda).toHaveBeenCalledTimes(4);
     } finally {
       await act(async () => root.unmount());
       container.remove();

@@ -1,0 +1,37 @@
+.day-agenda-heading, .day-agenda-item-heading, .day-agenda-move { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.day-agenda-heading { margin-bottom: 16px; flex-wrap: wrap; }
+.day-agenda-heading strong { font-size: 16px; }
+.day-agenda-list { display: grid; gap: 12px; margin: 16px 0; }
+.day-agenda-item { border: 1px solid var(--color-line); border-left: 3px solid var(--color-brand); border-radius: 6px; padding: 12px; display: grid; gap: 6px; overflow-wrap: anywhere; min-width: 0; }
+.day-agenda-item-heading > strong { min-width: 0; font-size: 15px; }
+.day-agenda-item-heading .ant-space { flex-shrink: 0; }
+.day-agenda-item-heading .ant-btn { width: 36px; height: 36px; padding: 0; }
+.day-agenda-event-title { appearance: none; border: 0; background: transparent; color: inherit; font: inherit; font-size: 15px; font-weight: 700; text-align: left; min-width: 0; min-height: 36px; flex: 1; padding: 4px 0; overflow-wrap: anywhere; cursor: pointer; }
+.day-agenda-event-title:hover { color: var(--color-brand); }
+.day-agenda-event-title:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+.day-agenda-event-title:disabled { cursor: default; color: var(--color-muted); }
+.day-agenda-editor-heading { font-size: 15px; margin: 0 0 12px; }
+.day-agenda-note { color: var(--color-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.day-agenda-location { font-weight: 600; }
+.day-agenda-important { font-size: 12px; }
+.day-agenda-form, .day-agenda-adjustment { border-top: 1px solid var(--color-line); padding-top: 16px; margin-top: 16px; }
+.day-agenda-adjustment h3 { font-size: 15px; margin: 0 0 12px; }
+.day-agenda-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.day-agenda-times { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.day-agenda-times > .ant-form-item, .day-agenda-fields > .ant-form-item { min-width: 0; }
+.day-agenda-form .ant-picker { width: 100%; }
+.day-agenda-actions, .day-agenda-move-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.day-agenda-actions .ant-btn, .day-agenda-move-controls .ant-btn { height: 36px; white-space: normal; }
+.day-agenda-move { margin-top: 12px; flex-wrap: wrap; }
+.day-agenda-move-controls { margin-bottom: 8px; }
+.timetable-day-heading { appearance: none; border: 0; background: transparent; color: inherit; font: inherit; width: 100%; min-height: 32px; cursor: pointer; padding: 0; }
+.timetable-day-heading:focus-visible { outline: 2px solid var(--color-brand, #1677ff); outline-offset: -2px; }
+.timetable-day-heading:hover { color: var(--color-brand, #1677ff); }
+.timetable-extra-agenda { padding: 12px 0; display: grid; gap: 8px; }
+.timetable-extra-agenda .ant-btn { white-space: normal; height: auto; min-height: 36px; overflow-wrap: anywhere; }
+@media (max-width: 480px) { .day-agenda-fields { grid-template-columns: minmax(0, 1fr); gap: 0; } .day-agenda-heading > .ant-btn { width: 100%; } .day-agenda-move-controls { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 480px) {
+  .day-agenda-date-popup .ant-picker-date-panel { width: min(288px, calc(100vw - 16px)); }
+  .day-agenda-date-popup .ant-picker-header > button { min-width: 32px; width: 32px; }
+  .day-agenda-date-popup .ant-picker-content { width: 100%; table-layout: fixed; }
+}

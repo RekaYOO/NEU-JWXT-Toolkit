@@ -27,6 +27,12 @@ const loadApiWithAxios = () => {
 };
 
 describe('JWXK automation settings API', () => {
+  test('agenda saves exclude response-only lifecycle state', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.put.mockResolvedValue({ data: { revision: 4, events: [], moves: [], semester_ended: false } });
+    await apiModule.saveTimetableAgenda('2026-2027-1', { revision: 3, events: [], moves: [], semester_ended: false });
+    expect(client.put).toHaveBeenCalledWith('/api/timetable/agenda', { revision: 3, events: [], moves: [] }, { params: { term_code: '2026-2027-1' } });
+  });
   test('does not submit response-only batch and SMTP fields', async () => {
     const { client, apiModule } = loadApiWithAxios();
     client.put.mockResolvedValue({ data: { strategy_schedule_mode: 'final_windows' } });

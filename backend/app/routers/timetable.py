@@ -1,13 +1,15 @@
-"""Read-only timetable API routes."""
+"""Official timetable reads and separate account-owned agenda documents."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 import re
+import sqlite3
 
 from backend.app.cache_support import wait_for_job
 from backend.app.dependencies import (
     auth_generation_is_current,
     get_auth_generation,
     get_cache_coordinator,
+    get_storage,
     remote_session_guard,
     remote_read_session_guard,
     require_cached_auth_identity,
@@ -38,9 +40,95 @@ from backend.core.scheduling import meeting_extension, normalize_meeting
 from backend.core.timetable import TimetableError
 from backend.core.timetable.api import room_is_free_for_slots
 from backend.app.client_snapshot import timetable_bootstrap_snapshot
+from backend.app.schemas.timetable_agenda import AgendaDocument, AgendaResponse
+from backend.core.storage.timetable_agenda import (
+    AgendaConflict, AgendaSemesterEnded, agenda_today, read_agenda,
+    read_agenda_state, reconcile_agenda_semesters, save_agenda, semester_calendar,
+)
+from backend.core.storage import Storage
 
 
 router = APIRouter(prefix="/timetable", tags=["timetable"])
+
+def _agenda_calendars(storage, account):
+    """Observe existing fresh caches; never submit a job or call NEU."""
+    try:
+        calendars, current = _cached_agenda_calendars(account)
+    except (OSError, sqlite3.Error, KeyError, TypeError, ValueError):
+        # Optional lifecycle evidence cannot block authoritative agenda access.
+        calendars, current = {}, ""
+    reconcile_agenda_semesters(storage.config.data_dir, account, calendars, current)
+    return calendars
+
+
+def _cached_agenda_calendars(account):
+    coordinator = get_cache_coordinator()
+    calendars = {}
+    spec = coordinator.registry.get("personal-timetable")
+    for candidate in coordinator.store.list_entries(account_id=account, resource="personal-timetable"):
+        entry, stale = coordinator.read(account_id=account, resource="personal-timetable", variant=candidate.key.variant)
+        if stale or not _cache_entry_is_compatible(entry, spec) or not isinstance(entry.payload, dict):
+            continue
+        term = str(entry.payload.get("term_code") or "")
+        if not term:
+            continue
+        try:
+            variant = personal_timetable_variant(term)
+        except ValueError:
+            continue
+        if candidate.key.variant != variant:
+            continue
+        span = semester_calendar(entry.payload.get("weeks"))
+        if span:
+            calendars[term] = span
+    index, stale = coordinator.read(account_id=account, resource="timetable-index")
+    current = ""
+    if not stale and _cache_entry_is_compatible(index, coordinator.registry.get("timetable-index")) and isinstance(index.payload, dict):
+        code = str(index.payload.get("current") or "")
+        if any(isinstance(row, dict) and row.get("code") == code and row.get("current") for row in index.payload.get("terms") or []):
+            current = code
+    return calendars, current
+
+
+@router.get("/agenda", response_model=AgendaResponse)
+def get_agenda(
+    term_code: str = Query(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$"),
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+    storage: Storage = Depends(get_storage),
+):
+    account = str(auth.username)
+    calendars = _agenda_calendars(storage, account)
+    result = read_agenda_state(storage.config.data_dir, account, term_code)
+    if not result["semester_end"]:
+        result["semester_end"] = calendars.get(term_code, {}).get("end")
+    if result["semester_end"] and result["semester_end"] < agenda_today().isoformat():
+        result["semester_ended"] = True
+    return result
+
+
+@router.put("/agenda", response_model=AgendaResponse)
+def put_agenda(
+    document: AgendaDocument,
+    term_code: str = Query(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$"),
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+    storage: Storage = Depends(get_storage),
+):
+    root = storage.config.data_dir
+    account = str(auth.username)
+    calendars = _agenda_calendars(storage, account)
+    current = read_agenda(root, account, term_code)
+    old_moves = {(move["source"], move["target"]) for move in current["moves"]}
+    payload = document.model_dump(mode="json")
+    if any((move["source"], move["target"]) not in old_moves and move["source"] <= agenda_today().isoformat()
+           for move in payload["moves"]):
+        raise HTTPException(status_code=422, detail="只能调入未来日期的课程")
+    try:
+        save_agenda(root, account, term_code, payload, calendar=calendars.get(term_code))
+        return read_agenda_state(root, account, term_code)
+    except AgendaConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except AgendaSemesterEnded as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
 
 
 def _personal_cache_response(entry, stale: bool, source: str = "server") -> PersonalTimetableResponse | None:

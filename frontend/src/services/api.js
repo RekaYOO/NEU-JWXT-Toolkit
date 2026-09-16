@@ -1191,6 +1191,16 @@ export const getTimetableSchedule = async (data) => {
   return response.data;
 };
 
+export const getTimetableAgenda = async (termCode) => (
+  await api.get('/api/timetable/agenda', { params: { term_code: termCode }, skipAuthRedirect: true })
+).data;
+
+export const saveTimetableAgenda = async (termCode, document) => (
+  await api.put('/api/timetable/agenda', {
+    revision: document.revision, events: document.events, moves: document.moves,
+  }, { params: { term_code: termCode } })
+).data;
+
 export const getRoomAvailability = async (data) => {
   // A scan request checks only one room; allow a slow official schedule
   // response without making the UI wait for a whole catalog.

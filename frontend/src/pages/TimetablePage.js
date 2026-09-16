@@ -65,6 +65,9 @@ import { mergeSelectionConflictMatches, sameSelectionCourse } from '../utils/jwx
 import { jwxkScheduleOverlayMeta } from '../utils/jwxkModes';
 import { loadSetting, saveSetting } from '../utils/settings';
 import { resolveTimetableSections } from '../utils/timetableSections';
+import TimetableDayAgenda from '../components/TimetableDayAgenda';
+import { agendaDateForDay, injectTimetableAgenda } from '../utils/timetableAgenda';
+import { getTimetableAgenda, saveTimetableAgenda } from '../services/api';
 import './TimetablePage.css';
 
 const { useBreakpoint } = Grid;
@@ -1654,6 +1657,26 @@ function TimetablePage({
     && Array.isArray(context?.campuses) && context.campuses.length === 0;
   const [autoNotice, setAutoNotice] = useState('');
   const [detailCourse, setDetailCourse] = useState(null);
+  const [agendaDate, setAgendaDate] = useState(null);
+  const [agendaState, setAgendaState] = useState({ identity: '', term: '', document: { revision: 0, events: [], moves: [] }, loading: false, error: '' });
+  const agendaGeneration = useRef(0);
+  const agendaDocument = agendaState.identity === resourceIdentity && agendaState.term === termCode ? agendaState.document : { revision: 0, events: [], moves: [] };
+  const loadAgenda = useCallback(async () => {
+    if (!termCode || mode !== 'personal' || embedded || offlineMode || recoveryMode) return;
+    const generation = ++agendaGeneration.current;
+    setAgendaState(previous => ({ identity: resourceIdentity, term: termCode, document: previous.identity === resourceIdentity && previous.term === termCode ? previous.document : { revision: 0, events: [], moves: [] }, loading: true, error: '' }));
+    try {
+      const document = await getTimetableAgenda(termCode);
+      if (generation === agendaGeneration.current) setAgendaState({ identity: resourceIdentity, term: termCode, document, loading: false, error: '' });
+    } catch (exc) {
+      if (generation === agendaGeneration.current) setAgendaState(previous => ({ ...previous, loading: false, error: requestErrorText(exc, '无法读取当日日程') }));
+    }
+  }, [embedded, mode, offlineMode, recoveryMode, resourceIdentity, termCode]);
+  useEffect(() => {
+    setAgendaDate(null);
+    loadAgenda();
+    return () => { agendaGeneration.current += 1; };
+  }, [loadAgenda]);
   const [conflictDetectionEnabled, setConflictDetectionEnabled] = useState(false);
   const [conflictDetectionLoading, setConflictDetectionLoading] = useState(false);
   const [conflictDetectionError, setConflictDetectionError] = useState('');
@@ -3185,6 +3208,18 @@ function TimetablePage({
     ? (schedule.week == null ? 'term' : 'week') : viewMode;
   const displayedWeekNumber = !usesPersonalTimetableEndpoint && schedule
     ? schedule.week : weekNumber;
+  const agendaSections = useMemo(() => resolveTimetableSections({
+    sections, sectionsByCampus: personalPayload?.sections_by_campus || {}, campusCode,
+    campusName: context?.campuses?.find(item => item.code === campusCode)?.name || '',
+    campuses: context?.campuses || [], courses: personalPayload?.courses || [],
+  }), [sections, personalPayload, campusCode, context?.campuses]);
+  const agendaProjection = useMemo(() => injectTimetableAgenda({
+    courses: mode === 'personal' && personalPayload?.term_code === termCode ? personalPayload.courses : schedule?.courses || [],
+    weeks: context?.weeks || [], sections: agendaSections, now: localDate,
+    document: mode === 'personal' && !embedded && agendaState.identity === resourceIdentity && agendaState.term === termCode ? agendaState.document : null,
+  }), [mode, embedded, personalPayload, schedule, context?.weeks, agendaSections, localDate, agendaState.document, agendaState.identity, agendaState.term, resourceIdentity, termCode]);
+  const personalAgendaCourses = agendaProjection.courses;
+  const agendaEventCourses = agendaProjection.events;
   const coursesByDay = useMemo(() => {
     const result = Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]));
     const visibleOverlayCourses = termCode === preferredTermCode ? (overlayCourses || []).filter(course => (
@@ -3195,13 +3230,17 @@ function TimetablePage({
       || course.weeks.includes(displayedWeekNumber)
     )) : [];
     const mergedCourses = mergeScheduleWithSelectionOverlays(
-      schedule?.courses || [], visibleOverlayCourses,
+      mode === 'personal' && displayedViewMode === 'week' && !embedded ? [
+        ...personalAgendaCourses.filter(course => courseMatchesWeek(course, displayedWeekNumber)
+          && courseMatchesCampus(course, campusCode, personalPayload?.campuses || context?.campuses || [])),
+        ...agendaEventCourses.filter(course => course.weeks.includes(displayedWeekNumber) && course.start_section),
+      ] : schedule?.courses || [], visibleOverlayCourses,
     );
     mergedCourses.forEach(course => {
       if (result[course.weekday]) result[course.weekday].push(course);
     });
     return result;
-  }, [displayedViewMode, displayedWeekNumber, overlayCourses, preferredTermCode, schedule, termCode]);
+  }, [agendaEventCourses, campusCode, context?.campuses, displayedViewMode, displayedWeekNumber, embedded, mode, overlayCourses, personalAgendaCourses, personalPayload?.campuses, preferredTermCode, schedule, termCode]);
   const resolvedSections = useMemo(() => resolveTimetableSections({
     sections,
     sectionsByCampus: mode === 'personal' ? (personalPayload?.sections_by_campus || {}) : {},
@@ -3213,14 +3252,15 @@ function TimetablePage({
   const mobileSummaryCourses = useMemo(() => {
     if (mode !== 'personal' || !personalPayload) return [];
     const visibleOverlayCourses = termCode === preferredTermCode ? (overlayCourses || []) : [];
-    const campusCourses = (personalPayload.courses || []).filter(course => (
+    const campusCourses = [...agendaProjection.courses, ...agendaProjection.events].filter(course => (
+      course.agenda_event_id ||
       courseMatchesCampus(course, campusCode, personalPayload.campuses || [])
     ));
     return mergeScheduleWithSelectionOverlays(
       campusCourses,
       visibleOverlayCourses,
     );
-  }, [campusCode, mode, overlayCourses, personalPayload, preferredTermCode, termCode]);
+  }, [agendaProjection, campusCode, mode, overlayCourses, personalPayload, preferredTermCode, termCode]);
   const conflictCourseScheduleMap = useMemo(() => buildConflictCourseScheduleMap([
     ...(personalPayload?.courses || schedule?.courses || []),
     ...(overlayCourses || []),
@@ -3593,6 +3633,29 @@ function TimetablePage({
     });
   };
 
+  const openDayAgenda = day => {
+    const date = agendaDateForDay(context?.weeks || [], displayedWeekNumber, day);
+    if (date) setAgendaDate(date);
+  };
+  const dayAgendaAction = !embedded && displayedViewMode === 'week'
+    && agendaDateForDay(context?.weeks || [], displayedWeekNumber, 7) ? openDayAgenda : undefined;
+  const saveDayAgenda = async document => {
+    if (agendaState.loading || agendaState.error || agendaProjection.ended || offlineMode || recoveryMode || mode !== 'personal') throw new Error('当前日程不可编辑，请重新读取');
+    const generation = agendaGeneration.current;
+    try {
+      const result = await saveTimetableAgenda(termCode, document);
+      if (generation === agendaGeneration.current) setAgendaState({ identity: resourceIdentity, term: termCode, document: result, loading: false, error: '' });
+    } catch (exc) {
+      if ([409, 410].includes(exc.response?.status)) loadAgenda();
+      throw exc;
+    }
+  };
+
+  const openTimelineCourse = course => {
+    if (course.agenda_date) setAgendaDate(course.agenda_date);
+    else setDetailCourse(course);
+  };
+
   const desktopControls = (
     <div className="timetable-controls timetable-desktop-controls" aria-label="课表查询条件">
       <label><span>学期</span><Select
@@ -3821,7 +3884,7 @@ function TimetablePage({
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该学期暂无课程安排" />
       ) : schedule && (mode === 'personal' || querySubjectMatches) ? (
         <>
-          {hasVisibleArrangedCourses ? (
+          {hasVisibleArrangedCourses || (!embedded && displayedViewMode === 'week') ? (
             <>
               {overlayVisibleForTerm && (
                 <div className="timetable-overlay-legend" aria-label="课表叠加说明">
@@ -3839,7 +3902,7 @@ function TimetablePage({
                   onDayChange={handleMobileDayChange}
                   onSwipeDay={navigateMobileDay}
                   onSwipeWeek={navigateMobileWeek}
-                  onCourseClick={setDetailCourse}
+                  onCourseClick={openTimelineCourse}
                   personalConflictMap={effectiveConflictMap}
                   presentation={presentation}
                   onSlotSelect={onSlotSelect}
@@ -3850,6 +3913,7 @@ function TimetablePage({
                     && mobileCompactWeekView
                   )}
                   mode={mode}
+                  onDayAgenda={dayAgendaAction}
                 />
               </div>
               <div className={isMobile ? 'timetable-screen-desktop-hidden' : ''}>
@@ -3867,13 +3931,15 @@ function TimetablePage({
                     weekNumber: displayedWeekNumber,
                     currentWeekNumber: effectiveCurrentWeekNumber,
                   })}
-                  onCourseClick={setDetailCourse}
+                  onCourseClick={openTimelineCourse}
                   personalConflictMap={effectiveConflictMap}
                   courseScheduleMap={conflictCourseScheduleMap}
                   presentation={presentation}
                   onSlotSelect={onSlotSelect}
+                  onDayAgenda={dayAgendaAction}
                 />
               </div>
+              {!hasVisibleArrangedCourses && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasOtherCourses ? '当前范围内没有按节次安排的课程' : '当前条件下暂无课程安排'} />}
             </>
           ) : (
             <Empty
@@ -3882,6 +3948,9 @@ function TimetablePage({
             />
           )}
           <OtherCourses schedule={schedule} />
+          {mode === 'personal' && !embedded && displayedViewMode === 'week' && <div className="timetable-extra-agenda">
+            {agendaEventCourses.filter(course => course.weeks.includes(displayedWeekNumber) && !course.start_section).map(course => <Button key={course.id} onClick={() => setAgendaDate(course.agenda_date)}>{WEEKDAY_NAMES[course.weekday - 1]} · {course.start_time}–{course.end_time} · {course.course_name}</Button>)}
+          </div>}
         </>
       ) : null}
       </div>
@@ -3903,6 +3972,12 @@ function TimetablePage({
       )}
 
       <CourseDetail course={detailCourse} onClose={() => setDetailCourse(null)} isMobile={isMobile} conflictMap={effectiveConflictMap} courseScheduleMap={conflictCourseScheduleMap} resolveCourseDetail={resolveCourseDetail} />
+      <TimetableDayAgenda date={agendaDate} weeks={context?.weeks || []}
+        courses={mode === 'personal' && personalPayload?.term_code === termCode ? personalPayload.courses : schedule?.courses || []}
+        document={mode === 'personal' ? agendaDocument : { revision: 0, events: [], moves: [] }} projection={agendaProjection} sections={resolvedSections}
+        writable={mode === 'personal' && !embedded && !offlineMode && !recoveryMode && !agendaProjection.ended && agendaState.identity === resourceIdentity && agendaState.term === termCode && !agendaState.error}
+        loading={mode === 'personal' && agendaState.loading} error={mode === 'personal' ? agendaState.error : ''}
+        onRetry={loadAgenda} onSave={saveDayAgenda} onClose={() => setAgendaDate(null)} />
 
       <AdaptiveModal
         rootClassName="timetable-target-filter-modal"
@@ -4247,6 +4322,7 @@ export function TimetableGrid({
   presentation = 'default',
   onSlotSelect,
   highlightedDay = null,
+  onDayAgenda,
 }) {
   const [expandedCluster, setExpandedCluster] = useState(null);
   const [activeClusterCourse, setActiveClusterCourse] = useState(null);
@@ -4306,7 +4382,9 @@ export function TimetableGrid({
         <div className="timetable-axis-heading">{mobileCompact ? '时间' : '节次'}</div>
         {TIMETABLE_DAY_ORDER.map(day => {
           const name = mobileCompact ? `周${SHORT_WEEKDAY_NAMES[day - 1]}` : WEEKDAY_NAMES[day - 1];
-          return <div className={today === day ? 'is-today' : ''} key={day}>{name}{!mobileCompact && today === day && <small>今天</small>}</div>;
+          return <div className={today === day ? 'is-today' : ''} key={day}>{onDayAgenda && viewMode === 'week'
+            ? <button type="button" className="timetable-day-heading" onClick={() => onDayAgenda(day)} aria-label={`查看${WEEKDAY_NAMES[day - 1]}当日日程`}>{name}{!mobileCompact && today === day && <small>今天</small>}</button>
+            : <>{name}{!mobileCompact && today === day && <small>今天</small>}</>}</div>;
         })}
       </div>
       <div className="timetable-grid-body" style={{ ...gridStyle, height: totalHeight }}>
@@ -4812,6 +4890,7 @@ export function MobileCompactWeekTimetable({
   currentWeekNumber = null,
   onCourseClick,
   personalConflictMap = {},
+  onDayAgenda,
 }) {
   return (
     <TimetableGrid
@@ -4826,6 +4905,7 @@ export function MobileCompactWeekTimetable({
       onCourseClick={onCourseClick}
       personalConflictMap={personalConflictMap}
       presentation="mobile-compact"
+      onDayAgenda={onDayAgenda}
     />
   );
 }
@@ -4846,6 +4926,7 @@ export function MobileTimetable({
   onSlotSelect,
   dayAnchorRef,
   compactWeekView = false,
+  onDayAgenda,
 }) {
   const now = useTimetableNow();
   const swipeStartRef = useRef(null);
@@ -4872,6 +4953,7 @@ export function MobileTimetable({
           showToday={false}
           onCourseClick={onCourseClick}
           personalConflictMap={personalConflictMap}
+          onDayAgenda={onDayAgenda}
           presentation="mobile-selection"
           onSlotSelect={onSlotSelect}
         />
@@ -4960,16 +5042,33 @@ export function MobileTimetable({
           currentWeekNumber={currentWeekNumber}
           onCourseClick={onCourseClick}
           personalConflictMap={personalConflictMap}
+          onDayAgenda={onDayAgenda}
         />
       ) : (
         <>
-          <div className="timetable-mobile-day-selector" ref={dayAnchorRef}>
+          <div
+            className="timetable-mobile-day-selector"
+            ref={dayAnchorRef}
+            onClickCapture={event => {
+              if (viewMode !== 'week' || !onDayAgenda) return;
+              // Capture the previous selection before the radio's change handler runs.
+              if (!event.target.matches('input[type="radio"]')) return;
+              const day = Number(event.target.closest('.ant-segmented-item')?.querySelector('[data-agenda-day]')?.dataset.agendaDay);
+              if (day === selectedDay && TIMETABLE_DAY_ORDER.includes(day)) onDayAgenda(day);
+            }}
+            onKeyDownCapture={event => {
+              if (viewMode !== 'week' || !onDayAgenda || event.repeat) return;
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              event.preventDefault();
+              onDayAgenda(selectedDay);
+            }}
+          >
             <Segmented
               block
               value={selectedDay}
               onChange={onDayChange}
               options={TIMETABLE_DAY_ORDER.map(day => ({
-                label: <span className="timetable-day-option"><span>周{SHORT_WEEKDAY_NAMES[day - 1]}</span><small>{coursesByDay[day].length || ''}</small></span>,
+                label: <span className="timetable-day-option" data-agenda-day={day}><span>周{SHORT_WEEKDAY_NAMES[day - 1]}</span><small>{coursesByDay[day].length || ''}</small></span>,
                 value: day,
               }))}
             />

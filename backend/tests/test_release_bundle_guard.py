@@ -51,6 +51,13 @@ def test_release_bundle_guard_rejects_gpa_preferences(tmp_path):
     assert Path("app/gpa_preferences/account-hash.json") in find_forbidden(tmp_path)
 
 
+def test_release_bundle_guard_rejects_timetable_agendas(tmp_path):
+    directory = tmp_path / "app" / "timetable_agendas" / "account-hash"
+    directory.mkdir(parents=True)
+    (directory / "term-hash.json").write_text('{"events":[]}', encoding="utf-8")
+    assert Path("app/timetable_agendas/account-hash/term-hash.json") in find_forbidden(tmp_path)
+
+
 def test_release_bundle_guard_rejects_new_private_artifact_types(tmp_path):
     root = tmp_path / "bundle"
     root.mkdir()
