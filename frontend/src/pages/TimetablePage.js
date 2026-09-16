@@ -1636,7 +1636,8 @@ function TimetablePage({
   const [conflictDetectionLoading, setConflictDetectionLoading] = useState(false);
   const [conflictDetectionError, setConflictDetectionError] = useState('');
   const [personalConflictMap, setPersonalConflictMap] = useState({});
-  const [mobileDay, setMobileDay] = useState(todayWeekday());
+  const [localDate, setLocalDate] = useState(() => new Date());
+  const [mobileDay, setMobileDay] = useState(() => todayWeekday(localDate));
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [filterDraft, setFilterDraft] = useState({
     termCode: '', campusCode: '', viewMode: 'week',
@@ -1704,7 +1705,9 @@ function TimetablePage({
   const pendingPersonalPayloadRef = useRef(null);
   const pendingPersonalSignatureRef = useRef('');
   const timetableViewState = useRef({ termCode: '', campusCode: '', weekNumber: null });
-  const mobileDayTerm = useRef('');
+  const mobileDayContext = useRef('');
+  const mobileDayFollowsToday = useRef(true);
+  const previousLocalDate = useRef(localDate);
   const mobileWeekFocusRef = useRef(null);
   const mobileDayFocusRef = useRef(null);
   const mobileFocusKeyRef = useRef('');
@@ -1728,6 +1731,21 @@ function TimetablePage({
 
   useEffect(() => {
     setHeaderPortalTarget(document.getElementById('workspace-header-center'));
+  }, []);
+
+  useEffect(() => {
+    const refreshLocalDate = () => {
+      const next = new Date();
+      setLocalDate(previous => dateKey(previous) === dateKey(next) ? previous : next);
+    };
+    const interval = window.setInterval(refreshLocalDate, 30_000);
+    window.addEventListener('focus', refreshLocalDate);
+    document.addEventListener('visibilitychange', refreshLocalDate);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refreshLocalDate);
+      document.removeEventListener('visibilitychange', refreshLocalDate);
+    };
   }, []);
 
   const holdQueryViewport = useCallback(() => {
@@ -2685,6 +2703,7 @@ function TimetablePage({
 
   const switchTerm = nextTermCode => {
     if (nextTermCode === termCode) return;
+    mobileDayFollowsToday.current = true;
     clearTimeout(targetTimer.current);
     clearTimeout(targetFilterTimer.current);
     targetGeneration.current += 1;
@@ -2912,6 +2931,7 @@ function TimetablePage({
 
   const handleMobileDayChange = nextDay => {
     if (nextDay === mobileDay) return;
+    mobileDayFollowsToday.current = false;
     const generation = ++mobileDayScrollGeneration.current;
     const previousTop = typeof window !== 'undefined' ? window.scrollY : 0;
     if (!isMobile || embedded || previousTop <= 0 || typeof window === 'undefined') {
@@ -3039,7 +3059,7 @@ function TimetablePage({
     }));
   }, [context]);
   const effectiveCurrentWeekNumber = termCode === currentTermCode
-    ? selectDefaultWeek(context?.weeks || [], { currentTerm: true })
+    ? selectDefaultWeek(context?.weeks || [], { currentTerm: true, now: localDate })
     : null;
   const availabilityWeekOptions = useMemo(() => {
     return roomAvailabilityWeekChoices(
@@ -3175,9 +3195,10 @@ function TimetablePage({
       currentTerm: true,
       currentWeekNumber: effectiveCurrentWeekNumber,
       weeks: context?.weeks || [],
+      now: localDate,
     });
     return summary.kind === 'complete' ? null : summary;
-  }, [context?.weeks, currentTermCode, effectiveCurrentWeekNumber, mode, queryScheduleMatches, schedule, termCode, viewMode, weekNumber]);
+  }, [context?.weeks, currentTermCode, effectiveCurrentWeekNumber, localDate, mode, queryScheduleMatches, schedule, termCode, viewMode, weekNumber]);
   const isShowingCurrentWeek = Boolean(
     termCode === currentTermCode
     && weekNumber === effectiveCurrentWeekNumber,
@@ -3185,11 +3206,31 @@ function TimetablePage({
   timetableViewState.current = { termCode, campusCode, weekNumber };
 
   useEffect(() => {
-    if (!schedule || viewMode !== 'week' || mobileDayTerm.current === termCode) return;
-    mobileDayTerm.current = termCode;
+    if (!schedule || viewMode !== 'week' || !termCode) return;
+    const contextKey = `${termCode}:${currentTermCode}:${isShowingCurrentWeek}`;
+    if (mobileDayContext.current === contextKey) return;
+    mobileDayContext.current = contextKey;
+    if (!mobileDayFollowsToday.current) return;
     const linkedDay = termCode === deepLink.current.term ? deepLink.current.day : null;
-    setMobileDay(linkedDay || (isShowingCurrentWeek ? todayWeekday() : preferredMobileDay(coursesByDay)));
-  }, [coursesByDay, isShowingCurrentWeek, schedule, termCode, viewMode]);
+    if (linkedDay) {
+      mobileDayFollowsToday.current = false;
+      setMobileDay(linkedDay);
+    } else {
+      setMobileDay(isShowingCurrentWeek
+        ? todayWeekday(localDate) : preferredMobileDay(coursesByDay, todayWeekday(localDate)));
+    }
+  }, [coursesByDay, currentTermCode, isShowingCurrentWeek, localDate, schedule, termCode, viewMode]);
+
+  useEffect(() => {
+    const previous = previousLocalDate.current;
+    if (dateKey(previous) === dateKey(localDate)) return;
+    previousLocalDate.current = localDate;
+    if (!mobileDayFollowsToday.current || viewMode !== 'week' || termCode !== currentTermCode) return;
+    const previousWeek = selectDefaultWeek(context?.weeks || [], { currentTerm: true, now: previous });
+    const nextWeek = selectDefaultWeek(context?.weeks || [], { currentTerm: true, now: localDate });
+    if (weekNumber === previousWeek && nextWeek && nextWeek !== previousWeek) setWeekNumber(nextWeek);
+    if (weekNumber === previousWeek || weekNumber === nextWeek) setMobileDay(todayWeekday(localDate));
+  }, [context?.weeks, currentTermCode, localDate, termCode, viewMode, weekNumber]);
 
   useLayoutEffect(() => {
     if (
@@ -3514,6 +3555,7 @@ function TimetablePage({
               currentTerm: termCode === currentTermCode,
               currentWeekNumber: effectiveCurrentWeekNumber,
               weeks: context?.weeks || [],
+              now: localDate,
             })
             : mobileQuerySummary}
           defaultTimetableOnOpen={defaultTimetableOnOpen}
@@ -4035,6 +4077,22 @@ export const timetableSectionAxisMinimumHeight = (section, mobileCompact = false
     : 26 + variantCount * 16;
 };
 
+const useTimetableNow = () => {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const refresh = () => setNow(new Date());
+    const timer = window.setInterval(refresh, 30000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, []);
+  return now;
+};
+
 export function TimetableGrid({
   coursesByDay,
   sections = [],
@@ -4078,11 +4136,7 @@ export function TimetableGrid({
     [...offsets, offsets[offsets.length - 1] + value]
   ), [0]);
   const totalHeight = sectionOffsets[sectionOffsets.length - 1] || 64;
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 30000);
-    return () => window.clearInterval(timer);
-  }, []);
+  const now = useTimetableNow();
   useEffect(() => {
     setActiveClusterCourse(null);
     setExpandedCluster(null);
@@ -4631,13 +4685,9 @@ export function MobileTimetable({
   dayAnchorRef,
   compactWeekView = false,
 }) {
-  const [now, setNow] = useState(() => new Date());
+  const now = useTimetableNow();
   const swipeStartRef = useRef(null);
   const suppressSwipeClickRef = useRef(false);
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 30000);
-    return () => window.clearInterval(timer);
-  }, []);
   const courses = [...(coursesByDay[selectedDay] || [])].sort((a, b) => a.start_section - b.start_section);
   const compact = presentation === 'selection';
   const sectionNumbers = sections.length

@@ -98,6 +98,7 @@ describe('query timetable request lifecycle', () => {
   });
   afterEach(async () => {
     await act(async () => root.unmount());
+    jest.useRealTimers();
     container.remove();
     header.remove();
     window.history.replaceState(null, '', '/');
@@ -122,6 +123,117 @@ describe('query timetable request lifecycle', () => {
     await click(container.querySelector('.timetable-target-result-card'));
   };
   const week = number => container.querySelector(`[data-week="${number}"]`);
+
+  test('keeps the current weekday fresh after midnight without overriding a manually selected day', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-16T08:00:00'));
+    const datedWeeks = [1, 2, 3].map((number, index) => ({
+      number, name: `第${number}周`, current: number === 2,
+      start_date: `2026-09-${String(6 + index * 7).padStart(2, '0')}`,
+      end_date: `2026-09-${String(12 + index * 7).padStart(2, '0')}`,
+    }));
+    const cached = { ...personal, weeks: datedWeeks, courses: [{ ...course, weeks: [2, 3] }] };
+    mockTimetableMemory.data = {
+      payload: cached, terms: [{ code: termCode, name: '测试学期', current: true }],
+      currentTermCode: termCode, campusCode: '00', weekNumber: 3, viewMode: 'week',
+    };
+    getPersonalTimetable.mockResolvedValue(cached);
+
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+
+    const selectedDay = () => container.querySelector('.timetable-mobile-day-selector .ant-segmented-item-selected')?.textContent;
+    const highlightedDay = () => container.querySelector('.timetable-desktop:not(.is-mobile-compact) .timetable-grid-header .is-today')?.textContent;
+    expect(week(2)?.classList.contains('is-selected')).toBe(true);
+    expect(selectedDay()).toContain('周三'); // No Wednesday course is needed to select today.
+    expect(highlightedDay()).toContain('星期三');
+
+    jest.setSystemTime(new Date('2026-09-17T08:00:00'));
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect(selectedDay()).toContain('周四');
+    expect(highlightedDay()).toContain('星期四');
+
+    await click([...container.querySelectorAll('.timetable-mobile-day-selector .ant-segmented-item')]
+      .find(item => item.textContent.includes('周一')));
+    jest.setSystemTime(new Date('2026-09-18T08:00:00'));
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    expect(selectedDay()).toContain('周一');
+    expect(highlightedDay()).toContain('星期五');
+  });
+
+  test('moves the followed weekday and teaching week together at the Sunday boundary', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-19T08:00:00'));
+    const datedWeeks = [2, 3].map((number, index) => ({
+      number, name: `第${number}周`, current: number === 2,
+      start_date: `2026-09-${13 + index * 7}`,
+      end_date: `2026-09-${19 + index * 7}`,
+    }));
+    const cached = { ...personal, weeks: datedWeeks, courses: [{ ...course, weeks: [2, 3] }] };
+    mockTimetableMemory.data = {
+      payload: cached, terms: [{ code: termCode, name: '测试学期', current: true }],
+      currentTermCode: termCode, campusCode: '00', weekNumber: 2, viewMode: 'week',
+    };
+    getPersonalTimetable.mockResolvedValue(cached);
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+    expect(week(2)?.classList.contains('is-selected')).toBe(true);
+
+    jest.setSystemTime(new Date('2026-09-20T08:00:00'));
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect(week(3)?.classList.contains('is-selected')).toBe(true);
+    expect(container.querySelector('.timetable-mobile-day-selector .ant-segmented-item-selected')?.textContent).toContain('周日');
+
+    await click(week(2));
+    jest.setSystemTime(new Date('2026-09-21T08:00:00'));
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    expect(week(2)?.classList.contains('is-selected')).toBe(true);
+  });
+
+  test('corrects the weekday when the current term arrives after a cached timetable', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-16T08:00:00'));
+    const termsRequest = deferred();
+    const datedWeeks = [{
+      number: 2, name: '第2周', current: false,
+      start_date: '2026-09-13', end_date: '2026-09-19',
+    }];
+    const cached = { ...personal, weeks: datedWeeks, courses: [{ ...course, weeks: [2] }] };
+    mockTimetableMemory.data = {
+      payload: cached,
+      terms: [
+        { code: '2025-2026-2', name: '上一学期' },
+        { code: termCode, name: '测试学期' },
+      ],
+      currentTermCode: '2025-2026-2', campusCode: '00', weekNumber: 2, viewMode: 'week',
+    };
+    getTimetableTerms.mockReturnValue(termsRequest.promise);
+    getPersonalTimetable.mockResolvedValue(cached);
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+    const selectedDay = () => container.querySelector('.timetable-mobile-day-selector .ant-segmented-item-selected')?.textContent;
+    expect(container.textContent).toContain('查询课程');
+    expect(selectedDay()).toContain('周日');
+
+    await act(async () => termsRequest.resolve({
+      terms: [{ code: termCode, name: '测试学期', current: true }], current: termCode,
+    }));
+    await flush();
+    expect(week(2)?.classList.contains('is-selected')).toBe(true);
+    expect(selectedDay()).toContain('周三');
+  });
 
   test.each(['week', 'term'])(
     'desktop cached %s timetable never auto-scrolls while breakpoints initialize',
