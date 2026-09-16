@@ -21,6 +21,7 @@ import {
   Tooltip,
 } from 'antd';
 import {
+  ArrowRightOutlined,
   DownOutlined,
   DeleteOutlined,
   EnvironmentOutlined,
@@ -1168,6 +1169,7 @@ export const mobileCourseSummary = (
     return {
       kind: 'current',
       label: '当前',
+      weekNumber: currentWeekNumber,
       course: active[0],
       courses: active,
       count: active.length,
@@ -1178,6 +1180,7 @@ export const mobileCourseSummary = (
     return {
       kind: 'next',
       label: '下节',
+      weekNumber: currentWeekNumber,
       course: upcoming,
       courses: [upcoming],
       startTime: upcoming.start_time,
@@ -1208,12 +1211,31 @@ export const mobileCourseSummary = (
     return {
       kind: 'tomorrow',
       label: '明日',
+      weekNumber: tomorrowWeek,
       course: tomorrowCourse,
       courses: [tomorrowCourse],
       startTime: tomorrowCourse.start_time,
     };
   }
   return { kind: 'complete', label: '今明两天课程结束', courses: [] };
+};
+
+export const nextTimetableCourseWeek = (course, weeks = [], now = new Date()) => {
+  const day = Number(course?.weekday);
+  const dayIndex = TIMETABLE_DAY_ORDER.indexOf(day);
+  const currentWeek = selectDefaultWeek(weeks, { now });
+  if (dayIndex < 0 || currentWeek == null || !Array.isArray(course?.weeks)) return null;
+  const todayIndex = TIMETABLE_DAY_ORDER.indexOf(todayWeekday(now));
+  const end = timeToMinutes(course.end_time);
+  const todayEnded = dayIndex === todayIndex && end != null
+    && now.getHours() * 60 + now.getMinutes() >= end;
+  const available = new Set((weeks || []).map(item => Number(item.number)));
+  return [...new Set(course.weeks.map(Number))]
+    .filter(number => Number.isFinite(number) && available.has(number))
+    .sort((left, right) => left - right)
+    .find(number => number > currentWeek || (
+      number === currentWeek && (dayIndex > todayIndex || (dayIndex === todayIndex && !todayEnded))
+    )) ?? null;
 };
 
 export const adjacentMobileTimetableDay = ({ day, week, direction, weeks = [] }) => {
@@ -1695,6 +1717,8 @@ function TimetablePage({
   const personalGeneration = useRef(0);
   const conflictGeneration = useRef(0);
   const autoDefaultResolved = useRef(false);
+  const openingWeekResolved = useRef(false);
+  const manuallyNavigated = useRef(false);
   const targetTimer = useRef(null);
   const targetFilterTimer = useRef(null);
   const targetFilterOptionsLoadedFor = useRef('');
@@ -1714,6 +1738,9 @@ function TimetablePage({
   const mobileFocusPendingRef = useRef('');
   const mobileFocusReadyRef = useRef(false);
   const mobileDayScrollGeneration = useRef(0);
+  const desktopWeekSelectRef = useRef(null);
+  const lastWeekWheelAt = useRef(0);
+  const weekWheelDelta = useRef(0);
   const targetSelectRef = useRef(null);
   const targetSearchState = useRef({ keyword: '', page: 0, total: 0, loading: false, requestKey: '' });
   const modeSessions = useRef(createModeSessions());
@@ -1800,6 +1827,7 @@ function TimetablePage({
         const detectedCurrent = selectEffectiveCurrentTerm(rows, payload.current || '');
         setTerms(rows);
         setCurrentTermCode(detectedCurrent);
+        if (manuallyNavigated.current) return;
         const linkedTerm = (
           rows.some(item => item.code === deepLink.current.term)
           || (embedded && deepLink.current.term === preferredTermCode)
@@ -1809,7 +1837,11 @@ function TimetablePage({
         autoDefaultResolved.current = Boolean(linkedTerm);
         const preferredBrowser = browserPreferredTerm.current;
         const browserTermIsValid = preferredBrowser && rows.some(item => item.code === preferredBrowser);
-        setTermCode(linkedTerm || (browserTermIsValid ? preferredBrowser : selectDefaultTerm(rows, detectedCurrent)));
+        const openingWeeklyPage = !embedded && !manuallyNavigated.current
+          && viewModeRef.current === 'week' && !deepLink.current.term;
+        setTermCode(linkedTerm || (openingWeeklyPage && detectedCurrent
+          ? detectedCurrent
+          : (browserTermIsValid ? preferredBrowser : selectDefaultTerm(rows, detectedCurrent))));
         if (linkedTerm && deepLink.current.day) setMobileDay(deepLink.current.day);
       } catch (requestError) {
         if (generation !== termsGeneration.current) return;
@@ -1943,28 +1975,39 @@ function TimetablePage({
       const browser = await readBrowserTimetableCache(resourceIdentity);
       if (!active || generation !== browserHydrationGeneration.current) return;
       browserCacheRef.current = browser;
-      if (browser.terms?.length && !terms.length) {
+      if (browser.terms?.length && !termsRef.current.length) {
         setTerms(browser.terms);
         setCurrentTermCode(browser.current || selectEffectiveCurrentTerm(browser.terms, ''));
       }
-      const desiredTerm = requestedTerm || browser.current || browser.personal?.[0]?.term_code || '';
-      const candidate = browser.personal?.find(item => item.term_code === desiredTerm) || browser.personal?.[0];
+      const saved = browser.viewState || {};
+      const savedViewMode = saved.viewMode === 'term' ? 'term' : 'week';
+      const openingViewMode = personalPayload ? viewModeRef.current : savedViewMode;
+      const browserCurrentTerm = (termsRef.current.length ? currentTermCodeRef.current : '')
+        || selectEffectiveCurrentTerm(browser.terms || [], browser.current)
+        || currentTermCodeRef.current;
+      const desiredTerm = requestedTerm || (
+        !embedded && openingViewMode === 'week' ? browserCurrentTerm : saved.termCode || browser.current
+      ) || browser.personal?.[0]?.term_code || '';
+      const candidate = browser.personal?.find(item => item.term_code === desiredTerm)
+        || browser.personal?.[0];
       if (candidate?.term_code) {
         setAvailabilityPersonalWeekContext({
           term_code: candidate.term_code,
           weeks: candidate.weeks || [],
         });
       }
-      if (candidate && !personalPayload && modeRef.current === 'personal') {
-        const saved = browser.viewState || {};
-        const savedViewMode = saved.viewMode === 'term' ? 'term' : 'week';
-        const browserCurrentTerm = browser.current
-          || selectEffectiveCurrentTerm(browser.terms || [], currentTermCodeRef.current);
-        browserPreferredTerm.current = saved.termCode || candidate.term_code || '';
-        if (!embedded && (saved.termCode || candidate.term_code)) {
-          setTermCode(saved.termCode || candidate.term_code);
+      const replacePreviousTerm = !embedded && !requestedTerm && openingViewMode === 'week'
+        && candidate?.term_code === browserCurrentTerm
+        && personalPayload?.term_code !== browserCurrentTerm;
+      if (candidate && (!personalPayload || replacePreviousTerm)
+        && modeRef.current === 'personal' && !manuallyNavigated.current) {
+        browserPreferredTerm.current = desiredTerm;
+        if (!embedded) {
+          setTermCode(candidate.term_code);
         }
-        if (saved.viewMode === 'term' || saved.viewMode === 'week') setViewMode(saved.viewMode);
+        if (!personalPayload && (saved.viewMode === 'term' || saved.viewMode === 'week')) {
+          setViewMode(saved.viewMode);
+        }
         applyCachedSnapshot(candidate, 'browser');
         if (saved.campusCode && candidate.campuses?.some(item => item.code === saved.campusCode)) {
           setCampusCode(saved.campusCode);
@@ -2278,20 +2321,30 @@ function TimetablePage({
   }, [mode, targetFilterOptionsLoading, termCode]);
 
   const openTargetFilters = () => {
+    const savedScan = mode === 'room' ? roomAvailabilityResult : null;
     setTargetFilterDraft(targetFilters);
-    setTargetPreviewKeyword(targetKeyword);
-    setTargetPreviewOptions([]);
+    setTargetPreviewKeyword(savedScan?.request?.keyword ?? targetKeyword);
+    setTargetPreviewOptions(savedScan?.items || []);
     setTargetPreviewPage(0);
-    setTargetPreviewTotal(0);
-    setTargetPreviewLoading(true);
+    setTargetPreviewTotal(savedScan?.items?.length || 0);
+    setTargetPreviewLoading(!savedScan);
     setTargetPreviewError('');
     setTargetFilterOpen(true);
     if (targetFilterOptionsLoadedFor.current !== `${mode}:${termCode}:all`) loadTargetFilterOptions();
   };
 
+  const pauseRoomAvailabilityScan = () => {
+    if (!roomAvailabilityLoading) return;
+    roomAvailabilityGeneration.current += 1;
+    setRoomAvailabilityLoading(false);
+    setRoomAvailabilityResult(previous => previous && !previous.complete
+      ? { ...previous, paused: true } : previous);
+  };
+
   const closeTargetFilters = () => {
     clearTimeout(targetFilterTimer.current);
     targetPreviewGeneration.current += 1;
+    pauseRoomAvailabilityScan();
     setTargetFilterOpen(false);
     setTargetFilterDraft(targetFilters);
     setTargetPreviewLoading(false);
@@ -2393,8 +2446,9 @@ function TimetablePage({
     if (mode !== 'personal' && termCode && !targetOptions.length) searchTargets(targetKeyword);
   }, [mode, searchTargets, targetKeyword, targetOptions.length, termCode]);
 
+  const hasRoomAvailabilityPreview = mode === 'room' && Boolean(roomAvailabilityResult);
   useEffect(() => {
-    if (!targetFilterOpen || mode === 'personal' || !termCode) return undefined;
+    if (!targetFilterOpen || mode === 'personal' || !termCode || hasRoomAvailabilityPreview) return undefined;
     clearTimeout(targetFilterTimer.current);
     if (capacityRangeInvalid(targetFilterDraft)) {
       setTargetPreviewOptions([]);
@@ -2409,7 +2463,7 @@ function TimetablePage({
       searchTargetPreview(targetPreviewKeyword, { page: 1, filters });
     }, 250);
     return () => clearTimeout(targetFilterTimer.current);
-  }, [mode, searchTargetPreview, targetFilterDraft, targetFilterOpen, targetPreviewKeyword, termCode]);
+  }, [hasRoomAvailabilityPreview, mode, searchTargetPreview, targetFilterDraft, targetFilterOpen, targetPreviewKeyword, termCode]);
 
   useEffect(() => {
     if (
@@ -2677,6 +2731,11 @@ function TimetablePage({
 
   const switchMode = nextMode => {
     if (nextMode === mode) return;
+    manuallyNavigated.current = true;
+    openingWeekResolved.current = true;
+    roomAvailabilityGeneration.current += 1;
+    setRoomAvailabilityLoading(false);
+    setRoomAvailabilityResult(null);
     clearTimeout(targetTimer.current);
     clearTimeout(targetFilterTimer.current);
     saveModeSession();
@@ -2703,6 +2762,11 @@ function TimetablePage({
 
   const switchTerm = nextTermCode => {
     if (nextTermCode === termCode) return;
+    manuallyNavigated.current = true;
+    openingWeekResolved.current = true;
+    roomAvailabilityGeneration.current += 1;
+    setRoomAvailabilityLoading(false);
+    setRoomAvailabilityResult(null);
     mobileDayFollowsToday.current = true;
     clearTimeout(targetTimer.current);
     clearTimeout(targetFilterTimer.current);
@@ -2823,6 +2887,7 @@ function TimetablePage({
     if (!selected) return;
     clearTimeout(targetFilterTimer.current);
     targetPreviewGeneration.current += 1;
+    pauseRoomAvailabilityScan();
     const cleaned = Object.fromEntries(Object.entries(filters)
       .filter(([, value]) => value !== '' && value != null));
     setTargetFilters(cleaned);
@@ -2900,6 +2965,8 @@ function TimetablePage({
 
   const switchViewMode = nextViewMode => {
     if (nextViewMode === viewMode) return;
+    manuallyNavigated.current = true;
+    openingWeekResolved.current = true;
     scheduleGeneration.current += 1;
     holdQueryViewport();
     if (usesPersonalTimetableEndpoint && personalPayload) {
@@ -2916,6 +2983,9 @@ function TimetablePage({
 
   const switchWeek = nextWeek => {
     if (!nextWeek || nextWeek === weekNumber) return;
+    manuallyNavigated.current = true;
+    openingWeekResolved.current = true;
+    mobileDayFollowsToday.current = false;
     scheduleGeneration.current += 1;
     if (mode !== 'personal') {
       holdQueryViewport();
@@ -2928,6 +2998,30 @@ function TimetablePage({
     setError(null);
     setWeekNumber(nextWeek);
   };
+
+  useEffect(() => {
+    const field = desktopWeekSelectRef.current;
+    if (!field || isMobile || viewMode !== 'week' || !context?.weeks?.length) return undefined;
+    const handleWheel = event => {
+      if (!event.deltaY) return;
+      const direction = Math.sign(event.deltaY);
+      const nextWeek = adjacentMobileTimetableWeek({ week: weekNumber, direction, weeks: context.weeks });
+      if (nextWeek == null) return;
+      event.preventDefault();
+      weekWheelDelta.current += event.deltaY * (event.deltaMode === 0 ? 1 : 40);
+      if (Math.abs(weekWheelDelta.current) < 50) return;
+      weekWheelDelta.current = 0;
+      const now = Date.now();
+      if (now - lastWeekWheelAt.current < 140) return;
+      lastWeekWheelAt.current = now;
+      switchWeek(nextWeek);
+    };
+    field.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      field.removeEventListener('wheel', handleWheel);
+      weekWheelDelta.current = 0;
+    };
+  }, [context?.weeks, isMobile, switchWeek, viewMode, weekNumber]);
 
   const handleMobileDayChange = nextDay => {
     if (nextDay === mobileDay) return;
@@ -3077,12 +3171,13 @@ function TimetablePage({
     ...Array.from({ length: Math.max(12, sections.length || 0) }, (_, i) => ({ value: i + 1, label: `第${i + 1}节` })),
   ], [sections.length]);
   useEffect(() => {
+    if (roomAvailabilitySlots[0]?.week_start != null || roomAvailabilitySlots[0]?.week_end != null) return;
     changeRoomAvailabilitySlots(previous => previous.map((slot, index) => (
       index === 0 && slot.week_start == null && slot.week_end == null
         ? { ...slot, week_start: availabilityWeekDefault, week_end: availabilityWeekDefault }
         : slot
     )));
-  }, [availabilityWeekDefault, changeRoomAvailabilitySlots]);
+  }, [availabilityWeekDefault, changeRoomAvailabilitySlots, roomAvailabilitySlots]);
 
   // Keep the retained query's layout and overlays on its actual range until
   // the new response arrives; controls already show the requested range.
@@ -3183,27 +3278,40 @@ function TimetablePage({
   const querySubjectMatches = !usesPersonalTimetableEndpoint && queryTimetableSubjectMatches({
     mode, schedule, targetId: target?.id || '', termCode, campusCode,
   });
-  const mobileQuerySummary = useMemo(() => {
+  const getMobileSummary = now => {
+    if (mode === 'personal') return mobileCourseSummary(mobileSummaryCourses, {
+      currentTerm: termCode === currentTermCode,
+      currentWeekNumber: effectiveCurrentWeekNumber,
+      weeks: context?.weeks || [],
+      now,
+    });
     if (
-      mode === 'personal'
-      || !schedule
-      || !queryScheduleMatches
-      || termCode !== currentTermCode
+      !schedule || !queryScheduleMatches || termCode !== currentTermCode
       || (viewMode === 'week' && weekNumber !== effectiveCurrentWeekNumber)
     ) return null;
     const summary = mobileCourseSummary(schedule.courses || [], {
       currentTerm: true,
       currentWeekNumber: effectiveCurrentWeekNumber,
       weeks: context?.weeks || [],
-      now: localDate,
+      now,
     });
     return summary.kind === 'complete' ? null : summary;
-  }, [context?.weeks, currentTermCode, effectiveCurrentWeekNumber, localDate, mode, queryScheduleMatches, schedule, termCode, viewMode, weekNumber]);
+  };
   const isShowingCurrentWeek = Boolean(
     termCode === currentTermCode
     && weekNumber === effectiveCurrentWeekNumber,
   );
   timetableViewState.current = { termCode, campusCode, weekNumber };
+
+  useEffect(() => {
+    if (
+      openingWeekResolved.current || embedded || mode !== 'personal' || viewMode !== 'week'
+      || !termCode || termCode !== currentTermCode || !context?.weeks?.length
+    ) return;
+    openingWeekResolved.current = true;
+    if (deepLink.current.week || !effectiveCurrentWeekNumber) return;
+    if (weekNumber !== effectiveCurrentWeekNumber) setWeekNumber(effectiveCurrentWeekNumber);
+  }, [context?.weeks, currentTermCode, effectiveCurrentWeekNumber, embedded, mode, termCode, viewMode, weekNumber]);
 
   useEffect(() => {
     if (!schedule || viewMode !== 'week' || !termCode) return;
@@ -3417,22 +3525,32 @@ function TimetablePage({
 
   const scanRoomAvailability = async ({ reset = false } = {}) => {
     if (mode !== 'room' || !termCode || !roomAvailabilitySlots.length) return;
+    clearTimeout(targetFilterTimer.current);
+    targetPreviewGeneration.current += 1;
+    setTargetPreviewLoading(false);
+    setTargetPreviewError('');
     const generation = ++roomAvailabilityGeneration.current;
     const isFresh = () => generation === roomAvailabilityGeneration.current;
-    const filters = Object.fromEntries(Object.entries(targetFilterDraft)
-      .filter(([, value]) => value !== '' && value != null));
+    const request = !reset && roomAvailabilityResult?.request ? roomAvailabilityResult.request : {
+      term_code: termCode,
+      campus_code: campusCode || 'all',
+      filters: Object.fromEntries(Object.entries(targetFilterDraft)
+        .filter(([, value]) => value !== '' && value != null)),
+      slots: roomAvailabilitySlots.map(slot => Object.fromEntries(Object.entries(slot)
+        .map(([key, value]) => [key, value === 'any' ? null : value]))),
+      keyword: targetPreviewKeyword.trim(),
+    };
     let cursor = reset ? 0 : (roomAvailabilityResult?.cursor || 0);
     let items = reset ? [] : (roomAvailabilityResult?.items || []);
     let scanned = reset ? 0 : (roomAvailabilityResult?.scanned || 0);
     let candidateTotal = reset ? 0 : (roomAvailabilityResult?.candidate_total || 0);
     let seenRoomIds = reset ? [] : (roomAvailabilityResult?.seen_room_ids || []);
     setRoomAvailabilityLoading(true);
-    setRoomAvailabilityResult(previous => ({ ...(previous || {}), items, scanned, cursor, candidate_total: candidateTotal, seen_room_ids: seenRoomIds, complete: false, paused: false, error: '' }));
+    setRoomAvailabilityResult(previous => ({ ...(previous || {}), request, items, scanned, cursor, candidate_total: candidateTotal, seen_room_ids: seenRoomIds, complete: false, paused: false, error: '' }));
     try {
       let foundThisRun = 0;
       while (isFresh() && foundThisRun < 3) {
-        const slots = roomAvailabilitySlots.map(slot => Object.fromEntries(Object.entries(slot).map(([key, value]) => [key, value === 'any' ? null : value])));
-        const result = await getRoomAvailability({ term_code: termCode, campus_code: campusCode || 'all', filters, slots, cursor, scan_limit: 1, seen_room_ids: seenRoomIds, keyword: targetKeyword || '' });
+        const result = await getRoomAvailability({ ...request, cursor, scan_limit: 1, seen_room_ids: seenRoomIds });
         if (!isFresh()) return;
         const nextItems = [...items, ...(result.items || []).filter(item => !items.some(existing => existing.id === item.id))];
         foundThisRun += nextItems.length - items.length;
@@ -3446,7 +3564,7 @@ function TimetablePage({
           ...(result.scanned_room_ids || []),
         ])];
         candidateTotal = result.candidate_total ?? candidateTotal;
-        setRoomAvailabilityResult({ items, scanned, cursor, candidate_total: candidateTotal, seen_room_ids: seenRoomIds, complete: Boolean(result.complete), paused: false });
+        setRoomAvailabilityResult({ request, items, scanned, cursor, candidate_total: candidateTotal, seen_room_ids: seenRoomIds, complete: Boolean(result.complete), paused: false });
         if (result.complete || !(result.scanned > 0)) break;
       }
       if (isFresh()) setRoomAvailabilityResult(previous => ({ ...previous, paused: !previous.complete && foundThisRun >= 3 }));
@@ -3458,6 +3576,22 @@ function TimetablePage({
   };
   const refreshDisabled = refreshesTargetList ? !termCode : (!context || (!campusCode && !queryContextEmpty));
   const refreshLoading = refreshesTargetList ? targetLoading : loading;
+
+  const navigateToSummaryCourse = selected => {
+    const day = Number(selected?.course?.weekday);
+    const nextWeek = nextTimetableCourseWeek(selected?.course, context?.weeks || [], new Date());
+    if (!nextWeek) return;
+    mobileDayFollowsToday.current = false;
+    if (viewMode === 'week') switchWeek(nextWeek);
+    if (!mobileCompactWeekView && day >= 1 && day <= 7) setMobileDay(day);
+    const destination = mobileCompactWeekView && viewMode === 'week'
+      ? mobileWeekFocusRef : mobileDayFocusRef;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => destination.current?.scrollIntoView?.({
+        block: 'start', inline: 'nearest', behavior: 'smooth',
+      }));
+    });
+  };
 
   const desktopControls = (
     <div className="timetable-controls timetable-desktop-controls" aria-label="课表查询条件">
@@ -3483,7 +3617,7 @@ function TimetablePage({
         onChange={switchViewMode}
         options={[{ label: '按周', value: 'week' }, { label: '全学期', value: 'term' }]}
       /></label>
-      {viewMode === 'week' && <label><span>教学周</span><Select
+      {viewMode === 'week' && <label ref={desktopWeekSelectRef} title="悬停后滚动切换教学周"><span>教学周</span><Select
         value={weekNumber}
         onChange={switchWeek}
         disabled={!context?.weeks?.length}
@@ -3550,14 +3684,8 @@ function TimetablePage({
           mode={mode}
           target={target}
           targetDescription={targetDescription(target)}
-          summary={mode === 'personal'
-            ? mobileCourseSummary(mobileSummaryCourses, {
-              currentTerm: termCode === currentTermCode,
-              currentWeekNumber: effectiveCurrentWeekNumber,
-              weeks: context?.weeks || [],
-              now: localDate,
-            })
-            : mobileQuerySummary}
+          getSummary={getMobileSummary}
+          onCourseNavigate={mode === 'personal' ? navigateToSummaryCourse : undefined}
           defaultTimetableOnOpen={defaultTimetableOnOpen}
           onToggleDefault={toggleDefaultTimetable}
           compactWeekView={mobileCompactWeekView}
@@ -3829,11 +3957,18 @@ function TimetablePage({
             invalidateTargetPreview();
             setTargetPreviewKeyword(event.target.value);
           }}
-          onSearch={value => searchTargetPreview(value, {
-            page: 1,
-            filters: Object.fromEntries(Object.entries(targetFilterDraft)
-              .filter(([, item]) => item !== '' && item != null)),
-          })}
+          onSearch={value => {
+            if (hasRoomAvailabilityPreview) {
+              invalidateTargetPreview();
+              setTargetPreviewKeyword(value);
+              return;
+            }
+            searchTargetPreview(value, {
+              page: 1,
+              filters: Object.fromEntries(Object.entries(targetFilterDraft)
+                .filter(([, item]) => item !== '' && item != null)),
+            });
+          }}
           placeholder={`可选：搜索${MODE_LABELS[mode]?.replace('课表', '') || '查询对象'}名称或代码`}
         />
         <div className="timetable-target-filter-grid">
@@ -3936,7 +4071,7 @@ function TimetablePage({
             <div className="timetable-room-availability-actions">
               <Tooltip title="添加一行条件"><Button type="dashed" shape="circle" icon={<PlusOutlined />} onClick={() => changeRoomAvailabilitySlots(items => [...items, { week_start: 'any', week_end: 'any', weekday_start: 'any', weekday_end: 'any', start_section: 1, end_section: 2, joiner: 'and' }])} aria-label="添加空闲时间条件" /></Tooltip>
               <Button type="primary" icon={<SearchOutlined />} loading={roomAvailabilityLoading} onClick={() => { setTargetPreviewOptions([]); setTargetPreviewTotal(0); scanRoomAvailability({ reset: true }); }}>开始扫描</Button>
-              {roomAvailabilityLoading && <Button onClick={() => { roomAvailabilityGeneration.current += 1; setRoomAvailabilityLoading(false); setRoomAvailabilityResult(previous => ({ ...(previous || {}), paused: true })); }}>停止</Button>}
+              {roomAvailabilityLoading && <Button onClick={pauseRoomAvailabilityScan}>停止</Button>}
               {roomAvailabilityResult?.paused && !roomAvailabilityResult?.complete && <Button onClick={() => scanRoomAvailability()}>继续查找</Button>}
             </div>
             {roomAvailabilityLoading && <div className="timetable-room-availability-progress"><span className="timetable-inline-spinner" />正在逐间检查教室… 已检查 {roomAvailabilityResult?.scanned || 0} 间</div>}
@@ -3972,7 +4107,7 @@ function TimetablePage({
               total: targetPreviewTotal,
             },
           )}
-          onLoadMore={() => searchTargetPreview(targetPreviewKeyword, {
+          onLoadMore={hasRoomAvailabilityPreview ? undefined : () => searchTargetPreview(targetPreviewKeyword, {
             page: targetPreviewPage + 1,
             append: true,
             filters: Object.fromEntries(Object.entries(targetFilterDraft)
@@ -4080,7 +4215,12 @@ export const timetableSectionAxisMinimumHeight = (section, mobileCompact = false
 const useTimetableNow = () => {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    const refresh = () => setNow(new Date());
+    const refresh = () => {
+      const next = new Date();
+      setNow(previous => dateKey(previous) === dateKey(next)
+        && previous.getHours() === next.getHours()
+        && previous.getMinutes() === next.getMinutes() ? previous : next);
+    };
     const timer = window.setInterval(refresh, 30000);
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
@@ -4438,7 +4578,9 @@ export function MobileTimetableSummary({
   mode = 'personal',
   target = null,
   targetDescription: queryTargetDescription = '',
-  summary,
+  summary: providedSummary,
+  getSummary,
+  onCourseNavigate,
   defaultTimetableOnOpen,
   onToggleDefault,
   compactWeekView,
@@ -4451,6 +4593,8 @@ export function MobileTimetableSummary({
   onToggleConflictDetection,
 }) {
   const [expanded, setExpanded] = useState(false);
+  const now = useTimetableNow();
+  const summary = getSummary ? getSummary(now) : providedSummary;
   const queryMode = mode !== 'personal';
   const queryModeLabel = (MODE_LABELS[mode] || '查询课表').replace('课表', '');
   const targetName = target?.name || queryModeLabel;
@@ -4474,6 +4618,15 @@ export function MobileTimetableSummary({
   const countSuffix = summary?.kind === 'current' && summary.count > 1
     ? ` 等 ${summary.count} 门`
     : '';
+  const courseDetails = summaryCourse && (
+    <>
+      {queryMode && <span><small>{summary?.kind === 'current' ? '当前' : summary?.kind === 'tomorrow' ? '明日' : '下节'}</small><b>{summaryName}{countSuffix}</b></span>}
+      {summaryTime && <span><small>时间</small><b>{summaryTime}</b></span>}
+      <span><small>地点</small><b>{summaryCourseContent.location}</b></span>
+      {summaryContext?.classes && <span><small>班级</small><b>{summaryContext.classes}</b></span>}
+      {summaryContext?.teacher && <span><small>教师</small><b>{summaryContext.teacher}</b></span>}
+    </>
+  );
   const controlsId = `timetable-mobile-summary-controls-${mode}`;
   return (
     <section
@@ -4511,15 +4664,24 @@ export function MobileTimetableSummary({
               {queryTargetDescription && <span><small>信息</small><b>{queryTargetDescription}</b></span>}
             </div>
           )}
-          {summaryCourse && (
+          {summaryCourse && (queryMode ? (
             <div className="timetable-mobile-summary-course" aria-label={`${summaryName}课程信息`}>
-              {queryMode && <span><small>{summary?.kind === 'current' ? '当前' : summary?.kind === 'tomorrow' ? '明日' : '下节'}</small><b>{summaryName}{countSuffix}</b></span>}
-              {summaryTime && <span><small>时间</small><b>{summaryTime}</b></span>}
-              <span><small>地点</small><b>{summaryCourseContent.location}</b></span>
-              {summaryContext?.classes && <span><small>班级</small><b>{summaryContext.classes}</b></span>}
-              {summaryContext?.teacher && <span><small>教师</small><b>{summaryContext.teacher}</b></span>}
+              {courseDetails}
             </div>
-          )}
+          ) : (
+            <button
+              type="button"
+              className="timetable-mobile-summary-course is-action"
+              aria-label={`定位到${summaryName}课表位置`}
+              onClick={() => {
+                setExpanded(false);
+                onCourseNavigate?.(summary);
+              }}
+            >
+              {courseDetails}
+              <ArrowRightOutlined className="timetable-mobile-summary-course-arrow" aria-hidden="true" />
+            </button>
+          ))}
           <div className={`timetable-mobile-summary-preferences${queryMode ? ' is-query' : ''}`}>
             {!queryMode && <label className="timetable-mobile-summary-default">
               <span>打开时默认课表</span>

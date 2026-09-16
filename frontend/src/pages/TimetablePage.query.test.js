@@ -5,6 +5,7 @@ import TimetablePage, { MobileTimetableNotices, TIMETABLE_LOGIN_ERROR_TEXT } fro
 import {
   getTimetableTerms, getPersonalTimetable, getTimetableContext,
   getTimetableSchedule, searchTimetableTargets, getTimetableBootstrap, syncTimetable,
+  getRoomAvailability,
 } from '../services/api';
 import {
   readBrowserTimetableCache, writeBrowserTimetableCache, subscribeBrowserTimetableCache,
@@ -18,6 +19,7 @@ jest.mock('../services/api', () => ({
   searchTimetableTargets: jest.fn(),
   getTimetableBootstrap: jest.fn(),
   syncTimetable: jest.fn().mockResolvedValue({ jobs: [] }),
+  getRoomAvailability: jest.fn(),
   getTimetableTargetFilterOptions: jest.fn(),
   checkScheduleConflicts: jest.fn(),
 }));
@@ -91,6 +93,7 @@ describe('query timetable request lifecycle', () => {
     writeBrowserTimetableCache.mockResolvedValue(undefined);
     subscribeBrowserTimetableCache.mockImplementation(() => () => {});
     getTimetableContext.mockResolvedValue(context);
+    getRoomAvailability.mockResolvedValue({ items: [], scanned: 0, complete: true });
     getTimetableSchedule.mockImplementation(async request => empty(request));
     searchTimetableTargets.mockImplementation(async request => ({
       items: [{ id: `${request.mode}-fixture`, name: '测试查询对象', details: {} }], total: 1, page: 1,
@@ -198,6 +201,155 @@ describe('query timetable request lifecycle', () => {
     expect(week(2)?.classList.contains('is-selected')).toBe(true);
   });
 
+  test('clock ticks and midnight preserve a manually previewed week and its day without reloading', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-19T23:59:00'));
+    const datedWeeks = [2, 3].map((number, index) => ({
+      number, name: `第${number}周`, current: number === 2,
+      start_date: `2026-09-${13 + index * 7}`,
+      end_date: `2026-09-${19 + index * 7}`,
+    }));
+    const cached = {
+      ...personal, weeks: datedWeeks,
+      courses: [{ ...course, weekday: 6, weeks: [2, 3], course_name: '周六课程' }],
+    };
+    mockTimetableMemory.data = {
+      payload: cached, terms: [{ code: termCode, name: '测试学期', current: true }],
+      currentTermCode: termCode, campusCode: '00', weekNumber: 2, viewMode: 'week',
+    };
+    getPersonalTimetable.mockResolvedValue(cached);
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+    await click(week(3));
+    const grid = container.querySelector('.timetable-grid');
+    const mobile = container.querySelector('.timetable-mobile');
+    const selectedDay = () => container.querySelector('.timetable-mobile-day-selector .ant-segmented-item-selected')?.textContent;
+    const personalRequests = getPersonalTimetable.mock.calls.length;
+    const queryRequests = getTimetableSchedule.mock.calls.length;
+    expect(week(3)?.classList.contains('is-selected')).toBe(true);
+    expect(selectedDay()).toContain('周六');
+
+    await act(async () => jest.advanceTimersByTime(30_000));
+    expect(container.querySelector('.timetable-grid')).toBe(grid);
+    expect(container.querySelector('.timetable-mobile')).toBe(mobile);
+    expect(selectedDay()).toContain('周六');
+    await act(async () => jest.advanceTimersByTime(90_000));
+    expect(week(3)?.classList.contains('is-selected')).toBe(true);
+    expect(selectedDay()).toContain('周六');
+    expect(container.querySelector('.timetable-grid')).toBe(grid);
+    expect(container.querySelector('.timetable-mobile')).toBe(mobile);
+    expect(container.querySelector('.timetable-loading')).toBeNull();
+    expect(getPersonalTimetable).toHaveBeenCalledTimes(personalRequests);
+    expect(getTimetableSchedule).toHaveBeenCalledTimes(queryRequests);
+  });
+
+  test('clock ticks do not repeat a queried timetable request or replace its preview', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-19T23:59:00'));
+    await mountQuery('教室课表');
+    await click(week(2));
+    const grid = container.querySelector('.timetable-grid');
+    const requestCount = getTimetableSchedule.mock.calls.length;
+    await act(async () => jest.advanceTimersByTime(120_000));
+    expect(week(2)?.classList.contains('is-selected')).toBe(true);
+    expect(container.querySelector('.timetable-grid')).toBe(grid);
+    expect(container.querySelector('.timetable-loading')).toBeNull();
+    expect(getTimetableSchedule).toHaveBeenCalledTimes(requestCount);
+  });
+
+  test('midnight does not clear an existing room availability scan when its default week changes', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-19T23:59:00'));
+    const datedWeeks = [2, 3].map((number, index) => ({
+      number, name: `第${number}周`,
+      start_date: `2026-09-${13 + index * 7}`,
+      end_date: `2026-09-${19 + index * 7}`,
+    }));
+    getTimetableContext.mockResolvedValue({ ...context, weeks: datedWeeks });
+    getRoomAvailability.mockResolvedValue({
+      items: [{ id: 'room-1', name: '空教室' }], scanned: 1,
+      cursor: 1, candidate_total: 1, complete: true, scanned_room_ids: ['room-1'],
+    });
+    await mountQuery('教室课表');
+    await click([...container.querySelectorAll('button')].find(button => button.textContent === '筛选'));
+    const modal = document.querySelector('.timetable-target-filter-modal');
+    expect(modal).toBeTruthy();
+    await click([...modal.querySelectorAll('button')].find(button => button.textContent === '开始扫描'));
+    expect(modal.textContent).toContain('已完成：共检查 1 间教室');
+    expect(modal.textContent).toContain('空教室');
+    const requests = getRoomAvailability.mock.calls.length;
+
+    await act(async () => jest.advanceTimersByTime(120_000));
+    expect(modal.textContent).toContain('已完成：共检查 1 间教室');
+    expect(modal.textContent).toContain('空教室');
+    expect(getRoomAvailability).toHaveBeenCalledTimes(requests);
+  });
+
+  test('returning from a scanned room retains candidates and continues from the saved cursor', async () => {
+    jest.useFakeTimers();
+    const rooms = Array.from({ length: 4 }, (_, index) => ({
+      id: `room-${index + 1}`, name: `空教室 ${index + 1}`,
+    }));
+    getRoomAvailability.mockImplementation(async request => ({
+      items: [rooms[request.cursor]],
+      scanned: 1,
+      cursor: request.cursor + 1,
+      candidate_total: rooms.length,
+      complete: request.cursor === rooms.length - 1,
+      scanned_room_ids: [rooms[request.cursor].id],
+    }));
+    await mountQuery('教室课表');
+    const pendingPreview = deferred();
+    searchTimetableTargets.mockReturnValueOnce(pendingPreview.promise);
+    await click([...container.querySelectorAll('button')].find(button => button.textContent === '筛选'));
+    const modal = document.querySelector('.timetable-target-filter-modal');
+    const searchInput = modal.querySelector('.timetable-filter-search input');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(searchInput, '实验楼');
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(searchInput.value).toBe('实验楼');
+    await act(async () => jest.advanceTimersByTime(250));
+    await click([...modal.querySelectorAll('button')].find(button => button.textContent === '开始扫描'));
+    expect(getRoomAvailability).toHaveBeenCalledTimes(3);
+    expect(getRoomAvailability.mock.calls[0][0].keyword).toBe('实验楼');
+    expect(modal.textContent).toContain('已找到 3 间');
+    await act(async () => pendingPreview.resolve({
+      items: [{ id: 'ordinary-room', name: '普通候选' }], total: 1, page: 1,
+    }));
+    expect(modal.querySelectorAll('.timetable-target-result-card')).toHaveLength(3);
+    expect(modal.textContent).not.toContain('普通候选');
+    await click([...modal.querySelectorAll('.timetable-target-result-card')]
+      .find(button => button.textContent.includes('空教室 1')));
+    expect(container.textContent).toContain('空教室 1');
+
+    const ordinaryRequests = searchTimetableTargets.mock.calls.length;
+    await click([...container.querySelectorAll('button')].find(button => button.textContent === '筛选'));
+    await act(async () => jest.advanceTimersByTime(300));
+    expect(searchTimetableTargets).toHaveBeenCalledTimes(ordinaryRequests);
+    expect(modal.querySelectorAll('.timetable-target-result-card')).toHaveLength(3);
+    expect(modal.textContent).toContain('空教室 2');
+    expect(modal.textContent).toContain('已找到 3 间');
+    await click([...modal.querySelectorAll('button')].find(button => button.textContent === '继续查找'));
+    expect(getRoomAvailability).toHaveBeenCalledTimes(4);
+    expect(getRoomAvailability.mock.calls[3][0]).toEqual(expect.objectContaining({
+      cursor: 3,
+      seen_room_ids: ['room-1', 'room-2', 'room-3'],
+      keyword: '实验楼',
+    }));
+    expect(modal.querySelectorAll('.timetable-target-result-card')).toHaveLength(4);
+    expect(modal.textContent).toContain('已完成：共检查 4 间教室');
+    await click([...modal.querySelectorAll('.timetable-target-result-card')]
+      .find(button => button.textContent.includes('空教室 4')));
+    await click([...container.querySelectorAll('button')].find(button => button.textContent === '筛选'));
+    expect(modal.querySelectorAll('.timetable-target-result-card')).toHaveLength(4);
+    expect(getRoomAvailability).toHaveBeenCalledTimes(4);
+  });
+
   test('corrects the weekday when the current term arrives after a cached timetable', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-09-16T08:00:00'));
@@ -281,6 +433,226 @@ describe('query timetable request lifecycle', () => {
 
     expect(week(2)?.classList.contains('is-selected')).toBe(true);
     expect(week(3)?.classList.contains('is-selected')).toBe(false);
+  });
+
+  test('opening the weekly page ignores a saved next term and its week', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-16T08:00:00'));
+    const datedWeeks = [1, 2, 3].map((number, index) => ({
+      number, name: `第${number}周`, current: number === 1,
+      start_date: `2026-09-${String(6 + index * 7).padStart(2, '0')}`,
+      end_date: `2026-09-${12 + index * 7}`,
+    }));
+    const currentPayload = { ...personal, weeks: datedWeeks, courses: [{ ...course, weeks: [2] }] };
+    const nextTerm = '2026-2027-2';
+    readBrowserTimetableCache.mockResolvedValue({
+      terms: [{ code: termCode, name: '当前学期', current: true }, { code: nextTerm, name: '下一学期' }],
+      current: termCode,
+      personal: [currentPayload, { ...personal, term_code: nextTerm }],
+      viewState: { termCode: nextTerm, campusCode: '00', weekNumber: 3, viewMode: 'week' },
+    });
+    getTimetableTerms.mockResolvedValue({
+      terms: [{ code: termCode, name: '当前学期', current: true }, { code: nextTerm, name: '下一学期' }],
+      current: termCode,
+    });
+    getPersonalTimetable.mockResolvedValue(currentPayload);
+
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+    expect(container.textContent).toContain('当前学期');
+    expect(week(2)?.classList.contains('is-selected')).toBe(true);
+    expect(week(3)?.classList.contains('is-selected')).toBe(false);
+  });
+
+  test('offline recovery opens the current cached week even when memory held the next term', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-16T08:00:00'));
+    mockRecoveryMode = true;
+    const nextTerm = '2026-2027-2';
+    const datedWeeks = [1, 2, 3].map((number, index) => ({
+      number, name: `第${number}周`, current: number === 1,
+      start_date: `2026-09-${String(6 + index * 7).padStart(2, '0')}`,
+      end_date: `2026-09-${12 + index * 7}`,
+    }));
+    const currentPayload = { ...personal, weeks: datedWeeks, courses: [{ ...course, weeks: [2] }] };
+    const terms = [{ code: termCode, name: '当前学期', current: true }, { code: nextTerm, name: '下一学期' }];
+    mockTimetableMemory.data = {
+      payload: { ...personal, term_code: nextTerm }, terms, currentTermCode: termCode,
+      campusCode: '00', weekNumber: 3, viewMode: 'week',
+    };
+    readBrowserTimetableCache.mockResolvedValue({
+      terms, current: termCode, personal: [currentPayload, mockTimetableMemory.data.payload],
+      viewState: { termCode: nextTerm, campusCode: '00', weekNumber: 3, viewMode: 'term' },
+    });
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+    expect(week(2)?.classList.contains('is-selected')).toBe(true);
+    expect(container.textContent).toContain('当前学期');
+    expect(getTimetableTerms).not.toHaveBeenCalled();
+  });
+
+  test('desktop week selector changes weeks by wheel without scrolling the page', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-16T08:00:00'));
+    window.matchMedia = () => ({
+      matches: true, addListener: jest.fn(), removeListener: jest.fn(),
+      addEventListener: jest.fn(), removeEventListener: jest.fn(),
+    });
+    mockTimetableMemory.data = {
+      payload: personal, terms: [{ code: termCode, name: '测试学期', current: true }],
+      currentTermCode: termCode, campusCode: '00', weekNumber: 1, viewMode: 'week',
+    };
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+    const field = [...container.querySelectorAll('.timetable-desktop-controls label')]
+      .find(item => item.textContent.startsWith('教学周'));
+    expect(field).toBeTruthy();
+    const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 });
+    await act(async () => field.dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(true);
+    expect(field.querySelector('.ant-select-selection-item')?.textContent).toContain('第2周');
+    expect(window.scrollTo).not.toHaveBeenCalled();
+
+    await act(async () => jest.advanceTimersByTime(150));
+    await act(async () => field.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true, cancelable: true, deltaY: 120,
+    })));
+    expect(field.querySelector('.ant-select-selection-item')?.textContent).toContain('第3周');
+    const beyondLastWeek = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 });
+    await act(async () => field.dispatchEvent(beyondLastWeek));
+    expect(beyondLastWeek.defaultPrevented).toBe(false);
+    expect(field.querySelector('.ant-select-selection-item')?.textContent).toContain('第3周');
+  });
+
+  test.each([
+    ['week', false, 3, '周日'],
+    ['term', false, 2, '周日'],
+    ['week', true, 3, '周六'],
+    ['term', true, 2, '周六'],
+  ])('mobile summary navigates in %s view (compact=%s)', async (range, compact, expectedWeek, expectedDay) => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-19T20:00:00'));
+    const datedWeeks = [2, 3].map((number, index) => ({
+      number, name: `第${number}周`, current: number === 2,
+      start_date: `2026-09-${13 + index * 7}`,
+      end_date: `2026-09-${19 + index * 7}`,
+    }));
+    const cached = {
+      ...personal, weeks: datedWeeks,
+      courses: [{ ...course, weeks: [3], start_time: '08:30', end_time: '10:00' }],
+    };
+    mockTimetableMemory.data = {
+      payload: cached, terms: [{ code: termCode, name: '测试学期', current: true }],
+      currentTermCode: termCode, campusCode: '00', weekNumber: 2, viewMode: 'week',
+    };
+    getPersonalTimetable.mockResolvedValue(cached);
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+    await click(header.querySelector('.timetable-mobile-summary-trigger'));
+    if (range === 'term') {
+      await click([...header.querySelectorAll('.timetable-mobile-summary-view .ant-segmented-item')]
+        .find(item => item.textContent === '学期课表'));
+    }
+    if (compact) await click(header.querySelector('.timetable-mobile-summary-compact .ant-switch'));
+    const detail = header.querySelector('.timetable-mobile-summary-course');
+    expect(detail?.tagName).toBe('BUTTON');
+    expect(detail.querySelector('.timetable-mobile-summary-course-arrow')).not.toBeNull();
+    Element.prototype.scrollIntoView.mockClear();
+    await click(detail);
+    await act(async () => jest.advanceTimersByTime(40));
+    if (range === 'term' && compact) {
+      expect(Element.prototype.scrollIntoView).not.toHaveBeenCalledWith({
+        block: 'start', inline: 'nearest', behavior: 'smooth',
+      });
+    } else {
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({
+        block: 'start', inline: 'nearest', behavior: 'smooth',
+      });
+    }
+    expect(header.querySelector('.timetable-mobile-summary').classList.contains('expanded')).toBe(false);
+    if (range === 'week') expect(week(expectedWeek)?.classList.contains('is-selected')).toBe(true);
+    else expect(container.querySelector('.timetable-mobile-week-timeline')).toBeNull();
+    if (compact) {
+      expect(container.querySelector('.is-mobile-compact .timetable-grid-header .is-today')?.textContent)
+        .toContain(expectedDay);
+    } else {
+      expect(container.querySelector('.timetable-mobile-day-selector .ant-segmented-item-selected')?.textContent)
+        .toContain(expectedDay);
+    }
+  });
+
+  test('mobile summary advances to the next course without remounting the page', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-16T09:50:00'));
+    const cached = {
+      ...personal,
+      weeks: [{ number: 2, name: '第2周', current: true, start_date: '2026-09-13', end_date: '2026-09-19' }],
+      courses: [
+        { ...course, id: 'morning', course_name: '上午课程', weekday: 3, weeks: [2], start_time: '09:00', end_time: '10:00' },
+        { ...course, id: 'later', course_name: '随后课程', weekday: 3, weeks: [2], start_time: '10:30', end_time: '11:30' },
+      ],
+    };
+    mockTimetableMemory.data = {
+      payload: cached, terms: [{ code: termCode, name: '测试学期', current: true }],
+      currentTermCode: termCode, campusCode: '00', weekNumber: 2, viewMode: 'week',
+    };
+    getPersonalTimetable.mockResolvedValue(cached);
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+    await click(header.querySelector('.timetable-mobile-summary-trigger'));
+    expect(header.querySelector('.timetable-mobile-summary-trigger').textContent).toContain('上午课程');
+
+    jest.setSystemTime(new Date('2026-09-16T10:01:00'));
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect(header.querySelector('.timetable-mobile-summary-trigger').textContent).toContain('随后课程');
+    expect(header.querySelector('.timetable-mobile-summary-course').getAttribute('aria-label')).toContain('随后课程');
+    await click(header.querySelector('.timetable-mobile-summary-course'));
+    expect(week(2)?.classList.contains('is-selected')).toBe(true);
+    expect(container.querySelector('.timetable-mobile-day-selector .ant-segmented-item-selected')?.textContent)
+      .toContain('周三');
+  });
+
+  test.each(['教室课表', '教师课表', '班级课表'])(
+    '%s summary shows course information without a navigation action', async label => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-13T08:00:00'));
+    const queryCourse = {
+      ...course, start_time: '09:00', end_time: '10:00', weeks: [1, 2],
+    };
+    getTimetableSchedule.mockImplementation(async request => ({
+      ...empty(request), courses: [queryCourse],
+    }));
+    await mountQuery(label);
+    await click(header.querySelector('.timetable-mobile-summary-trigger'));
+    const detail = header.querySelector('.timetable-mobile-summary-course');
+    expect(detail?.tagName).toBe('DIV');
+    expect(detail.textContent).toContain('查询课程');
+    expect(detail.querySelector('.timetable-mobile-summary-course-arrow')).toBeNull();
+    Element.prototype.scrollIntoView.mockClear();
+    await click(detail);
+    expect(header.querySelector('.timetable-mobile-summary').classList.contains('expanded')).toBe(true);
+    expect(week(1)?.classList.contains('is-selected')).toBe(true);
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
   });
 
   test.each(['week', 'term'])(

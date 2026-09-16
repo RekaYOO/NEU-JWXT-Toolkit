@@ -1550,6 +1550,32 @@
     border-radius: var(--radius-md);
   }
 
+  .timetable-mobile-summary-course {
+    position: relative;
+    width: 100%;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+  }
+
+  .timetable-mobile-summary-course.is-action {
+    padding-right: 36px;
+    cursor: pointer;
+  }
+
+  .timetable-mobile-summary-course.is-action:hover,
+  .timetable-mobile-summary-course.is-action:focus-visible {
+    border-color: var(--color-brand);
+    outline: none;
+  }
+
+  .timetable-mobile-summary-course-arrow {
+    position: absolute;
+    top: 14px;
+    right: 12px;
+    color: var(--color-brand-strong);
+  }
+
   .timetable-mobile-summary-course > span,
   .timetable-mobile-summary-target > span {
     min-width: 0;

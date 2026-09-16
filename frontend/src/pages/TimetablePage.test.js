@@ -31,6 +31,7 @@ import {
   preferredMobileDay,
   isCourseHappeningNow,
   mobileCourseSummary,
+  nextTimetableCourseWeek,
   adjacentMobileTimetableDay,
   adjacentMobileTimetableWeek,
   mobileInitialFocusAnchor,
@@ -453,6 +454,8 @@ describe('TimetablePage helpers', () => {
         .toContain('计算机学院 · 教授');
       expect(container.querySelector('.timetable-mobile-summary-course').textContent)
         .toContain('数据结构');
+      expect(container.querySelector('.timetable-mobile-summary-course').tagName).toBe('DIV');
+      expect(container.querySelector('.timetable-mobile-summary-course-arrow')).toBeNull();
       expect(container.querySelector('.timetable-mobile-summary-course').textContent)
         .toContain('计算机类2401');
       expect(container.querySelector('.timetable-mobile-summary-course').textContent)
@@ -977,6 +980,19 @@ describe('TimetablePage helpers', () => {
     expect(mobileCourseSummary(courses, {
       now: new Date('2026-08-17T19:00:00'), currentTerm: true, currentWeekNumber: 3,
     })).toEqual(expect.objectContaining({ kind: 'complete', label: '今明两天课程结束' }));
+  });
+
+  test('locates the next occurrence of a summary course in Sunday-first teaching weeks', () => {
+    const weeks = [2, 3, 4].map((number, index) => ({
+      number,
+      start_date: `2026-09-${13 + index * 7}`,
+      end_date: `2026-09-${19 + index * 7}`,
+    }));
+    const sundayCourse = { weekday: 7, weeks: [3, 4], end_time: '10:00' };
+    expect(nextTimetableCourseWeek(sundayCourse, weeks, new Date('2026-09-19T20:00:00'))).toBe(3);
+    expect(nextTimetableCourseWeek(sundayCourse, weeks, new Date('2026-09-20T09:00:00'))).toBe(3);
+    expect(nextTimetableCourseWeek(sundayCourse, weeks, new Date('2026-09-20T10:01:00'))).toBe(4);
+    expect(nextTimetableCourseWeek(sundayCourse, weeks, new Date('2026-09-27T10:01:00'))).toBeNull();
   });
 
   test('shows Monday classes on a class-free Sunday without advancing the teaching week', () => {
