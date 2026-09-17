@@ -10,24 +10,11 @@ import LoginPage from './pages/LoginPage';
 import MainLayout from './layouts/MainLayout';
 import AccessLoginPage from './pages/AccessLoginPage';
 import ScoresPage from './pages/ScoresPage';
-import AcademicReportPage from './pages/AcademicReportPage';
-import ExperimentCoursePage from './pages/ExperimentCoursePage';
-import EvaluationPage from './pages/EvaluationPage';
-import ExamPage from './pages/ExamPage';
-import GradeTrackingPage from './pages/GradeTrackingPage';
 import AuthRecoveryPage from './pages/AuthRecoveryPage';
 import { nativeShellInfo } from './services/nativeBridge';
 import NativeServerSettingsButton from './components/NativeServerSettingsButton';
-import ResearchTrainingPage from './pages/ResearchTrainingPage';
-import ExportPage from './pages/ExportPage';
-import FestivalActivitiesPage from './pages/FestivalActivitiesPage';
 import TimetablePage from './pages/TimetablePage';
-import CourseOutlinePage from './pages/CourseOutlinePage';
-import AcademicDocumentsPage from './pages/AcademicDocumentsPage';
-import CourseSelectionPage from './pages/CourseSelectionPage';
-import CourseSelectionWorkspacePage from './pages/CourseSelectionWorkspacePage';
-import CourseSelectionArchivePage from './pages/CourseSelectionArchivePage';
-import SystemSettingsPage from './pages/SystemSettingsPage';
+import ReliableRoute from './components/ReliableRoute';
 import {
   checkStatus, getAccessStatus, getClientBootstrap, getHealth, getOfflineStatus,
   refreshWebVPNCaptcha, sendWebVPNSMSCode,
@@ -40,6 +27,7 @@ import { isExportToolAvailable } from './export/exportTools';
 import {
   featureAvailable,
   offlineDefaultPath as resolveOfflineDefaultPath,
+  visibleMenuItems,
 } from './features/featureRegistry';
 import {
   clearManualLogout,
@@ -51,6 +39,8 @@ import './App.css';
 import { loadSetting } from './utils/settings';
 import WebVPNAuthModal from './components/WebVPNAuthModal';
 import { hasServiceAuthOwner } from './components/ServiceConnection';
+import { preloadRoutePath } from './utils/routeModules';
+import { scheduleRoutePreloads } from './utils/routePreload';
 
 const { Content } = Layout;
 dayjs.locale('zh-cn');
@@ -173,6 +163,16 @@ function AppContent({
   const canRenderCurrentRoute = isLoggedIn
     || (showTimetableRecovery && isTimetableRoute(location.pathname));
 
+  useEffect(() => {
+    // 课表恢复态只允许静态课表浏览，不代表在线业务身份已确认；
+    // 只有正常在线登录或明确进入离线模式后才预取异步业务包。
+    if (!canRenderCurrentRoute || (!isLoggedIn && !offlineMode)) return undefined;
+    return scheduleRoutePreloads({
+      paths: visibleMenuItems({ offlineMode, offlineCapabilities }).map(item => item.key),
+      runtimeProfile,
+    });
+  }, [canRenderCurrentRoute, isLoggedIn, offlineCapabilities, offlineMode, runtimeProfile]);
+
   if (isLoading && !showTimetableRecovery) {
     return (
       <div className="loading" role="status" aria-live="polite">
@@ -238,33 +238,33 @@ function AppContent({
                   ? <ScoresPage offlineMode={offlineMode} />
                   : <Navigate to={offlineDefaultPath} />}
               />
-              <Route path="grade-tracking" element={featureAvailable('grade-tracking', { offlineMode, offlineCapabilities }) ? <GradeTrackingPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="grade-tracking" element={featureAvailable('grade-tracking', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="grade-tracking" /> : <Navigate to={offlineDefaultPath} />} />
               <Route
                 path="academic-report"
                 element={featureAvailable('academic-report', { offlineMode, offlineCapabilities })
-                  ? <AcademicReportPage offlineMode={offlineMode} />
+                  ? <ReliableRoute routeId="academic-report" componentProps={{ offlineMode }} />
                   : <Navigate to={offlineDefaultPath} />}
               />
-              <Route path="experiment-courses" element={featureAvailable('experiment-courses', { offlineMode, offlineCapabilities }) ? <ExperimentCoursePage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="experiment-courses" element={featureAvailable('experiment-courses', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="experiment-courses" /> : <Navigate to={offlineDefaultPath} />} />
               <Route
                 path="research-training"
                 element={featureAvailable('research-training', { offlineMode, offlineCapabilities })
-                  ? <ResearchTrainingPage offlineMode={offlineMode} />
+                  ? <ReliableRoute routeId="research-training" componentProps={{ offlineMode }} />
                   : <Navigate to={offlineDefaultPath} />}
               />
-              <Route path="evaluation" element={featureAvailable('evaluation', { offlineMode, offlineCapabilities }) ? <EvaluationPage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="exams" element={featureAvailable('exams', { offlineMode, offlineCapabilities }) ? <ExamPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="evaluation" element={featureAvailable('evaluation', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="evaluation" /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="exams" element={featureAvailable('exams', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="exams" /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="timetable" element={featureAvailable('timetable', { offlineMode, offlineCapabilities }) ? <TimetablePage recoveryNotice={showTimetableRecovery ? timetableRecoveryNotice : ''} /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="course-selection" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionPage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="course-selection/archive/:archiveId" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionArchivePage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="course-selection/:batchCode/*" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <CourseSelectionWorkspacePage /> : <Navigate to={offlineDefaultPath} />} />
-              <Route path="course-outlines" element={featureAvailable('course-outlines', { offlineMode, offlineCapabilities }) ? <CourseOutlinePage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="course-selection" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="course-selection" /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="course-selection/archive/:archiveId" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="course-selection-archive" /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="course-selection/:batchCode/*" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="course-selection-workspace" /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="course-outlines" element={featureAvailable('course-outlines', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="course-outlines" /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="logs" element={<Navigate to="/system-settings?tab=logs" replace />} />
-              <Route path="system-settings" element={featureAvailable('system-settings', { offlineMode, offlineCapabilities }) ? <SystemSettingsPage /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="system-settings" element={featureAvailable('system-settings', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="system-settings" /> : <Navigate to={offlineDefaultPath} />} />
               <Route
                 path="export"
                 element={featureAvailable('export', { offlineMode, offlineCapabilities })
-                  ? <ExportPage offlineMode={offlineMode} offlineCapabilities={offlineCapabilities} />
+                  ? <ReliableRoute routeId="export" componentProps={{ offlineMode, offlineCapabilities }} />
                   : <Navigate to={offlineDefaultPath} />}
               />
               <Route
@@ -273,7 +273,7 @@ function AppContent({
                   offlineMode,
                   offlineCapabilities,
                 })
-                  ? <FestivalActivitiesPage offlineMode={offlineMode} />
+                  ? <ReliableRoute routeId="festival-activities" componentProps={{ offlineMode }} />
                   : <Navigate to="/export" />}
               />
               <Route
@@ -282,7 +282,7 @@ function AppContent({
                   offlineMode,
                   offlineCapabilities,
                 })
-                  ? <AcademicDocumentsPage />
+                  ? <ReliableRoute routeId="academic-documents" />
                   : <Navigate to="/export" />}
               />
             </Route>
@@ -308,6 +308,12 @@ function AppContent({
 }
 
 function App() {
+  useEffect(() => {
+    // 离线能力需要由 bootstrap 确认，确认前不能提前下载可能不可访问的页面。
+    if (sessionStorage.getItem(OFFLINE_SESSION_KEY) !== '1') {
+      preloadRoutePath(window.location.pathname);
+    }
+  }, []);
   const [timetableRecoveryIdentity] = useState(() => browserTimetableRecoveryIdentity());
   const [timetableRecoveryActive, setTimetableRecoveryActive] = useState(
     () => isTimetableRoute(window.location.pathname)

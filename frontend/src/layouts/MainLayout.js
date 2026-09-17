@@ -23,6 +23,7 @@ import {
   writeBrowserAvatarCache,
 } from '../resources/BrowserTimetableStore';
 import { pageTitles, visibleMenuItems } from '../features/featureRegistry';
+import { preloadRoutePath } from '../utils/routeModules';
 import './MainLayout.css';
 
 const { Header, Sider, Content } = Layout;
@@ -49,7 +50,14 @@ const MainLayout = ({
   const location = useLocation();
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
-  const menuItems = visibleMenuItems({ offlineMode, offlineCapabilities });
+  const menuItems = visibleMenuItems({ offlineMode, offlineCapabilities }).map(item => ({
+    ...item,
+    label: <span
+      data-route-path={item.key}
+      onPointerEnter={() => preloadRoutePath(item.key)}
+      onTouchStart={() => preloadRoutePath(item.key)}
+    >{item.label}</span>,
+  }));
 
   const showAvatar = useCallback((identity, candidate) => {
     const blob = candidate?.blob;
@@ -308,6 +316,7 @@ const MainLayout = ({
   }
 
   const onMenuClick = ({ key }) => {
+    preloadRoutePath(key);
     navigate(key);
     setMobileNavOpen(false);
   };
@@ -327,6 +336,10 @@ const MainLayout = ({
       selectedKeys={[location.pathname.startsWith('/export') ? '/export' : location.pathname]}
       items={menuItems}
       onClick={onMenuClick}
+      onFocusCapture={event => {
+        const path = event.target.closest?.('.ant-menu-item')?.querySelector?.('[data-route-path]')?.dataset?.routePath;
+        if (path) preloadRoutePath(path);
+      }}
       aria-label="主要导航"
     />
   );

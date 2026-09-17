@@ -127,6 +127,26 @@ def test_release_bundle_guard_rejects_unsafe_symlinks(tmp_path):
     assert found == set(links)
 
 
+def _frontend_assets(build):
+    javascript = (
+        "static/js/main.12345678.js",
+        "static/js/route-example.abcdef12.chunk.js",
+    )
+    for relative in javascript:
+        target = build / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"javascript")
+        Path(f"{target}.gz").write_bytes(b"gzip")
+        Path(f"{target}.br").write_bytes(b"brotli")
+    (build / "asset-manifest.json").write_text(json.dumps({
+        "files": {
+            "main.js": f"/{javascript[0]}",
+            "route-example.js": f"/{javascript[1]}",
+        },
+        "entrypoints": [javascript[0]],
+    }), encoding="utf-8")
+
+
 def _desktop_bundle(root):
     (root / "frontend" / "build").mkdir(parents=True)
     (root / "backend" / "core" / "course_selection").mkdir(parents=True)
@@ -138,6 +158,7 @@ def _desktop_bundle(root):
     (root / "frontend" / "build" / "index.html").write_text(
         '<div id="root"></div>', encoding="utf-8"
     )
+    _frontend_assets(root / "frontend" / "build")
     for name in (
         "favicon.ico",
         "manifest.webmanifest",
@@ -191,6 +212,7 @@ def _server_bundle(root):
     (root / "frontend" / "build" / "index.html").write_text(
         '<div id="root"></div>', encoding="utf-8"
     )
+    _frontend_assets(root / "frontend" / "build")
     for name in (
         "favicon.ico",
         "manifest.webmanifest",

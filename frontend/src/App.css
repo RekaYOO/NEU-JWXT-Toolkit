@@ -115,6 +115,40 @@ select {
   min-height: min(420px, 60vh);
 }
 
+.route-load-state {
+  width: min(100%, var(--content-max));
+  min-height: min(420px, 60vh);
+  margin-inline: auto;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-4);
+  color: var(--color-muted);
+}
+
+.route-load-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+@media (max-width: 480px) {
+  .route-load-state {
+    min-height: 320px;
+    padding: var(--space-4);
+  }
+
+  .route-load-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-load-actions .ant-btn {
+    width: 100%;
+  }
+}
+
 /* Shared workspace rhythm */
 .scores-page,
 .academic-report-page,

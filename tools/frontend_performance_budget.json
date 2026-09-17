@@ -1,0 +1,15 @@
+{
+  "initial": {
+    "gzip": 561152,
+    "brotli": 450560
+  },
+  "largest_async": {
+    "gzip": 61440,
+    "brotli": 53248
+  },
+  "total": {
+    "gzip": 704512,
+    "brotli": 573440
+  },
+  "async_chunks": 13
+}

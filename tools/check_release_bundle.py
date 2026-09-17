@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -29,6 +30,38 @@ FORBIDDEN_FILE_PATTERNS = (
 FORBIDDEN_TOP_LEVEL_DIRECTORIES = {"data", "logs", "成绩"}
 FORBIDDEN_ANYWHERE_DIRECTORIES = {"gpa_simulations", "gpa_preferences", "timetable_agendas"}
 SCRIPT_SUFFIXES = {".bat", ".cmd", ".ps1", ".vbs", ".wsf"}
+
+
+def _frontend_asset_violations(build: Path) -> list[str]:
+    manifest_path = build / "asset-manifest.json"
+    if not manifest_path.is_file():
+        return ["missing frontend asset manifest"]
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ["invalid frontend asset manifest"]
+    violations: list[str] = []
+    javascript = sorted({
+        str(value).lstrip("/")
+        for value in manifest.get("files", {}).values()
+        if str(value).lstrip("/").startswith("static/js/")
+        and str(value).endswith(".js")
+    })
+    if not javascript:
+        violations.append("frontend asset manifest has no JavaScript")
+    for relative in javascript:
+        target = build / relative
+        try:
+            target.resolve().relative_to(build.resolve())
+        except (OSError, ValueError):
+            violations.append(f"unsafe frontend asset path: {relative}")
+            continue
+        for candidate in (target, Path(f"{target}.gz"), Path(f"{target}.br")):
+            if not candidate.is_file():
+                violations.append(
+                    f"missing frontend asset: {candidate.relative_to(build)}"
+                )
+    return violations
 
 
 def _unsafe_symlink(path: Path, root: Path) -> bool:
@@ -89,6 +122,7 @@ def _desktop_payload_violations(root: Path) -> list[str]:
         root / "LICENSE",
         root / "backend" / "core" / "course_selection" / "THIRD_PARTY_NOTICE.md",
         root / "frontend" / "build" / "index.html",
+        root / "frontend" / "build" / "asset-manifest.json",
         root / "frontend" / "build" / "favicon.ico",
         root / "frontend" / "build" / "manifest.webmanifest",
         root / "frontend" / "build" / "icon-192.png",
@@ -113,6 +147,7 @@ def _desktop_payload_violations(root: Path) -> list[str]:
     )
     if scripts:
         violations.append("unexpected top-level launcher scripts: " + ", ".join(scripts))
+    violations.extend(_frontend_asset_violations(root / "frontend" / "build"))
     return violations
 
 
@@ -123,6 +158,7 @@ def _server_payload_violations(root: Path, executable: Path) -> list[str]:
         root / "LICENSE",
         root / "backend" / "core" / "course_selection" / "THIRD_PARTY_NOTICE.md",
         root / "frontend" / "build" / "index.html",
+        root / "frontend" / "build" / "asset-manifest.json",
         root / "frontend" / "build" / "favicon.ico",
         root / "frontend" / "build" / "manifest.webmanifest",
         root / "frontend" / "build" / "icon-192.png",
@@ -134,6 +170,7 @@ def _server_payload_violations(root: Path, executable: Path) -> list[str]:
             violations.append(f"missing server bundle path: {path.relative_to(root)}")
     if not executable.is_file() or executable.read_bytes()[:4] != b"\x7fELF":
         violations.append("server launcher is missing or is not an ELF executable")
+    violations.extend(_frontend_asset_violations(root / "frontend" / "build"))
     return violations
 
 

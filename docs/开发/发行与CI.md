@@ -43,10 +43,14 @@ cd ..
 python -m pip install -r requirements-build.lock
 ```
 
-React 继续构建为一个主包。`npm run build` 随后运行 `tools/prepare_frontend_assets.mjs`，为 JS、
-CSS、HTML、JSON、SVG 等文本资源生成确定性的 gzip/Brotli 变体，并删除生产目录中的 source
-map。FastAPI 内置内容协商和缓存头，因此本地单端口、Windows、Linux、1Panel 均无需额外配置
-Nginx/Caddy 才能获得压缩传输。带哈希资源使用一年 immutable 缓存；HTML 和根级资源重新验证。
+React 构建为核心入口加多个异步业务包。`npm run build` 随后运行
+`tools/prepare_frontend_assets.mjs`，为 JS、CSS、HTML、JSON、SVG 等文本资源生成确定性的 gzip/Brotli
+变体，并删除生产目录中的 source map。`tools/check_performance_budget.mjs` 读取
+`tools/frontend_performance_budget.json`，校验初始入口、最大异步包、全部 JS 总量、异步包数量以及每个
+manifest JS 的原文件/`.gz`/`.br` 完整性；预算按“实测向上取整到 4 KiB 后加固定余量”建立，CI 只校验不自动更新。
+FastAPI 内置内容协商和缓存头，因此本地单端口、Windows、Linux、1Panel 均无需额外配置 Nginx/Caddy
+才能获得压缩传输。带哈希资源使用一年 immutable 缓存；HTML 和根级资源重新验证。异步 chunk 缺失时，
+前端只在发现 manifest 中 main 哈希变化且尚未针对该版本刷新过时自动刷新一次，否则显示可重试错误页。
 
 Windows：
 
@@ -102,7 +106,7 @@ Defender 安全智能下，官方 1.4.5 启动器未检出，而官方 1.4.6 启
 - 后端测试；
 - 前端交互与业务规则测试；
 - React 生产构建；
-- 单主包、gzip/Brotli 体积预算和运行目录无 source map 检查；
+- 混合包 gzip/Brotli 体积预算、manifest 异步资源完整性和运行目录无 source map 检查；
 - Python 编译检查；
 - 静态首页挂载测试。
 
@@ -114,11 +118,12 @@ APK，并在 API 35 模拟器完成安装、启动和本地页面 smoke test。�
 本地 `test:changed`/`test:related` 只用于缩短开发反馈，不用于替换 CI 全量、生产构建、
 体积预算、同源检查和成品 smoke test。不得因增量命令没有选中用例就报告完整回归通过。
 
-当前单主包预算为 gzip 612 KiB、Brotli 500 KiB。gzip 上限在共享课表网格、手机堆叠缩略视图和
-内置多校区作息发布后重新基准化，当前 CI 产物约 607 KiB，并保留有限余量；该预算检查的是
-`prepare_frontend_assets.mjs` 生成的实际预压缩传输文件，不是 CRA 根据未二次压缩产物显示的
-通用体积提醒。新增完整业务能力后如确需调整预算，必须记录原因并保留小幅余量，不能仅为让
-CI 变绿而无限抬高上限。
+当前混合包预算记录在 `tools/frontend_performance_budget.json`。本次 Node 25 本机构建实测初始入口
+gzip 542192、Brotli 431833；最大异步包 gzip 48712、Brotli 38952；全部 JS gzip 668729、Brotli
+539294；异步包 11 个。预算按批准公式取为初始 561152/450560、最大异步包 61440/53248、总量
+704512/573440、异步包数量 13。CI 使用 Node.js 20 的干净构建作为发布基线；若 Node 20 与本地
+构建产生差异，应先记录新实测和增长归因，再单独调整对应维度，不能用提高总上限掩盖初始包或单个业务
+包的增长。
 
 CI 默认权限限制为 `contents: read`，所用 GitHub Actions 均固定到经过核对的完整提交
 SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Action 时应同时更新注释中的
