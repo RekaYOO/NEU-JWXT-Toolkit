@@ -395,6 +395,152 @@ def test_scores_backfill_keeps_current_details_and_queues_missing_or_outdated(tm
     assert store.get(outdated_key).last_checked_at is None
 
 
+def test_tracking_score_refresh_retries_once_after_same_account_auth_renewal(monkeypatch):
+    from backend.app import dependencies
+    from backend.core.cache import JobStatus
+
+    submissions = []
+    identity_epochs = iter([7, 8, 8])
+    jobs = {
+        "job-1": SimpleNamespace(
+            status=JobStatus.CANCELLED, error_kind="identity_changed",
+        ),
+        "job-2": SimpleNamespace(
+            status=JobStatus.COMPLETED, error_kind=None,
+        ),
+    }
+
+    class Coordinator:
+        def submit(self, **kwargs):
+            submissions.append(kwargs)
+            return SimpleNamespace(job_id=f"job-{len(submissions)}")
+
+        def get_job(self, job_id):
+            return jobs[job_id]
+
+        def read(self, **_kwargs):
+            return SimpleNamespace(revision="v1:scores", payload={"scores": []}), False
+
+    monkeypatch.setattr(dependencies, "_cache_coordinator", Coordinator())
+    monkeypatch.setattr(
+        dependencies, "_tracking_identity_epoch", lambda _account: next(identity_epochs),
+    )
+
+    result = dependencies._tracking_score_refresh("account", manual=False)
+
+    assert result == {"revision": "v1:scores", "payload": {"scores": []}}
+    assert [item["identity_epoch"] for item in submissions] == [7, 8]
+    assert all(item["reason"] == "tracking" for item in submissions)
+
+
+@pytest.mark.parametrize("renewed_epoch", [None, 7])
+def test_tracking_score_refresh_does_not_retry_without_new_same_account_identity(
+    monkeypatch, renewed_epoch,
+):
+    from backend.app import dependencies
+    from backend.core.cache import JobStatus
+
+    submissions = []
+    identity_epochs = iter([7, renewed_epoch])
+
+    class Coordinator:
+        def submit(self, **kwargs):
+            submissions.append(kwargs)
+            return SimpleNamespace(job_id="job-1")
+
+        def get_job(self, _job_id):
+            return SimpleNamespace(
+                status=JobStatus.CANCELLED, error_kind="identity_changed",
+            )
+
+    monkeypatch.setattr(dependencies, "_cache_coordinator", Coordinator())
+    monkeypatch.setattr(
+        dependencies, "_tracking_identity_epoch", lambda _account: next(identity_epochs),
+    )
+
+    with pytest.raises(RuntimeError, match="identity_changed"):
+        dependencies._tracking_score_refresh("account", manual=False)
+
+    assert len(submissions) == 1
+
+
+def test_tracking_score_refresh_stops_after_second_identity_change(monkeypatch):
+    from backend.app import dependencies
+    from backend.core.cache import JobStatus
+
+    submissions = []
+    identity_epochs = iter([7, 8])
+
+    class Coordinator:
+        def submit(self, **kwargs):
+            submissions.append(kwargs)
+            return SimpleNamespace(job_id=f"job-{len(submissions)}")
+
+        def get_job(self, _job_id):
+            return SimpleNamespace(
+                status=JobStatus.CANCELLED, error_kind="identity_changed",
+            )
+
+    monkeypatch.setattr(dependencies, "_cache_coordinator", Coordinator())
+    monkeypatch.setattr(
+        dependencies, "_tracking_identity_epoch", lambda _account: next(identity_epochs),
+    )
+
+    with pytest.raises(RuntimeError, match="identity_changed"):
+        dependencies._tracking_score_refresh("account", manual=True)
+
+    assert [item["identity_epoch"] for item in submissions] == [7, 8]
+    assert all(item["reason"] == "manual" for item in submissions)
+
+
+def test_tracking_score_refresh_does_not_retry_other_job_failures(monkeypatch):
+    from backend.app import dependencies
+    from backend.core.cache import JobStatus
+
+    submissions = []
+
+    class Coordinator:
+        def submit(self, **kwargs):
+            submissions.append(kwargs)
+            return SimpleNamespace(job_id="job-1")
+
+        def get_job(self, _job_id):
+            return SimpleNamespace(status=JobStatus.FAILED, error_kind="network_error")
+
+    monkeypatch.setattr(dependencies, "_cache_coordinator", Coordinator())
+    monkeypatch.setattr(dependencies, "_tracking_identity_epoch", lambda _account: 7)
+
+    with pytest.raises(RuntimeError, match="network_error"):
+        dependencies._tracking_score_refresh("account", manual=False)
+
+    assert len(submissions) == 1
+
+
+@pytest.mark.parametrize(
+    ("client", "expected"),
+    [
+        (SimpleNamespace(username="account", is_logged_in=True), 12),
+        (SimpleNamespace(username="other", is_logged_in=True), None),
+        (SimpleNamespace(username="account", is_logged_in=False), None),
+        (None, None),
+    ],
+)
+def test_tracking_identity_epoch_requires_live_matching_account(
+    monkeypatch, client, expected,
+):
+    from contextlib import nullcontext
+    from backend.app import dependencies
+
+    sessions = SimpleNamespace(
+        identity_commit_guard=lambda: nullcontext(),
+        peek_client=lambda: client,
+        epoch=lambda: 12,
+    )
+    monkeypatch.setattr(dependencies, "_auth_sessions", sessions)
+
+    assert dependencies._tracking_identity_epoch("account") == expected
+
+
 def test_unchanged_scores_event_still_checks_detail_backfill(monkeypatch):
     from backend.app import dependencies
 

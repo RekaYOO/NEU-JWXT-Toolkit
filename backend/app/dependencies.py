@@ -1127,30 +1127,64 @@ def _commit_recovered_auth(
     set_auth_client(client, force_epoch=True)
 
 
-def _tracking_score_refresh(account: str, manual: bool) -> dict:
-    submission = _cache_coordinator.submit(
-        account_id=account,
-        resource="scores",
-        identity_epoch=get_auth_generation(),
-        force=manual,
-        reason="manual" if manual else "tracking",
-    )
-    if submission.job_id:
-        import time
-        from backend.core.cache import JobStatus
+def _tracking_identity_epoch(account: str) -> int | None:
+    """Atomically snapshot a live identity for one tracking account."""
+    with _auth_sessions.identity_commit_guard():
+        client = _auth_sessions.peek_client()
+        epoch = _auth_sessions.epoch()
+        if not client or not getattr(client, "is_logged_in", False):
+            return None
+        if str(getattr(client, "username", "") or "") != str(account):
+            return None
+        return epoch
 
-        deadline = time.monotonic() + 90
-        while time.monotonic() < deadline:
-            job = _cache_coordinator.get_job(submission.job_id)
-            if job and job.status in {
-                JobStatus.COMPLETED,
-                JobStatus.FAILED,
-                JobStatus.CANCELLED,
-            }:
-                if job.status != JobStatus.COMPLETED:
-                    raise RuntimeError(job.error_kind or "成绩刷新失败")
-                break
-            time.sleep(0.05)
+
+def _tracking_score_refresh(account: str, manual: bool) -> dict:
+    import time
+    from backend.core.cache import JobStatus
+
+    identity_epoch = _tracking_identity_epoch(account)
+    if identity_epoch is None:
+        raise RuntimeError("identity_changed")
+
+    for attempt in range(2):
+        submission = _cache_coordinator.submit(
+            account_id=account,
+            resource="scores",
+            identity_epoch=identity_epoch,
+            force=manual,
+            reason="manual" if manual else "tracking",
+        )
+        job = None
+        if submission.job_id:
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                job = _cache_coordinator.get_job(submission.job_id)
+                if job and job.status in {
+                    JobStatus.COMPLETED,
+                    JobStatus.FAILED,
+                    JobStatus.CANCELLED,
+                }:
+                    break
+                time.sleep(0.05)
+        if job is None or job.status == JobStatus.COMPLETED:
+            break
+        if job.error_kind != "identity_changed" or attempt > 0:
+            raise RuntimeError(job.error_kind or "成绩刷新失败")
+
+        renewed_epoch = _tracking_identity_epoch(account)
+        if renewed_epoch is None or renewed_epoch == identity_epoch:
+            raise RuntimeError("identity_changed")
+        _api_logger.info(
+            "grade tracking score refresh resumed after same-account auth renewal "
+            "old_epoch=%s new_epoch=%s",
+            identity_epoch,
+            renewed_epoch,
+        )
+        identity_epoch = renewed_epoch
+
+    if _tracking_identity_epoch(account) is None:
+        raise RuntimeError("identity_changed")
     entry, _stale = _cache_coordinator.read(
         account_id=account,
         resource="scores",
