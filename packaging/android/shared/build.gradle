@@ -33,7 +33,10 @@ tasks.register("stageBranding", Copy) {
 
 tasks.register("stageWebAssets", Sync) {
     from(new File(rootProject.ext.repoRoot, "frontend/build")) {
-        exclude "**/*.map"
+        // Android WebView reads the original files from the embedded asset
+        // directory. Brotli/gzip siblings are for HTTP content negotiation
+        // and must stay out of APK assets.
+        exclude "**/*.map", "**/*.gz", "**/*.br"
     }
     into layout.buildDirectory.dir("generated/webAssets")
 }
@@ -55,15 +58,16 @@ tasks.register("verifyWebAssets") {
             throw new GradleException("Source maps must be removed before Android packaging")
         }
         def manifestFile = new File(rootProject.ext.repoRoot, "frontend/build/asset-manifest.json")
+        if (!manifestFile.isFile()) {
+            throw new GradleException("frontend/build/asset-manifest.json is missing")
+        }
         def manifest = new groovy.json.JsonSlurper().parse(manifestFile)
         manifest.files.values().findAll {
             it.toString().startsWith("/static/js/") && it.toString().endsWith(".js")
         }.each { value ->
             def relative = value.toString().substring(1)
-            [relative, relative + ".gz", relative + ".br"].each { asset ->
-                if (!new File(rootProject.ext.repoRoot, "frontend/build/" + asset).isFile()) {
-                    throw new GradleException("Frontend asset is missing: " + asset)
-                }
+            if (!new File(rootProject.ext.repoRoot, "frontend/build/" + relative).isFile()) {
+                throw new GradleException("Frontend runtime asset is missing: " + relative)
             }
         }
     }

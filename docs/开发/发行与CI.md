@@ -67,7 +67,8 @@ python packaging/nuitka/build.py server
 ```
 
 Android 调试包需要 JDK 17、Android SDK 35 和 Python 3.13。先构建前端，再为目标 ABI 构建
-锁定的 Android wheel，最后运行 Gradle Wrapper：
+锁定的 Android wheel，最后运行 Gradle Wrapper。Android 只把未压缩的 WebView 运行资源复制进
+APK；前端构建生成的 `.gz`/`.br` 是 HTTP 内容协商资源，由桌面/服务器静态服务使用，不进入 APK：
 
 ```bash
 bash packaging/android/build_android_wheels.sh x86_64
