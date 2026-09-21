@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import CourseSelectionWorkspacePage, {
   clearExperimentSelectionsForClasses, scheduleOverlayForCourse,
-  filterCatalogGroupsByOnlineMode, isHumanitiesElectiveSelectionBatch,
+  filterCatalogGroupsByOnlineMode, hasLiveAutomationTask, isHumanitiesElectiveSelectionBatch,
   selectionRecordsFromResponse, taskStartActionLabel,
 } from './CourseSelectionWorkspacePage';
 import { useCachedResource } from '../resources/ResourceStore';
@@ -78,9 +78,18 @@ test('paused automation tasks expose a clear continue action', () => {
     .toBe('继续抢课任务');
 });
 
+test('draft automation tasks do not require live status polling', () => {
+  expect(hasLiveAutomationTask([{ status: 'draft' }, { status: 'paused' }])).toBe(false);
+  expect(hasLiveAutomationTask([{ status: 'needs_review' }])).toBe(false);
+  expect(hasLiveAutomationTask([{ status: 'waiting' }])).toBe(true);
+});
+
 test('humanities elective rounds expose a local online-course filter', () => {
   expect(isHumanitiesElectiveSelectionBatch({
     name: '轮次23 2022-2025级人文类选修课程选课',
+  })).toBe(true);
+  expect(isHumanitiesElectiveSelectionBatch({
+    batch_name: '2022-2025级人文类选修课程', selection_type: '人文类选修课程选课',
   })).toBe(true);
   expect(isHumanitiesElectiveSelectionBatch({ name: '轮次23 专业选修课程选课' })).toBe(false);
   const groups = [{

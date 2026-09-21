@@ -2116,7 +2116,7 @@ class JwxkSessionClient:
         self, *, batch_code: str, page_number: int, page_size: int,
         keyword: str = "", scope: str = "ROUND", campus: str = "",
         order_by: str = "", filters: dict[str, str] | None = None,
-        time_slot: dict[str, int] | None = None,
+        time_slot: dict[str, int] | None = None, online_mode: str = "all",
     ) -> dict[str, Any]:
         context = self.get_context()
         batch = next((item for item in context["batches"] if item.code == batch_code), None)
@@ -2130,6 +2130,7 @@ class JwxkSessionClient:
         campus = normalize_jwxk_campus_code(campus)
         self._activate_batch(batch_code)
         remote_filters = dict(filters or {})
+        online_mode = online_mode if online_mode in {"all", "online", "offline"} else "all"
         requested_category = _text(remote_filters.get("KCLB"))
         if requested_category:
             # Category display labels vary between scopes.  Sending labels such
@@ -2168,11 +2169,18 @@ class JwxkSessionClient:
             }
             return campus in values
 
+        def online_matches(course: dict[str, Any]) -> bool:
+            if online_mode == "all":
+                return True
+            is_online = "在线式" in _text(course.get("course_name"))
+            return is_online if online_mode == "online" else not is_online
+
         def scan_scope(teaching_class_type: str) -> tuple[int, list[dict[str, Any]]]:
             local_campus_filter = bool(campus and teaching_class_type == "ALLKC")
             requires_full_scan = bool(
                 requested_category or time_slot or local_campus_filter
                 or (campus and effective_scope in {"ALL", "ROUND"})
+                or online_mode != "all"
             )
             if not requires_full_scan:
                 result = self._search_courses_page(
@@ -2196,7 +2204,8 @@ class JwxkSessionClient:
                 rows = result["courses"]
                 courses.extend(
                     course for course in rows
-                    if category_matches(course) and meeting_matches(course) and campus_matches(course)
+                    if category_matches(course) and meeting_matches(course)
+                    and campus_matches(course) and online_matches(course)
                 )
                 if not rows or remote_page * 50 >= remote_total:
                     break
@@ -2262,14 +2271,14 @@ class JwxkSessionClient:
             merged_courses = list(by_class.values())
             apply_selection_market_semantics(merged_courses, batch.selection_type_code)
             all_groups = group_course_rows(merged_courses, source_tags=round_tags_by_code)
-            filtered_locally = bool(requested_category or time_slot or campus)
+            filtered_locally = bool(requested_category or time_slot or campus or online_mode != "all")
             start = (page_number - 1) * page_size
             primary = {
                 "total": len(all_groups) if filtered_locally else merged_total,
                 "courses": merged_courses,
                 "groups": all_groups[start:start + page_size] if filtered_locally else all_groups,
             }
-        elif requested_category or time_slot or (campus and effective_scope == "ALLKC"):
+        elif requested_category or time_slot or online_mode != "all" or (campus and effective_scope == "ALLKC"):
             _, matched_courses = scan_scope(effective_scope)
             apply_selection_market_semantics(matched_courses, batch.selection_type_code)
             all_groups = group_course_rows(matched_courses)

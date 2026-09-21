@@ -1247,6 +1247,7 @@ class CourseSelectionAutomationService:
         campus: str = "",
         filters: dict[str, str] | None = None,
         time_slot: dict[str, int] | None = None,
+        online_mode: str = "all",
     ) -> dict[str, Any] | None:
         """Query the progressively-built, account-scoped union catalog."""
         with self._lock:
@@ -1263,6 +1264,7 @@ class CourseSelectionAutomationService:
 
         query = keyword.strip().casefold()
         remote_filters = filters or {}
+        online_mode = online_mode if online_mode in {"all", "online", "offline"} else "all"
 
         def matches(course: dict[str, Any]) -> bool:
             provenance_scopes = {
@@ -1283,6 +1285,10 @@ class CourseSelectionAutomationService:
                 str(course.get("teacher") or ""),
             )).casefold():
                 return False
+            if online_mode != "all":
+                is_online = "在线式" in str(course.get("course_name") or "")
+                if (online_mode == "online") != is_online:
+                    return False
             if campus:
                 requested_campus = normalize_jwxk_campus_code(campus)
                 course_campuses = {

@@ -336,6 +336,7 @@ class JwxkCatalogSearchRequest(JwxkBatchRequest):
     order_by: str = Field(default="", max_length=34)
     filters: dict[str, str] = Field(default_factory=dict)
     time_slot: JwxkTimeSlot | None = None
+    online_mode: Literal["all", "online", "offline"] = "all"
     local_only: bool = False
 
 
@@ -403,6 +404,7 @@ class JwxkCatalogSearchResponse(StrictModel):
     cache_hit: bool = False
     data_source: Literal["local", "remote"] = "remote"
     sync_status: str = ""
+    catalog_complete: bool = False
 
 
 class JwxkCourseDetail(StrictModel):

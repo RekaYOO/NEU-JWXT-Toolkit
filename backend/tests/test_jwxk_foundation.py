@@ -2485,6 +2485,37 @@ def test_catalog_time_slot_matches_classes_covering_the_selected_section():
     assert [group["course_code"] for group in result["groups"]] == ["A", "B"]
 
 
+def test_catalog_online_mode_filters_before_pagination():
+    batch = JwxkBatch(
+        code="batch", name="人文类选修课程选课", term_code="2026-2027-1", term_name="秋季",
+        begin_time="", end_time="", selection_type="抢选", selection_type_code="02",
+        tactic_name="", course_types=("TJKC",), need_confirm=False, notice="",
+        state="active", can_enter=True, menus=({"code": "TJKC", "name": "TJKC"},),
+    )
+
+    class Client(JwxkSessionClient):
+        def get_context(self):
+            return {"batches": [batch]}
+
+        def _activate_batch(self, _batch_code):
+            return {}
+
+        def _search_courses_page(self, **kwargs):
+            assert kwargs["page_size"] == 50
+            return {"total": 3, "courses": [
+                {"course_code": "ON", "course_name": "大学英语在线式", "class_id": "ON-1", "schedules": []},
+                {"course_code": "OFF", "course_name": "大学英语", "class_id": "OFF-1", "schedules": []},
+                {"course_code": "ON2", "course_name": "大学英语在线式（二）", "class_id": "ON-2", "schedules": []},
+            ]}
+
+    result = Client(type("Auth", (), {})()).search_catalog(
+        batch_code="batch", page_number=1, page_size=1, scope="TJKC", online_mode="online",
+    )
+
+    assert result["total"] == 2
+    assert [group["course_code"] for group in result["groups"]] == ["ON"]
+
+
 def test_round_catalog_uses_real_menu_scopes_and_merges_plan_courses():
     batch = JwxkBatch(
         code="batch", name="选课", term_code="2026-2027-1", term_name="秋季",

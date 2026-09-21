@@ -617,6 +617,7 @@ def search_jwxk_catalog(
                     "cache_hit": True,
                     "data_source": "local",
                     "sync_status": str((archive or {}).get("sync_status") or ""),
+                    "catalog_complete": bool((archive or {}).get("catalog_complete")),
                 })
                 return JwxkCatalogSearchResponse.model_validate(cached)
             return JwxkCatalogSearchResponse.model_validate({
@@ -627,6 +628,7 @@ def search_jwxk_catalog(
                 "cache_hit": False,
                 "data_source": "local",
                 "sync_status": str((archive or {}).get("sync_status") or ""),
+                "catalog_complete": False,
             })
         archived = automation.query_catalog_archive(
             account,
@@ -638,6 +640,7 @@ def search_jwxk_catalog(
             campus=request.campus,
             filters=request.filters,
             time_slot=request.time_slot.model_dump() if request.time_slot else None,
+            online_mode=request.online_mode,
         )
         return JwxkCatalogSearchResponse.model_validate({
             "total": int((archived or {}).get("total") or 0),
@@ -647,6 +650,7 @@ def search_jwxk_catalog(
             "cache_hit": archived is not None,
             "data_source": "local",
             "sync_status": str((archived or {}).get("sync_status") or ""),
+            "catalog_complete": bool((archived or {}).get("catalog_complete")),
         })
     result = _run_jwxk_read(storage, lambda client: client.search_catalog(
         batch_code=request.batch_code,
@@ -658,6 +662,7 @@ def search_jwxk_catalog(
         order_by=request.order_by,
         filters=request.filters,
         time_slot=request.time_slot.model_dump() if request.time_slot else None,
+        online_mode=request.online_mode,
     ))
     account = str(result.pop("_account", "") or "")
     batch = result.pop("_batch", {})
@@ -679,6 +684,7 @@ def search_jwxk_catalog(
         campus=request.campus,
         filters=request.filters,
         time_slot=request.time_slot.model_dump() if request.time_slot else None,
+        online_mode=request.online_mode,
     )
     # ALLKC is an explicit live global-directory query and is deliberately
     # excluded from the durable round archive.  Never replace its successful
@@ -695,6 +701,10 @@ def search_jwxk_catalog(
         "cache_hit": False,
         "data_source": "remote",
         "sync_status": str((archived or {}).get("sync_status") or ""),
+        "catalog_complete": bool(
+            request.online_mode != "all"
+            or (archived or {}).get("catalog_complete")
+        ),
     })
     validated = JwxkCatalogSearchResponse.model_validate(result)
     if request.scope == "ALLKC":
@@ -722,6 +732,7 @@ def get_jwxk_catalog_classes(
         keyword=request.keyword.strip(), scope=request.scope,
         campus=request.campus, order_by=request.order_by, filters=request.filters,
         time_slot=request.time_slot.model_dump() if request.time_slot else None,
+        online_mode=request.online_mode,
     ))
     account = str(result.pop("_account", "") or "")
     batch = result.pop("_batch", {})

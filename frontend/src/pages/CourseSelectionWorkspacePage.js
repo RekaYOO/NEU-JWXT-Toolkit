@@ -124,8 +124,11 @@ export const taskStartActionLabel = (task = {}) => {
   if (['paused', 'needs_review'].includes(task.status)) {
     return isWeight ? '继续实时策略' : isSwap ? '继续追踪空位' : '继续抢课任务';
   }
-  return isWeight ? '启动实时策略' : isSwap ? '开始追踪空位' : '同时启动全部方案组';
+  return isWeight ? '启动实时策略' : isSwap ? '开始追踪空位' : '启动全部方案组';
 };
+export const hasLiveAutomationTask = (tasks = []) => (
+  (tasks || []).some(task => ['running', 'waiting'].includes(task?.status))
+);
 const modelForecastText = item => {
   if (item?.forecast_status === 'scope_mismatch') return '市场口径与年级人数不匹配，三种终局人数暂不可区分';
   if (item?.forecast_status === 'flat_current') return '当前数据下三种情景均回落为实时人数';
@@ -285,8 +288,16 @@ const batchScopeOptions = batch => {
   }).filter(([code]) => code)).values()];
 };
 export const isHumanitiesElectiveSelectionBatch = (batch = {}) => {
-  const name = String(batch?.name || batch?.batch_name || '').trim();
-  return name.includes('人文类选修课程选课');
+  const labels = [
+    batch?.name, batch?.batch_name, batch?.batchName,
+    batch?.selection_type, batch?.selection_type_name,
+    batch?.selectionType, batch?.selectionTypeName,
+    batch?.tactic_name, batch?.tacticName,
+    batch?.metadata?.name, batch?.metadata?.batch_name,
+  ].filter(Boolean).map(value => String(value).replace(/\s+/g, ''));
+  return labels.some(label => (
+    label.includes('人文') && label.includes('选修') && label.includes('选课')
+  ));
 };
 
 export const filterCatalogGroupsByOnlineMode = (groups = [], mode = 'all') => {
@@ -468,6 +479,7 @@ const CourseSelectionWorkspacePage = () => {
   const [tasks, setTasks] = useState([]);
   const [tasksRefreshing, setTasksRefreshing] = useState(false);
   const [taskActionLoading, setTaskActionLoading] = useState('');
+  const hasLiveTasks = hasLiveAutomationTask(tasks);
   const [attentionTaskId, setAttentionTaskId] = useState('');
   const [expandedGroupId, setExpandedGroupId] = useState('');
   const [catalogPreviewClasses, setCatalogPreviewClasses] = useState([]);
@@ -676,6 +688,7 @@ const CourseSelectionWorkspacePage = () => {
         batch_code: batchCode, page_number: targetPage, page_size: 20,
         keyword: String(targetKeyword || '').trim(), scope: safeScope, campus: safeCampus,
         order_by: '', filters: remoteFilters, time_slot: safeTimeSlot,
+        online_mode: isHumanitiesElectiveSelectionBatch(batch) ? onlineMode : 'all',
       };
       const applyResult = result => {
         const nextGroups = result.groups || [];
@@ -691,7 +704,9 @@ const CourseSelectionWorkspacePage = () => {
         try {
           const localResult = await searchJwxkCatalog({ ...payload, local_only: true });
           if (generation !== requestGeneration.current) return [];
-          if (localResult.cache_hit) {
+          const canUseLocalCatalog = localResult.cache_hit
+            && (onlineMode === 'all' || localResult.catalog_complete);
+          if (canUseLocalCatalog) {
             const localGroups = applyResult(localResult);
             setLoading(false);
             window.setTimeout(() => {
@@ -1062,7 +1077,7 @@ const CourseSelectionWorkspacePage = () => {
       loadCatalog(1, keyword, scope, timeSlot, effectiveCatalogFilters, weekday);
     }, 80);
     return () => window.clearTimeout(timer);
-  }, [batchCode, effectiveCatalogFilters, keyword, remoteAvailability, scope, timeSlot, weekday]);
+  }, [batchCode, effectiveCatalogFilters, keyword, onlineMode, remoteAvailability, scope, timeSlot, weekday]);
 
   useEffect(() => {
     if (!batch || batch.state !== 'active' || view !== 'catalog' || loading) return undefined;
@@ -1075,7 +1090,7 @@ const CourseSelectionWorkspacePage = () => {
     };
     const timer = window.setInterval(refreshCapacity, CATALOG_CAPACITY_REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [batch, effectiveCatalogFilters, keyword, loading, page, remoteAvailability, scope, timeSlot, view, weekday]);
+  }, [batch, effectiveCatalogFilters, keyword, loading, onlineMode, page, remoteAvailability, scope, timeSlot, view, weekday]);
 
   const ensureCatalogFilterOptions = async () => {
     if (filterOptions) return filterOptions;
@@ -1164,12 +1179,13 @@ const CourseSelectionWorkspacePage = () => {
 
   useEffect(() => {
     if (view !== 'tasks') return undefined;
+    if (!hasLiveTasks) return undefined;
     const refresh = () => {
       if (document.visibilityState === 'visible') loadTasks({ silent: true });
     };
     const timer = window.setInterval(refresh, TASK_STATUS_REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [batchCode, view]);
+  }, [batchCode, hasLiveTasks, view]);
 
   useEffect(() => {
     if (!batch || batch.state !== 'active' || view !== 'selected') return undefined;
@@ -2831,7 +2847,9 @@ const CourseSelectionWorkspacePage = () => {
       type="info"
       showIcon
       message={<Space><Badge status={tasksRefreshing ? 'processing' : 'success'} />后台任务实时状态</Space>}
-      description="停留在本页时每秒读取一次本地执行状态；学校端人数仍按任务自身的安全轮询间隔更新。关闭页面不会停止任务。"
+      description={hasLiveTasks
+        ? '运行中的任务会每秒读取一次本地执行状态；学校端人数仍按任务自身的安全轮询间隔更新。关闭页面不会停止任务。'
+        : '当前没有运行中的任务，不会持续读取任务状态；启动或继续任务后才会恢复实时状态更新。关闭页面不会停止任务。'}
     />
     {tasks.map(task => {
     const isSwap = task.task_type === 'vacancy_swap';
