@@ -1683,6 +1683,7 @@ function TimetablePage({
   const [personalConflictMap, setPersonalConflictMap] = useState({});
   const [localDate, setLocalDate] = useState(() => new Date());
   const [mobileDay, setMobileDay] = useState(() => todayWeekday(localDate));
+  const [mobileSummaryNavigationVersion, setMobileSummaryNavigationVersion] = useState(0);
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [filterDraft, setFilterDraft] = useState({
     termCode: '', campusCode: '', viewMode: 'week',
@@ -1760,6 +1761,7 @@ function TimetablePage({
   const mobileFocusKeyRef = useRef('');
   const mobileFocusPendingRef = useRef('');
   const mobileFocusReadyRef = useRef(false);
+  const mobileSummaryNavigationRef = useRef(null);
   const mobileDayScrollGeneration = useRef(0);
   const desktopWeekSelectRef = useRef(null);
   const lastWeekWheelAt = useRef(0);
@@ -3447,7 +3449,7 @@ function TimetablePage({
     // it correctly. scroll-margin keeps the selector below the sticky header.
     anchor.style.scrollMarginTop = `${topOffset}px`;
     const alignSelector = () => {
-      if (cancelled || !anchor.isConnected) return;
+      if (cancelled || !anchor.isConnected || mobileSummaryNavigationRef.current) return;
       if (typeof anchor.scrollIntoView === 'function') {
         anchor.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'auto' });
       } else {
@@ -3476,6 +3478,31 @@ function TimetablePage({
     if (mobileFocusPendingRef.current === focusKey) mobileFocusPendingRef.current = '';
   };
   }, [embedded, screens.lg, mode, schedule, termCode, viewMode]);
+
+  useLayoutEffect(() => {
+    const navigation = mobileSummaryNavigationRef.current;
+    if (!navigation || !schedule || navigation.termCode !== termCode) return undefined;
+    if (viewMode === 'week' && weekNumber !== navigation.weekNumber) return undefined;
+    const destination = navigation.compact && viewMode === 'week'
+      ? mobileWeekFocusRef.current : mobileDayFocusRef.current;
+    if (!destination) return undefined;
+    let firstFrame = 0;
+    let secondFrame = 0;
+    const scroll = () => destination.isConnected && destination.scrollIntoView?.({
+      block: 'start', inline: 'nearest', behavior: 'smooth',
+    });
+    firstFrame = window.requestAnimationFrame(() => {
+      scroll();
+      secondFrame = window.requestAnimationFrame(() => {
+        scroll();
+        mobileSummaryNavigationRef.current = null;
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [mobileDay, mobileSummaryNavigationVersion, schedule, termCode, viewMode, weekNumber]);
   const targetPlaceholder = mode === 'class'
     ? '搜索班级代码或名称'
     : mode === 'teacher'
@@ -3622,15 +3649,14 @@ function TimetablePage({
     const nextWeek = nextTimetableCourseWeek(selected?.course, context?.weeks || [], new Date());
     if (!nextWeek) return;
     mobileDayFollowsToday.current = false;
+    mobileSummaryNavigationRef.current = {
+      termCode,
+      weekNumber: nextWeek,
+      compact: mobileCompactWeekView,
+    };
+    setMobileSummaryNavigationVersion(value => value + 1);
     if (viewMode === 'week') switchWeek(nextWeek);
     if (!mobileCompactWeekView && day >= 1 && day <= 7) setMobileDay(day);
-    const destination = mobileCompactWeekView && viewMode === 'week'
-      ? mobileWeekFocusRef : mobileDayFocusRef;
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => destination.current?.scrollIntoView?.({
-        block: 'start', inline: 'nearest', behavior: 'smooth',
-      }));
-    });
   };
 
   const openDayAgenda = day => {
