@@ -449,7 +449,16 @@
   .jwxk-plan-aside { grid-template-columns: 1fr; }
   .jwxk-plan-item .ant-card-body { display: grid; }
   .jwxk-plan-page-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-content: stretch; }
-  .jwxk-plan-page-actions > .ant-btn { width: 100%; min-width: 0; min-height: 42px; }
+  .jwxk-plan-page-actions > .ant-btn {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    height: auto;
+    padding: 6px 8px;
+    line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
   .jwxk-plan-page-actions > .ant-btn-primary:last-child { grid-column: 1 / -1; }
   .jwxk-plan-page-actions > .jwxk-task-group-picker { grid-column: 1 / -1; }
   .jwxk-live-schedule__head, .jwxk-plan-alternative { align-items: stretch; flex-direction: column; }
@@ -459,7 +468,17 @@
   .jwxk-plan-alternative__actions .ant-space-item:last-child { flex-basis: auto; }
   .jwxk-plan-alternative__actions .ant-input-number,
   .jwxk-plan-alternative__actions .ant-input-number-group-wrapper,
-  .jwxk-plan-alternative__actions .ant-btn { width: 100%; min-width: 0; min-height: 40px; justify-content: center; }
+  .jwxk-plan-alternative__actions .ant-btn {
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+    height: auto;
+    justify-content: center;
+    padding: 6px 8px;
+    line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
   .jwxk-plan-alternative__title { align-items: flex-start; }
   .jwxk-plan-alternative__title .jwxk-plan-course-link { white-space: normal; }
   .jwxk-selected-market { grid-template-columns: 1fr; }
@@ -486,10 +505,25 @@
   .jwxk-task-course-row.is-weight > span:nth-child(6),
   .jwxk-task-course-row:not(.is-weight) > span:nth-child(3) { grid-column: 1 / -1; }
   .jwxk-task-course-status { width: 100%; min-height: 42px; align-self: stretch; }
-  .jwxk-task-actions { display: grid !important; grid-template-columns: 1fr 1fr; width: 100%; gap: 8px !important; }
+  .jwxk-inline-class__actions,
+  .jwxk-task-actions { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px !important; }
+  .jwxk-inline-class__actions .ant-space-item,
   .jwxk-task-actions .ant-space-item { min-width: 0; display: flex; }
-  .jwxk-task-actions .ant-btn { width: 100%; min-width: 0; min-height: 42px; padding-inline: 8px; }
-  .jwxk-task-actions .ant-space-item:last-child { grid-column: 1 / -1; }
+  .jwxk-inline-class__actions .ant-btn,
+  .jwxk-task-actions .ant-btn {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    height: auto;
+    padding: 6px 8px;
+    line-height: 1.35;
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .jwxk-inline-class__actions .ant-btn .anticon,
+  .jwxk-task-actions .ant-btn .anticon { flex: 0 0 auto; }
   .jwxk-task-history > div { flex-direction: column; gap: 2px; }
 }
 
