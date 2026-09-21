@@ -1,6 +1,7 @@
 import { AxiosError, CanceledError } from 'axios';
 
 const pending = new Map();
+const pendingUpdates = new Map();
 
 const bridge = () => (typeof window !== 'undefined' ? window.NeuNative : null);
 
@@ -94,6 +95,21 @@ if (typeof window !== 'undefined') {
       callbacks.reject(error);
     }
   });
+  window.__neuNativeUpdateDeliver = (requestId, rawPayload) => Promise.resolve().then(() => {
+    const callbacks = pendingUpdates.get(requestId);
+    if (!callbacks) return;
+    pendingUpdates.delete(requestId);
+    try {
+      const payload = typeof rawPayload === 'string' ? JSON.parse(rawPayload) : rawPayload;
+      if (!payload || Number(payload.status || 1) === 0 || payload.error) {
+        const error = new Error(payload?.error || '应用更新失败');
+        if (payload?.code) error.code = payload.code;
+        callbacks.reject(error);
+        return;
+      }
+      callbacks.resolve(payload);
+    } catch (error) { callbacks.reject(error); }
+  });
 }
 
 export const nativeAxiosAdapter = config => new Promise((resolve, reject) => {
@@ -184,6 +200,23 @@ export const nativeAxiosAdapter = config => new Promise((resolve, reject) => {
 });
 
 export const openNativeServerSettings = () => bridge()?.openServerSettings?.();
+
+const nativeUpdateRequest = method => new Promise((resolve, reject) => {
+  const native = bridge();
+  if (!native?.[method]) { reject(new Error('当前运行环境不支持应用更新')); return; }
+  let id;
+  try { id = native[method](); } catch (error) { reject(error); return; }
+  if (!id) { reject(new Error('原生更新请求未接受')); return; }
+  pendingUpdates.set(id, { resolve, reject });
+  window.setTimeout(() => {
+    if (!pendingUpdates.has(id)) return;
+    pendingUpdates.delete(id);
+    reject(new Error('更新请求超时'));
+  }, 120000);
+});
+
+export const checkNativeAppUpdate = () => nativeUpdateRequest('checkAppUpdate');
+export const installNativeAppUpdate = () => nativeUpdateRequest('installAppUpdate');
 
 export const saveNativeFile = (filename, mediaType, blob) => {
   if (!bridge()?.saveFile || !(blob instanceof Blob)) return false;

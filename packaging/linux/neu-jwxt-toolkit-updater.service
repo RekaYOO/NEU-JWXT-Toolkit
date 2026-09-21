@@ -1,0 +1,14 @@
+[Unit]
+Description=NEU JWXT Toolkit staged updater
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/neu-jwxt-toolkit/updater/update-helper.sh
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/neu-jwxt-toolkit /etc/neu-jwxt-toolkit /var/lib/neu-jwxt-toolkit /etc/systemd/system

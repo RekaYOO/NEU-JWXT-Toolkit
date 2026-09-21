@@ -17,6 +17,7 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
+      android_version_code: ${{ steps.version.outputs.android_version_code }}
     steps:
       # actions/checkout v4.4.0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -56,6 +57,7 @@ jobs:
             exit 1
           fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'android_version_code=%s\n' "$android_version_code" >> "$GITHUB_OUTPUT"
 
   web:
     name: Build web assets
@@ -296,9 +298,11 @@ jobs:
           package="release/neu-jwxt-toolkit"
           mkdir -p "$package/app" "$package/examples"
           cp -a dist/neu-jwxt-server/. "$package/app/"
-          cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/neu-jwxt-toolkit.service "$package/"
+          cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/neu-jwxt-toolkit.service \
+            packaging/linux/update-helper.sh packaging/linux/neu-jwxt-toolkit-updater.service \
+            packaging/linux/neu-jwxt-toolkit-updater.path "$package/"
           cp packaging/linux/examples/* "$package/examples/"
-          chmod +x "$package/install.sh" "$package/uninstall.sh" "$package/app/neu-jwxt-server"
+          chmod +x "$package/install.sh" "$package/uninstall.sh" "$package/update-helper.sh" "$package/app/neu-jwxt-server"
           python tools/check_release_bundle.py dist/neu-jwxt-server "$package" "$package/app"
           source_date_epoch="$(git log -1 --format=%ct)"
           archive="release/NEU-JWXT-Toolkit-$RELEASE_VERSION-linux-amd64.tar.gz"
@@ -487,8 +491,15 @@ jobs:
       - name: Generate checksums
         working-directory: release
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          ANDROID_VERSION_CODE: ${{ needs.validate.outputs.android_version_code }}
         run: |
           set -euo pipefail
+          # The tool writes the verified release-manifest.json next to the assets.
+          python ../tools/generate_release_manifest.py . \
+            --version "$RELEASE_VERSION" \
+            --android-version-code "$ANDROID_VERSION_CODE"
           find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%P\0' \
             | sort -z \
             | xargs -0 sha256sum > SHA256SUMS.txt

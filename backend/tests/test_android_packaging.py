@@ -86,6 +86,21 @@ def test_android_manifests_do_not_request_external_storage():
         assert 'android:allowBackup="false"' in text
 
 
+def test_android_update_bridge_is_official_only_and_uses_private_file_provider():
+    manifest = (ANDROID / "shared" / "src" / "main" / "AndroidManifest.xml").read_text(encoding="utf-8")
+    paths = (ANDROID / "shared" / "src" / "main" / "res" / "xml" / "neu_file_paths.xml").read_text(encoding="utf-8")
+    bridge = (ANDROID / "shared" / "src" / "main" / "java" / "io" / "github" / "rekayoo" / "neujwxt" / "shared" / "NativeBridge.java").read_text(encoding="utf-8")
+    manager = (ANDROID / "shared" / "src" / "main" / "java" / "io" / "github" / "rekayoo" / "neujwxt" / "shared" / "AppUpdateManager.java").read_text(encoding="utf-8")
+
+    assert "android.permission.REQUEST_INSTALL_PACKAGES" in manifest
+    assert "${applicationId}.fileprovider" in manifest
+    assert "cache-path" in paths and "updates/" in paths
+    assert "checkAppUpdate" in bridge and "installAppUpdate" in bridge
+    assert "api.github.com/repos/RekaYOO/NEU-JWXT-Toolkit" in manager
+    assert "allowedHost" in manager and "REQUEST_INSTALL_PACKAGES" in manifest
+    assert "download_url" in manager and "sha256" in manager
+
+
 def test_android_native_sources_match_pinned_runtime_versions():
     sources = json.loads((ANDROID / "recipes" / "sources.json").read_text())
     pinned = _requirements(ROOT / "requirements.lock")

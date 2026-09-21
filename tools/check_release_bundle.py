@@ -189,7 +189,17 @@ def find_structure_violations(
     if (root / "app").is_dir():
         if not packaged_server.is_file():
             return ["assembled server package is missing app/neu-jwxt-server"]
-        return [f"app/{item}" for item in _server_payload_violations(root / "app", packaged_server)]
+        violations = [f"app/{item}" for item in _server_payload_violations(root / "app", packaged_server)]
+        for required in (
+            root / "install.sh",
+            root / "uninstall.sh",
+            root / "update-helper.sh",
+            root / "neu-jwxt-toolkit-updater.service",
+            root / "neu-jwxt-toolkit-updater.path",
+        ):
+            if not required.is_file():
+                violations.append(f"missing Linux updater path: {required.name}")
+        return violations
     return []
 
 

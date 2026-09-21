@@ -233,6 +233,14 @@ def test_server_layout_accepts_nuitka_standalone_and_assembled_package(tmp_path)
     package = tmp_path / "package"
     (package / "app").mkdir(parents=True)
     _server_bundle(package / "app")
+    for name in (
+        "install.sh",
+        "uninstall.sh",
+        "update-helper.sh",
+        "neu-jwxt-toolkit-updater.service",
+        "neu-jwxt-toolkit-updater.path",
+    ):
+        (package / name).write_text("placeholder", encoding="utf-8")
     assert find_structure_violations(package) == []
 
 

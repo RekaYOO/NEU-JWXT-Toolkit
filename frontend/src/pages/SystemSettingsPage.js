@@ -15,6 +15,7 @@ import {
 import { clearBrowserAvatarCache, clearBrowserTimetableCache } from '../resources/BrowserTimetableStore';
 import { useResourceIdentity } from '../resources/ResourceStore';
 import { nativeShellInfo, openNativeServerSettings } from '../services/nativeBridge';
+import VersionUpdateCard from '../components/VersionUpdateCard';
 import './SystemSettingsPage.css';
 
 const { Title, Text } = Typography;
@@ -139,5 +140,5 @@ export default function SystemSettingsPage() {
   const [params, setParams] = useSearchParams();
   const activeKey = params.get('tab') === 'logs' ? 'logs' : 'config';
   const mobileLocal = shellInfo?.kind === 'local';
-  return <main className="system-settings-page"><div className="system-settings-heading"><SettingOutlined /><div><Title level={2}>系统设置</Title><Text type="secondary">统一管理日志、缓存和系统通知配置</Text></div></div><Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={[{ key: 'config', label: <span><SettingOutlined /> 配置项</span>, children: <><NativeServerSettings /><CacheSettings /><BrowserTimetableCacheCard />{!mobileLocal && <><Card title="系统邮件" className="system-settings-card"><SystemMailForm /></Card><Card title="远程登录恢复" className="system-settings-card"><AuthRecoverySettings /></Card></>}</> }, { key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded /> }]} /></main>;
+  return <main className="system-settings-page"><div className="system-settings-heading"><SettingOutlined /><div><Title level={2}>系统设置</Title><Text type="secondary">统一管理日志、缓存和系统通知配置</Text></div></div><Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={[{ key: 'config', label: <span><SettingOutlined /> 配置项</span>, children: <><VersionUpdateCard /><NativeServerSettings /><CacheSettings /><BrowserTimetableCacheCard />{!mobileLocal && <><Card title="系统邮件" className="system-settings-card"><SystemMailForm /></Card><Card title="远程登录恢复" className="system-settings-card"><AuthRecoverySettings /></Card></>}</> }, { key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded /> }]} /></main>;
 }

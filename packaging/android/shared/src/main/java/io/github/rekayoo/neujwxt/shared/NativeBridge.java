@@ -13,6 +13,7 @@ public final class NativeBridge {
     private final WebView webView;
     private final Supplier<ApiTransport> transport;
     private final Supplier<JSONObject> shellInfo;
+    private final AppUpdateManager updates;
 
     public NativeBridge(BaseShellActivity activity, WebView webView,
                         Supplier<ApiTransport> transport, Supplier<JSONObject> shellInfo) {
@@ -20,11 +21,23 @@ public final class NativeBridge {
         this.webView = webView;
         this.transport = transport;
         this.shellInfo = shellInfo;
+        this.updates = new AppUpdateManager(activity);
     }
 
     @JavascriptInterface
     public String getShellInfo() {
-        return shellInfo.get().toString();
+        try {
+            JSONObject value = new JSONObject(shellInfo.get().toString());
+            android.content.pm.PackageInfo info = activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0);
+            value.put("application_id", activity.getPackageName())
+                .put("version", info.versionName)
+                .put("version_code", android.os.Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode)
+                .put("update_supported", activity.getPackageName().equals("io.github.rekayoo.neujwxt.client")
+                    || activity.getPackageName().equals("io.github.rekayoo.neujwxt.local"));
+            return value.toString();
+        } catch (Exception ignored) {
+            return shellInfo.get().toString();
+        }
     }
 
     @JavascriptInterface
@@ -75,12 +88,42 @@ public final class NativeBridge {
         activity.runOnUiThread(activity::openServerSettings);
     }
 
+    @JavascriptInterface
+    public String checkAppUpdate() {
+        return runUpdate(false);
+    }
+
+    @JavascriptInterface
+    public String installAppUpdate() {
+        return runUpdate(true);
+    }
+
+    private String runUpdate(boolean install) {
+        String id = UUID.randomUUID().toString();
+        new Thread(() -> {
+            JSONObject payload;
+            try { payload = install ? updates.downloadAndInstall() : updates.check(); }
+            catch (Exception exception) {
+                payload = error(exception.getMessage() == null ? "更新检查失败" : exception.getMessage(), "ERR_UPDATE");
+            }
+            deliverUpdate(id, payload);
+        }, "neu-app-update").start();
+        return id;
+    }
+
     private void deliver(String id, JSONObject payload) {
         String script = "window.__neuNativeDeliver(" + JSONObject.quote(id) + "," + payload + ");";
         webView.post(() -> {
             if (!activity.isDestroyed() && !activity.isFinishing()) {
                 webView.evaluateJavascript(script, null);
             }
+        });
+    }
+
+    private void deliverUpdate(String id, JSONObject payload) {
+        String script = "window.__neuNativeUpdateDeliver(" + JSONObject.quote(id) + "," + payload + ");";
+        webView.post(() -> {
+            if (!activity.isDestroyed() && !activity.isFinishing()) webView.evaluateJavascript(script, null);
         });
     }
 

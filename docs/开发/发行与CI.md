@@ -10,6 +10,10 @@
 `versionName` 和发行文件名均从该文件读取。Android 另用正整数 `ANDROID_VERSION_CODE` 作为
 系统覆盖安装顺序，每次 Android 正式发布都必须递增。Git 标签必须与 `VERSION` 相同并带 `v` 前缀。
 
+Release 发布阶段还生成 `release-manifest.json`，登记版本、Android version code、平台资产、
+大小和 SHA-256。系统设置的版本检查固定读取官方仓库的 latest Release；后端和 Android 原生
+更新器都只接受 manifest 声明的 GitHub 资产，不把前端传入的 URL 当作下载地址。
+
 项目定义四种运行模式：
 
 | 模式 | 用途 | 数据目录 |
@@ -65,6 +69,10 @@ Linux：
 sudo apt-get install build-essential patchelf ccache
 python packaging/nuitka/build.py server
 ```
+
+Linux 安装包同时包含 `update-helper.sh` 及 `neu-jwxt-toolkit-updater.path/.service`。它们只
+允许处理 `/var/lib/neu-jwxt-toolkit/updates/` 中已校验的官方包，再调用既有 `install.sh --upgrade`；
+服务用户不直接提权，配置和回滚边界与手动升级相同。
 
 Android 调试包需要 JDK 17、Android SDK 35 和 Python 3.13。先构建前端，再为目标 ABI 构建
 锁定的 Android wheel，最后运行 Gradle Wrapper。Android 只把未压缩的 WebView 运行资源复制进

@@ -70,6 +70,12 @@ gh attestation verify .\NEU-JWXT-Toolkit-<版本>-windows-x64-portable.zip `
 
 程序始终绑定 `127.0.0.1`，不提供局域网服务模式。若需要在手机等其他设备访问，请在 Linux 服务器上安装服务版。
 
+## 检查更新
+
+系统设置会从官方 GitHub Release 检查当前版本。Windows 便携版更新会下载并校验完整的
+`windows-x64-portable.zip` 到本机数据目录，但不会替换正在运行的 standalone 目录。退出程序后，
+请将新压缩包完整解压到新的目录再启动；`%LOCALAPPDATA%\NEU-JWXT-Toolkit\data` 不会被覆盖。
+
 ## 故障排查
 
 - 页面没有自动打开：双击托盘图标或再次运行 `NEU-JWXT-Toolkit.exe`，并检查安全软件是否拦截了程序

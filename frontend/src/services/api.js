@@ -659,6 +659,9 @@ export const updateSystemMailSettings = async (payload) => (await api.put('/api/
 export const testSystemMail = async () => (await api.post('/api/system-settings/mail/test')).data;
 export const getAuthRecoverySettings = async () => (await api.get('/api/system-settings/auth-recovery')).data;
 export const updateAuthRecoverySettings = async (payload) => (await api.put('/api/system-settings/auth-recovery', payload)).data;
+export const getRuntimeUpdate = async (force = false) => (await api.get('/api/runtime/update', { params: force ? { force: true } : undefined, skipAuthRedirect: true })).data;
+export const startRuntimeUpdateDownload = async () => (await api.post('/api/runtime/update/download', null, { skipAuthRedirect: true })).data;
+export const getRuntimeUpdateJob = async jobId => (await api.get(`/api/runtime/update/${encodeURIComponent(jobId)}`, { skipAuthRedirect: true })).data;
 
 export const getAuthRecoveryStatus = async (token) => {
   const response = await api.get(

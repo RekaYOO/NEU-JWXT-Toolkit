@@ -42,7 +42,7 @@ jobs:
       - name: Compile backend
         run: python -m compileall -q backend launchers
       - name: Validate Linux installer scripts
-        run: bash -n packaging/linux/install.sh packaging/linux/uninstall.sh
+        run: bash -n packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/update-helper.sh
 
       - name: Install frontend dependencies
         working-directory: frontend

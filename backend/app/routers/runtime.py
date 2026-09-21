@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import hmac
+import re
 import threading
 from urllib.parse import urlsplit
 
@@ -11,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from backend.core.runtime import get_runtime_config
+from backend.core.runtime.updates import UpdateError, manager as update_manager
 from backend.core.runtime.capabilities import MOBILE_API_VERSION, runtime_capabilities
 from backend.core.runtime.access import (
     COOKIE_NAME,
@@ -57,6 +59,32 @@ async def health():
     if config.desktop_mode:
         result["shutdown_token"] = os.environ.get("NEU_JWXT_SHUTDOWN_TOKEN", "")
     return result
+
+
+@router.get("/api/runtime/update")
+def runtime_update_status(force: bool = False):
+    """Return release information without touching the NEU remote session."""
+    result = update_manager.snapshot(config, force=force)
+    result["job"] = update_manager.status(config)
+    return result
+
+
+@router.post("/api/runtime/update/download")
+def runtime_update_download():
+    try:
+        return update_manager.start_download(config)
+    except UpdateError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.get("/api/runtime/update/{job_id}")
+def runtime_update_job(job_id: str):
+    if not job_id or len(job_id) > 64 or not re.fullmatch(r"[0-9a-f]+", job_id):
+        raise HTTPException(status_code=400, detail="更新任务编号无效")
+    status = update_manager.status(config, job_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="更新任务不存在")
+    return status
 
 
 @router.get("/api/access/status")

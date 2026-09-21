@@ -84,7 +84,14 @@ jwxt.example.com {
 sudo ./install.sh --upgrade
 ```
 
-升级需要用户手动下载新版；脚本负责自动替换和失败回滚，不会在后台自动下载更新。
+登录后进入“系统设置”，可以从官方 GitHub Release 检查版本并下载 Linux 发行包。下载完成后，
+服务用户只会写入 `/var/lib/neu-jwxt-toolkit/updates/`，由安装时配置的 root-owned
+`neu-jwxt-toolkit-updater.path` 触发现有 `install.sh --upgrade`；服务进程本身不会获得 root
+权限。systemd 不可用或更新器未安装时，页面会退化为手动命令提示。
+
+自动升级只接受 Release 清单中声明的资产，并在 root 更新器中再次校验版本、路径和 SHA-256。
+更新期间服务会短暂重启，配置、会话和业务数据不移动；新版本健康检查失败时沿用安装脚本的
+自动回滚。
 
 当 `/etc/neu-jwxt-toolkit/config.json` 已存在时，脚本不会调用初始化配置，也不会再次
 询问端口或网站访问密码。以下内容全部延续：

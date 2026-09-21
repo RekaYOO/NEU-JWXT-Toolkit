@@ -1,6 +1,7 @@
 import {
   nativeAxiosAdapter,
   nativeShellInfo,
+  checkNativeAppUpdate,
   saveNativeFile,
 } from './nativeBridge';
 
@@ -157,5 +158,25 @@ describe('native Android bridge', () => {
       ['upload-token', '', '@chunk:YWJj'],
       ['outline.html', 'text/html', '@native:upload-token'],
     ]);
+  });
+
+  test('resolves native app update checks through the bridge callback', async () => {
+    window.NeuNative = { checkAppUpdate: jest.fn(() => 'update-1') };
+    const pending = checkNativeAppUpdate();
+    window.__neuNativeUpdateDeliver('update-1', {
+      current_version: '1.0.0', latest_version: '1.1.0', available: true,
+    });
+    await expect(pending).resolves.toMatchObject({ available: true, latest_version: '1.1.0' });
+  });
+
+  test('rejects native app update failures instead of treating them as a version snapshot', async () => {
+    window.NeuNative = { checkAppUpdate: jest.fn(() => 'update-error') };
+    const pending = checkNativeAppUpdate();
+    window.__neuNativeUpdateDeliver('update-error', {
+      status: 0, code: 'ERR_UPDATE', error: '无法连接 GitHub Release',
+    });
+    await expect(pending).rejects.toMatchObject({
+      code: 'ERR_UPDATE', message: '无法连接 GitHub Release',
+    });
   });
 });

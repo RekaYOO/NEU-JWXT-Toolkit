@@ -88,6 +88,13 @@ def test_release_only_publishes_version_tags_and_final_artifacts():
     assert "workflow_dispatch:" in RELEASE
     assert "if: startsWith(github.ref, 'refs/tags/v')" in RELEASE
     assert 'pattern: "*-release"' in RELEASE
+    assert "release-manifest.json" in RELEASE
+    assert "android_version_code" in RELEASE
+
+
+def test_linux_release_contains_staged_updater_components():
+    assert "update-helper.sh" in RELEASE
+    assert "neu-jwxt-toolkit-updater.path" in RELEASE
 
 
 def test_windows_release_keeps_compiled_portable_but_drops_unsigned_installer():
