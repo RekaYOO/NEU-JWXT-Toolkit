@@ -238,6 +238,7 @@
 .jwxk-workspace-tabs > .ant-segmented { flex: 1; padding: 4px; border: 1px solid var(--color-line); }
 .jwxk-catalog-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 18px; align-items: start; }
 .jwxk-catalog-layout.is-plan-managing { grid-template-columns: minmax(0, 1fr) minmax(360px, 420px); }
+.jwxk-catalog-layout > section { min-width: 0; container: jwxk-catalog-content / inline-size; }
 .jwxk-search-row { display: grid; grid-template-columns: minmax(240px, 1fr) repeat(4, minmax(128px, auto)); gap: 10px; margin-bottom: 14px; }
 .jwxk-capacity-refresh-status { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-height: 22px; margin: -7px 0 10px; font-size: 12px; }
 .jwxk-archive-search { grid-template-columns: minmax(260px, 1fr) repeat(4, minmax(132px, auto)); margin-top: 18px; }
@@ -271,7 +272,9 @@
 .jwxk-plan-inline-editor .ant-input-number-group-wrapper { width: 100%; }
 .jwxk-plan-inline-editor__actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .jwxk-plan-inline-editor__actions .ant-btn { width: 100%; }
-.jwxk-plan-quick-summary { display: grid; gap: 7px; padding: 11px 12px; background: var(--color-surface-soft); border: 1px solid var(--color-line-soft); border-radius: var(--radius-md); }
+.jwxk-plan-quick-summary { display: grid; width: 100%; gap: 7px; padding: 11px 12px; color: var(--color-ink); font: inherit; text-align: left; background: var(--color-surface-soft); border: 1px solid var(--color-line-soft); border-radius: var(--radius-md); cursor: pointer; transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease; }
+.jwxk-plan-quick-summary:not(:disabled):hover, .jwxk-plan-quick-summary:not(:disabled):focus-visible { border-color: color-mix(in srgb, var(--color-brand) 55%, var(--color-line)); background: color-mix(in srgb, var(--color-brand) 5%, var(--color-surface)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-brand) 10%, transparent); outline: none; }
+.jwxk-plan-quick-summary:disabled { color: var(--color-ink); cursor: default; opacity: 1; }
 .jwxk-plan-quick-summary__title { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: 8px; }
 .jwxk-plan-quick-summary__title strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jwxk-plan-quick-summary__title span, .jwxk-plan-quick-summary small { color: var(--color-muted); font-size: 12px; }
@@ -285,13 +288,23 @@
 .jwxk-plan-quick-item strong { font-size: 13px; }
 .jwxk-plan-quick-item small { color: var(--color-muted); font-size: 11px; }
 .jwxk-plan-quick-item__arrow { flex: none; color: var(--color-muted); font-size: 20px; line-height: 1; }
-.jwxk-plan-management-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding-top: 2px; }
+.jwxk-plan-management-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 8px; padding-top: 2px; }
+.jwxk-plan-management-toolbar.is-weight { grid-template-columns: repeat(2, minmax(0, 1fr)) 40px; }
 .jwxk-plan-management-toolbar .ant-btn { width: 100%; min-width: 0; height: auto; min-height: 36px; padding-inline: 8px; line-height: 1.3; white-space: normal; }
 .jwxk-plan-editor-items { display: grid; gap: 8px; }
 .jwxk-plan-editor-item { display: grid; gap: 9px; padding: 10px; background: var(--color-surface-soft); border: 1px solid transparent; border-radius: var(--radius-md); }
 .jwxk-plan-editor-item:focus-within { border-color: color-mix(in srgb, var(--color-brand) 42%, var(--color-line)); }
 .jwxk-plan-editor-item__body { display: grid; min-width: 0; gap: 3px; }
-.jwxk-plan-editor-item__body .jwxk-plan-course-link { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.jwxk-plan-editor-item__body .jwxk-plan-course-link {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 .jwxk-plan-editor-item__body small { min-width: 0; overflow-wrap: anywhere; color: var(--color-muted); font-size: 11px; line-height: 1.4; }
 .jwxk-plan-editor-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .jwxk-plan-editor-tags .ant-tag { margin-inline-end: 0; }
@@ -309,11 +322,11 @@
 .jwxk-course-group.is-focused { border-color: var(--color-brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 18%, transparent), var(--shadow-card); }
 .jwxk-course-group__head { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
 .jwxk-course-group__main { min-width: 0; flex: 1; }
-.jwxk-course-group__title-row { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: 18px; margin: 6px 0 2px; }
-.jwxk-course-group__title-row h4 { min-width: 180px; margin: 0; }
+.jwxk-course-group__title-row { display: grid; grid-template-columns: minmax(210px, .8fr) minmax(0, 1.2fr); min-width: 0; align-items: start; gap: 12px 18px; margin: 6px 0 2px; }
+.jwxk-course-group__title-row h4 { display: -webkit-box; min-width: 0; max-width: 100%; margin: 0; overflow: hidden; line-height: 1.35; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .jwxk-course-group.has-volunteered-class .jwxk-course-group__title-row h4 { color: var(--color-brand); }
 .jwxk-course-group.has-all-conflicts .jwxk-course-group__title-row h4 { color: var(--color-danger); }
-.jwxk-course-group__facts { display: flex; min-width: 0; align-items: baseline; justify-content: flex-end; gap: 8px 18px; color: var(--color-muted); font-size: 12px; }
+.jwxk-course-group__facts { display: flex; min-width: 0; align-items: baseline; justify-content: flex-end; flex-wrap: wrap; gap: 8px 18px; color: var(--color-muted); font-size: 12px; }
 .jwxk-course-group__facts span { display: inline-flex; gap: 5px; white-space: nowrap; }
 .jwxk-course-group__facts b { max-width: 180px; overflow: hidden; color: var(--color-ink); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .jwxk-course-group__stats { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 14px; color: var(--color-muted); font-size: 13px; }
@@ -478,6 +491,11 @@
 .jwxk-weight-group-picker .ant-checkbox { flex: none; margin-top: 2px; }
 .jwxk-weight-group-picker .ant-checkbox + span { min-width: 0; padding-inline-start: 0; }
 
+@container jwxk-catalog-content (max-width: 760px) {
+  .jwxk-course-group__title-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .jwxk-course-group__facts { justify-content: flex-start; }
+}
+
 @media (max-width: 1100px) {
   .jwxk-catalog-layout { grid-template-columns: 1fr; }
   .jwxk-catalog-layout.is-plan-managing { grid-template-columns: 1fr; }
@@ -490,7 +508,7 @@
   .jwxk-search-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .jwxk-inline-class { grid-template-columns: minmax(0, 1fr) auto; }
   .jwxk-inline-class__actions { grid-column: 1 / -1; justify-content: flex-start; }
-  .jwxk-course-group__title-row { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .jwxk-course-group__title-row { grid-template-columns: minmax(0, 1fr); align-items: start; gap: 5px; }
   .jwxk-course-group__facts { justify-content: flex-start; flex-wrap: wrap; }
   .jwxk-task-course-row,
   .jwxk-task-course-row.is-weight { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -600,7 +618,8 @@
 }
 
 @media (max-width: 359px) {
-  .jwxk-plan-management-toolbar { grid-template-columns: 1fr; }
+  .jwxk-plan-management-toolbar,
+  .jwxk-plan-management-toolbar.is-weight { grid-template-columns: 1fr; }
   .jwxk-plan-editor-item__actions { grid-template-columns: 1fr; }
   .jwxk-plan-editor-item__actions.has-experiment > .ant-btn:first-child { grid-column: auto; }
   .jwxk-plan-panel__footer { grid-template-columns: 1fr; }

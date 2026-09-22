@@ -77,7 +77,11 @@ def get_status():
     # in-flight recovery rather than start a second network probe or wait on
     # the shared Session lock. The keepalive worker owns recovery.
     client = peek_auth_client()
-    if client is None:
+    # A stale in-memory client is just as recoverable as a missing one. The
+    # previous check only woke the keepalive when the client object was gone,
+    # so an expired cookie could leave the UI waiting for manual login even
+    # though same-account credentials were already stored.
+    if client is None or not getattr(client, "is_logged_in", False):
         request_auth_recovery()
 
     storage_info = _storage.get_storage_info()

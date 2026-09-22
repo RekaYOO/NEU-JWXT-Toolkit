@@ -96,6 +96,7 @@ logger = logging.getLogger(__name__)
 _solver_slots = BoundedSemaphore(value=2)
 _JWXK_CONFIG_KEY = "course_selection"
 _JWXK_STATUS_TIMEOUT_SECONDS = 6
+_JWXK_RECOVERY_TIMEOUT_SECONDS = 10
 _JWXK_SCOPE_NAMES = {
     "TJKC": "任务推荐班课程", "FANKC": "培养方案内课",
     "FAWKC": "培养方案外课程", "XGKC": "通识选修课",
@@ -201,11 +202,12 @@ def _jwxk_status_message(
             "当前尚未登录教务系统，请先完成登录。"
             if not primary_authenticated
             else (
-                "选课系统的 WebVPN 登录已失效，请使用账号密码或微信扫码恢复。"
+                "选课系统的 WebVPN 登录已失效，且没有可用的已保存凭据；请使用账号密码或微信扫码恢复。"
                 if effective == "webvpn"
                 else "教务登录有效，但选课系统会话未能建立，请重新登录后重试。"
             )
         ),
+        "interaction_required": "自动恢复已继续到学校的验证码或短信验证，请完成验证。",
         "service_unavailable": "选课系统当前暂不可用，可能尚未开放服务。历史课程备份仍可查看。",
         "checking": "选课线路设置已保存，正在后台核验可用性。",
     }
@@ -239,6 +241,10 @@ def get_jwxk_status(
     service_error_code = ""
     if primary_authenticated:
         credentials_attached = attach_saved_auth_credentials(primary)
+        automatic_credentials_available = bool(
+            str(getattr(primary, "username", "") or "")
+            and str(getattr(primary, "password", "") or "")
+        )
         if credentials_attached:
             logger.info(
                 "jwxk service recovery credentials attached mode=%s account_match=true",
@@ -251,16 +257,22 @@ def get_jwxk_status(
                     if original_timeout is not None:
                         primary.timeout = min(
                             float(original_timeout),
-                            _JWXK_STATUS_TIMEOUT_SECONDS,
+                            _JWXK_RECOVERY_TIMEOUT_SECONDS
+                            if automatic_credentials_available
+                            else _JWXK_STATUS_TIMEOUT_SECONDS,
                         )
                     try:
                         status_client = JwxkSessionClient(
                             primary,
                             network_mode=effective,
                         )
-                        # Direct CAS recovery cannot trigger a WebVPN challenge.
-                        # A WebVPN primary may have no direct CAS identity yet.
-                        setattr(status_client, "allow_identity_recovery", effective == "direct")
+                        # A missing child session is repaired with the same-account
+                        # saved credentials. The client submits them at most once;
+                        # CAPTCHA/SMS is preserved on this Session for the foreground.
+                        setattr(
+                            status_client, "allow_identity_recovery",
+                            automatic_credentials_available,
+                        )
                         context = status_client.get_context()
                     finally:
                         if original_timeout is not None:
@@ -277,6 +289,16 @@ def get_jwxk_status(
             service_auth_state, service_error_code = _jwxk_service_failure(
                 error, effective=effective,
             )
+            try:
+                challenge = primary.get_webvpn_sms_challenge()
+            except (AttributeError, TypeError, ValueError):
+                challenge = None
+            if (
+                challenge
+                and str(challenge.get("target_service") or "primary") == "jwxk"
+            ):
+                service_auth_state = "interaction_required"
+                service_error_code = "INTERACTION_REQUIRED"
             logger.info(
                 "jwxk service session unavailable mode=%s primary_authenticated=%s error=%s",
                 effective,

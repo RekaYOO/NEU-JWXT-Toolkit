@@ -218,34 +218,19 @@ describe('selection workspace independent resource loading', () => {
     expect(mockTimetableProps.refreshSignal).toBe(initialSignal + 1);
   });
 
-  test('plan management stays in the same sidebar and can return to the summary', async () => {
+  test('plan management is expanded by default inside the same sidebar', async () => {
     await render();
     const aside = container.querySelector('.jwxk-catalog-layout > .jwxk-plan-aside');
-    const panel = aside.querySelector('.jwxk-plan-panel');
-    const manage = [...aside.querySelectorAll('button')]
-      .find(button => button.textContent.includes('管理方案'));
-    await act(async () => {
-      manage.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    const managingPanel = aside.querySelector('.jwxk-plan-panel.is-managing');
-    expect(managingPanel).not.toBeNull();
+    expect(aside.querySelector('.jwxk-plan-panel.is-managing')).not.toBeNull();
     expect(aside.querySelector('.jwxk-plan-management-toolbar')).not.toBeNull();
-    expect(document.body.textContent).not.toContain('先选择方案组，再管理目标和候选课程');
-    const finish = managingPanel.querySelector('.jwxk-plan-panel__head-actions button');
-    expect(finish).not.toBeNull();
-    await act(async () => {
-      finish.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    expect(aside.querySelector('.jwxk-plan-panel.is-managing')).toBeNull();
-    expect(aside.querySelector('.jwxk-plan-management-toolbar')).toBeNull();
-    expect(aside.textContent).toContain('管理方案');
+    expect(aside.textContent).not.toContain('管理方案');
+    expect(aside.textContent).not.toContain('名称与目标');
   });
 
   test('creating a plan group uses an inline sidebar editor instead of another window', async () => {
     await render();
     const aside = container.querySelector('.jwxk-catalog-layout > .jwxk-plan-aside');
-    const create = [...aside.querySelectorAll('button')]
-      .find(button => button.textContent.includes('新建方案组'));
+    const create = aside.querySelector('button[aria-label="新建方案组"]');
     await act(async () => {
       create.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });

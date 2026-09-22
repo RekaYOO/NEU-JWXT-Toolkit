@@ -105,6 +105,17 @@ describe('shared service WebVPN recovery', () => {
     expect(api.cancelWebVPNSMSLogin).toHaveBeenCalledWith('pending-flow');
   });
 
+  test('silently detected service challenge can be adopted without reopening password login', async () => {
+    api.getPendingAuthChallenge.mockResolvedValue({
+      required: true, target_service: 'jwxk', flow_id: 'auto-flow', captcha_image: 'image',
+    });
+    await render('jwxk');
+    await settle(() => login.current.continuePending());
+    expect(container.textContent).toContain('auto-flow');
+    expect(api.startWebVPNPasswordLogin).not.toHaveBeenCalled();
+    expect(api.startWebVPNQRLogin).not.toHaveBeenCalled();
+  });
+
   test('cancels a late QR creation instead of reopening a closed modal', async () => {
     let finish;
     api.startWebVPNQRLogin.mockReturnValue(new Promise(resolve => { finish = resolve; }));
@@ -179,5 +190,16 @@ describe('shared service WebVPN recovery', () => {
     expect(container.textContent).toContain('无法直连创院系统');
     await settle(() => click(button('切换 WebVPN')));
     expect(change).toHaveBeenCalledWith('webvpn');
+  });
+
+  test('interactive recovery asks to continue the preserved verification flow', async () => {
+    const loginAction = jest.fn();
+    await settle(() => root.render(<ServiceAuthNotice status={{
+      effective_network_mode: 'webvpn', service_auth_state: 'interaction_required',
+      message: '请完成短信验证', primary_authenticated: true,
+    }} onLogin={loginAction} />));
+    await settle(() => click(button('继续验证码或短信验证')));
+    expect(loginAction).toHaveBeenCalledWith('pending');
+    expect(container.textContent).not.toContain('账号密码恢复');
   });
 });

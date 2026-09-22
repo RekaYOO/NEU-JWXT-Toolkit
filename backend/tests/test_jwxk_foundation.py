@@ -889,9 +889,10 @@ def test_status_route_attaches_same_account_saved_password_for_webvpn_recovery(m
         def __init__(self, auth, *, network_mode):
             assert auth.password == "saved-password"
             assert network_mode == "webvpn"
+            self.allow_identity_recovery = True
 
-        @staticmethod
-        def get_context():
+        def get_context(self):
+            assert self.allow_identity_recovery is True
             return {"batches": []}
 
     monkeypatch.setattr(course_selection, "JwxkSessionClient", SessionClient)
@@ -930,7 +931,7 @@ def test_status_route_reuses_primary_client_under_remote_guard(monkeypatch, mode
             events.append(("client", network_mode))
 
         def get_context(self):
-            assert self.allow_identity_recovery is (mode == "direct")
+            assert self.allow_identity_recovery is False
             events.append("context")
             return {"batches": []}
 

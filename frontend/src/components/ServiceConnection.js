@@ -42,16 +42,18 @@ export function ServiceAuthNotice({ status, busy, offline, onChange, onCheck, on
   const webvpn = status.effective_network_mode === 'webvpn';
   return (
     <Alert className={`service-auth-notice ${className}`} showIcon
-      type={busy || state === 'checking' ? 'info' : state === 'login_required' ? 'warning' : 'error'}
+      type={busy || state === 'checking' ? 'info' : ['login_required', 'interaction_required'].includes(state) ? 'warning' : 'error'}
       message={status.message || '服务会话需要重新核验'}
       action={busy ? null : (
         <Space wrap>
           {blocked ? <>
             <Button size="small" type="primary" onClick={() => onChange('direct')}>切换为直连</Button>
             <Button size="small" onClick={() => onChange('follow')}>跟随教务</Button>
+          </> : state === 'interaction_required' ? <>
+            <Button size="small" type="primary" icon={<LockOutlined />} onClick={() => onLogin?.('pending')}>继续验证码或短信验证</Button>
           </> : state === 'login_required' && webvpn && status.primary_authenticated ? <>
-            <Button size="small" type="primary" icon={<LockOutlined />} onClick={() => onLogin('password')}>账号密码恢复</Button>
-            <Button size="small" icon={<QrcodeOutlined />} onClick={() => onLogin('qr')}>微信扫码恢复</Button>
+            <Button size="small" type="primary" icon={<LockOutlined />} onClick={() => onLogin?.('password')}>账号密码恢复</Button>
+            <Button size="small" icon={<QrcodeOutlined />} onClick={() => onLogin?.('qr')}>微信扫码恢复</Button>
           </> : <>
             {!webvpn && ['network_unreachable', 'login_required'].includes(state)
               && <Button size="small" type="primary" onClick={() => onChange('webvpn')}>切换 WebVPN</Button>}
@@ -119,6 +121,28 @@ export const ServiceWebVPNLogin = forwardRef(function ServiceWebVPNLogin({
     }
   }, [discard]);
 
+  const continuePending = useCallback(async () => {
+    if (offline) return false;
+    try {
+      const pending = await getPendingAuthChallenge();
+      if (!pending.required || pending.target_service !== service) return false;
+      if (active.current.sms?.flow_id === pending.flow_id) return true;
+      const previous = active.current;
+      generation.current += 1;
+      active.current = { qr: null, sms: pending };
+      setView(null); setQr(null); setSms(pending); setPassword('');
+      setCaptcha(''); setCode(''); setSent(false); setError('');
+      setBusy(false); setCaptchaBusy(false);
+      if (previous.qr?.flow_id) cancelWebVPNQRLogin(previous.qr.flow_id).catch(() => {});
+      if (previous.sms?.flow_id && previous.sms.flow_id !== pending.flow_id) {
+        cancelWebVPNSMSLogin(previous.sms.flow_id).catch(() => {});
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }, [offline, service]);
+
   const open = useCallback(async nextView => {
     if (offline) return;
     discard();
@@ -150,7 +174,7 @@ export const ServiceWebVPNLogin = forwardRef(function ServiceWebVPNLogin({
     } finally { if (current === generation.current) setBusy(false); }
   }, [applyResult, discard, offline, service, username]);
 
-  useImperativeHandle(ref, () => ({ open, close: discard }), [open, discard]);
+  useImperativeHandle(ref, () => ({ open, close: discard, continuePending }), [open, discard, continuePending]);
   useEffect(() => {
     if (offline) return undefined;
     activeLoginTargets.add(service);

@@ -11,11 +11,12 @@ jest.mock('../services/api', () => ({
   isWebVPNCampusNetworkBlocked: jest.fn(() => false),
 }));
 let mockAuthCallbacks;
+let mockContinuePending;
 jest.mock('../components/ServiceConnection', () => ({
   ...jest.requireActual('../components/ServiceConnection'),
   ServiceWebVPNLogin: require('react').forwardRef((props, ref) => {
     mockAuthCallbacks = props;
-    require('react').useImperativeHandle(ref, () => ({ close: jest.fn(), open: jest.fn() }));
+    require('react').useImperativeHandle(ref, () => ({ close: jest.fn(), open: jest.fn(), continuePending: mockContinuePending }));
     return null;
   }),
 }));
@@ -72,6 +73,7 @@ describe('CourseSelectionPage mobile recovery notice', () => {
     await act(async () => root.unmount());
     container.remove();
     jest.clearAllMocks();
+    mockContinuePending = jest.fn().mockResolvedValue(true);
     global.IS_REACT_ACT_ENVIRONMENT = false;
   });
 
@@ -94,6 +96,19 @@ describe('CourseSelectionPage mobile recovery notice', () => {
     expect(action?.textContent).toContain('账号密码恢复');
     expect(action?.textContent).toContain('微信扫码恢复');
     expect(content.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test('automatically resumes a preserved SMS challenge instead of asking for credentials again', async () => {
+    getJwxkStatus.mockResolvedValue({
+      ...localStatus,
+      service_auth_state: 'interaction_required',
+      message: '自动恢复已继续到学校的验证码或短信验证，请完成验证。',
+    });
+    await render();
+    await act(async () => { await Promise.resolve(); });
+    expect(mockContinuePending).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('继续验证码或短信验证');
+    expect(container.textContent).not.toContain('账号密码恢复');
   });
 
   test('shows the resolved follow route before the remote probe finishes', async () => {

@@ -145,6 +145,9 @@ const CourseSelectionPage = () => {
         timeChanges = changedOfficialBatchTimes(status?.batches || [], nextStatus.batches || []);
       }
       setStatus(nextStatus);
+      if (nextStatus.service_auth_state === 'interaction_required') {
+        await serviceLogin.current?.continuePending?.();
+      }
     }
     catch (error) {
       if (generation !== statusRequestGeneration.current) return;
@@ -290,7 +293,9 @@ const CourseSelectionPage = () => {
       )}
       <ServiceAuthNotice className="course-selection-auth-alert" status={status} busy={loading || saving}
         onChange={changeJwxkNetworkMode} onCheck={() => load({ manual: true })}
-        onLogin={view => serviceLogin.current?.open(view)} />
+        onLogin={view => view === 'pending'
+          ? serviceLogin.current?.continuePending?.()
+          : serviceLogin.current?.open(view)} />
       <ServiceWebVPNLogin ref={serviceLogin} service="jwxk" username={status?.current_user || ''}
         onAuthenticated={onServiceAuthenticated} onBlocked={() => {
           statusRequestGeneration.current += 1;

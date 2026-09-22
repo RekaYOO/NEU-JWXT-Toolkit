@@ -22,6 +22,30 @@ from backend.core.auth.session_manager import AuthSessionManager
 
 
 class AuthRouteTests(unittest.TestCase):
+    def test_status_wakes_recovery_for_stale_in_memory_client(self):
+        stale = SimpleNamespace(
+            username="20250001", is_logged_in=False,
+            active_mode="direct", _last_webvpn_error_code="",
+            _last_webvpn_error_message="",
+        )
+        storage = Mock()
+        storage.get_storage_info.return_value = {"csv_count": 0}
+        storage.load_credentials.return_value = ("20250001", "saved-password")
+        with (
+            patch.object(auth, "_storage", storage),
+            patch.object(auth, "peek_auth_client", return_value=stale),
+            patch.object(auth, "request_auth_recovery") as wake,
+            patch.object(auth, "get_auth_recovery_status", return_value={}),
+            patch.object(auth, "pending_auth_challenge_snapshot", return_value={}),
+            patch.object(auth, "_cache_store") as cache_store,
+        ):
+            cache_store.latest_account_for.return_value = None
+            result = auth.get_status()
+
+        wake.assert_called_once_with()
+        self.assertFalse(result["is_logged_in"])
+        self.assertTrue(result["has_credentials"])
+
     def test_direct_recovery_falls_back_to_webvpn_with_saved_credentials(self):
         manager = AuthSessionManager()
         active = SimpleNamespace(
