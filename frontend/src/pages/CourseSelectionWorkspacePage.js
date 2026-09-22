@@ -6,7 +6,7 @@ import {
 import {
   ArrowLeftOutlined, CalendarOutlined, CheckCircleOutlined,
   BookOutlined,
-  ImportOutlined,
+  DeleteOutlined, EditOutlined, ImportOutlined, PlusOutlined,
   PauseCircleOutlined, PlayCircleOutlined, ReloadOutlined, RobotOutlined,
   SearchOutlined, ShoppingCartOutlined, SwapOutlined,
 } from '@ant-design/icons';
@@ -78,6 +78,7 @@ import './CourseSelectionPage.css';
 const { Paragraph, Text, Title } = Typography;
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 const CATALOG_CAPACITY_REFRESH_MS = 30_000;
+const PlanManagementSlot = ({ render }) => render();
 const TASK_STATUS_REFRESH_MS = 1_000;
 const preserveEqualSnapshot = (previous, next) => (
   JSON.stringify(previous) === JSON.stringify(next) ? previous : next
@@ -438,6 +439,7 @@ const CourseSelectionWorkspacePage = () => {
   const [localBatch, setLocalBatch] = useState(null);
   const [savedTermCode, setSavedTermCode] = useState('');
   const [view, setView] = useState('catalog');
+  const [planPanelOpen, setPlanPanelOpen] = useState(false);
   const [scope, setScope] = useState('ALL');
   const [scopeOptions, setScopeOptions] = useState([]);
   const [availability, setAvailability] = useState('all');
@@ -498,6 +500,8 @@ const CourseSelectionWorkspacePage = () => {
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupTargetCount, setNewGroupTargetCount] = useState(1);
   const [groupEditor, setGroupEditor] = useState(null);
+  const [groupEditorSaving, setGroupEditorSaving] = useState(false);
+  const [activePlanGroupId, setActivePlanGroupId] = useState('');
   const [weightImportOpen, setWeightImportOpen] = useState(false);
   const [weightImportLoading, setWeightImportLoading] = useState(false);
   const [weightImportCandidates, setWeightImportCandidates] = useState([]);
@@ -528,6 +532,14 @@ const CourseSelectionWorkspacePage = () => {
     setOnlineMode('all');
     setOnlineModeDraft('all');
   }, [batch?.batch_name, batch?.code, batch?.name]);
+  useEffect(() => {
+    if (view !== 'plan') return;
+    setView('catalog');
+    setPlanPanelOpen(true);
+  }, [view]);
+  useEffect(() => {
+    if (view === 'selected') setPlanPanelOpen(false);
+  }, [view]);
   const academicPlanSelected = useMemo(() => academicPlanSelectionRecords(
     selected, batch?.selection_type_code,
   ), [batch?.selection_type_code, selected]);
@@ -566,6 +578,19 @@ const CourseSelectionWorkspacePage = () => {
       )),
     }));
   }, [plan, planGroupConfigs]);
+  const activePlanGroup = useMemo(
+    () => planGroups.find(group => group.group_id === activePlanGroupId) || planGroups[0] || null,
+    [activePlanGroupId, planGroups],
+  );
+  useEffect(() => {
+    if (!planGroups.length) {
+      setActivePlanGroupId('');
+      return;
+    }
+    if (!planGroups.some(group => group.group_id === activePlanGroupId)) {
+      setActivePlanGroupId(planGroups[0].group_id);
+    }
+  }, [activePlanGroupId, planGroups]);
   const selectedByCourseCode = useMemo(() => new Map(
     selected.filter(item => (
       item.course_code && isCurrentBatchSelectionRecord(item, batch?.selection_type_code)
@@ -980,6 +1005,7 @@ const CourseSelectionWorkspacePage = () => {
     setPersonalCourses([]);
     setPersonalScheduleReady(false);
     setPlanAssignment(null);
+    setActivePlanGroupId('');
     setGroupEditor(null);
     setWeightImportOpen(false);
     setWeightImportLoading(false);
@@ -1309,11 +1335,18 @@ const CourseSelectionWorkspacePage = () => {
       plan_group_name: normalized.name,
       plan_group_target_count: normalized.target_count,
     } : item);
-    await savePlan(nextItems, nextGroups);
-    setTaskGroupIds(previous => previous.includes(normalized.group_id) || exists
-      ? previous.filter(groupId => nextGroups.some(group => group.group_id === groupId))
-      : [...previous, normalized.group_id]);
-    setGroupEditor(null);
+    setGroupEditorSaving(true);
+    try {
+      await savePlan(nextItems, nextGroups);
+      setTaskGroupIds(previous => previous.includes(normalized.group_id) || exists
+        ? previous.filter(groupId => nextGroups.some(group => group.group_id === groupId))
+        : [...previous, normalized.group_id]);
+      setActivePlanGroupId(normalized.group_id);
+      setGroupEditor(null);
+      message.success(exists ? '方案组已更新' : '方案组已创建');
+    } finally {
+      setGroupEditorSaving(false);
+    }
   };
 
   const openWeightImport = async () => {
@@ -2503,7 +2536,7 @@ const CourseSelectionWorkspacePage = () => {
   )).length + (weekday !== 'all' ? 1 : 0) + specialFilters.length + Number(onlineFilterActive);
   const catalog = (
     <Spin spinning={loading || (availability === 'selectable' && eligibilityLoading.length > 0)}>
-      <div className="jwxk-catalog-layout" ref={catalogRef}>
+      <div className={`jwxk-catalog-layout${planPanelOpen ? ' is-plan-managing' : ''}`} ref={catalogRef}>
         <section>
           <div className="jwxk-search-row">
             <Input.Search
@@ -2781,47 +2814,101 @@ const CourseSelectionWorkspacePage = () => {
             )}
             {academicReportResource.updateAvailable && <Button size="small" type="link" onClick={academicReportResource.applyAvailable}>使用刚更新的培养计划</Button>}
           </section>
-          <div><ShoppingCartOutlined /><b>我的方案</b><Tag>{planGroups.length} 组 / {plan.length} 个备选</Tag></div>
-        {planGroups.map(group => {
-            const ungrouped = group.group_id === UNGROUPED_WEIGHT_GROUP_ID;
-            return <div className="jwxk-plan-aside-group" key={group.id}><strong>{ungrouped ? `${group.name} · ${group.items.length} 门已投课程` : `${group.name} · 目标 ${group.target_count} 门`}</strong>{group.items.map(item => <button type="button" className="jwxk-plan-course-link" key={item.class_id} onClick={() => focusPlanCourse(item)}>{item.course_name} · {item.teacher || '教师待定'} · 意愿 {item.utility || 5}</button>)}</div>;
-          })}
-          <Space direction="vertical" className="jwxk-plan-aside-actions"><Button block onClick={() => setGroupEditor({ group_id: '', name: '', target_count: 1 })}>新建方案组</Button><Button block onClick={() => setView('plan')}>管理方案组</Button></Space>
+          <PlanManagementSlot render={() => planSidebarPanel} />
         </aside>
       </div>
     </Spin>
   );
 
-  const planView = <div className="jwxk-plan-page">
-    <Alert type="info" showIcon message="意愿值就是重视程度" description={batch?.selection_type_code === '04' ? '每门课程使用 1–10 分意愿值；分数越高表示越重视，策略模型会把它作为课程效用参考。' : '每门课程使用 1–10 分意愿值；分数越高表示越重视，自动抢课会优先尝试高意愿课程。'} />
-    <div className="jwxk-section-actions jwxk-plan-page-actions">
-      <Button onClick={() => setGroupEditor({ group_id: '', name: '', target_count: 1 })}>新建方案组</Button>
-      {batch?.selection_type_code === '04' && <Button icon={<ImportOutlined />} loading={weightImportLoading} onClick={openWeightImport}>整理未分组课程</Button>}
-      <Button icon={<CalendarOutlined />} onClick={previewConflicts}>实时检查冲突</Button>
-      {batch?.selection_type_code !== '04' && <Button type="primary" icon={<RobotOutlined />} disabled={!plan.length || !planGroups.length} onClick={openSelectionTaskSetup}>创建自动抢课任务</Button>}
-      {batch?.selection_type_code === '04' && <Button type="primary" icon={<RobotOutlined />} onClick={openWeightPlanner}>策略投权</Button>}
+  const removePlanGroup = group => Modal.confirm({
+    title: `删除方案组“${group.name}”？`,
+    content: '组内候选课程也会一起移除，已绑定任务会同步失去这些候选。',
+    okButtonProps: { danger: true },
+    okText: '删除方案组',
+    onOk: () => {
+      const removedClassIds = group.items.map(item => item.class_id);
+      setTaskGroupIds(previous => previous.filter(groupId => groupId !== group.group_id));
+      return savePlanAfterRemovingClasses(
+        plan.filter(item => item.plan_group_id !== group.group_id),
+        planGroupConfigs.filter(item => item.group_id !== group.group_id),
+        removedClassIds,
+      );
+    },
+  });
+
+  const beginGroupCreation = () => {
+    setPlanPanelOpen(true);
+    setGroupEditor({ group_id: '', name: '', target_count: 1 });
+  };
+  const beginActiveGroupEdit = () => {
+    if (!activePlanGroup || activePlanGroup.group_id === UNGROUPED_WEIGHT_GROUP_ID) return;
+    setGroupEditor({
+      group_id: activePlanGroup.group_id,
+      name: activePlanGroup.name,
+      target_count: activePlanGroup.target_count,
+    });
+  };
+  const finishPlanManagement = () => {
+    setGroupEditor(null);
+    setPlanPanelOpen(false);
+  };
+  const planSidebarPanel = <section className={`jwxk-plan-panel${planPanelOpen ? ' is-managing' : ''}`}>
+    <header className="jwxk-plan-panel__head">
+      <div><span className="jwxk-plan-eyebrow">当前轮次</span><strong>方案组</strong><small>{planPanelOpen ? '直接修改当前组，完成后返回摘要' : '选择课程时可随时查看当前方案'}</small></div>
+      <div className="jwxk-plan-panel__head-actions"><Tag color={plan.length ? 'blue' : 'default'}>{plan.length} 门</Tag><Button size="small" type={planPanelOpen ? 'default' : 'primary'} onClick={planPanelOpen ? finishPlanManagement : () => setPlanPanelOpen(true)}>{planPanelOpen ? '完成' : '管理'}</Button></div>
+    </header>
+    <div className="jwxk-plan-group-switcher">
+      <Select
+        className="jwxk-plan-group-select"
+        value={activePlanGroup?.group_id}
+        disabled={!planGroups.length || !!groupEditor}
+        onChange={value => {
+          setActivePlanGroupId(value);
+          setGroupEditor(null);
+        }}
+        placeholder="尚未建立方案组"
+        options={planGroups.map(group => ({
+          value: group.group_id,
+          label: `${group.name} · ${group.items.length}/${group.target_count} 门`,
+        }))}
+      />
+      <Tooltip title="新建方案组"><Button aria-label="新建方案组" icon={<PlusOutlined />} onClick={beginGroupCreation} /></Tooltip>
     </div>
-    {planGroups.map(group => {
-      const ungrouped = group.group_id === UNGROUPED_WEIGHT_GROUP_ID;
-      const title = ungrouped
-        ? `${group.name} · ${group.items.length} 门已投课程`
-        : `${group.name} · 目标 ${group.target_count} 门 · ${group.items.length} 个候选`;
-       const extra = ungrouped
-         ? <Button size="small" onClick={openWeightImport}>整理到其他方案组</Button>
-         : <Space><Button size="small" onClick={() => setGroupEditor({ group_id: group.group_id, name: group.name, target_count: group.target_count })}>编辑目标</Button><Button size="small" danger onClick={() => Modal.confirm({ title: `删除方案组“${group.name}”？`, content: '组内候选课程也会一起移除。', okButtonProps: { danger: true }, okText: '删除', onOk: () => { const removedClassIds = group.items.map(item => item.class_id); setTaskGroupIds(previous => previous.filter(groupId => groupId !== group.group_id)); return savePlanAfterRemovingClasses(plan.filter(item => item.plan_group_id !== group.group_id), planGroupConfigs.filter(item => item.group_id !== group.group_id), removedClassIds); } })}>删除组</Button></Space>;
-      return <Card key={group.id} title={title} extra={extra} className="jwxk-plan-group">
-        {ungrouped && <Alert type="info" showIcon message="当前已投、但尚未整理进普通方案组的课程" description="这些课程已进入统一课表与冲突链路。策略投权时可以手动选择本组，但默认不会勾选。" />}
-        {group.items.map(item => {
-          const conflict = combinedPlanConflictMap[item.class_id];
-          const conflictStatus = selectionTimeConflictStatus(conflict);
-          const scheduleMissing = conflict?.reason === 'course_schedule_missing';
-          const crossCampus = courseIsCrossCampus(item);
-           return <div className="jwxk-plan-alternative" key={item.class_id}><div><div className="jwxk-plan-alternative__title"><button type="button" className="jwxk-plan-course-link is-primary" onClick={() => focusPlanCourse(item)}>{item.course_name || item.course_code || '未命名课程'}</button>{conflict && <Tag color={conflictStatus === 'conflict' ? 'error' : conflictStatus === 'unknown' ? 'warning' : 'success'}>{conflictStatus === 'conflict' ? '时间冲突' : conflictStatus === 'unknown' ? (scheduleMissing ? '未提供上课时间' : '时间待核验') : '时间无冲突'}</Tag>}{courseHasExperiment(item) && <Tag color="purple">含实验</Tag>}{experimentSelections[item.class_id]?.length > 0 && <Tag color="purple">已选实验时间</Tag>}{crossCampus && <Tag color="orange">跨校区</Tag>}</div><strong>{item.course_code || '课程代码待定'} · {item.teacher || '教师待定'} · {item.class_number || item.class_id}</strong><span>{item.location || '地点待定'} · {classScheduleText(item)}</span></div><Space wrap className="jwxk-plan-alternative__actions">{courseHasExperiment(item) && <Button onClick={() => openExperimentSelection({ group_id: item.group_id, course_code: item.course_code, course_name: item.course_name }, item)}>{experimentSelections[item.class_id]?.length ? '调整实验时间' : '选择实验时间'}</Button>}{ungrouped ? <Button onClick={openWeightImport}>分配方案组</Button> : <><InputNumber min={1} max={10} value={item.utility || 5} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, utility: value || 5 } : row))} addonBefore="意愿值" title="1–10 分，分数越高表示越重视这门课" /><Button danger onClick={() => requestPlanItemRemoval(item)}>移出方案组</Button></>}</Space></div>;
-        })}
-      </Card>;
-    })}
-    {!plan.length && <Empty description="从课程目录选择教学班加入方案组" />}
-  </div>;
+    {groupEditor && <section className="jwxk-plan-inline-editor" aria-label={groupEditor.group_id ? '编辑方案组' : '新建方案组'}>
+      <div className="jwxk-plan-inline-editor__title"><strong>{groupEditor.group_id ? '编辑当前方案组' : '新建方案组'}</strong><Text type="secondary">保存后仍停留在当前侧栏</Text></div>
+      <label><span>方案组名称</span><Input autoFocus value={groupEditor.name} onChange={event => setGroupEditor(previous => ({ ...previous, name: event.target.value }))} placeholder="例如：专业选修 A 组" maxLength={60} /></label>
+      <label><span>目标门数</span><InputNumber min={1} max={20} value={groupEditor.target_count} onChange={value => setGroupEditor(previous => ({ ...previous, target_count: value || 1 }))} addonAfter="门" /></label>
+      <div className="jwxk-plan-inline-editor__actions"><Button onClick={() => setGroupEditor(null)}>取消</Button><Button type="primary" loading={groupEditorSaving} disabled={!groupEditor.name.trim()} onClick={() => void saveGroupEditor().catch(error => message.error(error.message || '方案组保存失败'))}>保存</Button></div>
+    </section>}
+    {activePlanGroup && <div className="jwxk-plan-quick-summary">
+      <div className="jwxk-plan-quick-summary__title"><strong>{activePlanGroup.name}</strong><span>{activePlanGroup.group_id === UNGROUPED_WEIGHT_GROUP_ID ? '已投课程保留组' : `目标 ${activePlanGroup.target_count} 门`}</span></div>
+      <div className="jwxk-plan-progress"><span style={{ width: `${Math.min(100, (activePlanGroup.items.length / Math.max(1, activePlanGroup.target_count)) * 100)}%` }} /></div>
+      <small>{activePlanGroup.items.length ? `按意愿值排序 · ${activePlanGroup.items.length} 个候选` : '还没有候选课程'}</small>
+    </div>}
+    {planPanelOpen && <div className="jwxk-plan-management-toolbar">
+      <Button icon={<EditOutlined />} disabled={!activePlanGroup || activePlanGroup.group_id === UNGROUPED_WEIGHT_GROUP_ID || !!groupEditor} onClick={beginActiveGroupEdit}>名称与目标</Button>
+      <Button icon={<CalendarOutlined />} onClick={previewConflicts}>检查冲突</Button>
+      {batch?.selection_type_code === '04' && <Button icon={<ImportOutlined />} loading={weightImportLoading} onClick={openWeightImport}>整理未分组</Button>}
+      <Tooltip title={activePlanGroup?.group_id === UNGROUPED_WEIGHT_GROUP_ID ? '未分组由系统维护，不能删除' : '删除当前方案组'}><Button aria-label="删除当前方案组" danger icon={<DeleteOutlined />} disabled={!activePlanGroup || activePlanGroup.group_id === UNGROUPED_WEIGHT_GROUP_ID} onClick={() => removePlanGroup(activePlanGroup)} /></Tooltip>
+    </div>}
+    {activePlanGroup?.group_id === UNGROUPED_WEIGHT_GROUP_ID && planPanelOpen && <Alert type="info" showIcon message="未分组是权重轮次的保留组" description="可以把已投课程整理到普通方案组；该组不会默认参与策略投权。" />}
+    {activePlanGroup ? planPanelOpen ? <div className="jwxk-plan-editor-items">{activePlanGroup.items.map(item => {
+      const conflict = combinedPlanConflictMap[item.class_id];
+      const conflictStatus = selectionTimeConflictStatus(conflict);
+      const scheduleMissing = conflict?.reason === 'course_schedule_missing';
+      const hasExperiment = courseHasExperiment(item);
+      return <article className="jwxk-plan-editor-item" key={item.class_id}>
+        <div className="jwxk-plan-editor-item__body"><button type="button" className="jwxk-plan-course-link is-primary" onClick={() => focusPlanCourse(item)}>{item.course_name || item.course_code || '未命名课程'}</button><small>{item.course_code || '课程代码待定'} · {item.teacher || '教师待定'} · {classScheduleText(item)}</small><div className="jwxk-plan-editor-tags">{conflict && <Tag color={conflictStatus === 'conflict' ? 'error' : conflictStatus === 'unknown' ? 'warning' : 'success'}>{conflictStatus === 'conflict' ? '时间冲突' : conflictStatus === 'unknown' ? (scheduleMissing ? '时间待核验' : '待核验') : '无时间冲突'}</Tag>}{hasExperiment && <Tag color="purple">含实验</Tag>}{courseIsCrossCampus(item) && <Tag color="orange">跨校区</Tag>}</div></div>
+        <div className={`jwxk-plan-editor-item__actions${hasExperiment ? ' has-experiment' : ''}`}>{hasExperiment && <Button size="small" onClick={() => openExperimentSelection({ group_id: item.group_id, course_code: item.course_code, course_name: item.course_name }, item)}>{experimentSelections[item.class_id]?.length ? '调整实验时间' : '选择实验时间'}</Button>}{activePlanGroup.group_id === UNGROUPED_WEIGHT_GROUP_ID ? <Button size="small" onClick={openWeightImport}>分配方案组</Button> : <><InputNumber min={1} max={10} value={item.utility || 5} onChange={value => savePlan(plan.map(row => row.class_id === item.class_id ? { ...row, utility: value || 5 } : row))} addonBefore="意愿" /><Button size="small" danger onClick={() => requestPlanItemRemoval(item)}>移出</Button></>}</div>
+      </article>;
+    })}{!activePlanGroup.items.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="从课程目录加入候选课程" />}</div> : <div className="jwxk-plan-quick-items">
+      {activePlanGroup.items.map(item => <button type="button" className="jwxk-plan-quick-item" key={item.class_id} onClick={() => focusPlanCourse(item)}><span><strong>{item.course_name || item.course_code || '未命名课程'}</strong><small>{item.teacher || '教师待定'} · 意愿 {item.utility || 5}</small></span><span className="jwxk-plan-quick-item__arrow">›</span></button>)}
+      {!activePlanGroup.items.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无候选课程" />}
+    </div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未建立方案组" />}
+    <footer className="jwxk-plan-panel__footer">
+      {planPanelOpen ? <>{batch?.selection_type_code !== '04' ? <Button type="primary" icon={<RobotOutlined />} disabled={!plan.length || !planGroups.length} onClick={openSelectionTaskSetup}>创建自动抢课任务</Button> : <Button type="primary" icon={<RobotOutlined />} onClick={openWeightPlanner}>策略投权</Button>}<Text type="secondary">修改会继续同步到已绑定任务。</Text></> : <><Button onClick={beginGroupCreation}>新建方案组</Button><Button type="primary" onClick={() => setPlanPanelOpen(true)}>管理方案</Button></>}
+    </footer>
+  </section>;
 
   const selectedView = <Spin spinning={loading}><Alert type="info" showIcon message={schedule?.source_label || '官方实时选课结果'} description={<span>{selectedRefreshing ? '正在静默更新人数状态' : '人数状态每 30 秒静默更新'}{marketDataUpdatedAt ? ` · 最近更新 ${marketDataUpdatedAt.toLocaleTimeString('zh-CN', { hour12: false })}` : ''}</span>} /><div className="jwxk-selected-grid">{orderedSelected.map(course => {
     const participantCount = selectionParticipantCount(course, batch?.selection_type_code);
@@ -2842,7 +2929,7 @@ const CourseSelectionWorkspacePage = () => {
     return <Card key={course.class_id}><Title level={5}>{course.course_name}</Title><Paragraph>{course.teacher || '教师待定'} · {course.location || '地点待定'}</Paragraph><Text type="secondary">{classScheduleText(course)}</Text><div className="jwxk-selected-market"><b>{participantLabel} {participantCount ?? '-'} / {selectionCapacityLabel(course, batch?.selection_type_code)} {capacity ?? '-'}</b><div className="jwxk-selected-badges">{batch?.selection_type_code === '04' && course.selection_record_type === 'volunteered' && currentBatchRecord && <Tag color="purple">当前投权 {course.devoted_weight ?? 0} 点</Tag>}<Tag color={!currentBatchRecord || participantCount == null || capacity == null ? 'default' : delta > 0 || (batch?.selection_type_code !== '04' && delta >= 0) ? 'warning' : 'success'}>{statusText}</Tag></div></div>{!operationAllowed && <Paragraph type="secondary">{operationReason || '该记录当前不可操作。'}</Paragraph>}{operationAllowed && <Space direction="vertical" style={{ width: '100%' }}>{batch?.selection_type_code === '04' && course.selection_record_type === 'volunteered' && <Button block onClick={() => adjustCourseWeight(course, course, course)}>调整权重</Button>}<Button danger block loading={actionLoading === course.class_id} onClick={() => confirmDeselect(course)}>退选</Button></Space>}</Card>;
   })}</div>{!selected.length && !loading && <Empty description={batch?.selection_type_code === '04' ? '当前轮次暂无投权记录' : '当前轮次暂无已选课程'} />}</Spin>;
 
-  const taskView = <div className="jwxk-task-list">
+  const taskView = <div className={`jwxk-task-layout${planPanelOpen ? ' is-plan-managing' : ''}`}><div className="jwxk-task-list">
     <Alert
       type="info"
       showIcon
@@ -2985,7 +3072,7 @@ const CourseSelectionWorkspacePage = () => {
         {(task.results || []).length > 0 && <div className="jwxk-task-history"><Text strong>最近操作</Text>{[...(task.results || [])].slice(-5).reverse().map((result, index) => <div key={`${result.at || index}:${result.class_id || ''}`}><span>{result.action === 'weight_drop' ? '撤回权重' : result.action === 'weight_add' ? `投放 ${result.weight || ''} 点权重` : result.action === 'drop' ? '自动退选' : '提交选课'} · {historyCourseLabel(result)}</span><small>{result.message || `官方代码 ${result.code || '-'}`} · {formatTaskTimestamp(result.at)}</small></div>)}</div>}
         <Space wrap className="jwxk-task-actions"><Button type={isWeight && attentionTaskId === task.task_id ? 'primary' : 'default'} className={isWeight && attentionTaskId === task.task_id ? 'jwxk-start-strategy-attention' : ''} icon={<PlayCircleOutlined />} loading={taskActionLoading === `${task.task_id}:start`} disabled={active || ['success', 'failed', 'cancelled'].includes(task.status)} onClick={() => runTaskAction(task, 'start')}>{taskStartActionLabel(task)}</Button><Button type="primary" ghost icon={<ReloadOutlined />} loading={taskActionLoading === `${task.task_id}:check_now`} disabled={!active} onClick={() => runTaskAction(task, 'check_now')}>{isWeight ? '立即检查并执行策略' : isSwap ? '立即检查空位' : '立即检查'}</Button><Button icon={<PauseCircleOutlined />} loading={taskActionLoading === `${task.task_id}:pause`} disabled={!active} onClick={() => runTaskAction(task, 'pause')}>暂停</Button><Button danger loading={taskActionLoading === `${task.task_id}:cancel`} onClick={() => Modal.confirm({ title: '取消并删除这个任务？', content: '任务会立即停止，并从任务列表中移除。', okText: '取消任务', okButtonProps: { danger: true }, onOk: () => runTaskAction(task, 'cancel') })}>取消任务</Button></Space>
       </Card>;
-  })}{!tasks.length && <Empty description={jwxkSelectionMode(batch?.selection_type_code).taskEmptyText} />}</div>;
+  })}{!tasks.length && <Empty description={jwxkSelectionMode(batch?.selection_type_code).taskEmptyText} />}</div><aside className="jwxk-plan-aside jwxk-task-plan-aside"><PlanManagementSlot render={() => planSidebarPanel} /></aside></div>;
 
   const detailGroup = catalogDetail?.group || {};
   const detailCourse = catalogDetail?.courseDetail || detailGroup;
@@ -3088,8 +3175,8 @@ const CourseSelectionWorkspacePage = () => {
         }}
       />}
     </section>
-    <Segmented block value={view} onChange={setView} options={[{ label: '选课目录', value: 'catalog' }, { label: `我的方案 ${plan.length}`, value: 'plan' }, { label: '已选结果', value: 'selected' }, { label: '自动任务', value: 'tasks' }]} />
-    {view === 'catalog' ? catalog : view === 'plan' ? planView : view === 'selected' ? selectedView : taskView}
+    <div className="jwxk-workspace-tabs"><Segmented block value={view === 'plan' ? 'catalog' : view} onChange={nextView => setView(nextView)} options={[{ label: '选课目录', value: 'catalog' }, { label: '已选结果', value: 'selected' }, { label: '自动任务', value: 'tasks' }]} /></div>
+    {view === 'catalog' ? catalog : view === 'selected' ? selectedView : taskView}
     <Modal
       className="jwxk-catalog-detail-modal"
       title={`${detailCourseName} · ${detailClass.teacher || '教师待定'}`}
@@ -3178,13 +3265,6 @@ const CourseSelectionWorkspacePage = () => {
         />}
         <label><span>目标方案组</span><Select value={assignmentGroupId} onChange={setAssignmentGroupId} options={[...planGroupConfigs.filter(group => group.group_id !== UNGROUPED_WEIGHT_GROUP_ID).map(group => ({ value: group.group_id, label: `${group.name}（目标 ${group.target_count} 门）` })), { value: '__new__', label: '新建方案组' }]} /></label>
         {assignmentGroupId === '__new__' && <><label><span>方案组名称</span><Input value={newGroupName} onChange={event => setNewGroupName(event.target.value)} placeholder="例如：A 类课程" maxLength={60} /></label><label><span>需要选中</span><InputNumber min={1} max={20} value={newGroupTargetCount} onChange={value => setNewGroupTargetCount(value || 1)} addonAfter="门" /></label></>}
-      </div>
-    </Modal>
-    <Modal title={groupEditor?.group_id ? '编辑方案组' : '新建方案组'} open={!!groupEditor} onCancel={() => setGroupEditor(null)} onOk={saveGroupEditor} okText="保存" okButtonProps={{ disabled: !groupEditor?.name?.trim() }}>
-      <div className="jwxk-group-form">
-        <label><span>方案组名称</span><Input value={groupEditor?.name || ''} onChange={event => setGroupEditor(previous => ({ ...previous, name: event.target.value }))} placeholder="例如：A 类课程" maxLength={60} /></label>
-        <label><span>需要选中</span><InputNumber min={1} max={20} value={groupEditor?.target_count || 1} onChange={value => setGroupEditor(previous => ({ ...previous, target_count: value || 1 }))} addonAfter="门" /></label>
-        <Text type="secondary">组内候选按意愿值从高到低尝试；只有官方明确满员、不可选或抢先失败才会降级。数据未知、冲突待核验、登录恢复和提交待确认时始终停留在当前候选。</Text>
       </div>
     </Modal>
     <Modal

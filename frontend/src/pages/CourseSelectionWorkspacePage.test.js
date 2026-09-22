@@ -166,6 +166,8 @@ describe('selection workspace independent resource loading', () => {
     await render();
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
     expect(container.textContent).toContain('测试选修课');
+    expect(container.textContent).toContain('方案组');
+    expect(container.textContent).not.toContain('我的方案');
     expect(readJwxkPlan).toHaveBeenCalledTimes(1);
     expect(checkJwxkCatalogEligibility).toHaveBeenCalledWith(
       'batch', ['class'], { skipAuthRedirect: true },
@@ -214,6 +216,42 @@ describe('selection workspace independent resource loading', () => {
       await new Promise(resolve => setTimeout(resolve, 20));
     });
     expect(mockTimetableProps.refreshSignal).toBe(initialSignal + 1);
+  });
+
+  test('plan management stays in the same sidebar and can return to the summary', async () => {
+    await render();
+    const aside = container.querySelector('.jwxk-catalog-layout > .jwxk-plan-aside');
+    const panel = aside.querySelector('.jwxk-plan-panel');
+    const manage = [...aside.querySelectorAll('button')]
+      .find(button => button.textContent.includes('管理方案'));
+    await act(async () => {
+      manage.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const managingPanel = aside.querySelector('.jwxk-plan-panel.is-managing');
+    expect(managingPanel).not.toBeNull();
+    expect(aside.querySelector('.jwxk-plan-management-toolbar')).not.toBeNull();
+    expect(document.body.textContent).not.toContain('先选择方案组，再管理目标和候选课程');
+    const finish = managingPanel.querySelector('.jwxk-plan-panel__head-actions button');
+    expect(finish).not.toBeNull();
+    await act(async () => {
+      finish.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(aside.querySelector('.jwxk-plan-panel.is-managing')).toBeNull();
+    expect(aside.querySelector('.jwxk-plan-management-toolbar')).toBeNull();
+    expect(aside.textContent).toContain('管理方案');
+  });
+
+  test('creating a plan group uses an inline sidebar editor instead of another window', async () => {
+    await render();
+    const aside = container.querySelector('.jwxk-catalog-layout > .jwxk-plan-aside');
+    const create = [...aside.querySelectorAll('button')]
+      .find(button => button.textContent.includes('新建方案组'));
+    await act(async () => {
+      create.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(aside.querySelector('.jwxk-plan-inline-editor')).not.toBeNull();
+    expect(aside.querySelector('.jwxk-plan-panel.is-managing')).not.toBeNull();
+    expect(document.body.querySelector('.ant-modal')).toBeNull();
   });
 
   test('ignores a personal-timetable callback for a different selection term', async () => {
