@@ -11,6 +11,7 @@ import {
 } from '@ant-design/icons';
 import { getExperimentRounds, selectExperimentRound, deselectExperimentRound } from '../services/api';
 import { useCachedResource, useResourceOfflineMode } from '../resources/ResourceStore';
+import SystemMessageNotice from '../components/SystemMessageNotice';
 import './ExperimentCoursePage.css';
 
 const { Title, Text } = Typography;
@@ -45,6 +46,7 @@ const ExperimentCoursePage = () => {
   const screens = useBreakpoint();
   const isMobile = !screens.md;
   const resource = useCachedResource('experiment-courses', { autoRefresh: false });
+  const systemMessagesResource = useCachedResource('system-messages', { autoRefresh: true });
   const offlineMode = useResourceOfflineMode();
 
   // 加载课程列表
@@ -375,6 +377,8 @@ const ExperimentCoursePage = () => {
           {liveLoading ? '更新中' : '刷新'}
         </Button>
       </div>
+
+      <SystemMessageNotice kind="experiment" messages={systemMessagesResource.data?.messages} />
 
       {/* 统计卡片 */}
       <div className="stats-row">

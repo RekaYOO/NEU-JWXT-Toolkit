@@ -67,6 +67,7 @@ import { jwxkScheduleOverlayMeta } from '../utils/jwxkModes';
 import { loadSetting, saveSetting } from '../utils/settings';
 import { resolveTimetableSections } from '../utils/timetableSections';
 import TimetableDayAgenda from '../components/TimetableDayAgenda';
+import SystemMessageNotice from '../components/SystemMessageNotice';
 import { agendaDateForDay, injectTimetableAgenda } from '../utils/timetableAgenda';
 import { getTimetableAgenda, saveTimetableAgenda } from '../services/api';
 import { summarizeSystemMessages } from '../utils/systemMessageSummary';
@@ -3876,6 +3877,7 @@ function TimetablePage({
       )}
 
       {!isMobile && recoveryAlert}
+      <SystemMessageNotice kind="timetable" messages={systemMessagesResource.data?.messages} />
 
       {!isMobile && mode !== 'personal' && conflictDetectionEnabled && conflictDetectionError && (
         <Alert type="warning" showIcon message={conflictDetectionError} className="timetable-conflict-notice" />

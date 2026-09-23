@@ -11,6 +11,8 @@ import {
 } from '@ant-design/icons';
 import { getExamTerms, getExams, exportExamsICS } from '../services/api';
 import { saveNativeFile } from '../services/nativeBridge';
+import { useCachedResource } from '../resources/ResourceStore';
+import SystemMessageNotice from '../components/SystemMessageNotice';
 import './ExamPage.css';
 
 const { Option } = Select;
@@ -34,6 +36,7 @@ const ExamPage = () => {
   const examRequestGeneration = useRef(0);
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
+  const systemMessagesResource = useCachedResource('system-messages', { autoRefresh: true });
 
   // 加载学期列表
   useEffect(() => {
@@ -197,6 +200,8 @@ const ExamPage = () => {
           </Button>
         </div>
       </div>
+
+      <SystemMessageNotice kind="exam" messages={systemMessagesResource.data?.messages} />
 
       {error && (
         <Alert message={error} type="error" showIcon style={{ marginBottom: 16 }} />
