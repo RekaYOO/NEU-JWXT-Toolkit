@@ -15,6 +15,7 @@ from backend.core.auth.client import (
     LOGIN_ERR_WRONG_PWD,
     NEULoginError,
     WEBVPN_ERR_CAMPUS_NETWORK,
+    WEBVPN_ERR_UPSTREAM_TIMEOUT,
     WebVPNRequiredError,
     WebVPNLoginError,
 )
@@ -103,6 +104,89 @@ class AuthRouteTests(unittest.TestCase):
         self.assertEqual(
             manager.auth_recovery_status()["status"], "credentials_invalid",
         )
+
+    def test_unknown_webvpn_form_retries_once_with_clean_saved_session(self):
+        manager = AuthSessionManager()
+        active = SimpleNamespace(
+            username="20250001", password="saved-password",
+            is_logged_in=False, active_mode="webvpn",
+            _webvpn_qr_flow=None, _webvpn_sms_flow=None,
+            ensure_login=Mock(side_effect=NEULoginError("unrecognized CAS response")),
+        )
+        manager.set_client(active)
+        fresh = SimpleNamespace(
+            username="20250001", password="saved-password",
+            is_logged_in=True, active_mode="webvpn",
+            start_webvpn_password_login=Mock(return_value={"status": "authenticated"}),
+        )
+        storage = Mock()
+        storage.load_credentials.return_value = ("20250001", "saved-password")
+
+        with (
+            patch.object(dependencies, "_auth_sessions", manager),
+            patch.object(dependencies, "_storage", storage),
+            patch.object(dependencies, "NEUAuthClient", return_value=fresh) as builder,
+            patch.object(dependencies, "schedule_login_bootstrap"),
+            patch.object(dependencies, "log_security_event"),
+        ):
+            resolved = dependencies._get_auth_client_unlocked()
+
+        self.assertIs(resolved, fresh)
+        self.assertIs(manager.peek_client(), fresh)
+        self.assertEqual(manager.auth_recovery_status()["status"], "authenticated")
+        self.assertEqual(builder.call_args.kwargs["network_mode"], "webvpn")
+        self.assertFalse(builder.call_args.kwargs["restore_session"])
+        fresh.start_webvpn_password_login.assert_called_once_with()
+        active.ensure_login.assert_called_once_with()
+
+    def test_webvpn_timeout_waits_for_cooldown_without_clean_password_retry(self):
+        manager = AuthSessionManager()
+        active = SimpleNamespace(
+            username="20250001", password="saved-password",
+            is_logged_in=False, active_mode="webvpn",
+            _webvpn_qr_flow=None, _webvpn_sms_flow=None,
+            ensure_login=Mock(side_effect=WebVPNLoginError(
+                "gateway timeout", error_code=WEBVPN_ERR_UPSTREAM_TIMEOUT,
+            )),
+        )
+        manager.set_client(active)
+        storage = Mock()
+        storage.load_credentials.return_value = ("20250001", "saved-password")
+
+        with (
+            patch.object(dependencies, "_auth_sessions", manager),
+            patch.object(dependencies, "_storage", storage),
+            patch.object(dependencies, "NEUAuthClient") as builder,
+        ):
+            self.assertIsNone(dependencies._get_auth_client_unlocked())
+
+        builder.assert_not_called()
+        self.assertEqual(manager.auth_recovery_status()["status"], "retry_wait")
+        self.assertEqual(
+            manager.auth_recovery_status()["error_code"], WEBVPN_ERR_UPSTREAM_TIMEOUT,
+        )
+
+    def test_unknown_webvpn_result_does_not_use_another_accounts_credentials(self):
+        manager = AuthSessionManager()
+        active = SimpleNamespace(
+            username="20250002", password="",
+            is_logged_in=False, active_mode="webvpn",
+            _webvpn_qr_flow=None, _webvpn_sms_flow=None,
+            ensure_login=Mock(side_effect=NEULoginError("unrecognized CAS response")),
+        )
+        manager.set_client(active)
+        storage = Mock()
+        storage.load_credentials.return_value = ("20250001", "saved-password")
+
+        with (
+            patch.object(dependencies, "_auth_sessions", manager),
+            patch.object(dependencies, "_storage", storage),
+            patch.object(dependencies, "NEUAuthClient") as builder,
+        ):
+            self.assertIsNone(dependencies._get_auth_client_unlocked())
+
+        builder.assert_not_called()
+        self.assertIs(manager.peek_client(), active)
 
     def test_auth_recovery_qr_candidate_stays_memory_only_until_commit(self):
         candidate = Mock()
@@ -256,6 +340,22 @@ class AuthRouteTests(unittest.TestCase):
 
         self.assertTrue(attached)
         self.assertEqual(client.password, "saved-password")
+
+    def test_saved_credentials_fill_missing_cookie_identity_and_normalize_account(self):
+        client = Mock(username="", password="")
+        storage = Mock()
+        storage.load_credentials.return_value = ("20250001", "saved-password")
+
+        with patch.object(dependencies, "_storage", storage):
+            self.assertTrue(dependencies.attach_saved_auth_credentials(client))
+
+        self.assertEqual(client.username, "20250001")
+        self.assertEqual(client.password, "saved-password")
+
+        client = Mock(username=" ２０２５０００１ ", password="")
+        with patch.object(dependencies, "_storage", storage):
+            self.assertTrue(dependencies.attach_saved_auth_credentials(client))
+        self.assertEqual(client.username, "20250001")
 
     def test_direct_login_failure_requests_webvpn_qr(self):
         client = Mock()

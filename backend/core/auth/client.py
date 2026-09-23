@@ -1725,8 +1725,10 @@ class NEUAuthClient:
                     self.network_mode = "direct"
                     return self.login(self.target)
                 logger.warning(
-                    "WebVPN 账号密码静默恢复失败，错误类型: %s",
+                    "WebVPN 账号密码静默恢复失败，异常类别=%s 错误类型=%s 错误码=%s",
+                    type(error).__name__,
                     getattr(error, "error_type", LOGIN_ERR_UNKNOWN),
+                    getattr(error, "error_code", None) or "none",
                 )
                 raise
 

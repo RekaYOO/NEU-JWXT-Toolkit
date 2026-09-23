@@ -91,6 +91,9 @@ test('humanities elective rounds expose a local online-course filter', () => {
   expect(isHumanitiesElectiveSelectionBatch({
     batch_name: '2022-2025级人文类选修课程', selection_type: '人文类选修课程选课',
   })).toBe(true);
+  expect(isHumanitiesElectiveSelectionBatch({
+    name: '轮次26 人文选修课补选',
+  })).toBe(true);
   expect(isHumanitiesElectiveSelectionBatch({ name: '轮次23 专业选修课程选课' })).toBe(false);
   const groups = [{
     group_id: 'g', course_name: '人文课', classes: [

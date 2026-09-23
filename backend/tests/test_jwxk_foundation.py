@@ -866,6 +866,35 @@ def test_status_route_explains_webvpn_login_requirement(monkeypatch):
     assert "WebVPN" in result.message
 
 
+def test_status_route_does_not_claim_saved_credentials_are_missing_after_auto_attempt(monkeypatch):
+    storage = MemoryStorage({"course_selection": {"network_mode": "webvpn"}})
+
+    class Primary:
+        active_mode = "direct"
+        is_logged_in = True
+        username = "student"
+        password = "saved-password"
+
+    primary = Primary()
+    monkeypatch.setattr(course_selection, "peek_auth_client", lambda: primary)
+    monkeypatch.setattr(
+        course_selection,
+        "JwxkSessionClient",
+        lambda *_args, **_kwargs: type(
+            "SessionClient",
+            (),
+            {"get_context": lambda _self: (_ for _ in ()).throw(NEULoginError("需要继续认证"))},
+        )(),
+    )
+    monkeypatch.setattr(course_selection.JwxkPublicClient, "get_batches", lambda _self: [])
+
+    result = course_selection.get_jwxk_status(Response(), storage)
+
+    assert result.service_auth_state == "login_required"
+    assert "已尝试使用本地保存凭据" in result.message
+    assert "没有可用的已保存凭据" not in result.message
+
+
 def test_status_route_attaches_same_account_saved_password_for_webvpn_recovery(monkeypatch):
     storage = MemoryStorage({"course_selection": {"network_mode": "webvpn"}})
 

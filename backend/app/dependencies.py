@@ -7,6 +7,7 @@
 import json
 import os
 import time
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
@@ -18,6 +19,7 @@ from fastapi.concurrency import contextmanager_in_threadpool
 from backend.core.auth import AuthSessionManager, NEUAuthClient
 from backend.core.auth.client import (
     DirectAccessError,
+    LOGIN_ERR_UNKNOWN,
     LOGIN_ERR_WRONG_PWD,
     NEULoginError,
     WEBVPN_ERR_CAMPUS_NETWORK,
@@ -761,18 +763,31 @@ def clear_pending_auth_client(
 
 def attach_saved_auth_credentials(client: Optional[NEUAuthClient]) -> bool:
     """Hydrate a cookie-restored client with same-account saved credentials."""
-    if client is None or getattr(client, "password", ""):
-        return False
-    account = str(getattr(client, "username", "") or "")
-    if not account:
+    if client is None:
         return False
     try:
         credentials = _storage.load_credentials()
     except (OSError, ValueError, TypeError):
         return False
-    if not credentials or str(credentials[0] or "") != account:
+    if not credentials:
         return False
-    client.password = str(credentials[1] or "")
+    saved_username = unicodedata.normalize("NFKC", str(credentials[0] or "")).strip()
+    saved_password = str(credentials[1] or "")
+    if not saved_username or not saved_password:
+        return False
+    account = unicodedata.normalize(
+        "NFKC", str(getattr(client, "username", "") or ""),
+    ).strip()
+    # Cookie-restored clients from older versions may not carry the account
+    # name, and some deployments preserve surrounding/full-width characters.
+    # The saved credential belongs to the single active local identity; fill
+    # the missing metadata or normalize an equivalent value before recovery.
+    if account and account != saved_username:
+        return False
+    if not account or account != str(getattr(client, "username", "") or ""):
+        client.username = saved_username
+    if not getattr(client, "password", ""):
+        client.password = saved_password
     return bool(client.password)
 
 
@@ -990,8 +1005,20 @@ def _get_auth_client_unlocked() -> Optional[NEUAuthClient]:
     elif (
         saved_credentials
         and not credential_candidate_attempted
-        and last_error is None
+        and str(getattr(candidate, "username", "") or username) == username
+        and str(getattr(candidate, "active_mode", preferred_mode) or preferred_mode) == preferred_mode
+        and (
+            last_error is None
+            or (
+                isinstance(last_error, NEULoginError)
+                and getattr(last_error, "error_type", "") == LOGIN_ERR_UNKNOWN
+                and not getattr(last_error, "error_code", None)
+            )
+        )
     ):
+        # A restored cookie jar can leave CAS on a login form without an
+        # explicit rejection. Retry once with the same saved identity and a
+        # fresh Session, as an explicit password login would do.
         recovered = run_clean_mode(preferred_mode)
         if recovered is not None or peek_pending_auth_client() is not None:
             return recovered

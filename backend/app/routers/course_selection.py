@@ -188,6 +188,7 @@ def _jwxk_service_failure(error: Exception, *, effective: str) -> tuple[str, str
 
 def _jwxk_status_message(
     state: str, *, effective: str, primary_authenticated: bool = True,
+    credentials_available: bool = False,
 ) -> str:
     messages = {
         "authenticated": "已按账号资格和官方时间读取全部轮次。",
@@ -202,7 +203,11 @@ def _jwxk_status_message(
             "当前尚未登录教务系统，请先完成登录。"
             if not primary_authenticated
             else (
-                "选课系统的 WebVPN 登录已失效，且没有可用的已保存凭据；请使用账号密码或微信扫码恢复。"
+                (
+                    "已尝试使用本地保存凭据恢复选课系统 WebVPN 登录，但仍需要继续认证；请完成验证码/短信验证，或检查保存的账号密码。"
+                    if credentials_available
+                    else "选课系统的 WebVPN 登录已失效，且没有可用的已保存凭据；请使用账号密码或微信扫码恢复。"
+                )
                 if effective == "webvpn"
                 else "教务登录有效，但选课系统会话未能建立，请重新登录后重试。"
             )
@@ -239,6 +244,7 @@ def get_jwxk_status(
     authenticated_batches = None
     account_context = {}
     service_error_code = ""
+    automatic_credentials_available = False
     if primary_authenticated:
         credentials_attached = attach_saved_auth_credentials(primary)
         automatic_credentials_available = bool(
@@ -334,6 +340,7 @@ def get_jwxk_status(
             message=_jwxk_status_message(
                 service_auth_state, effective=effective,
                 primary_authenticated=primary_authenticated,
+                credentials_available=automatic_credentials_available,
             ),
             error_code=service_error_code or None,
         )
@@ -361,6 +368,7 @@ def get_jwxk_status(
             message=_jwxk_status_message(
                 service_auth_state, effective=effective,
                 primary_authenticated=primary_authenticated,
+                credentials_available=automatic_credentials_available,
             ),
             error_code=service_error_code or None,
         )

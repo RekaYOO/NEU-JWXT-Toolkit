@@ -297,7 +297,12 @@ export const isHumanitiesElectiveSelectionBatch = (batch = {}) => {
     batch?.metadata?.name, batch?.metadata?.batch_name,
   ].filter(Boolean).map(value => String(value).replace(/\s+/g, ''));
   return labels.some(label => (
-    label.includes('人文') && label.includes('选修') && label.includes('选课')
+    label.includes('人文')
+      && label.includes('选修')
+      // Different years use different official suffixes: e.g. “选课”,
+      // “补选”, or “课程”. Keep the gate specific to humanities electives
+      // without requiring one exact round-name template.
+      && (label.includes('选课') || label.includes('补选') || label.includes('课程'))
   ));
 };
 
@@ -473,6 +478,7 @@ const CourseSelectionWorkspacePage = () => {
   const [experimentSelections, setExperimentSelections] = useState({});
   const [taskGroupIds, setTaskGroupIds] = useState([]);
   const [conflicts, setConflicts] = useState({});
+  const [conflictPreviewState, setConflictPreviewState] = useState({ status: 'idle', message: '' });
   const conflictPreviewGenerationRef = useRef(0);
   const [selected, setSelected] = useState([]);
   const [confirmedSelected, setConfirmedSelected] = useState([]);
@@ -530,7 +536,20 @@ const CourseSelectionWorkspacePage = () => {
     if (isHumanitiesElectiveSelectionBatch(batch)) return;
     setOnlineMode('all');
     setOnlineModeDraft('all');
-  }, [batch?.batch_name, batch?.code, batch?.name]);
+  }, [
+    batch?.batchName,
+    batch?.batch_name,
+    batch?.code,
+    batch?.metadata?.batch_name,
+    batch?.metadata?.name,
+    batch?.name,
+    batch?.selectionType,
+    batch?.selectionTypeName,
+    batch?.selection_type,
+    batch?.selection_type_name,
+    batch?.tacticName,
+    batch?.tactic_name,
+  ]);
   useEffect(() => {
     if (view !== 'plan') return;
     setView('catalog');
@@ -997,6 +1016,7 @@ const CourseSelectionWorkspacePage = () => {
     catalogDisplayLayoutRef.current = { signature: '', layout: [] };
     setCatalogPreviewClasses([]);
     setConflicts({});
+    setConflictPreviewState({ status: 'idle', message: '' });
     setPersonalCourses([]);
     setPersonalScheduleReady(false);
     setPlanAssignment(null);
@@ -1416,6 +1436,7 @@ const CourseSelectionWorkspacePage = () => {
 
   const previewConflicts = async ({ silent = false } = {}) => {
     const generation = ++conflictPreviewGenerationRef.current;
+    if (!silent) setConflictPreviewState({ status: 'loading', message: '正在根据当前个人课表检查方案课程…' });
     const meetings = conflictCandidates.flatMap(item => (item.schedules || []).map((meeting, index) => ({
       ...meeting, candidate_id: `${item.class_id}:${index}`, source_id: item.class_id,
       course_code: item.course_code, course_name: item.course_name,
@@ -1423,7 +1444,10 @@ const CourseSelectionWorkspacePage = () => {
       campus: meeting.campus_name || item.campus_name || meeting.campus || item.campus,
     })));
     if (!meetings.length || !termCode) {
-      if (generation === conflictPreviewGenerationRef.current) setConflicts({});
+      if (generation === conflictPreviewGenerationRef.current) {
+        setConflicts({});
+        if (!silent) setConflictPreviewState({ status: 'empty', message: '当前没有可核验的课程时间，暂时无法判断冲突。' });
+      }
       return;
     }
     try {
@@ -1439,9 +1463,21 @@ const CourseSelectionWorkspacePage = () => {
           : { ...previous, matches: [...(previous.matches || []), ...(item.matches || [])] };
       });
       setConflicts(map);
-      if (!silent) message.success('已使用当前个人课表数据重新核验冲突');
+      if (!silent) {
+        const conflictCount = Object.values(map).filter(item => selectionTimeConflictStatus(item) === 'conflict').length;
+        setConflictPreviewState({
+          status: conflictCount ? 'warning' : 'success',
+          message: conflictCount
+            ? `已完成核验，发现 ${conflictCount} 门课程存在时间冲突。`
+            : '已完成核验，当前方案课程没有发现时间冲突。',
+        });
+      }
     } catch (error) {
-      if (!silent) message.error(error.message || '课表冲突检测失败');
+      if (!silent) {
+        const messageText = error.message || '课表冲突检测失败';
+        setConflictPreviewState({ status: 'error', message: messageText });
+        message.error(messageText);
+      }
     }
   };
 
@@ -2859,7 +2895,7 @@ const CourseSelectionWorkspacePage = () => {
         placeholder="尚未建立方案组"
         options={planGroups.map(group => ({
           value: group.group_id,
-          label: `${group.name} · ${group.items.length}/${group.target_count} 门`,
+          label: `${group.name} · ${group.items.length} 项 / ${group.target_count} 门`,
         }))}
       />
       <Tooltip title="新建方案组"><Button aria-label="新建方案组" icon={<PlusOutlined />} onClick={beginGroupCreation} /></Tooltip>
@@ -2875,11 +2911,19 @@ const CourseSelectionWorkspacePage = () => {
       <div className="jwxk-plan-progress"><span style={{ width: `${Math.min(100, (activePlanGroup.items.length / Math.max(1, activePlanGroup.target_count)) * 100)}%` }} /></div>
       <small>{activePlanGroup.group_id === UNGROUPED_WEIGHT_GROUP_ID ? '可以将课程分配到普通方案组' : activePlanGroup.items.length ? `按意愿值排序 · ${activePlanGroup.items.length} 个候选 · 点击修改` : '还没有候选课程 · 点击修改'}</small>
     </button>}
-    <div className={`jwxk-plan-management-toolbar${batch?.selection_type_code === '04' ? ' is-weight' : ''}`}>
-      <Button icon={<CalendarOutlined />} onClick={previewConflicts}>检查冲突</Button>
-      {batch?.selection_type_code === '04' && <Button icon={<ImportOutlined />} loading={weightImportLoading} onClick={openWeightImport}>整理未分组</Button>}
+    <div className="jwxk-plan-management-toolbar">
+      <div className="jwxk-plan-management-toolbar__primary">
+        <Button icon={<CalendarOutlined />} loading={conflictPreviewState.status === 'loading'} onClick={() => void previewConflicts()}>检查冲突</Button>
+        {batch?.selection_type_code === '04' && <Button icon={<ImportOutlined />} loading={weightImportLoading} onClick={openWeightImport}>整理未分组</Button>}
+      </div>
       <Tooltip title={activePlanGroup?.group_id === UNGROUPED_WEIGHT_GROUP_ID ? '未分组由系统维护，不能删除' : '删除当前方案组'}><Button aria-label="删除当前方案组" danger icon={<DeleteOutlined />} disabled={!activePlanGroup || activePlanGroup.group_id === UNGROUPED_WEIGHT_GROUP_ID} onClick={() => removePlanGroup(activePlanGroup)} /></Tooltip>
     </div>
+    {conflictPreviewState.status !== 'idle' && <Alert
+      className="jwxk-plan-conflict-feedback"
+      type={conflictPreviewState.status === 'error' ? 'error' : conflictPreviewState.status === 'warning' ? 'warning' : conflictPreviewState.status === 'success' ? 'success' : 'info'}
+      showIcon
+      message={conflictPreviewState.message}
+    />}
     {activePlanGroup?.group_id === UNGROUPED_WEIGHT_GROUP_ID && <Alert type="info" showIcon message="未分组是权重轮次的保留组" description="可以把已投课程整理到普通方案组；该组不会默认参与策略投权。" />}
     {activePlanGroup ? <div className="jwxk-plan-editor-items">{activePlanGroup.items.map(item => {
       const conflict = combinedPlanConflictMap[item.class_id];
@@ -3301,6 +3345,7 @@ const CourseSelectionWorkspacePage = () => {
     <Modal
       title="创建自动抢课任务"
       open={selectionSetupOpen}
+      className="jwxk-selection-task-modal"
       onCancel={() => setSelectionSetupOpen(false)}
       footer={<>
         <Button onClick={() => setSelectionSetupOpen(false)}>取消</Button>
@@ -3329,11 +3374,11 @@ const CourseSelectionWorkspacePage = () => {
               }))}
           />
         </label>
-        <div className="jwxk-weight-import-list">
+        <div className="jwxk-selection-task-preview-list">
           {planGroups.filter(group => taskGroupIds.includes(group.group_id)).map(group => (
             <section className="jwxk-selection-task-group-preview" key={group.group_id}>
               <div className="jwxk-task-group-summary">
-                <span>{group.name}</span>
+                <span><strong>{group.name}</strong><small>{group.items.length} 项候选</small></span>
                 <Tag>目标 {group.target_count} 门</Tag>
                 <small>组内严格按意愿值从高到低处理；数据未知、登录恢复、限流或提交待核验时不会降级。</small>
               </div>
@@ -3343,13 +3388,13 @@ const CourseSelectionWorkspacePage = () => {
                 const scheduleMissing = conflictResult?.reason === 'course_schedule_missing';
                 const typeValid = isRealJwxkTeachingClassType(item.teaching_class_type);
                 const participants = selectionParticipantCount(item, batch?.selection_type_code);
-                return <div className="jwxk-weight-import-row" key={item.class_id}>
+                return <div className="jwxk-weight-import-row jwxk-selection-task-course" key={item.class_id}>
                   <span>
                     <strong>{item.course_name || item.course_code}</strong>
                     <small>意愿值 {item.utility || 5} · {item.class_number || item.class_id} · {courseCategoryLabel(item)}</small>
                     <small>{selectionParticipantLabel(item, batch?.selection_type_code)} {participants ?? '-'} / {selectionCapacityLabel(item, batch?.selection_type_code)} {item.capacity ?? '-'}</small>
                   </span>
-                  <Space wrap>
+                  <div className="jwxk-selection-task-course-tags">
                     <Tag color={typeValid ? 'success' : 'error'}>{typeValid ? item.teaching_class_type : '缺少真实提交类型'}</Tag>
                     {item.full && <Tag>已满员</Tag>}
                     {item.eligibility_status === 'unavailable' && <Tag color="error">官方不可选</Tag>}
@@ -3357,7 +3402,7 @@ const CourseSelectionWorkspacePage = () => {
                     {conflict === 'conflict' && <Tag color="error">时间冲突</Tag>}
                     {conflict === 'unknown' && <Tag color="warning">{scheduleMissing ? '未提供上课时间' : '时间待核验'}</Tag>}
                     {courseIsCrossCampus(item) && <Tag color="orange">跨校区</Tag>}
-                  </Space>
+                  </div>
                 </div>;
               })}
             </section>
