@@ -1073,7 +1073,11 @@ const CourseSelectionWorkspacePage = () => {
       const savedScopeOptions = batchScopeOptions(saved.batch);
       if (savedScopeOptions.length > 2) setScopeOptions(savedScopeOptions);
       setPlanLoaded(true);
-    }).catch(error => message.error(error.message || '读取本地选课数据失败'));
+    }).catch(error => {
+      if (generation === workspaceGeneration.current) {
+        message.error(error.message || '读取本地选课数据失败');
+      }
+    });
     getJwxkStatus().then(nextStatus => {
       if (generation !== workspaceGeneration.current) return;
       setStatus(nextStatus);

@@ -27,6 +27,14 @@ const loadApiWithAxios = () => {
 };
 
 describe('JWXK automation settings API', () => {
+  test('does not send an invalid timetable term during page bootstrap', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    await expect(apiModule.getPersonalTimetable('undefined')).rejects.toMatchObject({
+      code: 'ERR_INVALID_TIMETABLE_TERM',
+    });
+    expect(client.get).not.toHaveBeenCalled();
+  });
+
   test('agenda saves exclude response-only lifecycle state', async () => {
     const { client, apiModule } = loadApiWithAxios();
     client.put.mockResolvedValue({ data: { revision: 4, events: [], moves: [], semester_ended: false } });
@@ -112,6 +120,20 @@ describe('JWXK automation settings API', () => {
     expect(client.get).toHaveBeenCalledWith('/api/user/avatar', {
       params: { refresh: true }, responseType: 'blob', timeout: 12000,
     });
+  });
+});
+
+describe('API validation error text', () => {
+  test('exposes FastAPI validation details instead of Axios default text', async () => {
+    const { rejectResponse } = loadApiWithAxios();
+    const error = new Error('Request failed with status code 422');
+    error.response = {
+      status: 422,
+      data: { detail: [{ loc: ['body', 'term_code'], msg: 'String should match pattern' }] },
+    };
+    await expect(rejectResponse(error)).rejects.toBe(error);
+    expect(error.message).toContain('body.term_code');
+    expect(error.message).toContain('String should match pattern');
   });
 });
 

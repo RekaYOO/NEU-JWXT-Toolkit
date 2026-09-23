@@ -72,6 +72,14 @@ import './TimetablePage.css';
 
 const { useBreakpoint } = Grid;
 
+// Browser snapshots and deep links can outlive the server data that created
+// them. Keep stale placeholders out of the timetable API during bootstrap.
+export const normalizeTimetableTermCode = value => {
+  const text = String(value ?? '').trim();
+  if (!text || ['undefined', 'null', 'unknown'].includes(text.toLowerCase())) return '';
+  return /^[A-Za-z0-9_-]{1,32}$/.test(text) ? text : '';
+};
+
 export const TIMETABLE_MODES = [
   { key: 'personal', label: '我的课表' },
   { key: 'class', label: '班级课表' },
@@ -1349,13 +1357,18 @@ export const selectPersonalOpeningWeek = ({
 
 export const restorePersonalTimetableMemory = (memory, requestedTerm = '') => {
   const payload = memory?.payload;
-  const currentTermCode = memory?.currentTermCode || payload?.term_code || '';
+  const currentTermCode = normalizeTimetableTermCode(
+    memory?.currentTermCode || payload?.term_code || '',
+  );
+  const payloadTermCode = normalizeTimetableTermCode(payload?.term_code);
+  const normalizedRequestedTerm = normalizeTimetableTermCode(requestedTerm);
   const nextTermCode = immediateNextTerm(memory?.terms || [], currentTermCode);
   if (
     !payload
     || !currentTermCode
-    || ![currentTermCode, nextTermCode].includes(payload.term_code)
-    || (requestedTerm && requestedTerm !== payload.term_code)
+    || !payloadTermCode
+    || ![currentTermCode, nextTermCode].includes(payloadTermCode)
+    || (normalizedRequestedTerm && normalizedRequestedTerm !== payloadTermCode)
   ) return null;
   const campuses = payload.campuses || [];
   const campusCode = campuses.some(item => item.code === memory.campusCode)
@@ -1377,7 +1390,7 @@ export const restorePersonalTimetableMemory = (memory, requestedTerm = '') => {
   return {
     terms: memory.terms || [],
     currentTermCode,
-    termCode: payload.term_code,
+    termCode: payloadTermCode,
     context: { campuses, weeks, sections },
     campusCode,
     viewMode,
@@ -1596,9 +1609,11 @@ function TimetablePage({
   const resourceIdentity = useResourceIdentity();
   const offlineMode = useResourceOfflineMode();
   const recoveryMode = useResourceRecoveryMode();
-  const requestedTerm = preferredTermCode || (typeof window === 'undefined'
-    ? ''
-    : new URLSearchParams(window.location.search).get('term') || '');
+  const requestedTerm = normalizeTimetableTermCode(
+    preferredTermCode || (typeof window === 'undefined'
+      ? ''
+      : new URLSearchParams(window.location.search).get('term') || ''),
+  );
   const restored = restorePersonalTimetableMemory(timetableMemory.data, requestedTerm);
   const [mode, setMode] = useState('personal');
   const modeRef = useRef(mode);
@@ -1607,8 +1622,12 @@ function TimetablePage({
   const queryViewportHeld = useRef(false);
   const [headerPortalTarget, setHeaderPortalTarget] = useState(null);
   const [terms, setTerms] = useState(() => restored?.terms || []);
-  const [currentTermCode, setCurrentTermCode] = useState(() => restored?.currentTermCode || '');
-  const [termCode, setTermCode] = useState(() => restored?.termCode || (embedded ? preferredTermCode : ''));
+  const [currentTermCode, setCurrentTermCode] = useState(() => (
+    normalizeTimetableTermCode(restored?.currentTermCode || '')
+  ));
+  const [termCode, setTermCode] = useState(() => normalizeTimetableTermCode(
+    restored?.termCode || (embedded ? preferredTermCode : ''),
+  ));
   const [context, setContext] = useState(() => restored?.context || null);
   const [campusCode, setCampusCode] = useState(() => restored?.campusCode || '');
   const [viewMode, setViewMode] = useState(() => (
@@ -1662,12 +1681,13 @@ function TimetablePage({
   const agendaGeneration = useRef(0);
   const agendaDocument = agendaState.identity === resourceIdentity && agendaState.term === termCode ? agendaState.document : { revision: 0, events: [], moves: [] };
   const loadAgenda = useCallback(async () => {
-    if (!termCode || mode !== 'personal' || embedded || offlineMode || recoveryMode) return;
+    const safeTermCode = normalizeTimetableTermCode(termCode);
+    if (!safeTermCode || mode !== 'personal' || embedded || offlineMode || recoveryMode) return;
     const generation = ++agendaGeneration.current;
-    setAgendaState(previous => ({ identity: resourceIdentity, term: termCode, document: previous.identity === resourceIdentity && previous.term === termCode ? previous.document : { revision: 0, events: [], moves: [] }, loading: true, error: '' }));
+    setAgendaState(previous => ({ identity: resourceIdentity, term: safeTermCode, document: previous.identity === resourceIdentity && previous.term === safeTermCode ? previous.document : { revision: 0, events: [], moves: [] }, loading: true, error: '' }));
     try {
-      const document = await getTimetableAgenda(termCode);
-      if (generation === agendaGeneration.current) setAgendaState({ identity: resourceIdentity, term: termCode, document, loading: false, error: '' });
+      const document = await getTimetableAgenda(safeTermCode);
+      if (generation === agendaGeneration.current) setAgendaState({ identity: resourceIdentity, term: safeTermCode, document, loading: false, error: '' });
     } catch (exc) {
       if (generation === agendaGeneration.current) setAgendaState(previous => ({ ...previous, loading: false, error: requestErrorText(exc, '无法读取当日日程') }));
     }
@@ -1775,7 +1795,7 @@ function TimetablePage({
     const week = Number(params.get('week'));
     const day = Number(params.get('day'));
     return {
-      term: preferredTermCode || params.get('term') || '',
+      term: normalizeTimetableTermCode(preferredTermCode || params.get('term') || ''),
       week: Number.isInteger(week) && week >= 1 && week <= 30 ? week : null,
       day: Number.isInteger(day) && day >= 1 && day <= 7 ? day : null,
     };
@@ -2171,11 +2191,12 @@ function TimetablePage({
   }, []);
 
   const loadPersonalTimetable = useCallback(async (requestedTerm, { refresh = false, autoDetect = false } = {}) => {
-    if (!requestedTerm) return;
-    const fetchKey = `${requestedTerm}:${refresh ? 'force' : 'cache'}`;
+    const safeRequestedTerm = normalizeTimetableTermCode(requestedTerm);
+    if (!safeRequestedTerm) return;
+    const fetchKey = `${safeRequestedTerm}:${refresh ? 'force' : 'cache'}`;
     let fetchPromise = personalFetchPromiseRef.current;
     if (!fetchPromise || personalFetchKeyRef.current !== fetchKey) {
-      fetchPromise = getPersonalTimetable(requestedTerm, refresh);
+      fetchPromise = getPersonalTimetable(safeRequestedTerm, refresh);
       personalFetchKeyRef.current = fetchKey;
       personalFetchPromiseRef.current = fetchPromise;
       fetchPromise.finally(() => {
@@ -2195,20 +2216,20 @@ function TimetablePage({
       setCacheStatusPayload(payload);
       setCacheSyncFailed(Boolean(payload?.cache?.last_error_kind));
       const firstCampus = payload.campuses?.[0]?.code || '';
-      const linkedWeek = requestedTerm === deepLink.current.term
+      const linkedWeek = safeRequestedTerm === deepLink.current.term
         && (payload.weeks || []).some(item => item.number === deepLink.current.week)
         ? deepLink.current.week
         : null;
       const defaultWeek = linkedWeek || selectDefaultWeek(payload.weeks || [], {
-        currentTerm: requestedTerm === currentTermCode,
+        currentTerm: safeRequestedTerm === currentTermCode,
       });
 
-      if (autoDetect && requestedTerm === currentTermCode) {
+      if (autoDetect && safeRequestedTerm === currentTermCode) {
         autoDefaultResolved.current = true;
         const currentCourses = personalScheduleView(payload, firstCampus, 'week', defaultWeek).courses
           .filter(course => !course.recurrence_unknown && course.weeks?.includes(defaultWeek));
         if (!currentCourses.length) {
-          const nextTermCode = immediateNextTerm(termsRef.current, requestedTerm);
+          const nextTermCode = immediateNextTerm(termsRef.current, safeRequestedTerm);
           if (nextTermCode) {
             try {
               const nextPayload = await getPersonalTimetable(nextTermCode, false);
@@ -2218,7 +2239,7 @@ function TimetablePage({
                 const nextWeek = selectDefaultWeek(nextPayload.weeks || [], { currentTerm: false });
                 setViewMode('term');
                 setAutoNotice(automaticTimetableNotice({ nextTermHasCourses: true }));
-                setTermCode(nextTermCode);
+                setTermCode(normalizeTimetableTermCode(nextTermCode));
                 setPersonalContext(nextPayload, nextCampus, nextWeek);
                 setLoading(false);
                 return;
@@ -2238,7 +2259,7 @@ function TimetablePage({
 
       setPersonalContext(payload, firstCampus, defaultWeek);
       if (!refresh && payload.is_fresh === false) {
-        watchPersonalRefresh(requestedTerm, payload.cache?.revision || '');
+        watchPersonalRefresh(safeRequestedTerm, payload.cache?.revision || '');
       }
       if (!firstCampus) setError({ stage: 'personal', message: '该学期没有可查询的开课校区' });
     } catch (requestError) {
@@ -2516,7 +2537,8 @@ function TimetablePage({
   useEffect(() => {
     if (usesPersonalTimetableEndpoint) return;
     const targetId = target?.id || '';
-    if (!termCode || (mode !== 'personal' && !targetId)) {
+    const safeTermCode = normalizeTimetableTermCode(termCode);
+    if (!safeTermCode || (mode !== 'personal' && !targetId)) {
       setContext(null);
       setSchedule(null);
       setLoading(false);
@@ -2529,7 +2551,7 @@ function TimetablePage({
     setContext(null);
     setCampusCode('');
     setSchedule(null);
-    getTimetableContext({ mode, term_code: termCode, target_id: targetId })
+    getTimetableContext({ mode, term_code: safeTermCode, target_id: targetId })
       .then(payload => {
         if (generation !== contextGeneration.current) return;
         setContext(payload);
@@ -2564,7 +2586,8 @@ function TimetablePage({
       await loadPersonalTimetable(termCode, { refresh: true });
       return;
     }
-    if (!context || !termCode) return;
+    const safeTermCode = normalizeTimetableTermCode(termCode);
+    if (!context || !safeTermCode) return;
     const generation = ++scheduleGeneration.current;
     // An empty target campus list confirms no courses for the entire term.
     if (!campusCode) {
@@ -2585,7 +2608,7 @@ function TimetablePage({
     try {
       const payload = await getTimetableSchedule({
         mode,
-        term_code: termCode,
+        term_code: safeTermCode,
         target_id: target?.id || '',
         campus_code: campusCode,
         week: viewMode === 'week' ? weekNumber : null,

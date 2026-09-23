@@ -1,7 +1,11 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
-import TimetablePage, { MobileTimetableNotices, TIMETABLE_LOGIN_ERROR_TEXT } from './TimetablePage';
+import TimetablePage, {
+  MobileTimetableNotices,
+  TIMETABLE_LOGIN_ERROR_TEXT,
+  normalizeTimetableTermCode,
+} from './TimetablePage';
 import {
   getTimetableTerms, getPersonalTimetable, getTimetableContext,
   getTimetableSchedule, searchTimetableTargets, getTimetableBootstrap, syncTimetable,
@@ -1216,5 +1220,14 @@ describe('query timetable request lifecycle', () => {
     await act(async () => older.resolve({ ...empty(olderRequest), courses: [course] }));
     expect(week(3).getAttribute('aria-selected')).toBe('true');
     expect(container.textContent).toContain('模拟网络错误');
+  });
+});
+
+describe('timetable term input safety', () => {
+  test('rejects stale placeholders before they can become API requests', () => {
+    expect(normalizeTimetableTermCode('2026-2027-1')).toBe('2026-2027-1');
+    expect(normalizeTimetableTermCode('undefined')).toBe('');
+    expect(normalizeTimetableTermCode('../escape')).toBe('');
+    expect(normalizeTimetableTermCode('')).toBe('');
   });
 });

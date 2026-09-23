@@ -154,6 +154,15 @@ api.interceptors.response.use(
     const detail = error.response?.data?.detail;
     if (typeof detail === 'string' && detail.trim()) error.message = detail;
     else if (detail?.message) error.message = detail.message;
+    else if (Array.isArray(detail) && detail.length) {
+      const messages = detail.map(item => {
+        if (typeof item === 'string') return item;
+        const location = Array.isArray(item?.loc) ? item.loc.filter(Boolean).join('.') : '';
+        const message = String(item?.msg || item?.message || '').trim();
+        return location && message ? `${location}: ${message}` : message;
+      }).filter(Boolean);
+      if (messages.length) error.message = messages.join('；');
+    }
     return Promise.reject(error);
   }
 );
@@ -1125,6 +1134,18 @@ export const exportExamsICS = async (termCode = '') => {
 
 // ── 课表查询 API ─────────────────────────────────────────────────────────────
 
+const TIMETABLE_TERM_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
+const assertTimetableTermCode = value => {
+  const termCode = String(value ?? '').trim();
+  if (!termCode || ['undefined', 'null', 'unknown'].includes(termCode.toLowerCase())
+    || !TIMETABLE_TERM_PATTERN.test(termCode)) {
+    const error = new Error('课表学期尚未准备好，请稍后重试');
+    error.code = 'ERR_INVALID_TIMETABLE_TERM';
+    throw error;
+  }
+  return termCode;
+};
+
 export const getTimetableTerms = async () => {
   const response = await api.get('/api/timetable/terms');
   return response.data;
@@ -1175,7 +1196,10 @@ export const getUserAvatarCache = async () => singleFlight('avatar-cache', async
 });
 
 export const getTimetableContext = async (data) => {
-  const response = await api.post('/api/timetable/context', data);
+  const response = await api.post('/api/timetable/context', {
+    ...data,
+    term_code: assertTimetableTermCode(data?.term_code),
+  });
   return response.data;
 };
 
@@ -1185,35 +1209,45 @@ export const searchTimetableTargets = async (data) => {
 };
 
 export const getTimetableTargetFilterOptions = async (data) => {
-  const response = await api.post('/api/timetable/targets/filter-options', data);
+  const response = await api.post('/api/timetable/targets/filter-options', {
+    ...data,
+    term_code: assertTimetableTermCode(data?.term_code),
+  });
   return response.data;
 };
 
 export const getTimetableSchedule = async (data) => {
-  const response = await api.post('/api/timetable/schedule', data);
+  const response = await api.post('/api/timetable/schedule', {
+    ...data,
+    term_code: assertTimetableTermCode(data?.term_code),
+  });
   return response.data;
 };
 
 export const getTimetableAgenda = async (termCode) => (
-  await api.get('/api/timetable/agenda', { params: { term_code: termCode }, skipAuthRedirect: true })
+  await api.get('/api/timetable/agenda', { params: { term_code: assertTimetableTermCode(termCode) }, skipAuthRedirect: true })
 ).data;
 
 export const saveTimetableAgenda = async (termCode, document) => (
   await api.put('/api/timetable/agenda', {
     revision: document.revision, events: document.events, moves: document.moves,
-  }, { params: { term_code: termCode } })
+  }, { params: { term_code: assertTimetableTermCode(termCode) } })
 ).data;
 
 export const getRoomAvailability = async (data) => {
   // A scan request checks only one room; allow a slow official schedule
   // response without making the UI wait for a whole catalog.
-  const response = await api.post('/api/timetable/rooms/availability', data, { timeout: 90000 });
+  const response = await api.post('/api/timetable/rooms/availability', {
+    ...data,
+    term_code: assertTimetableTermCode(data?.term_code),
+  }, { timeout: 90000 });
   return response.data;
 };
 
 export const getPersonalTimetable = async (termCode, refresh = false) => {
+  const safeTermCode = assertTimetableTermCode(termCode);
   const response = await api.get('/api/timetable/personal', {
-    params: { term_code: termCode, refresh },
+    params: { term_code: safeTermCode, refresh },
   });
   return response.data;
 };
@@ -1228,14 +1262,23 @@ export const getTimetableBootstrap = async () => {
 };
 
 export const syncTimetable = async (data = {}) => {
-  const response = await api.post('/api/timetable/sync', data, {
+  const payload = { ...data };
+  if (payload.term_code !== undefined && payload.term_code !== null && payload.term_code !== '') {
+    payload.term_code = assertTimetableTermCode(payload.term_code);
+  } else {
+    delete payload.term_code;
+  }
+  const response = await api.post('/api/timetable/sync', payload, {
     skipAuthRedirect: true,
   });
   return response.data;
 };
 
 export const checkScheduleConflicts = async (data) => {
-  const response = await api.post('/api/schedule/conflicts/check', data);
+  const response = await api.post('/api/schedule/conflicts/check', {
+    ...data,
+    term_code: assertTimetableTermCode(data?.term_code),
+  });
   return response.data;
 };
 

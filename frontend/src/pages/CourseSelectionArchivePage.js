@@ -94,10 +94,22 @@ export default function CourseSelectionArchivePage() {
   const [preview, setPreview] = useState(null);
 
   useEffect(() => {
-    getJwxkCatalogArchive(archiveId).then(result => {
-      setArchive(result || null);
-    }).catch(error => message.error(error.message || '读取课程备份失败'))
-      .finally(() => setLoading(false));
+    const normalizedArchiveId = String(archiveId || '').trim();
+    let active = true;
+    if (!/^[A-Za-z0-9]{32}$/.test(normalizedArchiveId)) {
+      setArchive(null);
+      setLoading(false);
+      return () => { active = false; };
+    }
+    setLoading(true);
+    getJwxkCatalogArchive(normalizedArchiveId).then(result => {
+      if (active) setArchive(result || null);
+    }).catch(error => {
+      if (active) message.error(error.message || '读取课程备份失败');
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
   }, [archiveId]);
 
   const filterOptions = useMemo(() => {
