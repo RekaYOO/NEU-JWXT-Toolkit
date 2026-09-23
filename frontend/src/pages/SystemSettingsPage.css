@@ -1,8 +1,42 @@
 .system-settings-page { max-width: var(--content-max); margin: 0 auto; }
-.system-settings-heading { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; }
+.system-settings-heading { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; }
 .system-settings-heading > svg { font-size: 28px; color: var(--color-brand); }
 .system-settings-heading h2 { margin: 0; }
-.system-cache-list { display: grid; gap: 10px; margin-top: 18px; }
-.system-settings-card { margin-top: 16px; }
+.system-settings-sections { display: grid; gap: 16px; }
+.system-settings-sections > .system-settings-card { margin-top: 0; }
+.system-settings-card { margin-top: 0; }
+.system-settings-card > .ant-card-body { display: grid; gap: 16px; }
+.system-settings-card > .ant-card-body > .system-settings-form,
+.system-settings-card > .ant-card-body > .system-settings-description { min-width: 0; }
+.system-settings-description { display: block; line-height: 1.55; }
+.system-settings-form { min-width: 0; }
+.system-settings-form .ant-form-item { margin-bottom: 16px; }
+.system-settings-form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.system-settings-form-actions .ant-btn { min-width: 132px; }
+.system-settings-card-actions { row-gap: 8px; }
+.system-settings-card-actions .ant-btn { min-width: 124px; }
 .system-cache-resource-key { color: var(--color-text-tertiary, #999); font-size: 11px; margin-top: 2px; }
-.system-cache-list .ant-typography-secondary { display: block; margin-top: 4px; line-height: 1.45; }
+.system-cache-list { display: grid; gap: 10px; }
+.system-cache-item { border-color: var(--color-line-soft); background: var(--color-surface-soft); box-shadow: none; }
+.system-cache-item > .ant-card-body { padding: 14px 16px; }
+.system-cache-item__meta { display: grid; gap: 2px; min-width: 0; }
+.system-cache-item__meta .ant-typography-secondary { display: block; margin-top: 4px; line-height: 1.45; }
+.system-cache-item__status { margin-bottom: 0; }
+
+@media (max-width: 767px) {
+  .system-settings-page { width: 100%; }
+  .system-settings-heading { gap: 10px; margin-bottom: 16px; }
+  .system-settings-heading > svg { font-size: 24px; }
+  .system-settings-sections { gap: 12px; }
+  .system-settings-card > .ant-card-body { gap: 14px; padding: 16px; }
+  .system-settings-card-actions,
+  .system-settings-form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .system-settings-card-actions .ant-space-item,
+  .system-settings-form-actions .ant-btn { min-width: 0; width: 100%; }
+  .system-cache-item > .ant-card-body { padding: 12px; }
+}
+
+@media (max-width: 420px) {
+  .system-settings-card-actions,
+  .system-settings-form-actions { grid-template-columns: 1fr; }
+}
