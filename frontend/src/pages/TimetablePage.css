@@ -1210,6 +1210,27 @@
   }
 }
 
+.timetable-system-message-summary {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+
+.timetable-system-message-summary b {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.timetable-system-message-summary > div {
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .course-type {
   color: var(--color-muted);
   font-size: 10px;

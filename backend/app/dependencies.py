@@ -80,6 +80,9 @@ from backend.core.cache.resources import (
     fetch_experiment_courses,
     canonicalize_experiment_courses,
     diff_experiment_courses,
+    fetch_system_messages,
+    canonicalize_system_messages,
+    diff_system_messages,
     fetch_scores,
     fetch_festival_activities,
     canonicalize_festival_activities,
@@ -311,6 +314,10 @@ def _fetch_experiment_courses_resource(context):
     return fetch_experiment_courses(_cache_client(context))
 
 
+def _fetch_system_messages_resource(context):
+    return fetch_system_messages(_cache_client(context))
+
+
 def _fetch_festival_resource(context):
     return fetch_festival_activities(get_festival_service_client(_cache_client(context)))
 
@@ -532,6 +539,19 @@ _cache_registry = CacheRegistry(
             canonicalize=canonicalize_experiment_courses,
             diff=diff_experiment_courses,
             mutation_invalidations=("experiment-courses",),
+        ),
+        CacheResourceSpec(
+            resource="system-messages",
+            schema_version=1,
+            revision_algorithm_version=1,
+            account_scope=AccountScope.ACCOUNT,
+            payload_type=PayloadType.JSON,
+            max_age=timedelta(minutes=10),
+            offline_readable=True,
+            sensitivity="private-academic",
+            fetch=_fetch_system_messages_resource,
+            canonicalize=canonicalize_system_messages,
+            diff=diff_system_messages,
         ),
         CacheResourceSpec(
             resource="festival-activities",

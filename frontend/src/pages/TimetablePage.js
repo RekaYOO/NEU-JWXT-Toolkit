@@ -51,6 +51,7 @@ import {
 } from '../services/api';
 import {
   useResourceMemory,
+  useCachedResource,
   useResourceIdentity,
   useResourceOfflineMode,
   useResourceRecoveryMode,
@@ -68,6 +69,7 @@ import { resolveTimetableSections } from '../utils/timetableSections';
 import TimetableDayAgenda from '../components/TimetableDayAgenda';
 import { agendaDateForDay, injectTimetableAgenda } from '../utils/timetableAgenda';
 import { getTimetableAgenda, saveTimetableAgenda } from '../services/api';
+import { summarizeSystemMessages } from '../utils/systemMessageSummary';
 import './TimetablePage.css';
 
 const { useBreakpoint } = Grid;
@@ -1607,6 +1609,11 @@ function TimetablePage({
   const navigate = useNavigate();
   const timetableMemory = useResourceMemory('timetable-current-personal');
   const resourceIdentity = useResourceIdentity();
+  const systemMessagesResource = useCachedResource('system-messages', { autoRefresh: true });
+  const timetableSystemMessages = useMemo(
+    () => summarizeSystemMessages(systemMessagesResource.data?.messages, 'timetable'),
+    [systemMessagesResource.data],
+  );
   const offlineMode = useResourceOfflineMode();
   const recoveryMode = useResourceRecoveryMode();
   const requestedTerm = normalizeTimetableTermCode(
@@ -1986,7 +1993,17 @@ function TimetablePage({
     pendingPersonalSignatureRef.current = signature;
     personalUpdateModal.current = Modal.confirm({
       title: '课表有更新',
-      content: '后台读取到新的课表数据，当前显示内容有所变化。是否更新当前课表？',
+      content: (
+        <div>
+          <p>后台读取到新的课表数据，当前显示内容有所变化。是否更新当前课表？</p>
+          {timetableSystemMessages.length > 0 && (
+            <div className="timetable-system-message-summary">
+              <b>教务系统相关通知</b>
+              {timetableSystemMessages.slice(0, 4).map(item => <div key={item}>{item}</div>)}
+            </div>
+          )}
+        </div>
+      ),
       okText: '更新课表',
       cancelText: '保持当前',
       onOk: () => {
@@ -2008,7 +2025,7 @@ function TimetablePage({
       },
     });
     return true;
-  }, [applyCachedSnapshot, applyPersonalPayloadForView]);
+  }, [applyCachedSnapshot, applyPersonalPayloadForView, timetableSystemMessages]);
 
   useEffect(() => {
     if (!resourceIdentity || offlineMode) {

@@ -12,6 +12,7 @@ from typing import Any, Iterable, Mapping
 from backend.core.academic.report import AcademicReportAPI
 from backend.core.academic.research_training import ResearchTrainingAPI
 from backend.core.academic.experiment import ExperimentCourseAPI
+from backend.core.academic.system_messages import SystemMessageAPI
 from backend.core.festival_activities import fetch_festival_activities as _fetch_festival
 
 
@@ -123,6 +124,47 @@ def fetch_scores(auth: Any) -> dict[str, Any]:
     return {
         "scores": [score_to_dict(score) for score in scores],
         "overall_gpa": overall_gpa,
+    }
+
+
+def fetch_system_messages(auth: Any) -> dict[str, Any]:
+    return {"messages": [item.to_dict() for item in SystemMessageAPI(auth).get_messages()]}
+
+
+def canonicalize_system_messages(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise TypeError("system messages payload must be an object")
+    messages = []
+    for item in payload.get("messages") or []:
+        if not isinstance(item, Mapping) or not item.get("id"):
+            continue
+        messages.append({
+            "id": str(item.get("id") or ""),
+            "sent_at": str(item.get("sent_at") or ""),
+            "title": str(item.get("title") or ""),
+            "content": str(item.get("content") or ""),
+            "read": bool(item.get("read")),
+            "app_name": str(item.get("app_name") or ""),
+            "url": str(item.get("url") or ""),
+            "kind": str(item.get("kind") or "reminder"),
+        })
+    messages.sort(key=lambda item: (item["sent_at"], item["id"]), reverse=True)
+    return {"messages": messages[:200]}
+
+
+def diff_system_messages(previous: Any, current: Any) -> dict[str, Any]:
+    old = {str(item.get("id")): item for item in (previous or {}).get("messages") or []}
+    new = {str(item.get("id")): item for item in (current or {}).get("messages") or []}
+    added = [new[key] for key in sorted(new.keys() - old.keys())]
+    changed = [
+        {"before": old[key], "after": new[key]}
+        for key in sorted(old.keys() & new.keys())
+        if old[key] != new[key]
+    ]
+    return {
+        "added": added,
+        "changed": changed,
+        "counts": {"added": len(added), "changed": len(changed)},
     }
 
 

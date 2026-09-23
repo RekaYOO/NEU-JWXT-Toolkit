@@ -38,6 +38,7 @@ import ResourceUpdateSummary from '../components/ResourceUpdateSummary';
 import CourseOutlineDrawer from '../components/CourseOutlineDrawer';
 import useCourseOutlineMetadata from '../hooks/useCourseOutlineMetadata';
 import { summarizeAcademicReportUpdate } from '../utils/resourceUpdateSummary';
+import { summarizeSystemMessages } from '../utils/systemMessageSummary';
 import {
   ACADEMIC_REPORT_DEFAULT_COLUMNS,
   cloneDefaultColumns,
@@ -417,6 +418,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
   const [mobileCourseDetail, setMobileCourseDetail] = useState(null);
   const [outlineCourse, setOutlineCourse] = useState(null);
   const reportResource = useCachedResource('academic-report');
+  const systemMessagesResource = useCachedResource('system-messages', { autoRefresh: true });
   const initializedRef = useRef(false);
   const promptedRevisionRef = useRef('');
   const [pendingPlanUpdate, setPendingPlanUpdate] = useState(null);
@@ -523,6 +525,10 @@ const AcademicReportPage = ({ offlineMode = false }) => {
       reportResource.data,
       reportResource.availableData,
     );
+    const messageSummary = summarizeSystemMessages(
+      systemMessagesResource.data?.messages,
+      'academic',
+    );
     if (!updateSummary.length) {
       // The cache revision changed only because the remote endpoint reordered
       // equivalent nodes (or changed numeric serialization). Apply silently.
@@ -534,6 +540,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
       revision: reportResource.availableRevision,
       data: reportResource.availableData,
       summary: updateSummary,
+      systemMessages: messageSummary,
     });
     return undefined;
   }, [
@@ -542,6 +549,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
     reportResource.availableData,
     reportResource.availableRevision,
     reportResource.updateAvailable,
+    systemMessagesResource.data,
     reportResource.applyAvailable,
   ]);
 
@@ -1674,7 +1682,12 @@ const AcademicReportPage = ({ offlineMode = false }) => {
         onOk={applyPendingPlanUpdate}
         onCancel={() => setPendingPlanUpdate(null)}
       >
-        <ResourceUpdateSummary items={pendingPlanUpdate?.summary || []} />
+        <ResourceUpdateSummary
+          items={[
+            ...(pendingPlanUpdate?.summary || []),
+            ...(pendingPlanUpdate?.systemMessages || []).map(item => `教务系统消息：${item}`),
+          ]}
+        />
         <Text type="secondary">
           刷新后，你的搜索、分类和展开状态会尽量保留。
         </Text>

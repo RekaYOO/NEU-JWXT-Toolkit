@@ -1151,6 +1151,16 @@ const assertTimetableTermCode = value => {
   return termCode;
 };
 
+export const getCachedSystemMessages = async () => {
+  const response = await api.get('/api/system-messages/cache', { skipAuthRedirect: true });
+  return response.data;
+};
+
+export const getOfflineSystemMessages = async () => {
+  const response = await api.get('/api/offline/system-messages', { skipAuthRedirect: true });
+  return response.data;
+};
+
 export const getTimetableTerms = async () => {
   const response = await api.get('/api/timetable/terms');
   return response.data;

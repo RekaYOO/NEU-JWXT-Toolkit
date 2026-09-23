@@ -46,6 +46,7 @@ def _offline_account() -> str | None:
             "research-training",
             "experiment-courses",
             "festival-activities",
+            "system-messages",
         )
     )
     if account:
@@ -67,10 +68,12 @@ def _offline_status() -> dict:
         report_entry, _ = read_cache_offline(account, "academic-report")
         research_entry, _ = read_cache_offline(account, "research-training")
         festival_entry, _ = read_cache_offline(account, "festival-activities")
+        messages_entry, _ = read_cache_offline(account, "system-messages")
         has_scores = _compatible(score_entry, "scores")
         has_report = _compatible(report_entry, "academic-report")
         has_research = _compatible(research_entry, "research-training")
         has_festival = _compatible(festival_entry, "festival-activities")
+        has_messages = _compatible(messages_entry, "system-messages")
         resources = [
             resource
             for resource, available in (
@@ -78,6 +81,7 @@ def _offline_status() -> dict:
                 ("academic-report", has_report),
                 ("research-training", has_research),
                 ("festival-activities", has_festival),
+                ("system-messages", has_messages),
             )
             if available
         ]
@@ -86,6 +90,7 @@ def _offline_status() -> dict:
             "has_scores": has_scores,
             "has_report": has_report,
             "has_research": has_research,
+            "has_system_messages": has_messages,
             "resources": resources,
             "username": account,
             "read_only": True,
@@ -104,6 +109,7 @@ def _offline_status() -> dict:
         "has_scores": has_scores,
         "has_report": has_report,
         "has_research": False,
+        "has_system_messages": False,
         "resources": [
             resource
             for resource, available in (
@@ -206,6 +212,19 @@ def offline_gpa_policy():
     if not account:
         raise HTTPException(status_code=404, detail="本地没有账号数据")
     return get_gpa_policy().context(account)
+
+
+@router.get("/system-messages")
+def offline_system_messages():
+    entry, stale = _offline_entry("system-messages")
+    if not entry:
+        raise HTTPException(status_code=404, detail="本地没有系统消息缓存")
+    return {
+        "messages": entry.payload.get("messages") or [],
+        "source": "offline",
+        "is_fresh": False,
+        "cache": entry.metadata(is_stale=bool(stale)),
+    }
 
 
 @router.get("/scores/details", response_model=CourseScoreDetailResponse)

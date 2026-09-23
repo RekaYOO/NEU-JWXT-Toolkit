@@ -32,12 +32,14 @@ jest.mock('../services/api', () => ({
 }));
 let mockRecoveryMode = false;
 const mockTimetableMemory = { data: null, publish: jest.fn() };
+const mockSystemMessagesResource = { data: { messages: [] } };
 jest.mock('../resources/ResourceStore', () => {
   return {
     useResourceMemory: () => mockTimetableMemory,
     useResourceIdentity: () => 'query-fixture',
     useResourceOfflineMode: () => false,
     useResourceRecoveryMode: () => mockRecoveryMode,
+    useCachedResource: () => mockSystemMessagesResource,
   };
 });
 jest.mock('../resources/BrowserTimetableStore', () => ({

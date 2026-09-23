@@ -8,6 +8,8 @@ import {
   getOfflineFestivalActivities,
   getOfflineResearchTraining,
   getOfflineExperimentCourses,
+  getCachedSystemMessages,
+  getOfflineSystemMessages,
   getOfflineScores,
   getResearchTrainingCache,
   getExperimentCoursesCache,
@@ -58,6 +60,11 @@ const definitions = {
   'experiment-courses': {
     online: getExperimentCoursesCache,
     offline: getOfflineExperimentCourses,
+    offlineReadable: true,
+  },
+  'system-messages': {
+    online: getCachedSystemMessages,
+    offline: getOfflineSystemMessages,
     offlineReadable: true,
   },
   'festival-activities': {

@@ -19,7 +19,7 @@ from backend.app.client_snapshot import cache_events_snapshot
 
 
 router = APIRouter()
-PUBLIC_RESOURCES = frozenset(("scores", "academic-report", "research-training", "festival-activities", "avatar"))
+PUBLIC_RESOURCES = frozenset(("scores", "academic-report", "research-training", "festival-activities", "avatar", "system-messages"))
 
 
 def _account(auth: NEUAuthClient) -> str:
