@@ -457,6 +457,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
         <Row gutter={[12, 12]} className="research-rule-grid">
           <Col xs={12} md={6}><Card><Statistic title="最多报名" value={batch.max_topics} suffix="项" /></Card></Col>
           <Col xs={12} md={6}><Card><Statistic title="专业排名要求" value={batch.rank_limit_percent} suffix="%" prefix="前" /></Card></Col>
+          <Col xs={12} md={6}><Card><Statistic title="我的专业排名" value={eligibility?.major_rank || '—'} suffix={eligibility?.major_rank ? '%' : ''} prefix={eligibility?.major_rank ? '前' : ''} /></Card></Col>
           <Col xs={12} md={6}>
             <Card>
               <Statistic title="不及格成绩"
@@ -482,6 +483,10 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
             <div>
               <dt>专业排名</dt>
               <dd>前 {batch.rank_limit_percent}%</dd>
+            </div>
+            <div>
+              <dt>我的排名</dt>
+              <dd>{eligibility?.major_rank ? `前 ${eligibility.major_rank}%` : '暂未提供'}</dd>
             </div>
             <div>
               <dt>不及格成绩</dt>
@@ -581,8 +586,18 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
                     <div className="research-topic-card__meta">
                       <span><UserOutlined /> {topic.advisor_name || '导师待定'}</span>
                       <span><ReadOutlined /> 科研记录 {topic.journal_count} 次</span>
+                      {topic.department && <span><TeamOutlined /> {topic.department}</span>}
                     </div>
-                    {topic.score && <Tag color="success">成绩：{topic.score}</Tag>}
+                    <Space wrap size={[6, 6]} className="research-confirmed-tags">
+                      {topic.score && <Tag color="success">成绩：{topic.score}</Tag>}
+                      {topic.confirmed_status && <Tag>{topic.confirmed_status}</Tag>}
+                      {topic.has_attachment && <Tag color="processing">已有材料</Tag>}
+                    </Space>
+                    {eligibility?.major_rank && (
+                      <Text type="secondary" className="research-confirmed-rank">
+                        我的专业排名：前 {eligibility.major_rank}%
+                      </Text>
+                    )}
                   </Card>
                 ))}
               </div>

@@ -206,8 +206,14 @@ def get_confirmed_research_topics(
     try:
         api = _api(auth)
         batch = api.get_current_batch()
+        eligibility = api.get_eligibility(batch.batch_id)
         topics = api.get_confirmed_topics(batch.batch_id)
-        return {"batch": batch.__dict__, "topics": topics, "total": len(topics)}
+        return {
+            "batch": batch.__dict__,
+            "eligibility": eligibility.__dict__,
+            "topics": topics,
+            "total": len(topics),
+        }
     except ResearchTrainingError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 

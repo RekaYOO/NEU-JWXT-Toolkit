@@ -327,11 +327,14 @@ class ResearchTrainingAPI:
             },
         )
         rows = self._rows(body, "yqrktcxlb")
-        return [
-            {
+        result = []
+        for row in rows:
+            attachment = row.get("XXZJFJ")
+            result.append({
                 "record_id": str(row.get("WID") or ""),
                 "topic_id": str(row.get("KTWID") or ""),
                 "batch_id": str(row.get("PCWID") or ""),
+                "batch_name": str(row.get("PCWID_DISPLAY") or ""),
                 "title": str(row.get("YJTM") or ""),
                 "project_name": str(row.get("KYXMMC") or ""),
                 "major": str(row.get("SSZY_DISPLAY") or row.get("SSZY") or ""),
@@ -340,9 +343,25 @@ class ResearchTrainingAPI:
                 "advisor_contact": str(row.get("LXFS") or ""),
                 "journal_count": self._integer(row.get("ZJS")),
                 "score": str(row.get("CJ") or ""),
-            }
-            for row in rows
-        ]
+                # These fields are present only for some batches. Keep them in
+                # the read model so newly enabled confirmed-topic actions can
+                # be displayed without another endpoint or schema migration.
+                "key_laboratory": str(row.get("SFZDSYS") or "") == "1",
+                "key_laboratory_name": str(
+                    row.get("SSZDSYS_DISPLAY") or row.get("SSZDSYS") or ""
+                ),
+                "department": str(
+                    row.get("SZDWDM_DISPLAY") or row.get("SZDWDM") or ""
+                ),
+                "attachment": attachment if isinstance(attachment, (dict, list)) else (
+                    str(attachment or "")
+                ),
+                "has_attachment": bool(attachment),
+                "confirmed_status": str(
+                    row.get("QRZT_DISPLAY") or row.get("QRZT") or ""
+                ),
+            })
+        return result
 
     @staticmethod
     def _normalize_rank(value: str) -> str:

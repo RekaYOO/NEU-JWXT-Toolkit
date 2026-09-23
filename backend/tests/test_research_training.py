@@ -71,6 +71,33 @@ class FakeResearchClient:
                 "code": "0",
                 "datas": {"cxxsjdjzypm": {"rows": rows}},
             })
+        if url.endswith("/yqrktcxlb.do"):
+            return FakeResponse({
+                "code": "0",
+                "datas": {
+                    "yqrktcxlb": {
+                        "rows": [{
+                            "WID": "record-1",
+                            "KTWID": "topic-1",
+                            "PCWID": "batch-1",
+                            "PCWID_DISPLAY": "测试批次",
+                            "YJTM": "已确认课题",
+                            "KYXMMC": "测试项目",
+                            "SSZY_DISPLAY": "示例专业",
+                            "SSYX_DISPLAY": "示例学院",
+                            "DSXM": "示例导师",
+                            "LXFS": "13900000000",
+                            "ZJS": "2",
+                            "CJ": "优秀",
+                            "SFZDSYS": "1",
+                            "SSZDSYS_DISPLAY": "示例重点实验室",
+                            "SZDWDM_DISPLAY": "示例学院",
+                            "XXZJFJ": {"name": "材料.pdf"},
+                            "QRZT_DISPLAY": "已确认",
+                        }],
+                    }
+                },
+            })
         if url.endswith("/ktbm/save.do"):
             return FakeResponse({"code": "0", "msg": "操作成功"})
         if url.endswith("/ktbm/qxbm.do"):
@@ -127,6 +154,31 @@ def test_fractional_rank_values_are_normalized_to_percent():
 
     assert api.get_current_batch().rank_limit_percent == pytest.approx(25.93)
     assert api.get_eligibility("batch-1").major_rank == "25.93"
+
+
+def test_confirmed_topics_keep_new_optional_fields():
+    result = ResearchTrainingAPI(FakeResearchClient()).get_confirmed_topics("batch-1")
+
+    assert result == [{
+        "record_id": "record-1",
+        "topic_id": "topic-1",
+        "batch_id": "batch-1",
+        "batch_name": "测试批次",
+        "title": "已确认课题",
+        "project_name": "测试项目",
+        "major": "示例专业",
+        "college": "示例学院",
+        "advisor_name": "示例导师",
+        "advisor_contact": "13900000000",
+        "journal_count": 2,
+        "score": "优秀",
+        "key_laboratory": True,
+        "key_laboratory_name": "示例重点实验室",
+        "department": "示例学院",
+        "attachment": {"name": "材料.pdf"},
+        "has_attachment": True,
+        "confirmed_status": "已确认",
+    }]
 
 
 def test_enrollment_stops_with_visible_error_when_official_rank_data_is_empty():
