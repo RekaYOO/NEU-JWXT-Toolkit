@@ -11,6 +11,8 @@ from backend.core.cache.resources import (
     canonicalize_scores,
     canonicalize_personal_timetable,
     diff_personal_timetable,
+    canonicalize_experiment_courses,
+    diff_experiment_courses,
     personal_timetable_term,
     personal_timetable_variant,
     diff_scores,
@@ -141,6 +143,42 @@ def test_personal_timetable_variant_and_revision_payload_are_term_scoped():
     changes = diff_personal_timetable(before, after)
     assert changes["added_meeting_ids"] == ["m2"]
     assert changes["changed_meeting_ids"] == ["m1"]
+
+
+def test_experiment_cache_keeps_selected_results_separate_from_operations():
+    before = canonicalize_experiment_courses({
+        "term": "2026-2027-1",
+        "courses": [{
+            "task_id": "task-1",
+            "course_no": "A100",
+            "projects": [],
+        }],
+        "selected_results": [],
+    })
+    after = canonicalize_experiment_courses({
+        "term": "2026-2027-1",
+        "courses": [{
+            "task_id": "task-1",
+            "course_no": "A100",
+            "projects": [{
+                "project_code": "P1",
+                "selected_round_id": "R1",
+            }],
+        }],
+        "selected_results": [{
+            "task_id": "task-1",
+            "project_code": "P1",
+            "selected_round_id": "R1",
+        }],
+    })
+
+    assert diff_experiment_courses(before, after) == {
+        "term_changed": False,
+        "added_course_ids": [],
+        "removed_course_ids": [],
+        "changed_course_ids": ["task-1"],
+        "selected_results_changed": True,
+    }
 
 
 def test_auth_session_manager_fences_identity_and_serializes_state_cleanup():

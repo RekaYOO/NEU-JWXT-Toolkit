@@ -180,6 +180,51 @@ class ExperimentCourse:
         must_do = self.must_do_count or 0
         return self.selected_count >= must_do
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Stable read model shared by the live API and the cache."""
+        projects = [
+            {
+                "project_name": project.project_name,
+                "project_code": project.project_code,
+                "course_no": project.course_no,
+                "must_do": project.must_do,
+                "selected_round_id": project.selected_round_id,
+                "select_status": project.select_status,
+                "is_selected": bool(project.selected_round_id),
+            }
+            for project in self.projects
+        ]
+        return {
+            "task_id": self.task_id,
+            "course_name": self.course_name,
+            "course_no": self.course_no,
+            "credit": self.credit,
+            "term_code": self.term_code,
+            "experiment_hours": self.experiment_hours,
+            "center_name": self.center_name,
+            "college_name": self.college_name,
+            "must_do_count": self.must_do_count,
+            "selected_count": self.selected_count,
+            "is_complete": self.is_complete,
+            "projects": projects,
+        }
+
+    def selected_result_rows(self) -> List[Dict[str, Any]]:
+        """Project-level results already confirmed by the official feed."""
+        return [
+            {
+                "task_id": self.task_id,
+                "course_name": self.course_name,
+                "course_no": self.course_no,
+                "project_name": project.project_name,
+                "project_code": project.project_code,
+                "selected_round_id": project.selected_round_id,
+                "select_status": project.select_status,
+            }
+            for project in self.projects
+            if project.selected_round_id
+        ]
+
 
 class ExperimentCourseAPI:
     """实验选课 API"""

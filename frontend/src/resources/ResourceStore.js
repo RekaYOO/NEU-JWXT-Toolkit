@@ -7,8 +7,10 @@ import {
   getOfflineAcademicReport,
   getOfflineFestivalActivities,
   getOfflineResearchTraining,
+  getOfflineExperimentCourses,
   getOfflineScores,
   getResearchTrainingCache,
+  getExperimentCoursesCache,
   getFestivalActivitiesCache,
   requestCacheRefresh,
   waitForCacheRefreshJob,
@@ -51,6 +53,11 @@ const definitions = {
   'research-training': {
     online: getResearchTrainingCache,
     offline: getOfflineResearchTraining,
+    offlineReadable: true,
+  },
+  'experiment-courses': {
+    online: getExperimentCoursesCache,
+    offline: getOfflineExperimentCourses,
     offlineReadable: true,
   },
   'festival-activities': {

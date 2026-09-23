@@ -9,7 +9,8 @@ import {
   TeamOutlined, CalendarOutlined, EnvironmentOutlined,
   UserOutlined, ExclamationCircleOutlined, ReloadOutlined
 } from '@ant-design/icons';
-import { getExperimentCourses, getExperimentRounds, selectExperimentRound, deselectExperimentRound } from '../services/api';
+import { getExperimentRounds, selectExperimentRound, deselectExperimentRound } from '../services/api';
+import { useCachedResource, useResourceOfflineMode } from '../resources/ResourceStore';
 import './ExperimentCoursePage.css';
 
 const { Title, Text } = Typography;
@@ -38,30 +39,64 @@ const ExperimentCoursePage = () => {
   const [roundsModalVisible, setRoundsModalVisible] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [coursesError, setCoursesError] = useState('');
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [selectedResults, setSelectedResults] = useState([]);
   const actionLockRef = useRef(false);
   const screens = useBreakpoint();
   const isMobile = !screens.md;
+  const resource = useCachedResource('experiment-courses', { autoRefresh: false });
+  const offlineMode = useResourceOfflineMode();
 
   // 加载课程列表
-  const loadCourses = async () => {
-    setLoading(true);
+  const loadCourses = async ({ initial = false } = {}) => {
+    if (offlineMode) {
+      const cached = await resource.reloadCache();
+      if (cached) {
+        setCourses(cached.courses || []);
+        setSelectedResults(cached.selected_results || []);
+        setTerm(cached.term || '');
+        setLoading(false);
+      } else if (initial && !courses.length) {
+        setLoading(false);
+      }
+      return cached;
+    }
+    setLiveLoading(true);
+    if (initial && !courses.length && !selectedResults.length) setLoading(true);
     setCoursesError('');
     try {
-      const data = await getExperimentCourses();
+      await resource.refresh();
+      const data = await resource.reloadAndApply();
+      if (!data) throw new Error('实验选课数据暂不可用');
       setCourses(data.courses || []);
+      setSelectedResults(data.selected_results || []);
       setTerm(data.term || '');
+      setLoading(false);
+      return data;
     } catch (error) {
       console.error('加载实验课程失败:', error);
       setCoursesError(error.response?.data?.detail || '实验课程读取失败，请重试；这不代表当前没有实验课程');
+      if (!courses.length && !selectedResults.length) setLoading(false);
     } finally {
-      setLoading(false);
+      setLiveLoading(false);
     }
   };
 
   // 初始加载
   useEffect(() => {
-    loadCourses();
+    loadCourses({ initial: true });
+    // The resource hook owns cache loading; this call only starts the remote
+    // refresh and reuses the same coordinator job.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!resource.data) return;
+    setCourses(resource.data.courses || []);
+    setSelectedResults(resource.data.selected_results || []);
+    setTerm(resource.data.term || '');
+    setLoading(false);
+  }, [resource.data]);
 
   // 查看实验班
   const handleViewRounds = async (course, project) => {
@@ -267,6 +302,7 @@ const ExperimentCoursePage = () => {
     const pending = courses.filter(c => c.selected_count === 0).length;
     return { total, complete, inProgress, pending };
   }, [courses]);
+  const selectedResultCount = selectedResults.length;
   const orderedCourses = useMemo(() => [...courses].sort((left, right) => (
     Number(left.is_complete) - Number(right.is_complete)
     || (right.must_do_count - right.selected_count) - (left.must_do_count - left.selected_count)
@@ -282,7 +318,42 @@ const ExperimentCoursePage = () => {
     return rank(left) - rank(right) || left.selected_count - right.selected_count;
   }), [rounds]);
 
-  if (loading) {
+  const renderSelectedResults = () => (
+    <Card
+      className="experiment-selected-results-card"
+      title="选课结果"
+      extra={liveLoading ? <Spin size="small" /> : <Tag color={selectedResultCount ? 'success' : 'default'}>{selectedResultCount} 项</Tag>}
+    >
+      {selectedResultCount ? (
+        <div className="experiment-selected-results">
+          {selectedResults.map((result) => (
+            <div
+              className="experiment-selected-result"
+              key={`${result.task_id}:${result.project_code}:${result.selected_round_id}`}
+            >
+              <div>
+                <Text strong>{result.course_name || '未命名课程'}</Text>
+                <Text type="secondary">{result.course_no || '课程号待定'}</Text>
+              </div>
+              <div>
+                <Text>{result.project_name || '已选实验项目'}</Text>
+                <Text type="secondary">
+                  {result.select_status || '已确认'}
+                </Text>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有已形成的实验选课结果" />
+      )}
+      <Text type="secondary" className="experiment-selected-results-note">
+        结果优先显示本地缓存；下方课程操作数据会在后台继续更新。
+      </Text>
+    </Card>
+  );
+
+  if (loading && !courses.length && !selectedResults.length) {
     return (
       <div className="loading-container">
         <Spin size="large" tip="加载实验选课..." />
@@ -301,7 +372,7 @@ const ExperimentCoursePage = () => {
           <Text type="secondary">{term} 学期</Text>
         </div>
         <Button icon={<ReloadOutlined />} onClick={loadCourses} size="small">
-          刷新
+          {liveLoading ? '更新中' : '刷新'}
         </Button>
       </div>
 
@@ -345,6 +416,8 @@ const ExperimentCoursePage = () => {
           style={{ marginBottom: 16 }}
         />
       )}
+
+      {renderSelectedResults()}
 
       {/* 课程列表 */}
       <Card className="courses-card">

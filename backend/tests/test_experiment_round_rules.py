@@ -4,6 +4,8 @@ import pytest
 
 from backend.core.academic.experiment import (
     CHINA_STANDARD_TIME,
+    ExperimentCourse,
+    ExperimentProject,
     ExperimentCourseAPI,
     ExperimentCourseError,
     ExperimentRound,
@@ -149,3 +151,30 @@ def test_experiment_read_failure_is_not_reported_as_an_empty_list():
         api.get_courses("2026-2027-1")
     with pytest.raises(ExperimentCourseError):
         api.get_rounds("2026-2027-1", "task", "course", "project")
+
+
+def test_experiment_course_read_model_exposes_selected_results():
+    course = ExperimentCourse(
+        task_id="task-1",
+        course_name="实验课程",
+        course_no="A100",
+        credit=1,
+        term_code="2026-2027-1",
+        experiment_hours=16,
+        center_name="实验中心",
+        college_name="学院",
+        must_do_count=1,
+        projects=[
+            ExperimentProject(
+                project_name="实验项目",
+                project_code="P1",
+                course_no="A100",
+                must_do=True,
+                selected_round_id="R1",
+                select_status="已选",
+            )
+        ],
+    )
+
+    assert course.to_dict()["selected_count"] == 1
+    assert course.selected_result_rows()[0]["selected_round_id"] == "R1"

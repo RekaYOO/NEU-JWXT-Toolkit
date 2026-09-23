@@ -8,7 +8,7 @@ from backend.core.academic.experiment import ExperimentCourseAPI
 class _Registry:
     @staticmethod
     def resources():
-        return ("academic-report", "personal-timetable")
+        return ("academic-report", "experiment-courses", "personal-timetable")
 
 
 class _Coordinator:
@@ -58,6 +58,7 @@ def test_experiment_success_invalidates_declared_cache(monkeypatch):
     assert result["code"] == "0"
     assert coordinator.invalidated == [
         {"account_id": "20250001", "resource": "academic-report"},
+        {"account_id": "20250001", "resource": "experiment-courses"},
         {
             "account_id": "20250001",
             "resource": "personal-timetable",

@@ -40,7 +40,13 @@ def _research_cache_response(account, entry, **kwargs):
 
 def _offline_account() -> str | None:
     account = _cache_store.latest_account_for(
-        ("scores", "academic-report", "research-training", "festival-activities")
+        (
+            "scores",
+            "academic-report",
+            "research-training",
+            "experiment-courses",
+            "festival-activities",
+        )
     )
     if account:
         return account
@@ -300,6 +306,25 @@ def offline_research_training():
         entry,
         is_stale=bool(stale),
     )
+
+
+@router.get("/experiment-courses")
+def offline_experiment_courses():
+    account = _offline_account()
+    entry, stale = read_cache_offline(account, "experiment-courses") if account else (None, False)
+    if not account or not entry:
+        raise HTTPException(status_code=404, detail="本地没有已保存的实验选课数据")
+    payload = entry.payload if isinstance(entry.payload, dict) else {}
+    courses = payload.get("courses") or []
+    return {
+        "available": True,
+        "username": account,
+        "term": str(payload.get("term") or ""),
+        "courses": courses,
+        "selected_results": payload.get("selected_results") or [],
+        "total": len(courses),
+        "cache": entry.metadata(is_stale=bool(stale)),
+    }
 
 
 @router.get("/festival-activities", response_model=FestivalActivitiesResponse)

@@ -77,6 +77,9 @@ from backend.core.cache.resources import (
     diff_timetable_index,
     fetch_academic_report,
     fetch_research_training,
+    fetch_experiment_courses,
+    canonicalize_experiment_courses,
+    diff_experiment_courses,
     fetch_scores,
     fetch_festival_activities,
     canonicalize_festival_activities,
@@ -304,6 +307,10 @@ def _fetch_research_resource(context):
     return fetch_research_training(_cache_client(context))
 
 
+def _fetch_experiment_courses_resource(context):
+    return fetch_experiment_courses(_cache_client(context))
+
+
 def _fetch_festival_resource(context):
     return fetch_festival_activities(get_festival_service_client(_cache_client(context)))
 
@@ -511,6 +518,20 @@ _cache_registry = CacheRegistry(
             canonicalize=canonicalize_research_training,
             diff=diff_research_training,
             mutation_invalidations=("research-training",),
+        ),
+        CacheResourceSpec(
+            resource="experiment-courses",
+            schema_version=1,
+            revision_algorithm_version=1,
+            account_scope=AccountScope.ACCOUNT,
+            payload_type=PayloadType.JSON,
+            max_age=timedelta(minutes=5),
+            offline_readable=True,
+            sensitivity="private-academic",
+            fetch=_fetch_experiment_courses_resource,
+            canonicalize=canonicalize_experiment_courses,
+            diff=diff_experiment_courses,
+            mutation_invalidations=("experiment-courses",),
         ),
         CacheResourceSpec(
             resource="festival-activities",

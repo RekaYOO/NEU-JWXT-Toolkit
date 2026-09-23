@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 
 from backend.core.academic.report import AcademicReportAPI
 from backend.core.academic.research_training import ResearchTrainingAPI
+from backend.core.academic.experiment import ExperimentCourseAPI
 from backend.core.festival_activities import fetch_festival_activities as _fetch_festival
 
 
@@ -380,6 +381,75 @@ def diff_research_training(previous: Any, current: Any) -> dict[str, Any]:
         != (current or {}).get("eligibility"),
         "confirmed_changed": (previous or {}).get("confirmed_topics")
         != (current or {}).get("confirmed_topics"),
+    }
+
+
+def fetch_experiment_courses(auth: Any) -> dict[str, Any]:
+    api = ExperimentCourseAPI(auth)
+    term = api.get_semester()
+    courses = api.get_courses(term) if term else []
+    return {
+        "term": str(term or ""),
+        "courses": [course.to_dict() for course in courses],
+        "selected_results": [
+            result
+            for course in courses
+            for result in course.selected_result_rows()
+        ],
+    }
+
+
+def canonicalize_experiment_courses(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise TypeError("experiment courses payload must be an object")
+    courses = [
+        _plain(course)
+        for course in payload.get("courses") or []
+        if isinstance(course, Mapping)
+    ]
+    courses.sort(key=lambda item: (
+        str(item.get("task_id") or ""),
+        str(item.get("course_no") or ""),
+    ))
+    results = [
+        _plain(result)
+        for result in payload.get("selected_results") or []
+        if isinstance(result, Mapping)
+    ]
+    results.sort(key=lambda item: (
+        str(item.get("task_id") or ""),
+        str(item.get("project_code") or ""),
+        str(item.get("selected_round_id") or ""),
+    ))
+    return {
+        "term": str(payload.get("term") or ""),
+        "courses": courses,
+        "selected_results": results,
+    }
+
+
+def diff_experiment_courses(previous: Any, current: Any) -> dict[str, Any]:
+    previous = canonicalize_experiment_courses(previous or {})
+    current = canonicalize_experiment_courses(current or {})
+    old_courses = {
+        str(item.get("task_id") or item.get("course_no") or ""): item
+        for item in previous["courses"]
+    }
+    new_courses = {
+        str(item.get("task_id") or item.get("course_no") or ""): item
+        for item in current["courses"]
+    }
+    return {
+        "term_changed": previous["term"] != current["term"],
+        "added_course_ids": sorted(new_courses.keys() - old_courses.keys()),
+        "removed_course_ids": sorted(old_courses.keys() - new_courses.keys()),
+        "changed_course_ids": sorted(
+            key for key in old_courses.keys() & new_courses.keys()
+            if old_courses[key] != new_courses[key]
+        ),
+        "selected_results_changed": (
+            previous["selected_results"] != current["selected_results"]
+        ),
     }
 
 

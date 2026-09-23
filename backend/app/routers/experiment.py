@@ -2,7 +2,12 @@ from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 
-from backend.app.dependencies import get_auth_generation, get_cache_coordinator
+from backend.app.dependencies import (
+    get_auth_generation,
+    get_cache_coordinator,
+    require_cached_auth_identity,
+)
+from backend.app.cache_support import read_cache
 from backend.core.auth import NEUAuthClient
 from backend.core.academic.experiment import ExperimentCourseAPI
 from backend.core.cache import mutation_policy
@@ -13,6 +18,28 @@ from backend.app.dependencies import require_serialized_auth
 from backend.app.schemas import ExperimentCourseMutationRequest
 
 router = APIRouter()
+
+
+def _cache_response(auth: NEUAuthClient, entry, *, stale: bool) -> dict:
+    if not entry:
+        return {
+            "available": False,
+            "term": "",
+            "courses": [],
+            "selected_results": [],
+            "total": 0,
+        }
+    payload = entry.payload if isinstance(entry.payload, dict) else {}
+    courses = payload.get("courses") or []
+    return {
+        "available": True,
+        "username": str(auth.username or ""),
+        "term": str(payload.get("term") or ""),
+        "courses": courses,
+        "selected_results": payload.get("selected_results") or [],
+        "total": len(courses),
+        "cache": entry.metadata(is_stale=stale),
+    }
 
 
 def _best_effort_current_term(auth: NEUAuthClient) -> str:
@@ -54,31 +81,11 @@ def get_experiment_courses(
         courses = api.get_courses(term)
 
         return {
-            "courses": [
-                {
-                    "task_id": c.task_id,
-                    "course_name": c.course_name,
-                    "course_no": c.course_no,
-                    "credit": c.credit,
-                    "experiment_hours": c.experiment_hours,
-                    "center_name": c.center_name,
-                    "college_name": c.college_name,
-                    "must_do_count": c.must_do_count,
-                    "selected_count": c.selected_count,
-                    "is_complete": c.is_complete,
-                    "projects": [
-                        {
-                            "project_name": p.project_name,
-                            "project_code": p.project_code,
-                            "must_do": p.must_do,
-                            "selected_round_id": p.selected_round_id,
-                            "select_status": p.select_status,
-                            "is_selected": bool(p.selected_round_id),
-                        }
-                        for p in c.projects
-                    ]
-                }
-                for c in courses
+            "courses": [c.to_dict() for c in courses],
+            "selected_results": [
+                result
+                for course in courses
+                for result in course.selected_result_rows()
             ],
             "term": term or api.get_semester(),
             "total": len(courses),
@@ -86,6 +93,14 @@ def get_experiment_courses(
     except Exception as e:
         error_id = log_application_error("experiment.list_courses", e, 500)
         raise HTTPException(status_code=500, detail=f"获取实验课程失败（错误编号：{error_id}）") from e
+
+
+@router.get("/experiment-courses/cache")
+def get_experiment_courses_cache(
+    auth: NEUAuthClient = Depends(require_cached_auth_identity),
+):
+    entry, stale = read_cache(str(auth.username), "experiment-courses")
+    return _cache_response(auth, entry, stale=stale)
 
 
 @router.get("/experiment-courses/{task_id}/rounds")

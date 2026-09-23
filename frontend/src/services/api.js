@@ -521,6 +521,11 @@ export const getOfflineResearchTraining = async () => {
   return response.data;
 };
 
+export const getOfflineExperimentCourses = async () => {
+  const response = await api.get('/api/offline/experiment-courses');
+  return response.data;
+};
+
 export const getOfflineFestivalActivities = async () => {
   const response = await api.get('/api/offline/festival-activities', {
     skipAuthRedirect: true,
@@ -1200,6 +1205,11 @@ export const getTimetableContext = async (data) => {
     ...data,
     term_code: assertTimetableTermCode(data?.term_code),
   });
+  return response.data;
+};
+
+export const getExperimentCoursesCache = async () => {
+  const response = await api.get('/api/experiment-courses/cache');
   return response.data;
 };
 
