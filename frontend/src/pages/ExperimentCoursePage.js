@@ -89,7 +89,6 @@ const ExperimentCoursePage = () => {
     loadCourses({ initial: true });
     // The resource hook owns cache loading; this call only starts the remote
     // refresh and reuses the same coordinator job.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
