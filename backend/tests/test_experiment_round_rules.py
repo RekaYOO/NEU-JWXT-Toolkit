@@ -178,3 +178,50 @@ def test_experiment_course_read_model_exposes_selected_results():
 
     assert course.to_dict()["selected_count"] == 1
     assert course.selected_result_rows()[0]["selected_round_id"] == "R1"
+
+
+def test_official_selected_result_uses_task_course_metadata_when_project_row_omits_it():
+    class Client:
+        def post(self, url, data=None, **_kwargs):
+            assert url.endswith("/api/xkjg/queryStudentAllSelectCourseResult.do")
+            assert data == {"XNXQDM": "2026-2027-1"}
+            return type("Response", (), {
+                "json": lambda self: {
+                    "code": "0",
+                    "datas": {
+                        "queryStudentAllSelectCourseResult": [{
+                            "taskId": "task-1",
+                            "courseName": "基础工业工程",
+                            "courseNo": "A1441000070",
+                            "projectResultList": [{
+                                "projectName": "人机作业分析",
+                                "projectCode": "A1441000070-001",
+                            "courseName": None,
+                            "courseNo": None,
+                            "roundId": "round-1",
+                            "roundName": "实验班一",
+                            "classTeachers": "张老师",
+                            "classWeeks": "2-4周",
+                            "classDays": "周二",
+                            "classSessions": "第3-4节",
+                            "classrooms": "南馆 101",
+                            "selectCourseStartDate": "2026-09-01 08:00:00",
+                            "selectCourseEndDate": "2026-09-10 18:00:00",
+                        }],
+                        }],
+                    },
+                },
+            })()
+
+    results = ExperimentCourseAPI(Client()).get_selected_course_results("2026-2027-1")
+
+    assert results[0]["course_name"] == "基础工业工程"
+    assert results[0]["course_no"] == "A1441000070"
+    assert results[0]["round_name"] == "实验班一"
+    assert results[0]["teacher"] == "张老师"
+    assert results[0]["week"] == "2-4周"
+    assert results[0]["day"] == "周二"
+    assert results[0]["time"] == "第3-4节"
+    assert results[0]["location"] == "南馆 101"
+    assert results[0]["select_start"] == "2026-09-01 08:00:00"
+    assert results[0]["select_end"] == "2026-09-10 18:00:00"

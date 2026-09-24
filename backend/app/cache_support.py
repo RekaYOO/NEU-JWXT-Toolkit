@@ -252,6 +252,69 @@ def read_cache_offline(account: str, resource: str):
         return None, True
 
 
+def mark_system_messages_read_cache(
+    account: str,
+    marked_messages: list[dict[str, Any]],
+) -> bool:
+    """Optimistically reconcile official message acknowledgements in cache.
+
+    The official read endpoint updates the remote message center, while the
+    rebuildable cache may still contain the previous ``read: false`` snapshot.
+    Updating only the acknowledged rows prevents the next page mount from
+    immediately re-prompting the same messages before the next background
+    refresh completes.
+    """
+    keys = {
+        (
+            str(item.get("kind") or "reminder"),
+            str(item.get("message_id") or ""),
+        )
+        for item in marked_messages
+        if item.get("message_id")
+    }
+    if not keys:
+        return False
+    entry, _stale = read_cache(account, "system-messages")
+    if not entry or not isinstance(entry.payload, dict):
+        return False
+    payload = dict(entry.payload)
+    messages = []
+    changed = 0
+    for item in payload.get("messages") or []:
+        if not isinstance(item, dict):
+            continue
+        next_item = dict(item)
+        key = (
+            str(next_item.get("kind") or "reminder"),
+            str(next_item.get("id") or ""),
+        )
+        if key in keys and not bool(next_item.get("read")):
+            next_item["read"] = True
+            changed += 1
+        messages.append(next_item)
+    if not changed:
+        return False
+
+    spec = _cache_registry.get("system-messages")
+    canonical = spec.canonicalize({**payload, "messages": messages})
+    epoch = get_auth_generation()
+    with _identity_commit_guard(account, epoch):
+        if not auth_generation_is_current(epoch, account):
+            return False
+        _cache_store.commit_success(
+            key=CacheKey(account, "system-messages"),
+            schema_version=spec.schema_version,
+            revision_algorithm_version=spec.revision_algorithm_version,
+            payload_type=spec.payload_type,
+            payload=canonical,
+            revision=_revision(canonical, "system-messages"),
+            dependency_revisions=entry.dependency_revisions,
+            changes={"messages_read": changed},
+            reason="system_message_read",
+        )
+    return True
+
+
 def submit_refresh(
     account: str,
     resource: str,

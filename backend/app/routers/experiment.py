@@ -79,14 +79,11 @@ def get_experiment_courses(
             return {"courses": [], "term": "", "total": 0}
 
         courses = api.get_courses(term)
+        selected_results = api.get_selected_course_results(term)
 
         return {
             "courses": [c.to_dict() for c in courses],
-            "selected_results": [
-                result
-                for course in courses
-                for result in course.selected_result_rows()
-            ],
+            "selected_results": selected_results,
             "term": term or api.get_semester(),
             "total": len(courses),
         }

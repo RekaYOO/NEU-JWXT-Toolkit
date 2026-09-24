@@ -78,6 +78,67 @@
   margin-top: 2px;
 }
 
+.experiment-selected-results {
+  display: grid;
+  gap: 0;
+}
+
+.experiment-selected-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 20px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--color-border, #f0f0f0);
+}
+
+.experiment-selected-result:last-child {
+  border-bottom: 0;
+}
+
+.experiment-selected-result .ant-typography {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.experiment-selected-result > .ant-typography {
+  grid-column: 1 / -1;
+}
+
+.experiment-selected-result > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.experiment-selected-result__details {
+  grid-column: 1 / -1;
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 16px !important;
+  padding-top: 2px;
+}
+
+.experiment-selected-result__field {
+  min-width: 0;
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 6px !important;
+}
+
+.experiment-selected-result__field > span {
+  color: var(--color-muted, #8c8c8c);
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.experiment-selected-result__field .ant-typography {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* 展开的项目列表 */
 .projects-container {
   padding: 16px;
@@ -268,6 +329,17 @@
     background: var(--color-surface);
     border: 1px solid var(--color-line-soft);
     border-radius: var(--radius-md);
+  }
+
+  .experiment-selected-result {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding: 12px 0;
+  }
+
+  .experiment-selected-result__details {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 7px !important;
   }
 
   .experiment-course-page .stat-card {

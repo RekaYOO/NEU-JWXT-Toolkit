@@ -14,10 +14,28 @@
   margin: 0 0 4px;
 }
 
+.research-page-header > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .research-cache-time {
   display: block;
   margin-top: 3px;
   font-size: 12px;
+}
+
+.research-personal-rank {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: 14px;
+  color: var(--color-text-secondary);
+}
+
+.research-personal-rank strong {
+  color: var(--color-brand);
 }
 
 .research-eligibility-alert,
@@ -29,6 +47,11 @@
 
 .research-rule-grid .ant-card-body {
   padding: 16px;
+  height: 100%;
+}
+
+.research-rule-grid > .ant-col > .ant-card {
+  height: 100%;
 }
 
 .research-rule-grid .ant-statistic-content {
@@ -281,6 +304,12 @@
 
   .research-page-header h3 {
     font-size: 20px;
+  }
+
+  .research-personal-rank {
+    display: flex;
+    margin: 6px 0 0;
+    font-size: 13px;
   }
 
   .research-page-header .ant-btn {

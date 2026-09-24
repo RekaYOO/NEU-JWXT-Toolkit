@@ -341,8 +341,13 @@ class ResearchTrainingAPI:
                 "college": str(row.get("SSYX_DISPLAY") or row.get("SSYX") or ""),
                 "advisor_name": str(row.get("SQRXM") or row.get("DSXM") or ""),
                 "advisor_contact": str(row.get("LXFS") or ""),
+                "contact": str(row.get("LXFS") or ""),
+                "advisor_email": str(row.get("DZYX") or ""),
+                "advisor_title": str(row.get("ZC_DISPLAY") or row.get("ZC") or ""),
                 "journal_count": self._integer(row.get("ZJS")),
                 "score": str(row.get("CJ") or ""),
+                "introduction": str(row.get("KTJJ") or ""),
+                "requirements": str(row.get("BMYQ") or row.get("XSBMTJ") or ""),
                 # These fields are present only for some batches. Keep them in
                 # the read model so newly enabled confirmed-topic actions can
                 # be displayed without another endpoint or schema migration.
@@ -360,6 +365,38 @@ class ResearchTrainingAPI:
                 "confirmed_status": str(
                     row.get("QRZT_DISPLAY") or row.get("QRZT") or ""
                 ),
+            })
+        return result
+
+    def get_journals(self, record_id: str) -> List[Dict[str, Any]]:
+        """Read the official student research-record table for one confirmed topic.
+
+        ``record_id`` is the confirmed-topic row's ``WID`` (the value the
+        official page passes as ``BMWID``).  This endpoint is intentionally
+        read-only here; report/journal mutations remain separate explicit
+        actions and are never replayed by cache refreshes.
+        """
+        normalized_id = str(record_id or "").strip()
+        if not normalized_id or len(normalized_id) > 128:
+            raise ValueError("科研记录编号无效")
+        body = self._post_model("xszjcxlb", {"BMWID": normalized_id})
+        rows = self._rows(body, "xszjcxlb")
+        result: List[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            result.append({
+                "record_id": str(row.get("WID") or ""),
+                "confirmed_record_id": str(row.get("BMWID") or normalized_id),
+                "content": str(row.get("XLNR") or ""),
+                "start_at": str(row.get("KYXLKSSJ") or ""),
+                "end_at": str(row.get("KYXLJSSJ") or ""),
+                "mentor_start_at": str(row.get("JSZDKSSJ") or ""),
+                "mentor_end_at": str(row.get("JSZDJSSJ") or ""),
+                "status_code": str(row.get("PYZT") or ""),
+                "status": str(row.get("PYZT_DISPLAY") or row.get("PYZT") or ""),
+                "attachment": str(row.get("FJ") or ""),
+                "sort": row.get("PX"),
             })
         return result
 

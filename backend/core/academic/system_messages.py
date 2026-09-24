@@ -32,13 +32,21 @@ class SystemMessage:
 
 
 class SystemMessageAPI:
-    """The list endpoints do not mutate read state."""
+    """Read and acknowledge messages through the official message-center APIs."""
 
     REMINDER_URL = (
         "https://jwxt.neu.edu.cn/jwapp/sys/xxzxapp/modules/xtxx/cxtxxxlb.do"
     )
     AUDIT_URL = (
         "https://jwxt.neu.edu.cn/jwapp/sys/xxzxapp/modules/xtxx/cxshxxlb.do"
+    )
+    REMINDER_READ_URL = (
+        "https://jwxt.neu.edu.cn/jwapp/sys/xxzxapp/api/xtxx/txxx/"
+        "updateReadAndGetMessage.do"
+    )
+    AUDIT_READ_URL = (
+        "https://jwxt.neu.edu.cn/jwapp/sys/xxzxapp/api/xtxx/shxx/"
+        "updateReadAndGetMessage.do"
     )
     HEADERS = {
         "Accept": "application/json, text/plain, */*",
@@ -106,3 +114,25 @@ class SystemMessageAPI:
             raise RuntimeError("系统消息读取失败") from errors[0]
         messages.sort(key=lambda item: (item.sent_at, item.message_id), reverse=True)
         return messages
+
+    def mark_read(self, message_id: str, kind: str = "reminder") -> dict[str, Any]:
+        """Mark one message read using the same endpoint as the official detail view."""
+        normalized_id = str(message_id or "").strip()
+        if not normalized_id or len(normalized_id) > 128:
+            raise ValueError("消息编号无效")
+        url = self.AUDIT_READ_URL if kind == "audit" else self.REMINDER_READ_URL
+        response = self._client.post(
+            url,
+            data={"WID": normalized_id},
+            headers=self.HEADERS,
+            timeout=(5, 20),
+        )
+        if int(getattr(response, "status_code", 200) or 200) >= 400:
+            raise RuntimeError("教务系统消息已读请求失败")
+        try:
+            payload = json.loads(response.content.decode("utf-8"))
+        except Exception as error:
+            raise RuntimeError("教务系统消息已读响应格式异常") from error
+        if not isinstance(payload, dict) or str(payload.get("code")) != "0":
+            raise RuntimeError("教务系统消息已读请求被拒绝")
+        return payload

@@ -59,6 +59,7 @@ def test_offline_routes_read_only_local_caches(monkeypatch, tmp_path):
         "has_scores": True,
         "has_report": True,
         "has_research": False,
+        "has_system_messages": False,
         "resources": ["scores", "academic-report"],
         "username": "20250001",
         "read_only": True,

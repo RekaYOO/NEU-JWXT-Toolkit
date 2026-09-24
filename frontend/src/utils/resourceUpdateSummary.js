@@ -123,6 +123,85 @@ export const summarizeScoreUpdate = (beforePayload, afterPayload) => {
   return items.length ? items : ['成绩数据内容发生变化'];
 };
 
+const mapTimetableMeetings = courses => {
+  const result = new Map();
+  const occurrences = new Map();
+  (courses || []).filter(Boolean).forEach(course => {
+    const base = course.meeting_id || course.id || [
+      course.course_code || course.course_name || '',
+      course.weekday ?? '',
+      course.start_section ?? '',
+      course.end_section ?? '',
+    ].join(':');
+    const ordinal = occurrences.get(base) || 0;
+    occurrences.set(base, ordinal + 1);
+    result.set(`${base}::${ordinal}`, course);
+  });
+  return result;
+};
+
+const timetableValue = (value) => (
+  Array.isArray(value) ? value.join('、') : String(value ?? '')
+);
+
+export const summarizeTimetableUpdate = (beforePayload, afterPayload) => {
+  const before = mapTimetableMeetings(beforePayload?.courses);
+  const after = mapTimetableMeetings(afterPayload?.courses);
+  const items = [];
+  const name = course => course?.course_name || course?.course_code || '未命名课程';
+  const added = [...after].filter(([key]) => !before.has(key)).map(([, course]) => course);
+  const removed = [...before].filter(([key]) => !after.has(key)).map(([, course]) => course);
+  const paired = [];
+  const fallbackKey = course => String(course?.course_code || course?.course_name || '').trim();
+  // Missing official class IDs can change when a section changes. Pair only
+  // unambiguous one-to-one courses; multiple meetings retain add/remove labels.
+  for (let index = removed.length - 1; index >= 0; index -= 1) {
+    const key = fallbackKey(removed[index]);
+    if (!key) continue;
+    const sameOld = removed.filter(course => fallbackKey(course) === key);
+    const sameNew = added.filter(course => fallbackKey(course) === key);
+    if (sameOld.length !== 1 || sameNew.length !== 1) continue;
+    const next = added.indexOf(sameNew[0]);
+    paired.push({ previous: removed[index], course: added[next] });
+    removed.splice(index, 1);
+    added.splice(next, 1);
+  }
+  if (added.length) items.push(`新增课程：${listNames(added)}`);
+  if (removed.length) items.push(`移除课程：${listNames(removed)}`);
+
+  const fields = [
+    ['location', '地点'], ['weekday', '星期'], ['start_section', '开始节次'],
+    ['end_section', '结束节次'], ['weeks', '周次'], ['week_text', '周次说明'],
+    ['start_time', '开始时间'], ['end_time', '结束时间'],
+    ['teachers', '教师'], ['course_name', '课程名称'],
+  ];
+  const changed = [...after].filter(([key, course]) => (
+    before.has(key)
+    && JSON.stringify(before.get(key)) !== JSON.stringify(course)
+  )).map(([key, course]) => ({ previous: before.get(key), course })).concat(paired);
+  changed.slice(0, 3).forEach(({ previous, course }) => {
+    const details = fields.filter(([field]) => (
+      timetableValue(previous[field]) !== timetableValue(course[field])
+    )).slice(0, 3).map(([field, label]) => (
+      `${label} ${displayValue(timetableValue(previous[field]))} → ${displayValue(timetableValue(course[field]))}`
+    ));
+    items.push(`${name(course)}：${details.length ? details.join('，') : '课程安排信息有调整'}`);
+  });
+  if (changed.length > 3) items.push(`另有 ${changed.length - 3} 条课程安排发生变化`);
+
+  if (JSON.stringify(beforePayload?.unscheduled || []) !== JSON.stringify(afterPayload?.unscheduled || [])) {
+    items.push('未安排节次的课程发生变化');
+  }
+  if (JSON.stringify(beforePayload?.practices || []) !== JSON.stringify(afterPayload?.practices || [])) {
+    items.push('集中实践安排发生变化');
+  }
+  if (['campuses', 'weeks', 'sections_by_campus'].some(field => (
+    JSON.stringify(beforePayload?.[field] || []) !== JSON.stringify(afterPayload?.[field] || [])
+  ))) items.push('校区、教学周或节次配置发生变化');
+  if (!items.length) items.push('课表其他内容发生变化');
+  return items;
+};
+
 const collectAcademicCourses = payload => {
   const courses = [];
   const visit = nodes => (nodes || []).forEach(node => {

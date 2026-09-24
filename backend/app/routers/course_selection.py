@@ -272,9 +272,11 @@ def get_jwxk_status(
                             primary,
                             network_mode=effective,
                         )
-                        # A missing child session is repaired with the same-account
-                        # saved credentials. The client submits them at most once;
-                        # CAPTCHA/SMS is preserved on this Session for the foreground.
+                        # A missing child session is repaired with the
+                        # same-account saved credentials when available.
+                        # CAPTCHA/SMS remains on this Session for foreground
+                        # recovery; token refresh itself is handled separately
+                        # from primary-identity recovery.
                         setattr(
                             status_client, "allow_identity_recovery",
                             automatic_credentials_available,

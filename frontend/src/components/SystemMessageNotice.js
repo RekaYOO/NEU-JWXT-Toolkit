@@ -1,7 +1,12 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Modal } from 'antd';
 import { BellOutlined } from '@ant-design/icons';
-import { relatedSystemMessages, summarizeSystemMessages } from '../utils/systemMessageSummary';
+import { summarizeSystemMessages } from '../utils/systemMessageSummary';
+import {
+  acknowledgeAndSyncSystemMessagePrompts, unreadSystemMessagePrompts,
+} from '../utils/systemMessagePrompt';
+import { useCachedResource } from '../resources/ResourceStore';
+import { useResourceIdentity } from '../resources/ResourceStore';
 import ResourceUpdateSummary from './ResourceUpdateSummary';
 
 const TITLES = {
@@ -12,10 +17,15 @@ const TITLES = {
 };
 
 const SystemMessageNotice = ({ messages = [], kind }) => {
-  const relevant = useMemo(() => relatedSystemMessages(messages, kind), [messages, kind]);
-  const seenRef = useRef(new Map());
-  const initializedRef = useRef(false);
+  const account = useResourceIdentity();
+  const systemMessagesResource = useCachedResource('system-messages', { autoRefresh: false });
+  const messageSnapshot = systemMessagesResource.availableData?.messages || messages;
+  const relevant = useMemo(
+    () => unreadSystemMessagePrompts(messageSnapshot, kind, account),
+    [messageSnapshot, kind, account],
+  );
   const modalRef = useRef(null);
+  const modalOwnerRef = useRef('');
 
   useEffect(() => () => {
     modalRef.current?.destroy();
@@ -23,33 +33,51 @@ const SystemMessageNotice = ({ messages = [], kind }) => {
   }, []);
 
   useEffect(() => {
-    if (!messages.length) return;
-    const next = new Map(relevant.map((item, index) => [
-      item.id || item.message_id || `${item.title}-${index}`,
-      `${item.title || ''}|${item.content || ''}|${item.sent_at || ''}`,
-    ]));
-    const changed = relevant.filter((item, index) => {
-      const id = item.id || item.message_id || `${item.title}-${index}`;
-      const fingerprint = `${item.title || ''}|${item.content || ''}|${item.sent_at || ''}`;
-      return !seenRef.current.has(id) || seenRef.current.get(id) !== fingerprint;
-    });
-    const promptItems = initializedRef.current
-      ? changed
-      : relevant.filter(item => item.read === false);
-    seenRef.current = next;
-    initializedRef.current = true;
-    if (!promptItems.length) return;
+    const owner = `${account}:${kind}`;
+    if (modalOwnerRef.current && modalOwnerRef.current !== owner) {
+      modalRef.current?.destroy();
+      modalRef.current = null;
+    }
+    modalOwnerRef.current = owner;
+    if (!relevant.length) {
+      modalRef.current?.destroy();
+      modalRef.current = null;
+      return;
+    }
+    if (modalRef.current) return;
 
-    const promptSummaries = summarizeSystemMessages(promptItems, kind);
-    modalRef.current?.destroy();
+    const promptSummaries = summarizeSystemMessages(relevant, kind);
     modalRef.current = Modal.info({
       title: TITLES[kind] || '教务系统通知',
       icon: <BellOutlined />,
       content: <ResourceUpdateSummary items={promptSummaries} />,
       okText: '知道了',
-      maskClosable: true,
+      maskClosable: false,
+      onOk: () => {
+        const acknowledged = relevant;
+        modalRef.current = null;
+        return acknowledgeAndSyncSystemMessagePrompts(account, kind, acknowledged)
+          .then(result => {
+            const marked = new Set((result?.marked || []).map(item => (
+              `${item.kind || 'reminder'}:${item.message_id || ''}`
+            )));
+            if (!marked.size) return result;
+            systemMessagesResource.updateData(current => {
+              if (!current?.messages) return current;
+              return {
+                ...current,
+                messages: current.messages.map(item => (
+                  marked.has(`${item.kind || 'reminder'}:${item.id || item.message_id || ''}`)
+                    ? { ...item, read: true }
+                    : item
+                )),
+              };
+            });
+            return result;
+          });
+      },
     });
-  }, [kind, messages.length, relevant]);
+  }, [account, kind, relevant, systemMessagesResource.updateData]);
 
   return null;
 };

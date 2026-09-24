@@ -3,7 +3,45 @@ import {
   summarizeAcademicReportSnapshot,
   summarizeResearchTrainingUpdate,
   summarizeScoreUpdate,
+  summarizeTimetableUpdate,
 } from './resourceUpdateSummary';
+
+test('timetable update reports changed meetings and non-meeting arrangements', () => {
+  const before = {
+    courses: [
+      { id: 'a', course_name: '课程甲', location: '旧教室', weeks: [1, 2], start_section: 1 },
+      { id: 'b', course_name: '课程乙', location: '旧楼' },
+    ],
+    practices: [],
+  };
+  const after = {
+    courses: [
+      { id: 'a', course_name: '课程甲', location: '新教室', weeks: [1, 2], start_section: 1 },
+      { id: 'c', course_name: '课程丙' },
+    ],
+    practices: [{ course_name: '实习' }],
+  };
+  expect(summarizeTimetableUpdate(before, after)).toEqual([
+    '新增课程：课程丙',
+    '移除课程：课程乙',
+    '课程甲：地点 旧教室 → 新教室',
+    '集中实践安排发生变化',
+  ]);
+});
+
+test('timetable update does not pretend a changed calendar or section definition is a new course', () => {
+  expect(summarizeTimetableUpdate(
+    { courses: [], weeks: [{ number: 1 }] },
+    { courses: [], weeks: [{ number: 1 }, { number: 2 }] },
+  )).toEqual(['校区、教学周或节次配置发生变化']);
+});
+
+test('a unique course whose generated ID changed with its section is reported as rescheduled', () => {
+  expect(summarizeTimetableUpdate(
+    { courses: [{ id: 'old-digest', course_code: 'A1', course_name: '课程甲', start_section: 1 }] },
+    { courses: [{ id: 'new-digest', course_code: 'A1', course_name: '课程甲', start_section: 3 }] },
+  )).toEqual(['课程甲：开始节次 1 → 3']);
+});
 
 test('score update summary includes course and GPA changes', () => {
   const before = {

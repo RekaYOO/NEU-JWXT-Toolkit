@@ -1165,7 +1165,11 @@ class JwxkSessionClient:
             raise JwxkRateLimitError(max(1, round(cooldown_until - now)))
         if path == "/xsxk/elective/clazz/list":
             self._pace_catalog_request()
-        kwargs.setdefault("retry_on_auth", self.allow_identity_recovery)
+        # Rebuild an expired JWXK child token even when primary-identity
+        # recovery is disabled. These are separate decisions: a logged-in
+        # primary session can renew its service token without saved password
+        # credentials, while a truly expired primary identity must still stop.
+        kwargs.setdefault("retry_on_auth", True)
         kwargs.setdefault("allow_identity_recovery", self.allow_identity_recovery)
         response = self.auth.request_service(
             "jwxk", method, path,

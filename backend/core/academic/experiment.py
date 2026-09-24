@@ -280,6 +280,65 @@ class ExperimentCourseAPI:
             logger.warning("Experiment course request failed")
             raise ExperimentCourseError("实验课程读取失败") from error
 
+    def get_selected_course_results(self, term_code: str) -> List[Dict[str, Any]]:
+        """Read the official page-level ``选课结果`` feed.
+
+        The experiment course list contains enough state for the course picker,
+        but the official result tab uses a separate xkjg endpoint. Keeping the
+        two reads separate avoids manufacturing result rows from incomplete
+        project metadata.
+        """
+        if not term_code:
+            return []
+        url = f"{self.BASE_URL}/api/xkjg/queryStudentAllSelectCourseResult.do"
+        try:
+            response = self._client.post(
+                url,
+                data={"XNXQDM": term_code},
+                headers=self.HEADERS,
+            )
+            body = response.json()
+            if str(body.get("code")) != "0":
+                raise ExperimentCourseError("实验选课结果读取被教务系统拒绝")
+            rows = (body.get("datas") or {}).get("queryStudentAllSelectCourseResult") or []
+            if not isinstance(rows, list):
+                raise ExperimentCourseError("实验选课结果响应结构异常")
+            result = []
+            for task in rows:
+                if not isinstance(task, dict):
+                    continue
+                task_course_name = str(task.get("courseName") or "")
+                task_course_no = str(task.get("courseNo") or "")
+                task_id = str(task.get("taskId") or "")
+                for item in task.get("projectResultList") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    result.append({
+                        "task_id": task_id,
+                        "course_name": str(item.get("courseName") or task_course_name),
+                        "course_no": str(item.get("courseNo") or task_course_no),
+                        "project_name": str(item.get("projectName") or ""),
+                        "project_code": str(item.get("projectCode") or ""),
+                        "selected_round_id": str(item.get("roundId") or ""),
+                        "round_name": str(item.get("roundName") or ""),
+                        "select_status": str(item.get("operationType") or ""),
+                        "must_do": str(item.get("isMustDo") or "") == "1",
+                        "teacher": str(item.get("classTeachers") or ""),
+                        "week": str(item.get("classWeeks") or ""),
+                        "day": str(item.get("classDays") or ""),
+                        "time": str(item.get("classSessions") or ""),
+                        "location": str(item.get("classrooms") or ""),
+                        "select_start": str(item.get("selectCourseStartDate") or ""),
+                        "select_end": str(item.get("selectCourseEndDate") or ""),
+                        "term_code": str(item.get("termCode") or term_code),
+                    })
+            return result
+        except ExperimentCourseError:
+            raise
+        except Exception as error:
+            logger.warning("Experiment selected-result request failed")
+            raise ExperimentCourseError("实验选课结果读取失败") from error
+
     def get_rounds(self, term_code: str, task_id: str, course_no: str, project_code: str) -> List[ExperimentRound]:
         """
         获取实验班列表

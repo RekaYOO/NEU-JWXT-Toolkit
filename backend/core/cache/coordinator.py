@@ -27,6 +27,7 @@ from .models import (
 )
 from .registry import CacheRegistry, VARIANT_NAME
 from .store import CacheStore
+from .system_message_merge import preserve_system_message_read_state
 
 
 IdentityValidator = Callable[[str, int], bool]
@@ -546,6 +547,30 @@ class CacheCoordinator:
                 with self._lock:
                     if not self._identity_valid(job) or job.job_id in self._cancelled_jobs:
                         raise _IdentityChanged
+                    # A message can be acknowledged while this refresh is in
+                    # flight. Read the latest entry at commit time and retain
+                    # its monotonic read state before writing the refresh.
+                    if job.key.resource == "system-messages":
+                        latest = self.store.get(job.key)
+                        latest_payload = (
+                            latest.payload
+                            if latest
+                            and latest.schema_version == spec.schema_version
+                            and latest.revision_algorithm_version
+                            == spec.revision_algorithm_version
+                            and latest.payload_type == spec.payload_type
+                            else None
+                        )
+                        canonical = preserve_system_message_read_state(
+                            latest_payload,
+                            canonical,
+                        )
+                        revision = self._revision(
+                            spec.payload_type,
+                            spec.revision_payload(canonical),
+                            spec.revision_algorithm_version,
+                        )
+                        changes = dict(spec.diff(latest_payload, canonical))
                     event = self.store.commit_success(
                         key=job.key,
                         schema_version=spec.schema_version,

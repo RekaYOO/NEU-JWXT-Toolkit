@@ -67,10 +67,14 @@ import { jwxkScheduleOverlayMeta } from '../utils/jwxkModes';
 import { loadSetting, saveSetting } from '../utils/settings';
 import { resolveTimetableSections } from '../utils/timetableSections';
 import TimetableDayAgenda from '../components/TimetableDayAgenda';
-import SystemMessageNotice from '../components/SystemMessageNotice';
+import MergedUpdateSummary from '../components/MergedUpdateSummary';
 import { agendaDateForDay, injectTimetableAgenda } from '../utils/timetableAgenda';
 import { getTimetableAgenda, saveTimetableAgenda } from '../services/api';
 import { summarizeSystemMessages } from '../utils/systemMessageSummary';
+import {
+    acknowledgeAndSyncSystemMessagePrompts, unreadSystemMessagePrompts,
+} from '../utils/systemMessagePrompt';
+import { summarizeTimetableUpdate } from '../utils/resourceUpdateSummary';
 import './TimetablePage.css';
 
 const { useBreakpoint } = Grid;
@@ -1611,10 +1615,22 @@ function TimetablePage({
   const timetableMemory = useResourceMemory('timetable-current-personal');
   const resourceIdentity = useResourceIdentity();
   const systemMessagesResource = useCachedResource('system-messages', { autoRefresh: true });
-  const timetableSystemMessages = useMemo(
-    () => summarizeSystemMessages(systemMessagesResource.data?.messages, 'timetable'),
-    [systemMessagesResource.data],
+  const timetableNoticeMessages = useMemo(
+    () => unreadSystemMessagePrompts(
+      (systemMessagesResource.availableData || systemMessagesResource.data)?.messages,
+      'timetable',
+      resourceIdentity,
+    ),
+    [resourceIdentity, systemMessagesResource.availableData, systemMessagesResource.data],
   );
+  const timetableSystemMessages = useMemo(
+    () => summarizeSystemMessages(timetableNoticeMessages, 'timetable'),
+    [timetableNoticeMessages],
+  );
+  const timetableNoticeMessagesRef = useRef(timetableNoticeMessages);
+  timetableNoticeMessagesRef.current = timetableNoticeMessages;
+  const timetableSystemMessagesRef = useRef(timetableSystemMessages);
+  timetableSystemMessagesRef.current = timetableSystemMessages;
   const offlineMode = useResourceOfflineMode();
   const recoveryMode = useResourceRecoveryMode();
   const requestedTerm = normalizeTimetableTermCode(
@@ -1778,8 +1794,11 @@ function TimetablePage({
   const personalFetchKeyRef = useRef('');
   const personalFetchPromiseRef = useRef(null);
   const personalUpdateModal = useRef(null);
+  const timetableMessageModal = useRef(null);
+  const shownTimetableMessageFingerprint = useRef('');
   const pendingPersonalPayloadRef = useRef(null);
   const pendingPersonalSignatureRef = useRef('');
+  const pendingPersonalChangesRef = useRef([]);
   const timetableViewState = useRef({ termCode: '', campusCode: '', weekNumber: null });
   const mobileDayContext = useRef('');
   const mobileDayFollowsToday = useRef(true);
@@ -1990,24 +2009,22 @@ function TimetablePage({
     }
     if (pendingPersonalSignatureRef.current === signature || personalUpdateModal.current) return true;
 
+    timetableMessageModal.current?.destroy?.();
+    timetableMessageModal.current = null;
     pendingPersonalPayloadRef.current = payload;
     pendingPersonalSignatureRef.current = signature;
+    pendingPersonalChangesRef.current = summarizeTimetableUpdate(current, payload);
     personalUpdateModal.current = Modal.confirm({
       title: '课表有更新',
-      content: (
-        <div>
-          <p>后台读取到新的课表数据，当前显示内容有所变化。是否更新当前课表？</p>
-          {timetableSystemMessages.length > 0 && (
-            <div className="timetable-system-message-summary">
-              <b>教务系统相关通知</b>
-              {timetableSystemMessages.slice(0, 4).map(item => <div key={item}>{item}</div>)}
-            </div>
-          )}
-        </div>
-      ),
+      content: <MergedUpdateSummary
+        changes={pendingPersonalChangesRef.current}
+        messages={timetableSystemMessagesRef.current}
+        description="是否更新当前课表？"
+      />,
       okText: '更新课表',
       cancelText: '保持当前',
       onOk: () => {
+        acknowledgeAndSyncSystemMessagePrompts(resourceIdentity, 'timetable', timetableNoticeMessagesRef.current);
         const next = pendingPersonalPayloadRef.current;
         if (next) {
           applyPersonalPayloadForView(next);
@@ -2017,16 +2034,67 @@ function TimetablePage({
         }
         pendingPersonalPayloadRef.current = null;
         pendingPersonalSignatureRef.current = '';
+        pendingPersonalChangesRef.current = [];
         personalUpdateModal.current = null;
       },
       onCancel: () => {
+        acknowledgeAndSyncSystemMessagePrompts(resourceIdentity, 'timetable', timetableNoticeMessagesRef.current);
         pendingPersonalPayloadRef.current = null;
         pendingPersonalSignatureRef.current = '';
+        pendingPersonalChangesRef.current = [];
         personalUpdateModal.current = null;
       },
     });
     return true;
-  }, [applyCachedSnapshot, applyPersonalPayloadForView, timetableSystemMessages]);
+  }, [applyCachedSnapshot, applyPersonalPayloadForView, resourceIdentity]);
+
+  useEffect(() => {
+    if (!personalUpdateModal.current || !pendingPersonalPayloadRef.current) return;
+    personalUpdateModal.current.update?.({
+      content: <MergedUpdateSummary
+        changes={pendingPersonalChangesRef.current}
+        messages={timetableSystemMessages}
+        description="是否更新当前课表？"
+      />,
+    });
+  }, [timetableSystemMessages]);
+
+  // A timetable update and a system message are related, but neither one is
+  // guaranteed to exist when the other arrives.  Keep the notice scoped to
+  // this page and show message-only updates instead of silently dropping them.
+  useEffect(() => {
+    if (mode !== 'personal' || embedded || !timetableNoticeMessages.length) {
+      timetableMessageModal.current?.destroy?.();
+      timetableMessageModal.current = null;
+      return;
+    }
+    if (personalUpdateModal.current) return;
+    const fingerprint = timetableNoticeMessages
+      .map(item => `${item.kind || ''}:${item.id || item.message_id || ''}:${item.title || ''}:${item.content || ''}`)
+      .join('|');
+    if (!fingerprint || shownTimetableMessageFingerprint.current === fingerprint
+      || timetableMessageModal.current) return;
+    shownTimetableMessageFingerprint.current = fingerprint;
+    timetableMessageModal.current = Modal.info({
+      title: '课表相关通知',
+      content: (
+        <MergedUpdateSummary
+          messages={timetableSystemMessages}
+          description="课表内容未发生变化，以上为教务系统中的相关通知。"
+        />
+      ),
+      okText: '知道了',
+      maskClosable: false,
+      onOk: () => {
+        acknowledgeAndSyncSystemMessagePrompts(
+          resourceIdentity,
+          'timetable',
+          timetableNoticeMessagesRef.current,
+        );
+        timetableMessageModal.current = null;
+      },
+    });
+  }, [embedded, mode, resourceIdentity, timetableNoticeMessages, timetableSystemMessages]);
 
   useEffect(() => {
     if (!resourceIdentity || offlineMode) {
@@ -2206,6 +2274,7 @@ function TimetablePage({
     personalUpdateModal.current = null;
     pendingPersonalPayloadRef.current = null;
     pendingPersonalSignatureRef.current = '';
+    pendingPersonalChangesRef.current = [];
   }, []);
 
   const loadPersonalTimetable = useCallback(async (requestedTerm, { refresh = false, autoDetect = false } = {}) => {
@@ -2550,6 +2619,8 @@ function TimetablePage({
     targetFilterGeneration.current += 1;
     targetPreviewGeneration.current += 1;
     personalGeneration.current += 1;
+    timetableMessageModal.current?.destroy?.();
+    timetableMessageModal.current = null;
   }, []);
 
   useEffect(() => {
@@ -3877,7 +3948,6 @@ function TimetablePage({
       )}
 
       {!isMobile && recoveryAlert}
-      <SystemMessageNotice kind="timetable" messages={systemMessagesResource.data?.messages} />
 
       {!isMobile && mode !== 'personal' && conflictDetectionEnabled && conflictDetectionError && (
         <Alert type="warning" showIcon message={conflictDetectionError} className="timetable-conflict-notice" />

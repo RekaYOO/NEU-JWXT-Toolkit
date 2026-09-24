@@ -1,6 +1,9 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
+import { Modal } from 'antd';
+import { clearSystemMessagePromptMemory } from '../utils/systemMessagePrompt';
 import TimetablePage, {
   MobileTimetableNotices,
   TIMETABLE_LOGIN_ERROR_TEXT,
@@ -76,6 +79,9 @@ describe('query timetable request lifecycle', () => {
   let header;
   beforeEach(() => {
     jest.clearAllMocks();
+    clearSystemMessagePromptMemory();
+    mockSystemMessagesResource.data = { messages: [] };
+    mockSystemMessagesResource.availableData = null;
     mockRecoveryMode = false;
     mockTimetableMemory.data = null;
     global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -136,6 +142,62 @@ describe('query timetable request lifecycle', () => {
     await click([...container.querySelectorAll('[role="tab"]')].find(tab => tab.textContent === label));
     await click(container.querySelector('.timetable-target-result-card'));
   };
+
+  test('merges a late official message into the existing timetable diff dialog without another request', async () => {
+    const baseline = {
+      ...personal, courses: [{ ...course, id: 'meeting-1', location: '旧教室' }],
+      cache: { revision: 'old', last_checked_at: '2026-09-23T08:00:00Z' },
+    };
+    const updated = {
+      ...baseline, courses: [{ ...baseline.courses[0], location: '新教室' }],
+      cache: { revision: 'new', last_checked_at: '2026-09-24T08:00:00Z' },
+    };
+    mockTimetableMemory.data = {
+      payload: baseline,
+      terms: [{ code: termCode, name: '测试学期', current: true }],
+      currentTermCode: termCode, campusCode: '00', weekNumber: 1, viewMode: 'week',
+    };
+    readBrowserTimetableCache.mockResolvedValue({
+      terms: [{ code: termCode, name: '测试学期', current: true }],
+      current: termCode, personal: [baseline],
+    });
+    getTimetableBootstrap.mockResolvedValue({
+      terms: [{ code: termCode, name: '测试学期', current: true }],
+      current: termCode, personal: [updated],
+    });
+    const update = jest.fn();
+    const confirm = jest.spyOn(Modal, 'confirm').mockImplementation(() => ({
+      update, destroy: jest.fn(),
+    }));
+    const info = jest.spyOn(Modal, 'info').mockImplementation(() => ({ destroy: jest.fn() }));
+    const render = async () => {
+      await act(async () => root.render(
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <TimetablePage />
+        </MemoryRouter>,
+      ));
+      await flush();
+    };
+    try {
+      await render();
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(renderToStaticMarkup(confirm.mock.calls[0][0].content)).toContain('地点 旧教室 → 新教室');
+      const bootstrapCalls = getTimetableBootstrap.mock.calls.length;
+      mockSystemMessagesResource.availableData = { messages: [{
+        id: 'official-room-change', kind: 'reminder',
+        title: '课程变更通知', content: '课程改至新教室',
+        sent_at: '2026-09-24 08:00:00', read: false,
+      }] };
+      await render();
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(info).not.toHaveBeenCalled();
+      expect(getTimetableBootstrap).toHaveBeenCalledTimes(bootstrapCalls);
+      expect(renderToStaticMarkup(update.mock.calls.at(-1)[0].content)).toContain('课程改至新教室');
+    } finally {
+      confirm.mockRestore();
+      info.mockRestore();
+    }
+  });
   const week = number => container.querySelector(`[data-week="${number}"]`);
 
   test('weekly day headings open a dated agenda and persist a custom event across page mounts', async () => {

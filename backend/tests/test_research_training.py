@@ -98,6 +98,28 @@ class FakeResearchClient:
                     }
                 },
             })
+        if url.endswith("/xszjcxlb.do"):
+            assert data["BMWID"] == "record-1"
+            return FakeResponse({
+                "code": "0",
+                "datas": {
+                    "xszjcxlb": {
+                        "rows": [{
+                            "BMWID": "record-1",
+                            "WID": "journal-1",
+                            "XLNR": "完成阶段性实验记录",
+                            "KYXLKSSJ": "2026-03-01 10:00:00",
+                            "KYXLJSSJ": "2026-03-07 18:00:00",
+                            "JSZDKSSJ": "2026-03-01 09:00:00",
+                            "JSZDJSSJ": "2026-03-08 18:00:00",
+                            "PYZT": "0",
+                            "PYZT_DISPLAY": "未评阅",
+                            "FJ": "attachment-token",
+                            "PX": 1,
+                        }],
+                    }
+                },
+            })
         if url.endswith("/ktbm/save.do"):
             return FakeResponse({"code": "0", "msg": "操作成功"})
         if url.endswith("/ktbm/qxbm.do"):
@@ -170,14 +192,37 @@ def test_confirmed_topics_keep_new_optional_fields():
         "college": "示例学院",
         "advisor_name": "示例导师",
         "advisor_contact": "13900000000",
+        "contact": "13900000000",
+        "advisor_email": "",
+        "advisor_title": "",
         "journal_count": 2,
         "score": "优秀",
+        "introduction": "",
+        "requirements": "",
         "key_laboratory": True,
         "key_laboratory_name": "示例重点实验室",
         "department": "示例学院",
         "attachment": {"name": "材料.pdf"},
         "has_attachment": True,
         "confirmed_status": "已确认",
+    }]
+
+
+def test_confirmed_topic_journals_use_official_bmwid_and_preserve_fields():
+    result = ResearchTrainingAPI(FakeResearchClient()).get_journals("record-1")
+
+    assert result == [{
+        "record_id": "journal-1",
+        "confirmed_record_id": "record-1",
+        "content": "完成阶段性实验记录",
+        "start_at": "2026-03-01 10:00:00",
+        "end_at": "2026-03-07 18:00:00",
+        "mentor_start_at": "2026-03-01 09:00:00",
+        "mentor_end_at": "2026-03-08 18:00:00",
+        "status_code": "0",
+        "status": "未评阅",
+        "attachment": "attachment-token",
+        "sort": 1,
     }]
 
 

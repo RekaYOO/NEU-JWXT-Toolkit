@@ -1024,6 +1024,13 @@ export const getConfirmedResearchTopics = async () => {
   return response.data;
 };
 
+export const getResearchJournals = async (recordId) => {
+  const response = await api.get(
+    `/api/research-training/confirmed/${encodeURIComponent(recordId)}/journals`,
+  );
+  return response.data;
+};
+
 export const enrollResearchTopic = async (data) => {
   const response = await api.post('/api/research-training/enroll', data);
   return response.data;
@@ -1153,6 +1160,16 @@ const assertTimetableTermCode = value => {
 
 export const getCachedSystemMessages = async () => {
   const response = await api.get('/api/system-messages/cache', { skipAuthRedirect: true });
+  return response.data;
+};
+
+export const markSystemMessagesRead = async (messages) => {
+  const response = await api.post('/api/system-messages/read', {
+    messages: (messages || []).map(item => ({
+      message_id: item.id || item.message_id,
+      kind: item.kind || 'reminder',
+    })),
+  });
   return response.data;
 };
 

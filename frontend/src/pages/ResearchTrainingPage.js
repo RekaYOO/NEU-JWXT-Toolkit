@@ -14,6 +14,7 @@ import {
 import {
   cancelResearchEnrollment,
   enrollResearchTopic,
+  getResearchJournals,
   getResearchTopic,
   setResearchTopicFavorite,
 } from '../services/api';
@@ -47,6 +48,10 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
   const [detail, setDetail] = useState(null);
+  const [journalTopic, setJournalTopic] = useState(null);
+  const [journals, setJournals] = useState([]);
+  const [journalsLoading, setJournalsLoading] = useState(false);
+  const [journalsError, setJournalsError] = useState('');
   const [enrollTopic, setEnrollTopic] = useState(null);
   const [error, setError] = useState('');
   const [syncWarning, setSyncWarning] = useState('');
@@ -240,6 +245,35 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
     }
   };
 
+  const showConfirmedTopic = async (topic) => {
+    if (offlineMode) return;
+    setJournalTopic(topic);
+    setJournals([]);
+    setJournalsError('');
+    setJournalsLoading(true);
+    // The confirmed-topic table is already an official, read-only detail
+    // source.  Do not send its KTWID through the ordinary topic-detail
+    // endpoint: confirmed topics can be archived there and legitimately
+    // return "Not Found" even while their record remains available.
+    setDetail({
+      ...topic,
+      contact: topic.contact || topic.advisor_contact || '',
+    });
+    setDetailLoading(false);
+    if (!topic.record_id) {
+      setJournalsLoading(false);
+      return;
+    }
+    try {
+      const journalResult = await getResearchJournals(topic.record_id);
+      setJournals(journalResult?.journals || []);
+    } catch (requestError) {
+      setJournalsError(requestError.response?.data?.detail || '科研记录读取失败');
+    } finally {
+      setJournalsLoading(false);
+    }
+  };
+
   const toggleFavorite = async (topic, currentlyFavorite) => {
     if (offlineMode) return;
     const batchId = topic.favorite_batch_id || data?.batch?.batch_id;
@@ -423,6 +457,11 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
         <div>
           <Title level={3}><ReadOutlined /> 科研训练</Title>
           <Text type="secondary">{batch?.name || '学生科研训练课题报名与状态查询'}</Text>
+          {eligibility?.major_rank && (
+            <Text className="research-personal-rank">
+              我的专业排名 <strong>前 {eligibility.major_rank}%</strong>
+            </Text>
+          )}
           {savedAt && <Text className="research-cache-time" type="secondary">本地数据更新于 {savedAt}</Text>}
         </div>
         <Tooltip title={offlineMode ? '离线模式不会连接教务系统' : ''}>
@@ -457,7 +496,6 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
         <Row gutter={[12, 12]} className="research-rule-grid">
           <Col xs={12} md={6}><Card><Statistic title="最多报名" value={batch.max_topics} suffix="项" /></Card></Col>
           <Col xs={12} md={6}><Card><Statistic title="专业排名要求" value={batch.rank_limit_percent} suffix="%" prefix="前" /></Card></Col>
-          <Col xs={12} md={6}><Card><Statistic title="我的专业排名" value={eligibility?.major_rank || '—'} suffix={eligibility?.major_rank ? '%' : ''} prefix={eligibility?.major_rank ? '前' : ''} /></Card></Col>
           <Col xs={12} md={6}>
             <Card>
               <Statistic title="不及格成绩"
@@ -483,10 +521,6 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
             <div>
               <dt>专业排名</dt>
               <dd>前 {batch.rank_limit_percent}%</dd>
-            </div>
-            <div>
-              <dt>我的排名</dt>
-              <dd>{eligibility?.major_rank ? `前 ${eligibility.major_rank}%` : '暂未提供'}</dd>
             </div>
             <div>
               <dt>不及格成绩</dt>
@@ -593,10 +627,16 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
                       {topic.confirmed_status && <Tag>{topic.confirmed_status}</Tag>}
                       {topic.has_attachment && <Tag color="processing">已有材料</Tag>}
                     </Space>
-                    {eligibility?.major_rank && (
-                      <Text type="secondary" className="research-confirmed-rank">
-                        我的专业排名：前 {eligibility.major_rank}%
-                      </Text>
+                    {topic.record_id && (
+                      <div className="research-topic-card__actions">
+                        <Button
+                          icon={<EyeOutlined />}
+                          disabled={offlineMode}
+                          onClick={() => showConfirmedTopic(topic)}
+                        >
+                          查看课题
+                        </Button>
+                      </div>
                     )}
                   </Card>
                 ))}
@@ -607,7 +647,12 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
       </Spin>
 
       <Drawer title="课题详情" width={isMobile ? '100%' : 640}
-        open={Boolean(detail)} onClose={() => setDetail(null)}>
+        open={Boolean(detail)} onClose={() => {
+          setDetail(null);
+          setJournalTopic(null);
+          setJournals([]);
+          setJournalsError('');
+        }}>
         <Spin spinning={detailLoading}>
           {detail && (
             <>
@@ -626,6 +671,42 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
               <Paragraph className="research-detail-text">{detail.introduction || '暂无简介'}</Paragraph>
               <Title level={5}>报名要求</Title>
               <Paragraph className="research-detail-text">{detail.requirements || '暂无额外要求'}</Paragraph>
+              {journalTopic && (
+                <section className="research-journals" aria-label="学生科研记录">
+                  <Title level={5}>学生科研记录</Title>
+                  {journalsError && (
+                    <Alert type="warning" showIcon message={journalsError}
+                      description="课题基础信息仍来自已确认课题列表；可稍后重试读取科研记录。"
+                      action={<Button size="small" onClick={() => showConfirmedTopic(journalTopic)}>
+                        重试
+                      </Button>} />
+                  )}
+                  <Spin spinning={journalsLoading}>
+                    {journals.length ? journals.map((journal) => (
+                      <Card size="small" key={journal.record_id || `${journal.start_at}-${journal.end_at}`}>
+                        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                          <Space wrap>
+                            {journal.status && <Tag color="processing">{journal.status}</Tag>}
+                            {(journal.start_at || journal.end_at) && (
+                              <Text type="secondary">
+                                {journal.start_at || '起始时间待定'} 至 {journal.end_at || '结束时间待定'}
+                              </Text>
+                            )}
+                          </Space>
+                          <Paragraph className="research-detail-text">
+                            {journal.content || '该条科研记录未填写内容'}
+                          </Paragraph>
+                          {journal.attachment && (
+                            <Text type="secondary">已附科研记录材料</Text>
+                          )}
+                        </Space>
+                      </Card>
+                    )) : (!journalsLoading && (
+                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="官方系统暂无科研记录" />
+                    ))}
+                  </Spin>
+                </section>
+              )}
             </>
           )}
         </Spin>

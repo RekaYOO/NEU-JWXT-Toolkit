@@ -433,11 +433,7 @@ def fetch_experiment_courses(auth: Any) -> dict[str, Any]:
     return {
         "term": str(term or ""),
         "courses": [course.to_dict() for course in courses],
-        "selected_results": [
-            result
-            for course in courses
-            for result in course.selected_result_rows()
-        ],
+        "selected_results": api.get_selected_course_results(term) if term else [],
     }
 
 

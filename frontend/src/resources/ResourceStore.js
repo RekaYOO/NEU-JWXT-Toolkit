@@ -458,15 +458,19 @@ export const useCachedResource = (resource, { autoRefresh = true, enabled = true
   }, [resource, store.load]);
 
   const updateData = useCallback((nextOrUpdater) => {
+    // Sibling hooks can publish a newer shared snapshot while this hook still
+    // holds an older displayed copy. Always derive functional updates from
+    // the shared resource first so acknowledgements are not dropped.
+    const currentData = store.states[resource]?.availableData || displayedData;
     const next = typeof nextOrUpdater === 'function'
-      ? nextOrUpdater(displayedData)
+      ? nextOrUpdater(currentData)
       : nextOrUpdater;
     if (!next) return;
     const meta = metadataOf(next);
     setDisplayedData(next);
     setDisplayedRevision(meta.revision);
     store.publish(resource, next);
-  }, [displayedData, resource, store.publish]);
+  }, [displayedData, resource, store.publish, store.states]);
 
   const clear = useCallback(() => {
     setDisplayedData(null);

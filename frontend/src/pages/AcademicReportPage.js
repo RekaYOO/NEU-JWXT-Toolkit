@@ -14,7 +14,7 @@ import {
   ExclamationCircleOutlined, FilterOutlined, DownCircleOutlined, UpCircleOutlined,
   CheckSquareOutlined, SearchOutlined
 } from '@ant-design/icons';
-import { useCachedResource } from '../resources/ResourceStore';
+import { useCachedResource, useResourceIdentity } from '../resources/ResourceStore';
 import { columnSettings, loadSetting, saveSetting } from '../utils/settings';
 import {
   compareAcademicTermsNewestFirst,
@@ -34,11 +34,14 @@ import {
 } from '../utils/academicReport';
 import dayjs from 'dayjs';
 import { MobileDetailDrawer } from '../components/mobile/MobileUX';
-import ResourceUpdateSummary from '../components/ResourceUpdateSummary';
+import MergedUpdateSummary from '../components/MergedUpdateSummary';
 import CourseOutlineDrawer from '../components/CourseOutlineDrawer';
 import useCourseOutlineMetadata from '../hooks/useCourseOutlineMetadata';
 import { summarizeAcademicReportUpdate } from '../utils/resourceUpdateSummary';
 import { summarizeSystemMessages } from '../utils/systemMessageSummary';
+import {
+  acknowledgeAndSyncSystemMessagePrompts, unreadSystemMessagePrompts,
+} from '../utils/systemMessagePrompt';
 import {
   ACADEMIC_REPORT_DEFAULT_COLUMNS,
   cloneDefaultColumns,
@@ -419,6 +422,13 @@ const AcademicReportPage = ({ offlineMode = false }) => {
   const [outlineCourse, setOutlineCourse] = useState(null);
   const reportResource = useCachedResource('academic-report');
   const systemMessagesResource = useCachedResource('system-messages', { autoRefresh: true });
+  const resourceIdentity = useResourceIdentity();
+  const planNoticeMessages = unreadSystemMessagePrompts(
+    (systemMessagesResource.availableData || systemMessagesResource.data)?.messages,
+    'academic',
+    resourceIdentity,
+  );
+  const planMessageSummaries = summarizeSystemMessages(planNoticeMessages, 'academic');
   const initializedRef = useRef(false);
   const promptedRevisionRef = useRef('');
   const [pendingPlanUpdate, setPendingPlanUpdate] = useState(null);
@@ -525,10 +535,6 @@ const AcademicReportPage = ({ offlineMode = false }) => {
       reportResource.data,
       reportResource.availableData,
     );
-    const messageSummary = summarizeSystemMessages(
-      systemMessagesResource.data?.messages,
-      'academic',
-    );
     if (!updateSummary.length) {
       // The cache revision changed only because the remote endpoint reordered
       // equivalent nodes (or changed numeric serialization). Apply silently.
@@ -540,7 +546,6 @@ const AcademicReportPage = ({ offlineMode = false }) => {
       revision: reportResource.availableRevision,
       data: reportResource.availableData,
       summary: updateSummary,
-      systemMessages: messageSummary,
     });
     return undefined;
   }, [
@@ -549,7 +554,6 @@ const AcademicReportPage = ({ offlineMode = false }) => {
     reportResource.availableData,
     reportResource.availableRevision,
     reportResource.updateAvailable,
-    systemMessagesResource.data,
     reportResource.applyAvailable,
   ]);
 
@@ -575,6 +579,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
 
   const applyPendingPlanUpdate = () => {
     const update = pendingPlanUpdate;
+      acknowledgeAndSyncSystemMessagePrompts(resourceIdentity, 'academic', planNoticeMessages);
     setPendingPlanUpdate(null);
     if (!update?.data) return;
     reportResource.applyData(update.data);
@@ -1680,17 +1685,16 @@ const AcademicReportPage = ({ offlineMode = false }) => {
         keyboard={false}
         closable={false}
         onOk={applyPendingPlanUpdate}
-        onCancel={() => setPendingPlanUpdate(null)}
+        onCancel={() => {
+            acknowledgeAndSyncSystemMessagePrompts(resourceIdentity, 'academic', planNoticeMessages);
+          setPendingPlanUpdate(null);
+        }}
       >
-        <ResourceUpdateSummary
-          items={[
-            ...(pendingPlanUpdate?.summary || []),
-            ...(pendingPlanUpdate?.systemMessages || []).map(item => `教务系统消息：${item}`),
-          ]}
+        <MergedUpdateSummary
+          changes={pendingPlanUpdate?.summary || []}
+          messages={planMessageSummaries}
+          description="刷新后，你的搜索、分类和展开状态会尽量保留。"
         />
-        <Text type="secondary">
-          刷新后，你的搜索、分类和展开状态会尽量保留。
-        </Text>
       </Modal>
     </div>
   );

@@ -59,6 +59,7 @@ const ExperimentCoursePage = () => {
         setTerm(cached.term || '');
         setLoading(false);
       } else if (initial && !courses.length) {
+        setCoursesError('当前没有可用的实验选课缓存，联网登录后可刷新');
         setLoading(false);
       }
       return cached;
@@ -339,14 +340,33 @@ const ExperimentCoursePage = () => {
               <div>
                 <Text>{result.project_name || '已选实验项目'}</Text>
                 <Text type="secondary">
-                  {result.select_status || '已确认'}
+                  {result.select_status ? `官方状态：${result.select_status}` : '已确认'}
                 </Text>
+              </div>
+              <div className="experiment-selected-result__details">
+                {[
+                  ['实验班', result.round_name],
+                  ['教师', result.teacher],
+                  ['周次', result.week],
+                  ['星期', result.day],
+                  ['节次', result.time],
+                  ['地点', result.location],
+                  ['选课时间', [result.select_start, result.select_end].filter(Boolean).join(' 至 ')],
+                ].filter(([, value]) => value).map(([label, value]) => (
+                  <div className="experiment-selected-result__field" key={label}>
+                    <span>{label}</span>
+                    <Text>{value}</Text>
+                  </div>
+                ))}
               </div>
             </div>
           ))}
         </div>
       ) : (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有已形成的实验选课结果" />
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={coursesError
+            ? '实验选课结果尚未确认，重试后显示'
+            : '当前没有已形成的实验选课结果'} />
       )}
       <Text type="secondary" className="experiment-selected-results-note">
         结果优先显示本地缓存；下方课程操作数据会在后台继续更新。
@@ -459,7 +479,7 @@ const ExperimentCoursePage = () => {
             />
           )
         ) : (
-          <Empty description={coursesError ? '实验课程读取失败，重试后显示' : '暂无实验课程'} />
+          <Empty description={coursesError ? '实验课程尚未确认，重试后显示' : '暂无实验课程'} />
         )}
       </Card>
 

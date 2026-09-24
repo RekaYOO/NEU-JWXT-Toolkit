@@ -218,6 +218,23 @@ def get_confirmed_research_topics(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
+@router.get("/research-training/confirmed/{record_id}/journals")
+def get_confirmed_research_journals(
+    record_id: str,
+    auth: NEUAuthClient = Depends(require_serialized_auth),
+):
+    """Read one confirmed topic's official student research records."""
+    try:
+        return {
+            "record_id": record_id,
+            "journals": _api(auth).get_journals(record_id),
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except ResearchTrainingError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 @router.post("/research-training/enroll")
 def enroll_research_topic(
     request: ResearchEnrollmentRequest,

@@ -1,12 +1,14 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
+import { Modal } from 'antd';
 import AcademicReportPage, {
   calcElectiveRemainingCredits,
   calcRequiredRemainingCredits,
 } from './AcademicReportPage';
 import { columnSettings, loadSetting } from '../utils/settings';
 import { useCachedResource } from '../resources/ResourceStore';
+import { clearSystemMessagePromptMemory } from '../utils/systemMessagePrompt';
 
 // This test covers the pure credit aggregation rule. Keep the page's remote
 // course-outline integration outside this unit-test boundary so Jest never
@@ -18,7 +20,8 @@ jest.mock('../services/api', () => ({
 }));
 
 jest.mock('../resources/ResourceStore', () => ({
-  useCachedResource: jest.fn()
+  useCachedResource: jest.fn(),
+  useResourceIdentity: () => 'test-account',
 }));
 
 jest.mock('../utils/settings', () => ({
@@ -175,4 +178,54 @@ test('存在选修学分缺口时培养计划页面可以正常渲染', async ()
   await act(async () => root.unmount());
   container.remove();
   global.IS_REACT_ACT_ENVIRONMENT = false;
+});
+
+test('培养计划差异弹窗合并稍后到达的教务消息且不再开第二个弹窗', async () => {
+  clearSystemMessagePromptMemory();
+  global.IS_REACT_ACT_ENVIRONMENT = true;
+  window.matchMedia = window.matchMedia || (() => ({
+    matches: false, addListener() {}, removeListener() {},
+    addEventListener() {}, removeEventListener() {},
+  }));
+  global.ResizeObserver = global.ResizeObserver || class {
+    observe() {} unobserve() {} disconnect() {}
+  };
+  columnSettings.load.mockImplementation(defaults => defaults);
+  const report = {
+    data: { categories: [], credit_summary: { total_required: 20 } },
+    availableData: { categories: [], credit_summary: { total_required: 22 } },
+    availableRevision: 'new-revision', updateAvailable: true,
+    error: null, syncError: null, applyAvailable: jest.fn(), applyData: jest.fn(),
+    refresh: jest.fn(), reloadAndApply: jest.fn(),
+  };
+  const messages = { data: { messages: [] } };
+  useCachedResource.mockImplementation(resource => (
+    resource === 'academic-report' ? report : messages
+  ));
+  const info = jest.spyOn(Modal, 'info').mockImplementation(() => ({ destroy: jest.fn() }));
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const render = () => act(async () => root.render(
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <AcademicReportPage />
+    </MemoryRouter>,
+  ));
+  try {
+    await render();
+    expect(document.body.textContent).toContain('要求学分：20 → 22');
+    messages.availableData = { messages: [{
+      id: 'official-plan', kind: 'reminder', title: '培养计划学分通知',
+      content: '要求学分已调整', sent_at: '2026-09-24 08:00:00', read: false,
+    }] };
+    await render();
+    expect(document.body.textContent).toContain('要求学分已调整');
+    expect(document.querySelectorAll('.ant-modal-confirm')).toHaveLength(0);
+    expect(info).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    info.mockRestore();
+    global.IS_REACT_ACT_ENVIRONMENT = false;
+  }
 });
