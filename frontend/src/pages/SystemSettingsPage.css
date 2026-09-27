@@ -15,6 +15,18 @@
 .system-settings-form-actions .ant-btn { min-width: 132px; }
 .system-settings-card-actions { row-gap: 8px; }
 .system-settings-card-actions .ant-btn { min-width: 124px; }
+.version-update-single,
+.version-update-panel { display: grid; gap: 12px; min-width: 0; }
+.version-update-panel { padding: 14px 16px; border: 1px solid var(--color-line-soft); border-radius: 10px; background: var(--color-surface-soft); }
+.version-update-panel__heading { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.version-update-panel__heading .ant-tag { margin: 0; }
+.version-update-version { display: flex; flex-wrap: wrap; gap: 8px 24px; color: var(--color-text-secondary, #667085); font-size: 13px; }
+.version-update-version span { min-width: 0; }
+.version-update-version b { color: var(--color-text, #17233d); font-weight: 600; margin-left: 4px; }
+.version-update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.version-update-actions .ant-btn { min-height: 34px; }
+.version-update-hint { display: block; line-height: 1.55; }
+.version-update-status { display: grid; gap: 4px; min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }
 .system-cache-resource-key { color: var(--color-text-tertiary, #999); font-size: 11px; margin-top: 2px; }
 .system-cache-list { display: grid; gap: 10px; }
 .system-cache-item { border-color: var(--color-line-soft); background: var(--color-surface-soft); box-shadow: none; }
@@ -34,6 +46,10 @@
   .system-settings-card-actions .ant-space-item,
   .system-settings-form-actions .ant-btn { min-width: 0; width: 100%; }
   .system-cache-item > .ant-card-body { padding: 12px; }
+  .version-update-panel { padding: 12px; }
+  .version-update-version { display: grid; gap: 4px; }
+  .version-update-actions { display: grid; grid-template-columns: 1fr; }
+  .version-update-actions .ant-btn { width: 100%; white-space: normal; height: auto; min-height: 36px; }
 }
 
 @media (max-width: 420px) {

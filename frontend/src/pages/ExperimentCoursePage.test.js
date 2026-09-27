@@ -63,6 +63,24 @@ describe('experiment selection cache-first states', () => {
     expect(container.textContent).not.toContain('当前没有已形成的实验选课结果');
   });
 
+  test('selected results lead with a quick overview and schedule details', async () => {
+    mockSnapshot = {
+      term: '2026-2027-1', courses: [], selected_results: [
+        {
+          task_id: 'task-1', project_code: 'project-1', selected_round_id: 'round-1',
+          course_name: '材料实验', project_name: '必做项目', week: '3-4', day: '二',
+          time: '3-4', location: '实验楼 A203', round_name: '一班',
+        },
+        { task_id: 'task-2', project_code: 'project-2', selected_round_id: 'round-2', course_name: '待安排实验' },
+      ],
+    };
+    await act(async () => root.render(<ExperimentCoursePage />));
+    expect(container.textContent).toContain('已选实验');
+    expect(container.textContent).toContain('已有安排');
+    expect(container.textContent).toContain('实验楼 A203');
+    expect(container.textContent).toContain('第3-4周');
+  });
+
   test('first refresh failure is not presented as a confirmed empty result', async () => {
     mockRefresh.mockRejectedValue(new Error('remote unavailable'));
     await act(async () => root.render(<ExperimentCoursePage />));

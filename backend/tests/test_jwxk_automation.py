@@ -318,6 +318,27 @@ def test_strategy_notification_uses_task_market_snapshot_over_legacy_archive(tmp
     assert "可选容量：150" not in body
 
 
+def test_selection_notification_explains_personal_result_and_plan_progress(tmp_path):
+    service = _service(tmp_path)
+    archive = {"batch_code": "batch", "batch_name": "补选", "term_code": "2026-2027-1", "selection_type_code": "02"}
+    body, html_body = service._notification_content(
+        archive,
+        heading="选课结果",
+        reason="任务检查完成",
+        courses=[{
+            "course_name": "数据结构", "course_code": "A01",
+            "notification_sources": ["方案组课程"],
+            "notification_group_names": ["第一志愿"],
+            "selected": True, "selected_count": 12, "capacity": 40,
+            "plan_group_target_count": 1, "plan_group_selected_count": 1,
+        }],
+    )
+
+    assert "我的结果：已选中" in body
+    assert "方案组进度：1/1 门" in body
+    assert "当前状态 / 方案进度" in html_body
+
+
 def test_task_snapshot_overlays_latest_archive_market_capacity(tmp_path):
     service = _service(tmp_path)
     service.merge_catalog_archive(

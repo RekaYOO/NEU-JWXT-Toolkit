@@ -433,6 +433,8 @@ class CourseSelectionAutomationService:
             for item in audience_task.get("items") or []:
                 if not isinstance(item, dict):
                     continue
+                group_id = str(item.get("plan_group_id") or "")
+                group_result = (audience_task.get("group_results") or {}).get(group_id) or {}
                 snapshot_source = (
                     task_snapshot
                     if task_snapshot is not None
@@ -442,6 +444,10 @@ class CourseSelectionAutomationService:
                 )
                 enriched = {
                     **item,
+                    **({
+                        "plan_group_target_count": group_result.get("target_count"),
+                        "plan_group_selected_count": group_result.get("success_count"),
+                    } if group_result else {}),
                     **(
                         recommendation_by_class.get(str(item.get("class_id") or "").casefold())
                         or recommendation_by_code.get(str(item.get("course_code") or "").casefold())
@@ -523,6 +529,18 @@ class CourseSelectionAutomationService:
             task_text = "、".join(course.get("notification_task_names") or [])
             weight = course.get("devoted_weight")
             probability = self._notification_probability(course)
+            if course.get("selected") or course.get("course_already_selected") or str(course.get("selection_status") or "").lower() in {"selected", "success", "已选", "已选中"}:
+                selection_status = "已选中"
+            elif str(course.get("task_status") or course.get("candidate_status") or "").lower() in {"pending", "verifying", "待确认", "核验中"}:
+                selection_status = "待确认"
+            else:
+                selection_status = "未选中"
+            target_count = course.get("plan_group_target_count")
+            selected_count = course.get("plan_group_selected_count")
+            plan_progress = (
+                f"{selected_count if selected_count is not None else 0}/{target_count} 门"
+                if target_count is not None else ""
+            )
             title = f"{course.get('course_name') or '课程'}-{course.get('course_code') or '代码待定'}"
             detail_bits = [sources]
             if group_text:
@@ -536,6 +554,8 @@ class CourseSelectionAutomationService:
             plain_rows.append(
                 f"- {title}\n  {'；'.join(detail_bits)}\n  {count_label}：{count if count is not None else '待更新'} / "
                 f"{capacity_label}：{course.get('capacity') if course.get('capacity') is not None else '待更新'}"
+                f"；我的结果：{selection_status}"
+                f"{f'；方案组进度：{plan_progress}' if plan_progress else ''}"
                 f"{weight_details}"
             )
             badges = "".join(
@@ -548,6 +568,7 @@ class CourseSelectionAutomationService:
                 f'<div style="margin-top:6px">{badges}</div>'
                 f'<div style="margin-top:4px;color:#667085;font-size:12px">{html.escape(" · ".join(filter(None, [f"方案组：{group_text}" if group_text else "", f"自动任务：{task_text}" if task_text else ""])))}</div>'
                 '</td>'
+                f'<td style="padding:14px 12px;border-bottom:1px solid #edf0f5;text-align:center">{html.escape(selection_status)}<br><span style="color:#667085;font-size:12px">{html.escape(plan_progress)}</span></td>'
                 f'<td style="padding:14px 12px;border-bottom:1px solid #edf0f5;text-align:center">{html.escape(str(count if count is not None else "待更新"))} / {html.escape(str(course.get("capacity") if course.get("capacity") is not None else "待更新"))}</td>'
                 + (
                     f'<td style="padding:14px 12px;border-bottom:1px solid #edf0f5;text-align:center">{html.escape(str(weight if weight is not None else "未投权"))}</td>'
@@ -569,10 +590,12 @@ class CourseSelectionAutomationService:
                 )
             )
         )
-        extra_headers = '<th style="padding:10px 12px">当前投权</th><th style="padding:10px 12px">预测选中概率</th>' if is_weight else ''
-        column_count = 4 if is_weight else 2
+        extra_headers = '<th style="padding:10px 12px">当前状态 / 方案进度</th><th style="padding:10px 12px">人数 / 容量</th>'
+        if is_weight:
+            extra_headers += '<th style="padding:10px 12px">当前投权</th><th style="padding:10px 12px">预测选中概率</th>'
+        column_count = 5 if is_weight else 3
         footer = "预测值是策略模型代理值，不是官方录取承诺。邮件发送失败不会触发或重放选课写操作。" if is_weight else "邮件发送失败不会触发或重放选课写操作。"
-        html_body = f'''<!doctype html><html><body style="margin:0;background:#f3f6fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;color:#25324b"><div style="max-width:760px;margin:0 auto;padding:24px 12px"><div style="background:linear-gradient(135deg,#1769e0,#6b8cff);padding:24px;border-radius:16px 16px 0 0;color:white"><div style="font-size:12px;opacity:.85">NEU JWXT TOOLKIT · 选课通知</div><h1 style="margin:8px 0 0;font-size:22px">{html.escape(heading)}</h1></div><div style="background:white;padding:20px;border-radius:0 0 16px 16px;box-shadow:0 8px 28px rgba(31,53,90,.08)"><div style="padding:12px 14px;background:#f7f9fc;border-radius:10px;line-height:1.8"><b>{html.escape(str(archive.get('batch_name') or archive.get('batch_code') or '选课轮次'))}</b><br>{html.escape(str(archive.get('term_name') or archive.get('term_code') or '学期待定'))}<br><span style="color:#667085">{html.escape(reason)}</span></div><div style="overflow-x:auto;margin-top:18px"><table style="width:100%;border-collapse:collapse;min-width:620px"><thead><tr style="background:#f7f9fc;color:#475467"><th style="padding:10px 12px;text-align:left">课程与来源</th><th style="padding:10px 12px">{html.escape(count_label)} / {html.escape(capacity_label)}</th>{extra_headers}</tr></thead><tbody>{''.join(html_rows) or f'<tr><td colspan="{column_count}" style="padding:24px;text-align:center;color:#667085">当前没有需要通知的课程</td></tr>'}</tbody></table></div><p style="margin:18px 0 0;color:#98a2b3;font-size:12px;line-height:1.6">{html.escape(footer)}</p></div></div></body></html>'''
+        html_body = f'''<!doctype html><html><body style="margin:0;background:#f3f6fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;color:#25324b"><div style="max-width:760px;margin:0 auto;padding:24px 12px"><div style="background:linear-gradient(135deg,#1769e0,#6b8cff);padding:24px;border-radius:16px 16px 0 0;color:white"><div style="font-size:12px;opacity:.85">NEU JWXT TOOLKIT · 选课通知</div><h1 style="margin:8px 0 0;font-size:22px">{html.escape(heading)}</h1></div><div style="background:white;padding:20px;border-radius:0 0 16px 16px;box-shadow:0 8px 28px rgba(31,53,90,.08)"><div style="padding:12px 14px;background:#f7f9fc;border-radius:10px;line-height:1.8"><b>{html.escape(str(archive.get('batch_name') or archive.get('batch_code') or '选课轮次'))}</b><br>{html.escape(str(archive.get('term_name') or archive.get('term_code') or '学期待定'))}<br><span style="color:#667085">{html.escape(reason)}</span></div><div style="overflow-x:auto;margin-top:18px"><table style="width:100%;border-collapse:collapse;min-width:620px"><thead><tr style="background:#f7f9fc;color:#475467"><th style="padding:10px 12px;text-align:left">课程与来源</th>{extra_headers}</tr></thead><tbody>{''.join(html_rows) or f'<tr><td colspan="{column_count}" style="padding:24px;text-align:center;color:#667085">当前没有需要通知的课程</td></tr>'}</tbody></table></div><p style="margin:18px 0 0;color:#98a2b3;font-size:12px;line-height:1.6">{html.escape(footer)}</p></div></div></body></html>'''
         return plain, html_body
 
     def _notify_grab_issue(

@@ -17,6 +17,22 @@ import './ExperimentCoursePage.css';
 const { Title, Text } = Typography;
 const { useBreakpoint } = Grid;
 
+const weekNumberOf = value => {
+  const match = String(value || '').match(/\d+/);
+  return match ? Number(match[0]) : Number.POSITIVE_INFINITY;
+};
+
+const scheduleLabel = (value, prefix, suffix = '') => {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return `${text.startsWith(prefix) ? text : `${prefix}${text}`}${text.endsWith(suffix) ? '' : suffix}`;
+};
+
+const resultScheduleText = result => (
+  [scheduleLabel(result.week, '第', '周'), scheduleLabel(result.day, '周'), scheduleLabel(result.time, '', '节')]
+    .filter(Boolean).join(' · ')
+);
+
 // 状态标签
 const StatusTag = ({ isSelected, isComplete, mustDoCount, selectedCount }) => {
   if (isComplete) {
@@ -305,6 +321,10 @@ const ExperimentCoursePage = () => {
     return { total, complete, inProgress, pending };
   }, [courses]);
   const selectedResultCount = selectedResults.length;
+  const scheduledResults = useMemo(() => selectedResults
+    .filter(result => result.week || result.day || result.time || result.location)
+    .sort((left, right) => weekNumberOf(left.week) - weekNumberOf(right.week)), [selectedResults]);
+  const unscheduledResults = selectedResults.length - scheduledResults.length;
   const orderedCourses = useMemo(() => [...courses].sort((left, right) => (
     Number(left.is_complete) - Number(right.is_complete)
     || (right.must_do_count - right.selected_count) - (left.must_do_count - left.selected_count)
@@ -323,33 +343,32 @@ const ExperimentCoursePage = () => {
   const renderSelectedResults = () => (
     <Card
       className="experiment-selected-results-card"
-      title="选课结果"
+      title={<div><span>我的实验</span><Text type="secondary" className="experiment-card-subtitle">已形成官方选课结果</Text></div>}
       extra={liveLoading ? <Spin size="small" /> : <Tag color={selectedResultCount ? 'success' : 'default'}>{selectedResultCount} 项</Tag>}
     >
       {selectedResultCount ? (
-        <div className="experiment-selected-results">
-          {selectedResults.map((result) => (
+        <>
+          <div className="experiment-results-overview">
+            <div><b>{selectedResultCount}</b><span>已选实验</span></div>
+            <div><b>{scheduledResults.length}</b><span>已有安排</span></div>
+            <div><b>{unscheduledResults}</b><span>待安排</span></div>
+          </div>
+          {scheduledResults.length > 0 && <div className="experiment-results-section-title">已安排实验</div>}
+          <div className="experiment-selected-results">
+          {[...scheduledResults, ...selectedResults.filter(result => !scheduledResults.includes(result))].map((result) => (
             <div
               className="experiment-selected-result"
               key={`${result.task_id}:${result.project_code}:${result.selected_round_id}`}
             >
-              <div>
-                <Text strong>{result.course_name || '未命名课程'}</Text>
-                <Text type="secondary">{result.course_no || '课程号待定'}</Text>
-              </div>
-              <div>
-                <Text>{result.project_name || '已选实验项目'}</Text>
-                <Text type="secondary">
-                  {result.select_status ? `官方状态：${result.select_status}` : '已确认'}
-                </Text>
+              <div className="experiment-selected-result__main">
+                <div className="experiment-selected-result__title"><Text strong>{result.course_name || '未命名课程'}</Text><Tag color="success">已选中</Tag></div>
+                <Text type="secondary">{result.project_name || '已选实验项目'}{result.course_no ? ` · ${result.course_no}` : ''}</Text>
+                <Text type="secondary">{result.round_name || '实验班待定'}</Text>
               </div>
               <div className="experiment-selected-result__details">
                 {[
-                  ['实验班', result.round_name],
                   ['教师', result.teacher],
-                  ['周次', result.week],
-                  ['星期', result.day],
-                  ['节次', result.time],
+                  ['时间', resultScheduleText(result)],
                   ['地点', result.location],
                   ['选课时间', [result.select_start, result.select_end].filter(Boolean).join(' 至 ')],
                 ].filter(([, value]) => value).map(([label, value]) => (
@@ -361,7 +380,8 @@ const ExperimentCoursePage = () => {
               </div>
             </div>
           ))}
-        </div>
+          </div>
+        </>
       ) : (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={coursesError
