@@ -198,6 +198,43 @@ describe('query timetable request lifecycle', () => {
       info.mockRestore();
     }
   });
+
+  test('applies a change in another week without interrupting the displayed week', async () => {
+    const baseline = {
+      ...personal,
+      courses: [
+        { ...course, id: 'visible', weeks: [1], course_name: '本周课程' },
+        { ...course, id: 'later', weeks: [2], course_name: '下周课程', location: '旧教室' },
+      ],
+      cache: { revision: 'old', last_checked_at: '2026-09-23T08:00:00Z' },
+    };
+    const updated = {
+      ...baseline,
+      courses: [baseline.courses[0], { ...baseline.courses[1], location: '新教室' }],
+      cache: { revision: 'new', last_checked_at: '2026-09-24T08:00:00Z' },
+    };
+    mockTimetableMemory.data = {
+      payload: baseline, terms: [{ code: termCode, name: '测试学期', current: true }],
+      currentTermCode: termCode, campusCode: '00', weekNumber: 1, viewMode: 'week',
+    };
+    getTimetableBootstrap.mockResolvedValue({
+      terms: [{ code: termCode, name: '测试学期', current: true }],
+      current: termCode, personal: [updated],
+    });
+    const confirm = jest.spyOn(Modal, 'confirm').mockImplementation(() => ({ destroy: jest.fn() }));
+    try {
+      await act(async () => root.render(
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><TimetablePage /></MemoryRouter>,
+      ));
+      await flush();
+      expect(confirm).not.toHaveBeenCalled();
+      expect(container.textContent).toContain('本周课程');
+      await click(week(2));
+      expect(container.textContent).toContain('新教室');
+    } finally {
+      confirm.mockRestore();
+    }
+  });
   const week = number => container.querySelector(`[data-week="${number}"]`);
 
   test('weekly day headings open a dated agenda and persist a custom event across page mounts', async () => {

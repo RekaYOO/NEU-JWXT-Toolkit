@@ -65,6 +65,7 @@ import {
   timetableSnapshotIsNewer,
   timetableContentSignature,
   timetableContentChanged,
+  personalPayloadForDisplayedView,
   usableTargetFilterDefinitions,
   TIMETABLE_DAY_ORDER,
   ROOM_AVAILABILITY_WEEKDAY_OPTIONS,
@@ -140,6 +141,28 @@ describe('TimetablePage helpers', () => {
     expect(timetableContentSignature(metadataOnly)).toBe(timetableContentSignature(current));
     expect(timetableContentChanged(metadataOnly, current)).toBe(false);
     expect(timetableContentChanged(changed, current)).toBe(true);
+  });
+
+  test('keeps background changes outside the displayed week out of the visible update', () => {
+    const current = {
+      term_code: '2026-2027-1',
+      campuses: [{ code: '00', name: '主校区' }],
+      weeks: [{ number: 1 }, { number: 2 }],
+      courses: [
+        { id: 'shown', course_name: '当前周课程', campus_code: '00', weekday: 1, weeks: [1] },
+        { id: 'later', course_name: '下周课程', campus_code: '00', weekday: 2, weeks: [2] },
+      ],
+    };
+    const changed = {
+      ...current,
+      courses: [current.courses[0], { ...current.courses[1], location: '新教室' }],
+    };
+    const view = { viewMode: 'week', weekNumber: 1, campusCode: '00' };
+    expect(timetableContentChanged(changed, current)).toBe(true);
+    expect(timetableContentSignature(personalPayloadForDisplayedView(changed, view)))
+      .toBe(timetableContentSignature(personalPayloadForDisplayedView(current, view)));
+    expect(timetableContentSignature(personalPayloadForDisplayedView(changed, { ...view, weekNumber: 2 })))
+      .not.toBe(timetableContentSignature(personalPayloadForDisplayedView(current, { ...view, weekNumber: 2 })));
   });
 
   test('maps timetable cache state to the refresh button indicator', () => {

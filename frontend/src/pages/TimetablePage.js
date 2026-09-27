@@ -1450,6 +1450,28 @@ export const timetableContentChanged = (candidate, current) => Boolean(
   candidate && current && timetableContentSignature(candidate) !== timetableContentSignature(current),
 );
 
+// A background refresh may contain changes for another week.  Compare only
+// what the user can currently see before deciding whether to interrupt them
+// with the update dialog; the complete payload is still applied silently.
+export const personalPayloadForDisplayedView = (payload, {
+  viewMode = 'week', weekNumber = null, campusCode = '',
+} = {}) => {
+  if (!payload) return null;
+  const campuses = payload.campuses || [];
+  return {
+    ...payload,
+    campuses: [],
+    weeks: [],
+    sections_by_campus: {},
+    courses: (payload.courses || []).filter(course => (
+      courseMatchesCampus(course, campusCode, campuses)
+      && (viewMode !== 'week' || courseMatchesWeek(course, weekNumber))
+    )),
+    unscheduled: payload.unscheduled || [],
+    practices: payload.practices || [],
+  };
+};
+
 export const formatTimetableFloor = value => {
   const text = String(value ?? '').trim();
   return /^[+-]?\d+\.0+$/.test(text) ? text.replace(/\.0+$/, '') : text;
@@ -1938,7 +1960,7 @@ function TimetablePage({
 
   useEffect(() => { loadTerms(); }, [loadTerms]);
 
-  const setPersonalContext = useCallback((payload, nextCampusCode, nextWeek) => {
+  const setPersonalContext = useCallback((payload, nextCampusCode, nextWeek, nextViewMode = viewModeRef.current) => {
     setAvailabilityPersonalWeekContext({
       term_code: payload.term_code,
       weeks: payload.weeks || [],
@@ -1952,6 +1974,7 @@ function TimetablePage({
     setContext({ campuses: payload.campuses || [], weeks: payload.weeks || [], sections });
     setCampusCode(nextCampusCode);
     setWeekNumber(nextWeek);
+    setSchedule(personalScheduleView(payload, nextCampusCode, nextViewMode, nextWeek));
   }, []);
 
   const browserSyncStarted = useRef(false);
@@ -1973,7 +1996,6 @@ function TimetablePage({
     setCacheStatusPayload(payload);
     setCacheSyncFailed(Boolean(payload?.cache?.last_error_kind));
     setPersonalContext(decorated, firstCampus, nextWeek);
-    setSchedule(personalScheduleView(decorated, firstCampus, viewModeRef.current, nextWeek));
     setLoading(false);
     return true;
   }, [setPersonalContext]);
@@ -2006,6 +2028,17 @@ function TimetablePage({
       setCacheStatusPayload(payload);
       setCacheSyncFailed(Boolean(payload?.cache?.last_error_kind));
       return false;
+    }
+    const displayedView = timetableViewState.current;
+    const visibleCurrent = personalPayloadForDisplayedView(current, displayedView);
+    const visibleNext = personalPayloadForDisplayedView(payload, displayedView);
+    if (visibleCurrent?.term_code === visibleNext?.term_code
+      && timetableContentSignature(visibleCurrent) === timetableContentSignature(visibleNext)) {
+      applyPersonalPayloadForView(payload);
+      setCacheTier(source);
+      setCacheStatusPayload(payload);
+      setCacheSyncFailed(Boolean(payload?.cache?.last_error_kind));
+      return true;
     }
     if (pendingPersonalSignatureRef.current === signature || personalUpdateModal.current) return true;
 
@@ -2327,7 +2360,7 @@ function TimetablePage({
                 setViewMode('term');
                 setAutoNotice(automaticTimetableNotice({ nextTermHasCourses: true }));
                 setTermCode(normalizeTimetableTermCode(nextTermCode));
-                setPersonalContext(nextPayload, nextCampus, nextWeek);
+                setPersonalContext(nextPayload, nextCampus, nextWeek, 'term');
                 setLoading(false);
                 return;
               }
@@ -3133,6 +3166,9 @@ function TimetablePage({
     // user's vertical position; only the timetable data should change.
     setDetailCourse(null);
     setError(null);
+    if (mode === 'personal' && personalPayload?.term_code === termCode) {
+      setSchedule(personalScheduleView(personalPayload, campusCode, 'week', nextWeek));
+    }
     setWeekNumber(nextWeek);
   };
 
@@ -3455,7 +3491,7 @@ function TimetablePage({
     termCode === currentTermCode
     && weekNumber === effectiveCurrentWeekNumber,
   );
-  timetableViewState.current = { termCode, campusCode, weekNumber };
+  timetableViewState.current = { termCode, campusCode, weekNumber, viewMode };
 
   useEffect(() => {
     if (
@@ -3464,8 +3500,13 @@ function TimetablePage({
     ) return;
     openingWeekResolved.current = true;
     if (deepLink.current.week || !effectiveCurrentWeekNumber) return;
-    if (weekNumber !== effectiveCurrentWeekNumber) setWeekNumber(effectiveCurrentWeekNumber);
-  }, [context?.weeks, currentTermCode, effectiveCurrentWeekNumber, embedded, mode, termCode, viewMode, weekNumber]);
+    if (weekNumber !== effectiveCurrentWeekNumber) {
+      if (personalPayload?.term_code === termCode) {
+        setSchedule(personalScheduleView(personalPayload, campusCode, 'week', effectiveCurrentWeekNumber));
+      }
+      setWeekNumber(effectiveCurrentWeekNumber);
+    }
+  }, [campusCode, context?.weeks, currentTermCode, effectiveCurrentWeekNumber, embedded, mode, personalPayload, termCode, viewMode, weekNumber]);
 
   useEffect(() => {
     if (!schedule || viewMode !== 'week' || !termCode) return;
@@ -4087,7 +4128,30 @@ function TimetablePage({
           )}
           <OtherCourses schedule={schedule} />
           {mode === 'personal' && !embedded && displayedViewMode === 'week' && <div className="timetable-extra-agenda">
-            {agendaEventCourses.filter(course => course.weeks.includes(displayedWeekNumber) && !course.start_section).map(course => <Button key={course.id} onClick={() => setAgendaDate(course.agenda_date)}>{WEEKDAY_NAMES[course.weekday - 1]} · {course.start_time}–{course.end_time} · {course.course_name}</Button>)}
+            {agendaEventCourses.filter(course => course.weeks.includes(displayedWeekNumber) && !course.start_section).map(course => {
+              const openAgenda = () => setAgendaDate(course.agenda_date);
+              const title = `${WEEKDAY_NAMES[course.weekday - 1] || '当天'} · ${course.start_time || '时间待定'}${course.end_time ? `–${course.end_time}` : ''} · ${course.course_name}`;
+              return <article
+                className="timetable-extra-agenda-item"
+                key={course.id}
+                role="button"
+                tabIndex={0}
+                aria-label={`打开${title}日程`}
+                onClick={openAgenda}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openAgenda();
+                  }
+                }}
+              >
+                <span className="timetable-extra-agenda-item__time">{WEEKDAY_NAMES[course.weekday - 1] || '当天'} · {course.start_time || '时间待定'}{course.end_time ? `–${course.end_time}` : ''}</span>
+                <strong className="timetable-extra-agenda-item__title">{course.course_name}</strong>
+                {course.location && <span className="timetable-extra-agenda-item__location"><EnvironmentOutlined /> {course.location}</span>}
+                {course.teachers?.length > 0 && <span className="timetable-extra-agenda-item__note">{course.teachers.join('、')}</span>}
+                {(course.course_nature || course.assessment_type) && <b className="timetable-extra-agenda-item__important">{[course.course_nature, course.assessment_type].filter(Boolean).join(' · ')}</b>}
+              </article>;
+            })}
           </div>}
         </>
       ) : null}
@@ -4950,6 +5014,7 @@ function MobileWeekTimeline({ weeks, selectedWeek, currentWeek, onChange, anchor
   const railRef = useRef(null);
   const settleTimer = useRef(null);
   const programmaticScroll = useRef(false);
+  const mountedRef = useRef(false);
 
   useEffect(() => {
     const active = railRef.current?.querySelector(`[data-week="${selectedWeek}"]`);
@@ -4960,11 +5025,13 @@ function MobileWeekTimeline({ weeks, selectedWeek, currentWeek, onChange, anchor
     // scrollIntoView() can also move the document vertically when the user
     // changes weeks from a course card farther down the page. Keep this
     // adjustment strictly inside the horizontal week rail.
+    const behavior = !mountedRef.current || selectedWeek === currentWeek ? 'auto' : 'smooth';
     if (typeof rail?.scrollTo === 'function') {
-      rail.scrollTo({ left, behavior: 'smooth' });
+      rail.scrollTo({ left, behavior });
     } else if (rail) {
       rail.scrollLeft = left;
     }
+    mountedRef.current = true;
     const timer = window.setTimeout(() => { programmaticScroll.current = false; }, 420);
     return () => window.clearTimeout(timer);
   }, [selectedWeek]);
