@@ -81,6 +81,18 @@
 .experiment-selected-results {
   display: grid;
   gap: 0;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.experiment-selected-results-card {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.experiment-selected-results-card .ant-card-body {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .experiment-card-subtitle {
@@ -116,6 +128,9 @@
   gap: 10px 20px;
   padding: 14px 0;
   border-bottom: 1px solid var(--color-border, #f0f0f0);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .experiment-selected-result:last-child {
@@ -125,7 +140,9 @@
 .experiment-selected-result .ant-typography {
   display: block;
   min-width: 0;
+  max-width: 100%;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .experiment-selected-result > .ant-typography {
@@ -134,13 +151,42 @@
 
 .experiment-selected-result > div {
   min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
-.experiment-selected-result__main { grid-column: 1 / -1; }
-.experiment-selected-result__title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.experiment-selected-result__main {
+  grid-column: 1 / -1;
+  min-width: 0;
+  max-width: 100%;
+}
+.experiment-selected-result__title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.experiment-selected-result__title .ant-typography,
+.experiment-selected-result__course-title,
+.experiment-selected-result__meta,
+.experiment-selected-result__value {
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.experiment-selected-result__title .ant-typography {
+  flex: 1 1 auto;
+}
+.experiment-selected-result__title .ant-typography,
+.experiment-selected-result__course-title {
+  width: auto;
+}
 .experiment-selected-result__title .ant-tag { margin: 0; flex: none; }
 
 .experiment-selected-result__details {
@@ -149,17 +195,20 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px 16px !important;
   padding-top: 2px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .experiment-selected-result__field {
   min-width: 0;
+  max-width: 100%;
   display: grid !important;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: start;
   gap: 6px !important;
 }
 
-.experiment-selected-result__field > span {
+.experiment-selected-result__field > span:not(.ant-typography) {
   color: var(--color-muted, #8c8c8c);
   white-space: nowrap;
   font-size: 12px;
@@ -167,7 +216,11 @@
 
 .experiment-selected-result__field .ant-typography {
   min-width: 0;
+  max-width: 100%;
+  display: block;
+  white-space: normal;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* 展开的项目列表 */

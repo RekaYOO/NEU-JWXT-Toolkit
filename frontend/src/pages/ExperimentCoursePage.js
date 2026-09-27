@@ -361,9 +361,9 @@ const ExperimentCoursePage = () => {
               key={`${result.task_id}:${result.project_code}:${result.selected_round_id}`}
             >
               <div className="experiment-selected-result__main">
-                <div className="experiment-selected-result__title"><Text strong>{result.course_name || '未命名课程'}</Text><Tag color="success">已选中</Tag></div>
-                <Text type="secondary">{result.project_name || '已选实验项目'}{result.course_no ? ` · ${result.course_no}` : ''}</Text>
-                <Text type="secondary">{result.round_name || '实验班待定'}</Text>
+                <div className="experiment-selected-result__title"><Text strong className="experiment-selected-result__course-title">{result.course_name || '未命名课程'}</Text><Tag color="success">已选中</Tag></div>
+                <Text type="secondary" className="experiment-selected-result__meta">{result.project_name || '已选实验项目'}{result.course_no ? ` · ${result.course_no}` : ''}</Text>
+                <Text type="secondary" className="experiment-selected-result__meta">{result.round_name || '实验班待定'}</Text>
               </div>
               <div className="experiment-selected-result__details">
                 {[
@@ -374,7 +374,7 @@ const ExperimentCoursePage = () => {
                 ].filter(([, value]) => value).map(([label, value]) => (
                   <div className="experiment-selected-result__field" key={label}>
                     <span>{label}</span>
-                    <Text>{value}</Text>
+                    <Text className="experiment-selected-result__value">{value}</Text>
                   </div>
                 ))}
               </div>

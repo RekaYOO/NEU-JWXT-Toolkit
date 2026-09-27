@@ -81,6 +81,27 @@ describe('experiment selection cache-first states', () => {
     expect(container.textContent).toContain('第3-4周');
   });
 
+  test('long selected-result fields use constrained value elements', async () => {
+    mockSnapshot = {
+      term: '2026-2027-1',
+      courses: [],
+      selected_results: [{
+        task_id: 'task-long', project_code: 'project-long', selected_round_id: 'round-long',
+        course_name: '基础工业工程与生产物流系统综合实验课程名称较长',
+        project_name: '工业工程方向综合实验项目名称', round_name: '一班',
+        location: '生产与物流系统综合实验室(文管学馆B201)【文管学院】',
+        select_start: '2026-08-14 16:50:53', select_end: '2026-08-14 16:52:00',
+      }],
+    };
+
+    await act(async () => root.render(<ExperimentCoursePage />));
+
+    expect(container.querySelector('.experiment-selected-result__course-title')).not.toBeNull();
+    expect(container.querySelectorAll('.experiment-selected-result__value').length).toBe(2);
+    expect([...container.querySelectorAll('.experiment-selected-result__value')]
+      .every(element => element.classList.contains('experiment-selected-result__value'))).toBe(true);
+  });
+
   test('first refresh failure is not presented as a confirmed empty result', async () => {
     mockRefresh.mockRejectedValue(new Error('remote unavailable'));
     await act(async () => root.render(<ExperimentCoursePage />));
