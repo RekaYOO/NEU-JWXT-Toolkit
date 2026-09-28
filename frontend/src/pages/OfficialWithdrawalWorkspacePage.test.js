@@ -143,7 +143,9 @@ describe('独立退课工作台', () => {
       expect(scrollTargets.at(-1).target).toBe(container.querySelector('.jwxk-live-schedule'));
       expect(scrollTargets.at(-1).options).toEqual({ behavior: 'smooth', block: 'start' });
       expect(container.querySelector('[data-testid="withdrawal-timetable"]').dataset.previewCount).toBe('1');
-      await click(container.querySelector('.jwxk-live-schedule__head button'));
+      expect(container.querySelector('.jwxk-schedule-preview-controls').textContent)
+        .toContain('正在预览');
+      await click(container.querySelector('.jwxk-schedule-preview-controls button'));
       expect(scrollTargets.at(-1).target.closest('.jwxk-course-group').textContent).toContain('基础工业工程');
       expect(scrollTargets.at(-1).options).toEqual({ behavior: 'smooth', block: 'center' });
       expect(container.querySelector('[data-testid="withdrawal-timetable"]').dataset.previewCount).toBe('0');
@@ -169,7 +171,7 @@ describe('独立退课工作台', () => {
       await click(button(container, '比较教学班'));
       await click(button(container, '在课表中预览'));
       await click(button(container, '收起教学班'));
-      await click(container.querySelector('.jwxk-live-schedule__head button'));
+      await click(container.querySelector('.jwxk-schedule-preview-controls button'));
       expect(targets.at(-1).classList.contains('jwxk-course-group')).toBe(true);
     } finally {
       Element.prototype.scrollIntoView = previousScroll;

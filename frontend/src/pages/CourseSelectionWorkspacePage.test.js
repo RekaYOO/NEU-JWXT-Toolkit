@@ -221,6 +221,32 @@ describe('selection workspace independent resource loading', () => {
     expect(mockTimetableProps.refreshSignal).toBe(initialSignal + 1);
   });
 
+  test('catalog preview controls cancel the selected class and return to its course', async () => {
+    const previousScroll = Element.prototype.scrollIntoView;
+    const scrollTargets = [];
+    Element.prototype.scrollIntoView = function () { scrollTargets.push(this); };
+    try {
+      await render();
+      const group = container.querySelector('.jwxk-course-group');
+      await act(async () => group.click());
+      const preview = [...group.querySelectorAll('button')]
+        .find(item => item.textContent === '在课表中预览');
+      expect(preview).toBeTruthy();
+      await act(async () => preview.click());
+      expect(container.querySelector('.jwxk-schedule-preview-controls').textContent)
+        .toContain('测试选修课');
+      expect(mockTimetableProps.overlayCourses.some(item => item.layer === 'preview')).toBe(true);
+      await act(async () => {
+        container.querySelector('.jwxk-schedule-preview-controls button').click();
+        await new Promise(resolve => setTimeout(resolve, 120));
+      });
+      expect(container.querySelector('.jwxk-schedule-preview-controls')).toBeNull();
+      expect(scrollTargets.at(-1).closest('.jwxk-course-group')).toBe(group);
+    } finally {
+      Element.prototype.scrollIntoView = previousScroll;
+    }
+  });
+
   test('plan management is expanded by default inside the same sidebar', async () => {
     await render();
     const aside = container.querySelector('.jwxk-catalog-layout > .jwxk-plan-aside');

@@ -474,6 +474,52 @@
 .jwxk-live-schedule { display: grid; gap: 12px; margin-top: 16px; }
 .jwxk-live-schedule__head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .jwxk-live-schedule__head h4 { margin: 0; }
+.jwxk-schedule-preview-controls {
+  position: sticky;
+  top: 72px;
+  z-index: 12;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-line);
+  border-left: 3px solid var(--color-brand);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  box-shadow: 0 2px 8px rgb(15 23 42 / 10%);
+}
+.jwxk-schedule-preview-controls__summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.jwxk-schedule-preview-controls__summary strong { flex: none; font-size: 13px; }
+.jwxk-schedule-preview-controls__summary > span:last-child:not(.jwxk-schedule-preview-controls__indicator) {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jwxk-schedule-preview-controls__indicator {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-brand);
+}
+.jwxk-schedule-preview-controls__actions { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.jwxk-schedule-preview-controls__actions .ant-btn { display: inline-flex; max-width: 200px; align-items: center; }
+.jwxk-schedule-preview-controls__course { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 767px) {
+  .jwxk-schedule-preview-controls { top: 64px; flex-wrap: wrap; }
+  .jwxk-schedule-preview-controls__summary { flex: 1 1 140px; }
+  .jwxk-schedule-preview-controls__actions { flex: 1 1 auto; }
+}
 .jwxk-plan-group .ant-card-body { display: grid; gap: 8px; }
 .jwxk-plan-alternative { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 0; border-bottom: 1px solid var(--color-line-soft); }
 .jwxk-plan-alternative:last-child { border-bottom: 0; }
@@ -866,15 +912,6 @@
 .official-withdrawal-workspace__error { margin-top: 12px; }
 .official-withdrawal-workspace__loading { min-height: 180px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--color-muted); }
 .official-withdrawal-workspace__timetable { margin-top: 16px; }
-.official-withdrawal-workspace__timetable .jwxk-live-schedule__head > .ant-btn {
-  min-width: 0;
-  max-width: min(100%, 460px);
-  min-height: 36px;
-  height: auto;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: center;
-}
 .jwxk-catalog-layout.official-withdrawal-workspace__catalog-layout { grid-template-columns: minmax(0, 1fr) 280px; }
 .official-withdrawal-workspace__catalog-layout .jwxk-plan-aside { position: sticky; top: 76px; align-self: start; max-height: calc(100vh - 92px); overflow: auto; }
 .official-withdrawal-workspace__catalog-layout .jwxk-course-group.is-single { cursor: default; }

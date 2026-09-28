@@ -21,6 +21,7 @@ import {
   saveJwxkPlan, searchJwxkCatalog, selectJwxkCourse,
 } from '../services/api';
 import TimetablePage from './TimetablePage';
+import SchedulePreviewControls from '../components/SchedulePreviewControls';
 import {
   applyCatalogDisplayLayout,
   catalogAvailabilityRequestMode,
@@ -3183,12 +3184,12 @@ const CourseSelectionWorkspacePage = () => {
     <section className="jwxk-live-schedule" ref={scheduleRef}>
       <div className="jwxk-live-schedule__head">
         <div><Title level={4}>选课课表</Title><Text type="secondary">紧凑显示当前课表与方案候选；空闲节次可直接反查可选课程，也可切换班级、教师和教室课表比较。</Text></div>
-        {catalogPreviewClasses.length > 0 && <Space wrap>{catalogPreviewClasses.map(course => (
-          <Button key={course.class_id} size="small" onClick={() => cancelCatalogPreviewFromSchedule(course)}>
-            取消“{course.course_name}”的课表预览
-          </Button>
-        ))}</Space>}
       </div>
+      <SchedulePreviewControls
+        courses={catalogPreviewClasses}
+        courseKey={course => course.class_id}
+        onCancel={cancelCatalogPreviewFromSchedule}
+      />
       {termCode && <TimetablePage
         embedded
         preferredTermCode={termCode}

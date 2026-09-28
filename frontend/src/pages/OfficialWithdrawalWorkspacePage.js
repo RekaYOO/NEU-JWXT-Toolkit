@@ -8,6 +8,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import TimetablePage from './TimetablePage';
+import SchedulePreviewControls from '../components/SchedulePreviewControls';
 import { useCachedResource } from '../resources/ResourceStore';
 import { deselectOfficialCourse, getOfficialWithdrawalCourses } from '../services/api';
 import { collectAcademicPlanDeficits, getAcademicRuleDeficitText } from '../utils/academicReport';
@@ -300,8 +301,12 @@ const OfficialWithdrawalWorkspacePage = () => {
           <section className="jwxk-live-schedule official-withdrawal-workspace__timetable" ref={scheduleRef}>
             <div className="jwxk-live-schedule__head">
               <div><Title level={4}>选课课表</Title><Text type="secondary">用于核对课程时间和退课影响。</Text></div>
-              {previewedCourse && <Button size="small" onClick={() => cancelPreview(previewedCourse)}>取消“{previewedCourse.course_name}”的课表预览</Button>}
             </div>
+            <SchedulePreviewControls
+              courses={previewedCourse ? [previewedCourse] : []}
+              courseKey={course => course.wid}
+              onCancel={cancelPreview}
+            />
             {payload?.term_code ? <TimetablePage
               embedded
               preferredTermCode={payload.term_code}

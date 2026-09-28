@@ -783,6 +783,17 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-brand) 18%, transparent), var(--shadow-md);
 }
 
+.timetable-course-block.is-selection-preview,
+.timetable-cluster-stack-card.is-selection-preview,
+.timetable-mobile-card.is-selection-preview {
+  animation: timetable-preview-breathe 3s ease-in-out infinite;
+}
+
+@keyframes timetable-preview-breathe {
+  0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-brand) 18%, transparent), var(--shadow-md); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-brand) 25%, transparent), var(--shadow-md); }
+}
+
 .timetable-course-block.is-plan-candidate .course-title,
 .timetable-cluster-stack-card.is-plan-candidate > strong,
 .timetable-mobile-card.is-plan-candidate .mobile-course-title,
@@ -2291,6 +2302,12 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .timetable-course-block.is-selection-preview,
+  .timetable-cluster-stack-card.is-selection-preview,
+  .timetable-mobile-card.is-selection-preview {
+    animation: none;
+  }
+
   .timetable-course-block.is-course-now::after,
   .timetable-cluster-stack-card.is-course-now::after,
   .timetable-mobile-card.is-course-now::after {
