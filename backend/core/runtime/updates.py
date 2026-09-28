@@ -10,10 +10,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -29,6 +31,21 @@ RELEASE_PAGE_URL = f"https://github.com/{REPOSITORY}/releases/latest"
 MANIFEST_ASSET = "release-manifest.json"
 MAX_RELEASE_BYTES = 1024 * 1024 * 1024
 METADATA_TTL_SECONDS = 600
+REQUEST_TIMEOUT_SECONDS = 120
+DOWNLOAD_TIMEOUT_SECONDS = 180
+INSTALL_TIMEOUT_SECONDS = 1200
+DOWNLOAD_ATTEMPTS = 3
+
+STATE_MESSAGES = {
+    "downloading": "正在下载更新包",
+    "verifying": "正在校验更新包",
+    "staged": "更新包已准备",
+    "requested": "等待服务端更新器接管",
+    "installing": "正在安装并检查新版本",
+    "downloaded": "更新包已下载，需要手动安装",
+    "completed": "更新已完成",
+    "failed": "更新失败",
+}
 
 _SEMVER = re.compile(
     r"^(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)\.(?P<patch>0|[1-9][0-9]*)"
@@ -249,35 +266,130 @@ class UpdateManager:
 
     @staticmethod
     def auto_linux_available(config: RuntimeConfig) -> bool:
-        return config.profile == "server" and Path(
+        if config.profile != "server" or not Path(
             "/etc/systemd/system/neu-jwxt-toolkit-updater.path"
-        ).is_file()
-
-    def _write_status(self, config: RuntimeConfig, status: dict[str, Any]) -> None:
-        target = self._status_file(config)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(".tmp")
-        temporary.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
-        temporary.replace(target)
-
-    def status(self, config: RuntimeConfig, job_id: str | None = None) -> dict[str, Any] | None:
-        result_path = config.data_dir / "updates" / "update-result.env"
+        ).is_file():
+            return False
         try:
-            result_lines = result_path.read_text(encoding="utf-8").splitlines()
-            result = dict(line.split("=", 1) for line in result_lines if "=" in line)
-            if result.get("job_id") and (not job_id or result.get("job_id") == job_id):
-                return result
-        except (OSError, ValueError):
-            pass
-        with self._lock:
-            if job_id and job_id in self._jobs:
-                return dict(self._jobs[job_id])
-        path = self._status_file(config)
+            return subprocess.run(
+                ["systemctl", "is-active", "--quiet", "neu-jwxt-toolkit-updater.path"],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=2,
+            ).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    def _read_status(self, config: RuntimeConfig) -> dict[str, Any] | None:
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            value = json.loads(self._status_file(config).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        return value if isinstance(value, dict) else None
+        return value if isinstance(value, dict) and value.get("job_id") else None
+
+    def _read_result(self, config: RuntimeConfig) -> dict[str, str] | None:
+        try:
+            lines = (config.data_dir / "updates" / "update-result.env").read_text(encoding="utf-8").splitlines()
+            value = dict(line.split("=", 1) for line in lines if "=" in line)
+        except (OSError, ValueError):
+            return None
+        if not re.fullmatch(r"[0-9a-f]{1,64}", value.get("job_id", "")):
+            return None
+        return value if value.get("state") in {"installing", "completed", "failed"} else None
+
+    def _write_status(self, config: RuntimeConfig, status: dict[str, Any], *, new_job: bool = False) -> None:
+        with self._lock:
+            previous = self._read_status(config)
+            if previous and previous.get("job_id") != status.get("job_id") and not new_job:
+                return
+            same_job = previous and previous.get("job_id") == status.get("job_id")
+            history = list(previous.get("history", [])) if same_job else []
+            now = self._now()
+            value = {
+                **status,
+                "updated_at": now,
+                "message": status.get("message") or STATE_MESSAGES.get(status.get("state"), ""),
+            }
+            if not history or history[-1]["state"] != value["state"]:
+                history.append({"state": value["state"], "at": now, "message": value["message"]})
+            value["history"] = history[-16:]
+            target = self._status_file(config)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_suffix(".tmp")
+            temporary.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(target)
+            self._jobs[value["job_id"]] = value
+
+    def _ensure_current_job(self, config: RuntimeConfig, job_id: str) -> None:
+        with self._lock:
+            if (self._read_status(config) or {}).get("job_id") != job_id:
+                raise UpdateError("更新任务已由新的尝试替代")
+
+    def status(self, config: RuntimeConfig, job_id: str | None = None) -> dict[str, Any] | None:
+        with self._lock:
+            current = self._read_status(config)
+            value = current if current and (not job_id or current.get("job_id") == job_id) else None
+            if value is None and job_id:
+                value = self._jobs.get(job_id)
+            result = self._read_result(config)
+            if value is None and result and (not job_id or result["job_id"] == job_id) and current is None:
+                value = result
+            if value is None:
+                return None
+            value = dict(value)
+            if result and result["job_id"] == value["job_id"]:
+                history = list(value.get("history", []))
+                for stage, timestamp in (
+                    ("installing", result.get("install_started_at") or result.get("updated_at")),
+                    (result["state"], result.get("updated_at")),
+                ):
+                    if stage == "installing" and not result.get("install_started_at") and result["state"] != "installing":
+                        continue
+                    if timestamp and not any(item.get("state") == stage for item in history):
+                        history.append({"state": stage, "at": timestamp, "message": STATE_MESSAGES[stage]})
+                value.update(result)
+                value["history"] = history[-16:]
+                value["message"] = STATE_MESSAGES[result["state"]]
+                if result["state"] == "installing" and result.get("updated_at"):
+                    try:
+                        install_age = (datetime.now(timezone.utc) - datetime.fromisoformat(
+                            result["updated_at"].replace("Z", "+00:00")
+                        )).total_seconds()
+                    except ValueError:
+                        install_age = 0
+                    if install_age > INSTALL_TIMEOUT_SECONDS:
+                        value["error"] = "安装超过预期时间，请检查服务端更新器日志；安装可能仍在进行"
+                return value
+            limits = {
+                "downloading": DOWNLOAD_TIMEOUT_SECONDS,
+                "verifying": DOWNLOAD_TIMEOUT_SECONDS,
+                "staged": REQUEST_TIMEOUT_SECONDS,
+                "requested": REQUEST_TIMEOUT_SECONDS,
+                "installing": INSTALL_TIMEOUT_SECONDS,
+            }
+            timeout = limits.get(value.get("state"))
+            if timeout:
+                try:
+                    if value.get("updated_at"):
+                        age = (datetime.now(timezone.utc) - datetime.fromisoformat(
+                            value["updated_at"].replace("Z", "+00:00")
+                        )).total_seconds()
+                    else:
+                        age = time.time() - self._status_file(config).stat().st_mtime
+                except (OSError, TypeError, ValueError):
+                    age = 0
+                if age > timeout:
+                    error = {
+                        "requested": "更新器未接管任务，请检查 systemd 更新器状态后重试",
+                        "installing": "安装长时间没有回执，请检查服务端更新器日志",
+                    }.get(value["state"], "更新任务中断或超时，请重试")
+                    value.update(state="failed", error=error, message=STATE_MESSAGES["failed"])
+                    self._write_status(config, value)
+                    return dict(self._jobs[value["job_id"]])
+            return value
 
     def start_download(self, config: RuntimeConfig) -> dict[str, Any]:
         if config.profile not in {"server", "desktop"}:
@@ -290,61 +402,112 @@ class UpdateManager:
         if not asset:
             raise UpdateError("当前 Release 缺少对应平台资产")
         with self._lock:
-            active = next((item for item in self._jobs.values() if item.get("state") in {"downloading", "staged", "requested", "downloaded"}), None)
-            if active:
-                return dict(active)
+            active = self.status(config)
+            if active and active.get("state") in {"downloading", "verifying", "staged", "requested", "installing"}:
+                if active.get("version") != manifest.version:
+                    raise UpdateError("已有其他版本的更新任务正在进行")
+                return active
             job_id = uuid.uuid4().hex
-            state = {"job_id": job_id, "state": "downloading", "version": manifest.version, "asset": asset.name}
-            self._jobs[job_id] = state
-        self._write_status(config, state)
+            state = {
+                "job_id": job_id, "state": "downloading", "version": manifest.version,
+                "asset": asset.name, "bytes_downloaded": 0, "bytes_total": asset.size,
+            }
+            self._write_status(config, state, new_job=True)
         threading.Thread(target=self._download_worker, args=(config, manifest, asset, job_id), daemon=True, name="release-update").start()
-        return dict(state)
+        return self.status(config, job_id) or state
 
     start_linux_download = start_download
 
     def _download_worker(self, config: RuntimeConfig, manifest: ReleaseManifest, asset: ReleaseAsset, job_id: str) -> None:
         root = config.data_dir / "updates" / manifest.version
-        temporary = root / f"{asset.name}.part"
+        temporary = root / f"{asset.name}.{job_id}.part"
         final = root / asset.name
-        state = {"job_id": job_id, "state": "downloading", "version": manifest.version, "asset": asset.name}
+        state = {
+            "job_id": job_id, "state": "downloading", "version": manifest.version,
+            "asset": asset.name, "bytes_downloaded": 0, "bytes_total": asset.size,
+        }
+        stage = "下载"
         try:
             root.mkdir(parents=True, exist_ok=True)
             request = Request(asset.url, headers={"User-Agent": "NEU-JWXT-Toolkit-updater", "Accept": "application/octet-stream"})
-            digest = hashlib.sha256()
-            size = 0
-            with urlopen(request, timeout=30) as response, temporary.open("wb") as output:
-                if not _allowed_release_url(response.geturl()):
-                    raise UpdateError("下载地址跳转到不受信任的域名")
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > MAX_RELEASE_BYTES:
-                        raise UpdateError("发行包超过允许的大小")
-                    digest.update(chunk)
-                    output.write(chunk)
-                output.flush()
-            if digest.hexdigest().lower() != asset.sha256:
-                raise UpdateError("发行包校验失败")
-            temporary.replace(final)
-            state.update({"state": "staged", "path": str(final), "sha256": asset.sha256, "size": size})
-            if config.profile == "server" and self.auto_linux_available(config):
-                request_path = config.data_dir / "updates" / "request.env"
-                request_path.write_text(
-                    f"job_id={job_id}\nversion={manifest.version}\nasset={asset.name}\nsha256={asset.sha256}\n",
-                    encoding="ascii",
+            for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+                self._ensure_current_job(config, job_id)
+                state.update(
+                    bytes_downloaded=0, attempt=attempt, attempts=DOWNLOAD_ATTEMPTS,
+                    message=f"正在下载更新包（第 {attempt}/{DOWNLOAD_ATTEMPTS} 次）",
                 )
-                request_path.chmod(0o600)
-                state["state"] = "requested"
+                self._write_status(config, state)
+                digest = hashlib.sha256()
+                size = 0
+                last_report = time.monotonic()
+                try:
+                    with urlopen(request, timeout=30) as response, temporary.open("wb") as output:
+                        if not _allowed_release_url(response.geturl()):
+                            raise UpdateError("下载地址跳转到不受信任的域名")
+                        while True:
+                            chunk = response.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            size += len(chunk)
+                            if size > MAX_RELEASE_BYTES:
+                                raise UpdateError("发行包超过允许的大小")
+                            digest.update(chunk)
+                            output.write(chunk)
+                            if time.monotonic() - last_report >= 1:
+                                state["bytes_downloaded"] = size
+                                self._write_status(config, state)
+                                last_report = time.monotonic()
+                        output.flush()
+                    if size != asset.size or digest.hexdigest().lower() != asset.sha256:
+                        raise UpdateError("下载内容与发行清单不一致")
+                    break
+                except HTTPError as error:
+                    if error.code not in {408, 429} and error.code < 500:
+                        raise UpdateError(f"下载资源不可用（HTTP {error.code}）") from error
+                    reason = f"下载服务暂时不可用（HTTP {error.code}）"
+                except (URLError, TimeoutError, OSError) as error:
+                    reason = "网络中断或连接超时"
+                except UpdateError as error:
+                    if str(error) != "下载内容与发行清单不一致":
+                        raise
+                    reason = str(error)
+                temporary.unlink(missing_ok=True)
+                if attempt == DOWNLOAD_ATTEMPTS:
+                    raise UpdateError(f"{reason}，已尝试 {DOWNLOAD_ATTEMPTS} 次")
+                state["message"] = f"{reason}，准备第 {attempt + 1}/{DOWNLOAD_ATTEMPTS} 次下载"
+                self._write_status(config, state)
+                time.sleep(attempt)
+            stage = "校验"
+            state.pop("message", None)
+            state.update(state="verifying", bytes_downloaded=size)
+            self._write_status(config, state)
+            with self._lock:
+                self._ensure_current_job(config, job_id)
+                temporary.replace(final)
+                state.update({"state": "staged", "path": str(final), "sha256": asset.sha256, "size": size})
+                self._write_status(config, state)
+            if config.profile == "server" and self.auto_linux_available(config):
+                stage = "提交更新请求"
+                with self._lock:
+                    self._ensure_current_job(config, job_id)
+                    request_path = config.data_dir / "updates" / "request.env"
+                    request_temp = request_path.with_suffix(".tmp")
+                    request_temp.write_text(
+                        f"job_id={job_id}\nversion={manifest.version}\nasset={asset.name}\nsha256={asset.sha256}\n",
+                        encoding="ascii",
+                    )
+                    request_temp.chmod(0o600)
+                    request_temp.replace(request_path)
+                    state["state"] = "requested"
+                    self._write_status(config, state)
             else:
                 state["state"] = "downloaded"
+                self._write_status(config, state)
         except Exception as error:
             temporary.unlink(missing_ok=True)
-            state.update({"state": "failed", "error": str(error)})
-        with self._lock:
-            self._jobs[job_id] = state
-        self._write_status(config, state)
+            state.pop("message", None)
+            state.update({"state": "failed", "error": f"{stage}失败：{error}"})
+            self._write_status(config, state)
 
 
 manager = UpdateManager()

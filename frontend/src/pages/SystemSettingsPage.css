@@ -27,6 +27,10 @@
 .version-update-actions .ant-btn { min-height: 34px; }
 .version-update-hint { display: block; line-height: 1.55; }
 .version-update-status { display: grid; gap: 4px; min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }
+.version-update-history { display: grid; gap: 5px; margin: 4px 0 0; padding: 0; list-style: none; }
+.version-update-history li { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); gap: 8px; font-size: 12px; }
+.version-update-history time { color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.version-update-history span { min-width: 0; overflow-wrap: anywhere; }
 .system-cache-resource-key { color: var(--color-text-tertiary, #999); font-size: 11px; margin-top: 2px; }
 .system-cache-list { display: grid; gap: 10px; }
 .system-cache-item { border-color: var(--color-line-soft); background: var(--color-surface-soft); box-shadow: none; }
@@ -50,6 +54,7 @@
   .version-update-version { display: grid; gap: 4px; }
   .version-update-actions { display: grid; grid-template-columns: 1fr; }
   .version-update-actions .ant-btn { width: 100%; white-space: normal; height: auto; min-height: 36px; }
+  .version-update-history li { grid-template-columns: 1fr; gap: 0; }
 }
 
 @media (max-width: 420px) {

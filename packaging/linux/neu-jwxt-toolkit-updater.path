@@ -2,7 +2,7 @@
 Description=Watch for NEU JWXT Toolkit staged updates
 
 [Path]
-PathChanged=/var/lib/neu-jwxt-toolkit/updates/request.env
+PathExists=/var/lib/neu-jwxt-toolkit/updates/request.env
 Unit=neu-jwxt-toolkit-updater.service
 
 [Install]

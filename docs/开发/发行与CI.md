@@ -72,7 +72,9 @@ python packaging/nuitka/build.py server
 
 Linux 安装包同时包含 `update-helper.sh` 及 `neu-jwxt-toolkit-updater.path/.service`。它们只
 允许处理 `/var/lib/neu-jwxt-toolkit/updates/` 中已校验的官方包，再调用既有 `install.sh --upgrade`；
-服务用户不直接提权，配置和回滚边界与手动升级相同。
+服务用户不直接提权，配置和回滚边界与手动升级相同。path 单元使用 `PathExists` 拾取
+监听器重启前留下的请求；root helper 加锁并原子认领请求后才进入安装，不能留下请求文件
+导致重启时重复安装。下载阶段最多重试三次并丢弃每次不完整文件，安装阶段不自动重放。
 
 Android 调试包需要 JDK 17、Android SDK 35 和 Python 3.13。先构建前端，再为目标 ABI 构建
 锁定的 Android wheel，最后运行 Gradle Wrapper。Android 只把未压缩的 WebView 运行资源复制进
