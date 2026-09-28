@@ -25,7 +25,11 @@ jest.mock('../services/api', () => ({
 jest.mock('../resources/ResourceStore', () => ({ useCachedResource: jest.fn() }));
 jest.mock('./TimetablePage', () => props => {
   mockTimetableProps = props;
-  return null;
+  return <div
+    data-testid="selection-timetable"
+    data-initial-view-mode={props.initialViewMode}
+    data-auto-current-week={String(Boolean(props.autoSelectCurrentWeekOnOpen))}
+  />;
 });
 jest.mock('../components/CourseOutlineDrawer', () => () => null);
 
@@ -212,6 +216,8 @@ describe('selection workspace independent resource loading', () => {
 
   test('catalog refresh also asks the embedded personal timetable to rebuild its conflict baseline', async () => {
     await render();
+    expect(mockTimetableProps.initialViewMode).toBe('week');
+    expect(mockTimetableProps.autoSelectCurrentWeekOnOpen).toBe(true);
     const initialSignal = mockTimetableProps.refreshSignal;
     const refresh = container.querySelector('.jwxk-header-refresh');
     await act(async () => {

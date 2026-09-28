@@ -1939,7 +1939,8 @@
     margin-top: var(--space-3);
   }
 
-  .timetable-mobile.is-compact-week {
+  .timetable-mobile.is-compact-week,
+  .timetable-mobile.is-selection-compact {
     touch-action: pan-y;
   }
 

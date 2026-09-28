@@ -58,6 +58,8 @@ describe('OfficialWithdrawalCard', () => {
     expect(container.textContent).toContain('进入退课工作台');
     expect(container.querySelector('.official-withdrawal-row')).toBeNull();
     expect(container.querySelector('.official-withdrawal-card__entry > .ant-btn')).not.toBeNull();
+    expect(container.querySelector('.official-withdrawal-card__refresh')).not.toBeNull();
+    expect(container.querySelector('.official-withdrawal-card > .ant-card-head .ant-card-extra')).toBeNull();
   });
 
   test('does not call the write API from the entry card', async () => {

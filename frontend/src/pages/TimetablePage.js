@@ -1622,6 +1622,7 @@ function TimetablePage({
   embedded = false,
   preferredTermCode = '',
   initialViewMode = 'week',
+  autoSelectCurrentWeekOnOpen = false,
   overlayCourses = [],
   resolveCourseDetail,
   presentation = 'default',
@@ -2394,8 +2395,13 @@ function TimetablePage({
   useEffect(() => {
     if (!usesPersonalTimetableEndpoint || recoveryMode) return;
     if (personalPayload?.term_code === termCode && schedule) return;
-    loadPersonalTimetable(termCode, { autoDetect: !autoDefaultResolved.current });
-  }, [loadPersonalTimetable, personalPayload, recoveryMode, schedule, termCode, usesPersonalTimetableEndpoint]);
+    loadPersonalTimetable(termCode, {
+      // Embedded selection/withdrawal workspaces must stay on their supplied
+      // term and current week; the normal page's next-term auto-detection is
+      // not appropriate inside a round workspace.
+      autoDetect: !autoDefaultResolved.current && !embedded,
+    });
+  }, [embedded, loadPersonalTimetable, personalPayload, recoveryMode, schedule, termCode, usesPersonalTimetableEndpoint]);
 
   const appliedRefreshSignal = useRef(refreshSignal);
   useEffect(() => {
@@ -3495,7 +3501,8 @@ function TimetablePage({
 
   useEffect(() => {
     if (
-      openingWeekResolved.current || embedded || mode !== 'personal' || viewMode !== 'week'
+      openingWeekResolved.current || (embedded && !autoSelectCurrentWeekOnOpen)
+      || mode !== 'personal' || viewMode !== 'week'
       || !termCode || termCode !== currentTermCode || !context?.weeks?.length
     ) return;
     openingWeekResolved.current = true;
@@ -3506,7 +3513,7 @@ function TimetablePage({
       }
       setWeekNumber(effectiveCurrentWeekNumber);
     }
-  }, [campusCode, context?.weeks, currentTermCode, effectiveCurrentWeekNumber, embedded, mode, personalPayload, termCode, viewMode, weekNumber]);
+  }, [autoSelectCurrentWeekOnOpen, campusCode, context?.weeks, currentTermCode, effectiveCurrentWeekNumber, embedded, mode, personalPayload, termCode, viewMode, weekNumber]);
 
   useEffect(() => {
     if (!schedule || viewMode !== 'week' || !termCode) return;
@@ -5138,14 +5145,44 @@ export function MobileTimetable({
   const suppressSwipeClickRef = useRef(false);
   const courses = [...(coursesByDay[selectedDay] || [])].sort((a, b) => a.start_section - b.start_section);
   const compact = presentation === 'selection';
+  const canSwipeWeek = viewMode === 'week' && (compact || compactWeekView);
   const sectionNumbers = sections.length
     ? sections.map(item => Number(item.number))
     : Array.from({ length: 12 }, (_, index) => index + 1);
+  const handleSwipePointerDown = event => {
+    if (event.pointerType === 'mouse') return;
+    if (compact && !canSwipeWeek) return;
+    if (!compact && compactWeekView && viewMode !== 'week') return;
+    if (!compact && !compactWeekView && event.target.closest('button, a, input, .ant-segmented')) return;
+    swipeStartRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+  };
+  const handleSwipePointerUp = event => {
+    const start = swipeStartRef.current;
+    swipeStartRef.current = null;
+    if (!start || start.pointerId !== event.pointerId) return;
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    if (Math.abs(dx) < 50 || Math.abs(dx) <= Math.abs(dy) * 1.2) return;
+    suppressSwipeClickRef.current = true;
+    if (canSwipeWeek) onSwipeWeek?.(dx < 0 ? 1 : -1);
+    else onSwipeDay?.(dx < 0 ? 1 : -1);
+  };
+  const handleSwipeClickCapture = event => {
+    if (!suppressSwipeClickRef.current) return;
+    suppressSwipeClickRef.current = false;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const handleSwipePointerCancel = () => { swipeStartRef.current = null; };
   if (compact) {
     return (
       <section
         className="timetable-mobile is-selection-compact is-compact-week"
         aria-label="手机课表"
+        onClickCapture={handleSwipeClickCapture}
+        onPointerDown={handleSwipePointerDown}
+        onPointerUp={handleSwipePointerUp}
+        onPointerCancel={handleSwipePointerCancel}
       >
         <TimetableGrid
           coursesByDay={coursesByDay}
@@ -5208,33 +5245,10 @@ export function MobileTimetable({
     <section
       className={`timetable-mobile${compact ? ' is-selection-compact' : ''}${compactWeekView ? ' is-compact-week' : ''}${viewMode === 'term' ? ' is-term-view' : ''}`}
       aria-label="手机课表"
-      onClickCapture={event => {
-        if (!suppressSwipeClickRef.current) return;
-        suppressSwipeClickRef.current = false;
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-      onPointerDown={event => {
-        if (
-          compact
-          || event.pointerType === 'mouse'
-          || (compactWeekView && viewMode !== 'week')
-          || (!compactWeekView && event.target.closest('button, a, input, .ant-segmented'))
-        ) return;
-        swipeStartRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
-      }}
-      onPointerUp={event => {
-        const start = swipeStartRef.current;
-        swipeStartRef.current = null;
-        if (!start || start.pointerId !== event.pointerId) return;
-        const dx = event.clientX - start.x;
-        const dy = event.clientY - start.y;
-        if (Math.abs(dx) < 50 || Math.abs(dx) <= Math.abs(dy) * 1.2) return;
-        suppressSwipeClickRef.current = true;
-        if (compactWeekView && viewMode === 'week') onSwipeWeek?.(dx < 0 ? 1 : -1);
-        else onSwipeDay?.(dx < 0 ? 1 : -1);
-      }}
-      onPointerCancel={() => { swipeStartRef.current = null; }}
+      onClickCapture={handleSwipeClickCapture}
+      onPointerDown={handleSwipePointerDown}
+      onPointerUp={handleSwipePointerUp}
+      onPointerCancel={handleSwipePointerCancel}
     >
       {compactWeekView ? (
         <MobileCompactWeekTimetable

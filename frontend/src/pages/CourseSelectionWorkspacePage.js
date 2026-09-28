@@ -3193,7 +3193,8 @@ const CourseSelectionWorkspacePage = () => {
       {termCode && <TimetablePage
         embedded
         preferredTermCode={termCode}
-        initialViewMode="term"
+        initialViewMode="week"
+        autoSelectCurrentWeekOnOpen
         overlayCourses={allScheduleOverlay}
         resolveCourseDetail={resolvePreviewDetail}
         presentation="selection"

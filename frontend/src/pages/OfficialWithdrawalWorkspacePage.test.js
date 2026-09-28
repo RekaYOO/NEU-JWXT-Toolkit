@@ -9,8 +9,13 @@ jest.mock('../services/api', () => ({
   deselectOfficialCourse: jest.fn(),
 }));
 
-jest.mock('../pages/TimetablePage', () => ({ overlayCourses }) => (
-  <div data-testid="withdrawal-timetable" data-preview-count={overlayCourses.length}>课表</div>
+jest.mock('../pages/TimetablePage', () => ({ overlayCourses, initialViewMode, autoSelectCurrentWeekOnOpen }) => (
+  <div
+    data-testid="withdrawal-timetable"
+    data-preview-count={overlayCourses.length}
+    data-initial-view-mode={initialViewMode}
+    data-auto-current-week={String(Boolean(autoSelectCurrentWeekOnOpen))}
+  >课表</div>
 ));
 jest.mock('../utils/academicReport', () => ({
   ...jest.requireActual('../utils/academicReport'),
@@ -103,7 +108,10 @@ describe('独立退课工作台', () => {
     await renderPage();
     expect(container.textContent).toContain('退课工作台');
     expect(container.textContent).toContain('培养计划缺口');
-    expect(container.querySelector('[data-testid="withdrawal-timetable"]')).not.toBeNull();
+    const timetable = container.querySelector('[data-testid="withdrawal-timetable"]');
+    expect(timetable).not.toBeNull();
+    expect(timetable.dataset.initialViewMode).toBe('week');
+    expect(timetable.dataset.autoCurrentWeek).toBe('true');
     expect(container.querySelectorAll('.jwxk-inline-class')).toHaveLength(2);
     expect(container.querySelectorAll('.jwxk-course-group__stats')).toHaveLength(0);
     expect(container.textContent).not.toContain('教学班 1 个');

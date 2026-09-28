@@ -1387,6 +1387,49 @@ describe('TimetablePage helpers', () => {
     }
   });
 
+  test('selection presentation also supports swiping between weeks', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onSwipeWeek = jest.fn();
+    const onSwipeDay = jest.fn();
+    try {
+      await act(async () => {
+        root.render(<MobileTimetable
+          coursesByDay={Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]))}
+          sections={[]}
+          selectedDay={1}
+          viewMode="week"
+          currentTerm
+          currentWeekNumber={3}
+          onDayChange={() => {}}
+          onSwipeDay={onSwipeDay}
+          onSwipeWeek={onSwipeWeek}
+          onCourseClick={() => {}}
+          personalConflictMap={{}}
+          presentation="selection"
+        />);
+      });
+      const timetable = container.querySelector('.timetable-mobile');
+      await act(async () => {
+        timetable.dispatchEvent(new MouseEvent('pointerdown', {
+          bubbles: true, clientX: 240, clientY: 100,
+        }));
+        timetable.dispatchEvent(new MouseEvent('pointerup', {
+          bubbles: true, clientX: 100, clientY: 104,
+        }));
+      });
+      expect(onSwipeWeek).toHaveBeenCalledWith(1);
+      expect(onSwipeDay).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
   test('supports the compact seven-day grid in mobile term view without hidden week navigation', async () => {
     const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
     global.IS_REACT_ACT_ENVIRONMENT = true;

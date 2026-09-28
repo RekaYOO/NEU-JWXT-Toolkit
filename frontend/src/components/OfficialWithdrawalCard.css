@@ -1,5 +1,8 @@
 .official-withdrawal-card .ant-card-head-title { min-width: 0; }
-.official-withdrawal-card__title { display: inline-flex; align-items: center; gap: 8px; }
+.official-withdrawal-card__title { display: inline-flex; min-width: 0; align-items: center; gap: 8px; }
+.official-withdrawal-card__title > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.official-withdrawal-card__refresh { flex: none; margin-inline-start: 2px; color: var(--color-muted); }
+.official-withdrawal-card__refresh:hover { color: var(--color-brand-strong); background: var(--color-surface-soft); }
 .official-withdrawal-card__intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .official-withdrawal-card__intro h5 { margin: 0 0 4px; }
 .official-withdrawal-card__intro .ant-typography-secondary { display: block; max-width: 780px; }

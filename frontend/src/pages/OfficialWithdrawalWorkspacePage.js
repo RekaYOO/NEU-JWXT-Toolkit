@@ -310,7 +310,8 @@ const OfficialWithdrawalWorkspacePage = () => {
             {payload?.term_code ? <TimetablePage
               embedded
               preferredTermCode={payload.term_code}
-              initialViewMode="term"
+              initialViewMode="week"
+              autoSelectCurrentWeekOnOpen
               presentation="selection"
               overlayCourses={previewedCourse?.schedules || []}
             /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前学期信息待确认" />}

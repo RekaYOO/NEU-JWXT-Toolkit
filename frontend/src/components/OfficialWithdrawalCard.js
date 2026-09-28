@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Card, Empty, Spin, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Empty, Spin, Tag, Tooltip, Typography } from 'antd';
 import { ArrowRightOutlined, ReloadOutlined, RollbackOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { getOfficialWithdrawalCourses } from '../services/api';
@@ -34,8 +34,24 @@ const OfficialWithdrawalCard = () => {
   return (
     <Card
       className="official-withdrawal-card"
-      title={<div className="official-withdrawal-card__title"><RollbackOutlined /><span>官方退课管理</span></div>}
-      extra={<Button type="text" icon={<ReloadOutlined />} loading={loading} onClick={load}>刷新</Button>}
+      title={(
+        <div className="official-withdrawal-card__title">
+          <RollbackOutlined />
+          <span>官方退课管理</span>
+          <Tooltip title="刷新退课入口">
+            <Button
+              type="text"
+              shape="circle"
+              size="small"
+              className="official-withdrawal-card__refresh"
+              aria-label="刷新退课入口"
+              icon={<ReloadOutlined />}
+              loading={loading}
+              onClick={load}
+            />
+          </Tooltip>
+        </div>
+      )}
     >
       <div className="official-withdrawal-card__intro">
         <div>
