@@ -12,6 +12,7 @@ import {
 import { changedOfficialBatchTimes, courseCampusLabels, selectionParticipantCount } from '../utils/jwxkSchedule';
 import { jwxkBatchAccessMeta, jwxkSelectionMode } from '../utils/jwxkModes';
 import { ServiceAuthNotice, ServiceRouteControl, ServiceWebVPNLogin } from '../components/ServiceConnection';
+import OfficialWithdrawalCard from '../components/OfficialWithdrawalCard';
 import { nativeShellInfo } from '../services/nativeBridge';
 import './CourseSelectionPage.css';
 
@@ -305,6 +306,7 @@ const CourseSelectionPage = () => {
             message: '校园网环境下学校 WebVPN 不可用，请将选课线路切换为直连或跟随教务。',
           }));
         }} />
+      <OfficialWithdrawalCard />
       {[['active', '正在进行'], ['not_started', '即将开始'], ['ended', '已结束'], ['unknown', '状态待确认']].map(([key, title]) => groups[key]?.length > 0 && (
         <section className="course-selection-section" key={key}>
           <div className="course-selection-section__title"><div><Title level={4}>{title}</Title><Text type="secondary">{groups[key].length} 个轮次</Text></div></div>

@@ -267,6 +267,7 @@ def test_remote_mutations_declare_no_retry_and_consistency_action():
         "jwxk.confirm",
         "jwxk.select",
         "jwxk.deselect",
+        "jwxt.official_deselect",
     }
     assert set(MUTATION_POLICIES) == expected
     assert all(

@@ -1,0 +1,23 @@
+.official-withdrawal-card .ant-card-head-title { min-width: 0; }
+.official-withdrawal-card__title { display: inline-flex; align-items: center; gap: 8px; }
+.official-withdrawal-card__intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.official-withdrawal-card__intro h5 { margin: 0 0 4px; }
+.official-withdrawal-card__intro .ant-typography-secondary { display: block; max-width: 780px; }
+.official-withdrawal-card__loading { display: flex; min-height: 120px; align-items: center; justify-content: center; gap: 10px; color: var(--color-muted); }
+.official-withdrawal-card__entry { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, 240px); align-items: end; gap: 16px 24px; padding: 14px 0 2px; }
+.official-withdrawal-card__metrics { display: flex; min-width: 0; flex: 1; align-items: center; gap: 18px; flex-wrap: wrap; }
+.official-withdrawal-card__metrics > div:not(.official-withdrawal-card__hint) { display: grid; gap: 2px; min-width: 80px; }
+.official-withdrawal-card__metrics strong { color: var(--color-ink); font-size: 22px; line-height: 1; }
+.official-withdrawal-card__metrics span { color: var(--color-muted); font-size: 12px; }
+.official-withdrawal-card__hint { max-width: 420px; color: var(--color-muted); font-size: 12px; line-height: 1.6; }
+.official-withdrawal-card__entry > .ant-btn { width: 100%; min-height: 40px; }
+@media (max-width: 600px) {
+  .official-withdrawal-card .ant-card-head { padding-inline: 14px; }
+  .official-withdrawal-card .ant-card-body { padding: 14px; }
+  .official-withdrawal-card__intro { display: grid; gap: 8px; }
+  .official-withdrawal-card__intro .ant-tag { justify-self: start; }
+  .official-withdrawal-card__entry { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .official-withdrawal-card__metrics { gap: 14px 22px; }
+  .official-withdrawal-card__hint { flex-basis: 100%; max-width: none; }
+  .official-withdrawal-card__entry > .ant-btn { width: 100%; min-height: 42px; }
+}

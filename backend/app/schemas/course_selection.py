@@ -322,6 +322,50 @@ class JwxkMutationResponse(StrictModel):
     ] = ""
 
 
+class OfficialWithdrawalCourseModel(StrictModel):
+    """Normalized row from the independent official withdrawal page."""
+
+    wid: str = Field(min_length=1, max_length=128)
+    course_serial: str = ""
+    course_code: str = ""
+    course_name: str = ""
+    teaching_class_id: str = ""
+    department: str = ""
+    teacher: str = ""
+    schedule: str = ""
+    course_nature: str = ""
+    course_category: str = ""
+    hours: float | None = None
+    credits: float | None = None
+    class_start_at: str = ""
+    withdrawal_start_at: str = ""
+    withdrawal_end_at: str = ""
+    source_code: str = ""
+    source_label: str = ""
+    weight: float | None = None
+    can_withdraw: bool = False
+    unavailable_reason: str = ""
+    penalty_phase: Literal["", "1", "2"] = ""
+    penalty_label: str = ""
+    penalty_weight: int | None = None
+    schedules: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class OfficialWithdrawalResponse(StrictModel):
+    term_code: str = ""
+    term_name: str = ""
+    entry_available: bool = False
+    entry_status: Literal["open", "empty", "closed"] = "closed"
+    courses: list[OfficialWithdrawalCourseModel] = Field(default_factory=list)
+    penalty_rules: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class OfficialWithdrawalRequest(StrictModel):
+    term_code: str = Field(min_length=1, max_length=32, pattern=r"^[0-9-]+$")
+    wid: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    confirmed: Literal[True]
+
+
 class JwxkTimeSlot(StrictModel):
     weekday: int = Field(ge=1, le=7)
     section: int = Field(ge=1, le=30)

@@ -1805,6 +1805,7 @@ class NEUAuthClient:
         Returns:
             Response 对象
         """
+        retry_on_auth = kwargs.pop("retry_on_auth", True)
         # 确保已登录
         if not self._logged_in:
             with self._auth_operation_lock:
@@ -1853,6 +1854,9 @@ class NEUAuthClient:
 
         if _redirected_to_cas:
             logger.info("检测到票据失效（重定向到认证页），重新登录...")
+            if not retry_on_auth:
+                self._logged_in = False
+                raise NEULoginError("统一认证会话已过期，写操作未自动重试；请刷新确认状态")
             if is_remote_read_context():
                 # Visible shared reads must not hold their HTTP response open
                 # while a multi-route login chain runs. The application-level
@@ -3167,6 +3171,7 @@ class NEUAuthClient:
         2. 连接失败时自动切换协议重试
         3. 回退成功后记住可用协议，后续请求直接使用
         """
+        retry_on_transport = kwargs.pop("retry_on_transport", True)
         # WebVPN 模式下，业务层仍传原始校内 URL；在此处统一转换。
         if self.active_mode == "webvpn" and not WebVPNUrlCodec.is_webvpn_url(url):
             hostname = urlparse(url).hostname or ""
@@ -3204,6 +3209,8 @@ class NEUAuthClient:
             return response
         except (requests.exceptions.ConnectionError, requests.exceptions.SSLError,
                 requests.exceptions.Timeout, requests.exceptions.TooManyRedirects) as e:
+            if not retry_on_transport:
+                raise
             # 仅对 jwxt.neu.edu.cn 进行协议回退
             if "jwxt.neu.edu.cn" not in url:
                 raise

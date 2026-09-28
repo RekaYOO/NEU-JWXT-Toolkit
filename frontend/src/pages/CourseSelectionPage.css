@@ -861,3 +861,73 @@
     grid-template-columns: 1fr;
   }
 }
+/* Independent withdrawal workspace: a single round-style catalog with a
+   timetable and plan context, without reusing the selection action grid. */
+.official-withdrawal-workspace__error { margin-top: 12px; }
+.official-withdrawal-workspace__loading { min-height: 180px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--color-muted); }
+.official-withdrawal-workspace__timetable { margin-top: 16px; }
+.official-withdrawal-workspace__timetable .jwxk-live-schedule__head > .ant-btn {
+  min-width: 0;
+  max-width: min(100%, 460px);
+  min-height: 36px;
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.jwxk-catalog-layout.official-withdrawal-workspace__catalog-layout { grid-template-columns: minmax(0, 1fr) 280px; }
+.official-withdrawal-workspace__catalog-layout .jwxk-plan-aside { position: sticky; top: 76px; align-self: start; max-height: calc(100vh - 92px); overflow: auto; }
+.official-withdrawal-workspace__catalog-layout .jwxk-course-group.is-single { cursor: default; }
+.official-withdrawal-workspace__catalog-layout .jwxk-course-group .ant-card-body { padding: 18px 20px; }
+.official-withdrawal-workspace__catalog-layout .jwxk-course-group__title-row { grid-template-columns: minmax(0, 1fr) auto; }
+.official-withdrawal-workspace__catalog-layout .jwxk-inline-classes { margin-top: 12px; padding-top: 12px; }
+.official-withdrawal-workspace__catalog-layout .jwxk-course-group__stats .ant-btn { margin-left: auto; padding-inline: 0; }
+.official-withdrawal-workspace__catalog-layout .jwxk-inline-class {
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 12px 20px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 4px 0;
+}
+.official-withdrawal-workspace__catalog-layout .jwxk-inline-class:hover,
+.official-withdrawal-workspace__catalog-layout .jwxk-inline-class.is-previewing { background: transparent; box-shadow: none; }
+.official-withdrawal-workspace__catalog-layout .jwxk-inline-class.is-previewing .jwxk-inline-class__summary > strong { color: var(--color-brand-strong); }
+.official-withdrawal-workspace__class-controls { display: flex; min-width: 0; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 12px; }
+.official-withdrawal-workspace__catalog-layout .jwxk-inline-class__states,
+.official-withdrawal-workspace__catalog-layout .jwxk-inline-class__actions { justify-content: flex-end; }
+.official-withdrawal-workspace__catalog-layout .jwxk-inline-class__summary span {
+  display: block;
+  line-height: 1.5;
+}
+.official-withdrawal-workspace__catalog-layout .jwxk-inline-class__summary span,
+.official-withdrawal-workspace__catalog-layout .jwxk-inline-class__summary small { overflow-wrap: anywhere; }
+.official-withdrawal-workspace__catalog-layout .jwxk-inline-class__summary .official-withdrawal-workspace__reason {
+  color: var(--color-muted);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.official-withdrawal-workspace__catalog-layout .jwxk-plan-gap { cursor: pointer; }
+.official-withdrawal-confirm .ant-alert { margin: 9px 0; }
+@container jwxk-catalog-content (max-width: 900px) {
+  .official-withdrawal-workspace__catalog-layout .jwxk-inline-class { grid-template-columns: minmax(0, 1fr); }
+  .official-withdrawal-workspace__class-controls { justify-content: space-between; }
+  .official-withdrawal-workspace__catalog-layout .jwxk-inline-class__states,
+  .official-withdrawal-workspace__catalog-layout .jwxk-inline-class__actions { justify-content: flex-start; }
+}
+@media (max-width: 1350px) {
+  .jwxk-catalog-layout.official-withdrawal-workspace__catalog-layout { grid-template-columns: minmax(0, 1fr); }
+  .official-withdrawal-workspace__catalog-layout .jwxk-plan-aside { position: static; max-height: none; order: -1; }
+}
+@media (max-width: 620px) {
+  .official-withdrawal-workspace__catalog-layout .jwxk-course-group .ant-card-body { padding: 14px; }
+  .official-withdrawal-workspace__catalog-layout .jwxk-course-group__title-row { grid-template-columns: minmax(0, 1fr); }
+  .official-withdrawal-workspace__catalog-layout .jwxk-course-group__stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; }
+  .official-withdrawal-workspace__catalog-layout .jwxk-course-group__stats .ant-btn { grid-column: 1 / -1; width: 100%; min-height: 36px; margin: 0; text-align: center; }
+  .official-withdrawal-workspace__class-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .official-withdrawal-workspace__catalog-layout .jwxk-inline-class__states,
+  .official-withdrawal-workspace__catalog-layout .jwxk-inline-class__actions { width: 100%; justify-content: flex-start; }
+  .official-withdrawal-workspace__catalog-layout .jwxk-inline-class__actions .ant-space-item { flex: 1; min-width: 0; }
+  .official-withdrawal-workspace__catalog-layout .jwxk-inline-class__actions .ant-btn { width: 100%; min-width: 0; }
+  .official-withdrawal-workspace__catalog-layout .jwxk-inline-class__actions .ant-space-item:last-child { grid-column: 1 / -1; }
+}

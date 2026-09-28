@@ -44,6 +44,8 @@ from backend.app.schemas.course_selection import (
     JwxkAutomationTaskRequest,
     JwxkAutomationTaskAction,
     JwxkAutomationTaskTimeSyncRequest,
+    OfficialWithdrawalRequest,
+    OfficialWithdrawalResponse,
 )
 from backend.app.dependencies import (
     attach_saved_auth_credentials, get_primary_network_mode_hint, get_storage, peek_auth_client, remote_session_guard, require_cached_auth_identity,
@@ -89,6 +91,7 @@ from backend.core.course_selection.model import TieRule
 from backend.core.log import log_application_error
 from backend.core.cache.resources import personal_timetable_variant
 from backend.core.scheduling import check_conflicts, normalize_meeting
+from backend.core.academic.withdrawal import OfficialWithdrawalAPI, OfficialWithdrawalError
 
 
 router = APIRouter(prefix="/course-selection", tags=["course-selection"])
@@ -1811,6 +1814,84 @@ def deselect_jwxk_course(
         raise HTTPException(status_code=401, detail=str(error)) from error
     except requests.RequestException as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+def _official_withdrawal_payload(auth: NEUAuthClient, term_code: str) -> dict[str, Any]:
+    api = OfficialWithdrawalAPI(auth)
+    courses, rules = api.list_courses(term_code)
+    return {
+        "term_code": term_code,
+        "term_name": "",
+        "courses": [course.to_dict() for course in courses],
+        "penalty_rules": rules,
+    }
+
+
+@router.get("/official-withdrawal", response_model=OfficialWithdrawalResponse)
+def get_official_withdrawal_courses(
+    response: Response,
+    term_code: str = Query(default="", max_length=32, pattern=r"^[0-9-]*$"),
+    auth: NEUAuthClient = Depends(require_serialized_auth),
+) -> OfficialWithdrawalResponse:
+    """Read the independent official withdrawal-management page."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        api = OfficialWithdrawalAPI(auth)
+        current_term = api.get_current_term()
+        selected_term = term_code or str(current_term.get("code") or "")
+        if not selected_term:
+            return OfficialWithdrawalResponse(entry_available=False, entry_status="closed")
+        payload = _official_withdrawal_payload(auth, selected_term)
+        payload["term_name"] = current_term.get("name", "") if selected_term == current_term.get("code") else ""
+        payload["entry_available"] = True
+        payload["entry_status"] = "open" if payload["courses"] else "empty"
+        return OfficialWithdrawalResponse.model_validate(payload)
+    except OfficialWithdrawalError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except NEULoginError as error:
+        raise HTTPException(status_code=401, detail="教务登录已失效，请重新登录") from error
+    except requests.RequestException as error:
+        raise HTTPException(status_code=502, detail="官方退课管理暂时不可用") from error
+
+
+@router.post("/official-withdrawal/deselect")
+def deselect_official_course(
+    request: OfficialWithdrawalRequest,
+    response: Response,
+    auth: NEUAuthClient = Depends(require_mutation_auth),
+) -> dict[str, Any]:
+    """Withdraw one self-selected course after an explicit confirmation.
+
+    The preflight list prevents arbitrary WID values and ensures the official
+    page currently considers this row withdrawable before sending the write.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    mutation_policy("jwxt.official_deselect")
+    try:
+        api = OfficialWithdrawalAPI(auth)
+        current_term = api.get_current_term()
+        if request.term_code != current_term.get("code"):
+            raise HTTPException(status_code=409, detail="退课学期已变化，请刷新后重试")
+        courses, _rules = api.list_courses(request.term_code)
+        target = next((course for course in courses if course.wid == request.wid), None)
+        if target is None:
+            raise HTTPException(status_code=409, detail="课程已不在官方退课列表中，请刷新后重试")
+        if not target.can_withdraw:
+            raise HTTPException(
+                status_code=409,
+                detail=target.unavailable_reason or "官方当前不允许退课",
+            )
+        result = api.withdraw(request.term_code, request.wid)
+        _invalidate_jwxk_timetable(auth, request.term_code, "jwxt.official_deselect")
+        return {"success": True, **result}
+    except HTTPException:
+        raise
+    except OfficialWithdrawalError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except NEULoginError as error:
+        raise HTTPException(status_code=401, detail="教务登录已失效；退课请求未自动重试，请刷新确认") from error
+    except requests.RequestException as error:
+        raise HTTPException(status_code=502, detail="官方退课请求失败，请刷新后确认状态") from error
 
 
 @router.post("/optimize", response_model=CourseSelectionOptimizeResponse)

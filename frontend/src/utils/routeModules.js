@@ -20,6 +20,7 @@ export const ASYNC_ROUTE_DEFINITIONS = Object.freeze({
   'course-selection': { bundle: 'courseSelection', exportName: 'CourseSelectionPage', path: '/course-selection' },
   'course-selection-workspace': { bundle: 'courseSelection', exportName: 'CourseSelectionWorkspacePage', path: '/course-selection/:batchCode' },
   'course-selection-archive': { bundle: 'courseSelection', exportName: 'CourseSelectionArchivePage', path: '/course-selection/archive/:archiveId' },
+  'course-selection-official-withdrawal': { bundle: 'courseSelection', exportName: 'OfficialWithdrawalWorkspacePage', path: '/course-selection/official-withdrawal' },
   'course-outlines': { bundle: 'courseOutlines', exportName: 'default', path: '/course-outlines' },
   'system-settings': { bundle: 'systemSettings', exportName: 'default', path: '/system-settings' },
   export: { bundle: 'export', exportName: 'ExportPage', path: '/export' },
@@ -69,6 +70,7 @@ const resolveComponent = (routeId, module) => {
 
 export const routeIdForPath = pathname => {
   const normalized = String(pathname || '').split(/[?#]/, 1)[0].replace(/\/+$/, '') || '/';
+  if (normalized === '/course-selection/official-withdrawal') return 'course-selection-official-withdrawal';
   if (/^\/course-selection\/archive\/[^/]+/.test(normalized)) return 'course-selection-archive';
   if (/^\/course-selection\/[^/]+/.test(normalized)) return 'course-selection-workspace';
   if (normalized === '/course-selection') return 'course-selection';

@@ -1382,6 +1382,24 @@ export const deselectJwxkCourse = async (payload) => {
   return response.data;
 };
 
+// Official JWXT withdrawal management is independent from the JWXK round
+// workspace.  The server validates the current official row before any write.
+export const getOfficialWithdrawalCourses = async (termCode = '', config = {}) => {
+  const response = await api.get('/api/course-selection/official-withdrawal', {
+    params: termCode ? { term_code: termCode } : undefined,
+    ...config,
+  });
+  return response.data;
+};
+
+export const deselectOfficialCourse = async (payload) => {
+  const response = await api.post('/api/course-selection/official-withdrawal/deselect', {
+    ...payload,
+    confirmed: true,
+  }, { skipAuthRedirect: true });
+  return response.data;
+};
+
 export const searchJwxkCatalog = async (payload, config = {}) => {
   const response = await api.post('/api/course-selection/jwxk/catalog/search', payload, {
     authRecoveryScope: 'jwxk',

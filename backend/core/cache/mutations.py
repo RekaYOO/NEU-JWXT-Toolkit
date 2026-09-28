@@ -71,6 +71,10 @@ MUTATION_POLICIES = {
         "jwxk.deselect", "personal-timetable",
         refetches=("jwxk-selected",),
     ),
+    "jwxt.official_deselect": _policy(
+        "jwxt.official_deselect", "personal-timetable",
+        refetches=("personal-timetable",),
+    ),
 }
 
 
