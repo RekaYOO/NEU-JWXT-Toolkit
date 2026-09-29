@@ -357,6 +357,14 @@ describe('query timetable request lifecycle', () => {
     const highlightedDay = () => container.querySelector('.timetable-desktop:not(.is-mobile-compact) .timetable-grid-header .is-today')?.textContent;
     expect(week(2)?.classList.contains('is-selected')).toBe(true);
     expect(week(2)?.querySelector('.timetable-week-current')?.textContent).toBe('本周');
+    for (const card of container.querySelectorAll('.timetable-week-timeline > button')) {
+      expect(card.children[0].classList.contains('timetable-week-title')).toBe(true);
+      expect(card.children[0].firstElementChild.tagName).toBe('STRONG');
+      expect(card.children[1].classList.contains('timetable-week-dates')).toBe(true);
+      expect(card.querySelector('.timetable-week-current')).toBe(card === week(2) ? card.lastElementChild : null);
+      expect(card.children[0].querySelector('.timetable-week-current')).toBeNull();
+    }
+    expect(week(2)?.querySelector('.timetable-week-dates')?.textContent).toBe('9/13–9/19');
     expect(selectedDay()).toContain('周三'); // No Wednesday course is needed to select today.
     expect(highlightedDay()).toContain('星期三');
 

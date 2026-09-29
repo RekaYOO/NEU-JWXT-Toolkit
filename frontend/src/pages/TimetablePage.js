@@ -5083,8 +5083,14 @@ function MobileWeekTimeline({ weeks, selectedWeek, currentWeek, onChange, anchor
           key={week.number}
           onClick={() => onChange(week.number)}
         >
-          <strong>{week.name}</strong>
-          <span>{week.start_date ? `${week.start_date.slice(5)}—${week.end_date.slice(5)}` : '日期待定'}</span>
+          <span className="timetable-week-title">
+            <strong>{week.name}</strong>
+          </span>
+          <span className="timetable-week-dates">
+            {week.start_date
+              ? `${Number(week.start_date.slice(5, 7))}/${Number(week.start_date.slice(8, 10))}–${Number(week.end_date.slice(5, 7))}/${Number(week.end_date.slice(8, 10))}`
+              : '日期待定'}
+          </span>
           {week.number === currentWeek && <small className="timetable-week-current">本周</small>}
         </button>
       ))}

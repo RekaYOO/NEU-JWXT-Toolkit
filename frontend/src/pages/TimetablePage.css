@@ -1839,10 +1839,10 @@
     display: flex;
     gap: var(--space-2);
     margin-bottom: var(--space-3);
-    padding: 2px calc(50% - 45px) 6px;
+    padding: 6px calc(50% - 50px) 3px;
     overflow-x: auto;
     overscroll-behavior-inline: contain;
-    scroll-padding-inline: calc(50% - 45px);
+    scroll-padding-inline: calc(50% - 50px);
     scroll-snap-type: x mandatory;
     scrollbar-width: none;
     touch-action: pan-x;
@@ -1855,13 +1855,14 @@
 
   .timetable-week-timeline > button {
     position: relative;
-    min-width: 90px;
+    flex: 0 0 100px;
+    height: 40px;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 1px;
-    padding: 7px 8px;
+    padding: 4px 6px 3px;
     color: var(--color-ink);
     background: var(--color-surface);
     border: 1px solid var(--color-line);
@@ -1892,15 +1893,29 @@
     white-space: nowrap;
   }
 
-  .timetable-week-timeline small {
+  .timetable-week-timeline .timetable-week-title {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    line-height: 1.35;
+  }
+
+  .timetable-week-timeline .timetable-week-current {
     position: absolute;
-    top: 4px;
-    right: 4px;
-    padding: 1px 4px;
+    top: -4px;
+    right: -5px;
+    height: 15px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 3px;
     color: var(--color-brand-strong);
     background: var(--color-surface);
     border: 1px solid var(--color-brand);
     border-radius: var(--radius-sm);
+    font-weight: 600;
+    pointer-events: none;
   }
 
   .timetable-desktop:not(.is-mobile-compact) {
