@@ -152,11 +152,20 @@ function AppContent({
   onCancel,
 }) {
   const location = useLocation();
-  const showTimetableRecovery = Boolean(
+  // Keep the timetable shell mounted for the whole initial bootstrap when a
+  // local snapshot is available.  The auth result may arrive before the
+  // bootstrap promise finishes; switching recoveryMode off in that small
+  // window used to remount the global startup screen and caused a visible
+  // flash on mobile.  This is only a rendering affordance: the snapshot
+  // still remains read-only until the normal online state is confirmed.
+  const canStartTimetableFromLocal = Boolean(
     timetableRecoveryIdentity
-    && timetableRecoveryActive
     && !isManualLogoutActive()
     && isTimetableRoute(location.pathname),
+  );
+  const showTimetableRecovery = Boolean(
+    canStartTimetableFromLocal
+    && (timetableRecoveryActive || isLoading),
   );
   // 本机课表恢复是“只读课表浏览”能力，不是登录态。尤其不能因为
   // 有课表快照就挂载成绩、头像、培养计划等依赖真实身份的页面。
@@ -173,7 +182,7 @@ function AppContent({
     });
   }, [canRenderCurrentRoute, isLoggedIn, offlineCapabilities, offlineMode, runtimeProfile]);
 
-  if (isLoading && !showTimetableRecovery) {
+  if (isLoading && !canStartTimetableFromLocal) {
     return (
       <div className="loading" role="status" aria-live="polite">
         <Spin size="large" />
@@ -779,11 +788,15 @@ function App() {
 
   const offlineDefaultPath = resolveOfflineDefaultPath(offlineCapabilities);
 
-  if (isLoading && !(
+  // Do not tear down a locally-restored timetable while authentication and
+  // runtime bootstrap are finishing.  Once isLoading becomes false, the
+  // normal authenticated/recovery decision below takes over.
+  const canStartTimetableFromLocal = Boolean(
     timetableRecoveryIdentity
-    && timetableRecoveryActive
+    && !isManualLogoutActive()
     && isTimetableRoute(window.location.pathname)
-  )) {
+  );
+  if (isLoading && !canStartTimetableFromLocal) {
     return (
       <div className="loading" role="status" aria-live="polite">
         <Spin size="large" />

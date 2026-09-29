@@ -51,6 +51,33 @@ describe('cached timetable while the native backend is still starting', () => {
     expect(getClientBootstrap).not.toHaveBeenCalled();
   });
 
+  test('does not flash the global startup screen while auth finishes after the timetable is mounted', async () => {
+    let resolveBootstrap;
+    getAccessStatus.mockResolvedValue({
+      required: false,
+      configured: true,
+      authenticated: true,
+    });
+    getClientBootstrap.mockReturnValue(new Promise(resolve => {
+      resolveBootstrap = resolve;
+    }));
+
+    await act(async () => root.render(<App />));
+    await act(async () => Promise.resolve());
+    expect(container.textContent).toContain('只读课表');
+    expect(container.querySelector('.loading')).toBeNull();
+
+    await act(async () => {
+      resolveBootstrap({
+        runtime: { profile: 'development' },
+        auth: { is_logged_in: true, current_user: '20241643' },
+      });
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.loading')).toBeNull();
+    expect(container.textContent).toContain('在线课表');
+  });
+
   test.each(['manual logout', 'missing cache', 'another page'])(
     'does not turn cache recovery into an authentication bypass: %s', async reason => {
       if (reason === 'manual logout') sessionStorage.setItem('neu_manual_logout', '1');
