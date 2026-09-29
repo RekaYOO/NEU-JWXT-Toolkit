@@ -5085,7 +5085,7 @@ function MobileWeekTimeline({ weeks, selectedWeek, currentWeek, onChange, anchor
         >
           <strong>{week.name}</strong>
           <span>{week.start_date ? `${week.start_date.slice(5)}—${week.end_date.slice(5)}` : '日期待定'}</span>
-          {week.number === currentWeek && <small>本周</small>}
+          {week.number === currentWeek && <small className="timetable-week-current">本周</small>}
         </button>
       ))}
     </div>
@@ -5243,7 +5243,7 @@ export function MobileTimetable({
   };
   return (
     <section
-      className={`timetable-mobile${compact ? ' is-selection-compact' : ''}${compactWeekView ? ' is-compact-week' : ''}${viewMode === 'term' ? ' is-term-view' : ''}`}
+      className={`timetable-mobile${compact ? ' is-selection-compact' : ''}${compactWeekView ? ' is-compact-week' : ''}${viewMode === 'term' ? ' is-term-view' : ' is-week-view'}`}
       aria-label="手机课表"
       onClickCapture={handleSwipeClickCapture}
       onPointerDown={handleSwipePointerDown}

@@ -356,6 +356,7 @@ describe('query timetable request lifecycle', () => {
     const selectedDay = () => container.querySelector('.timetable-mobile-day-selector .ant-segmented-item-selected')?.textContent;
     const highlightedDay = () => container.querySelector('.timetable-desktop:not(.is-mobile-compact) .timetable-grid-header .is-today')?.textContent;
     expect(week(2)?.classList.contains('is-selected')).toBe(true);
+    expect(week(2)?.querySelector('.timetable-week-current')?.textContent).toBe('本周');
     expect(selectedDay()).toContain('周三'); // No Wednesday course is needed to select today.
     expect(highlightedDay()).toContain('星期三');
 

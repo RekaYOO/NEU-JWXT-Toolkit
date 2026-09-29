@@ -1344,6 +1344,45 @@ describe('TimetablePage helpers', () => {
     }
   });
 
+  test('swiping empty space in the mobile day view changes days', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onSwipeDay = jest.fn();
+    try {
+      await act(async () => {
+        root.render(<MobileTimetable
+          coursesByDay={Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]))}
+          selectedDay={1}
+          viewMode="week"
+          currentTerm
+          currentWeekNumber={3}
+          onDayChange={() => {}}
+          onSwipeDay={onSwipeDay}
+          onCourseClick={() => {}}
+          personalConflictMap={{}}
+        />);
+      });
+      const blankSpace = container.querySelector('.timetable-mobile-list');
+      expect(container.querySelector('.timetable-mobile.is-week-view')).not.toBeNull();
+      await act(async () => {
+        blankSpace.dispatchEvent(new MouseEvent('pointerdown', {
+          bubbles: true, clientX: 240, clientY: 100,
+        }));
+        blankSpace.dispatchEvent(new MouseEvent('pointerup', {
+          bubbles: true, clientX: 100, clientY: 104,
+        }));
+      });
+      expect(onSwipeDay).toHaveBeenCalledWith(1);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
   test('swiping the compact mobile week view changes weeks instead of days', async () => {
     const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
     global.IS_REACT_ACT_ENVIRONMENT = true;

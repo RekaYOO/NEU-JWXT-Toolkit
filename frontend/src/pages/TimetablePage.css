@@ -1448,6 +1448,7 @@
     background: transparent;
     border: 0;
     border-radius: 0;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .timetable-mobile-summary-trigger {
@@ -1468,6 +1469,9 @@
     white-space: nowrap;
     cursor: pointer;
     transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    touch-action: manipulation;
   }
 
   .timetable-mobile-summary-trigger:focus-visible {
@@ -1524,17 +1528,19 @@
   .timetable-mobile-summary-controls {
     display: none;
     position: absolute;
-    top: 100%;
+    top: calc(100% + 8px);
     left: 50%;
     z-index: 30;
-    width: 600px;
-    max-width: 90vw;
+    box-sizing: border-box;
+    width: min(360px, calc(100vw - 24px));
+    max-height: calc(100dvh - 80px);
+    overflow-y: auto;
     transform: translateX(-50%);
-    padding: 16px;
-    background: #ffffff;
+    padding: 12px;
+    background: var(--color-surface);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-lg);
-    box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
   }
 
   .timetable-mobile-summary.expanded .timetable-mobile-summary-trigger {
@@ -1548,17 +1554,18 @@
   }
 
   .timetable-mobile-summary-controls {
-    gap: var(--space-3);
+    gap: var(--space-2);
   }
 
   .timetable-mobile-summary-course,
   .timetable-mobile-summary-target {
     display: grid;
-    gap: 8px;
-    padding: 12px;
-    background: linear-gradient(135deg, #f8fbff, #f8fafc);
-    border: 1px solid #dbeafe;
-    border-radius: var(--radius-md);
+    gap: 6px;
+    padding: 4px 2px 10px;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--color-line-soft);
+    border-radius: 0;
   }
 
   .timetable-mobile-summary-course {
@@ -1570,20 +1577,22 @@
   }
 
   .timetable-mobile-summary-course.is-action {
-    padding-right: 36px;
+    padding-right: 30px;
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .timetable-mobile-summary-course.is-action:hover,
   .timetable-mobile-summary-course.is-action:focus-visible {
-    border-color: var(--color-brand);
-    outline: none;
+    color: var(--color-brand-strong);
+    outline: 2px solid var(--color-brand);
+    outline-offset: -2px;
   }
 
   .timetable-mobile-summary-course-arrow {
     position: absolute;
-    top: 14px;
-    right: 12px;
+    top: 8px;
+    right: 4px;
     color: var(--color-brand-strong);
   }
 
@@ -1885,7 +1894,7 @@
 
   .timetable-week-timeline small {
     position: absolute;
-    top: -5px;
+    top: 4px;
     right: 4px;
     padding: 1px 4px;
     color: var(--color-brand-strong);
@@ -1900,6 +1909,11 @@
 
   .timetable-mobile {
     display: block;
+    touch-action: pan-y;
+  }
+
+  .timetable-mobile.is-week-view:not(.is-compact-week):not(.is-selection-compact) {
+    min-height: max(320px, calc(100dvh - 280px));
   }
 
   .timetable-mobile > .ant-segmented {
