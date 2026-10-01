@@ -1927,6 +1927,10 @@
     touch-action: pan-y;
   }
 
+  .timetable-extra-agenda {
+    display: none;
+  }
+
   .timetable-mobile.is-week-view:not(.is-compact-week):not(.is-selection-compact) {
     min-height: max(320px, calc(100dvh - 280px));
   }

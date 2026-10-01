@@ -68,7 +68,12 @@ import { loadSetting, saveSetting } from '../utils/settings';
 import { resolveTimetableSections } from '../utils/timetableSections';
 import TimetableDayAgenda from '../components/TimetableDayAgenda';
 import MergedUpdateSummary from '../components/MergedUpdateSummary';
-import { agendaDateForDay, injectTimetableAgenda } from '../utils/timetableAgenda';
+import {
+  agendaDateForDay,
+  agendaEventMatchesDate,
+  injectTimetableAgenda,
+  sortAgendaCourses,
+} from '../utils/timetableAgenda';
 import { getTimetableAgenda, saveTimetableAgenda } from '../services/api';
 import { summarizeSystemMessages } from '../utils/systemMessageSummary';
 import {
@@ -3389,7 +3394,13 @@ function TimetablePage({
       mode === 'personal' && displayedViewMode === 'week' && !embedded ? [
         ...personalAgendaCourses.filter(course => courseMatchesWeek(course, displayedWeekNumber)
           && courseMatchesCampus(course, campusCode, personalPayload?.campuses || context?.campuses || [])),
-        ...agendaEventCourses.filter(course => course.weeks.includes(displayedWeekNumber) && course.start_section),
+        ...agendaEventCourses.filter(course => course.start_section
+          && agendaEventMatchesDate(
+            { date: course.agenda_date },
+            context?.weeks || [],
+            displayedWeekNumber,
+            course.weekday,
+          )),
       ] : schedule?.courses || [], visibleOverlayCourses,
     );
     mergedCourses.forEach(course => {
@@ -3397,6 +3408,28 @@ function TimetablePage({
     });
     return result;
   }, [agendaEventCourses, campusCode, context?.campuses, displayedViewMode, displayedWeekNumber, embedded, mode, overlayCourses, personalAgendaCourses, personalPayload?.campuses, preferredTermCode, schedule, termCode]);
+  const mobileCoursesByDay = useMemo(() => {
+    const result = Object.fromEntries(
+      TIMETABLE_DAY_ORDER.map(day => [day, [...(coursesByDay[day] || [])]]),
+    );
+    if (mode === 'personal' && displayedViewMode === 'week' && !embedded) {
+      agendaEventCourses
+        .filter(course => !course.start_section
+          && agendaEventMatchesDate(
+            { date: course.agenda_date },
+            context?.weeks || [],
+            displayedWeekNumber,
+            course.weekday,
+          ))
+        .forEach(course => {
+          if (result[course.weekday]) result[course.weekday].push(course);
+        });
+    }
+    TIMETABLE_DAY_ORDER.forEach(day => {
+      result[day] = sortAgendaCourses(result[day]);
+    });
+    return result;
+  }, [agendaEventCourses, context?.weeks, coursesByDay, displayedViewMode, displayedWeekNumber, embedded, mode]);
   const resolvedSections = useMemo(() => resolveTimetableSections({
     sections,
     sectionsByCampus: mode === 'personal' ? (personalPayload?.sections_by_campus || {}) : {},
@@ -3896,7 +3929,7 @@ function TimetablePage({
   );
 
   const overlayVisibleForTerm = termCode === preferredTermCode && Boolean(overlayCourses?.length);
-  const hasVisibleArrangedCourses = Object.values(coursesByDay).some(courses => courses.length > 0);
+  const hasVisibleArrangedCourses = Object.values(mobileCoursesByDay).some(courses => courses.length > 0);
   const hasOtherCourses = Boolean(schedule?.unscheduled?.length || schedule?.practices?.length);
   const queryTimetablePending = shouldShowQueryTimetablePending({
     mode,
@@ -4079,7 +4112,7 @@ function TimetablePage({
               )}
               <div className={isMobile ? '' : 'timetable-screen-mobile-hidden'}>
               <MobileTimetable
-                  coursesByDay={coursesByDay}
+                  coursesByDay={mobileCoursesByDay}
                   sections={resolvedSections}
                   selectedDay={mobileDay}
                   viewMode={displayedViewMode}
@@ -4135,29 +4168,25 @@ function TimetablePage({
           )}
           <OtherCourses schedule={schedule} />
           {mode === 'personal' && !embedded && displayedViewMode === 'week' && <div className="timetable-extra-agenda">
-            {agendaEventCourses.filter(course => course.weeks.includes(displayedWeekNumber) && !course.start_section).map(course => {
-              const openAgenda = () => setAgendaDate(course.agenda_date);
-              const title = `${WEEKDAY_NAMES[course.weekday - 1] || '当天'} · ${course.start_time || '时间待定'}${course.end_time ? `–${course.end_time}` : ''} · ${course.course_name}`;
-              return <article
-                className="timetable-extra-agenda-item"
-                key={course.id}
-                role="button"
-                tabIndex={0}
-                aria-label={`打开${title}日程`}
-                onClick={openAgenda}
-                onKeyDown={event => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    openAgenda();
-                  }
-                }}
-              >
-                <span className="timetable-extra-agenda-item__time">{WEEKDAY_NAMES[course.weekday - 1] || '当天'} · {course.start_time || '时间待定'}{course.end_time ? `–${course.end_time}` : ''}</span>
-                <strong className="timetable-extra-agenda-item__title">{course.course_name}</strong>
-                {course.location && <span className="timetable-extra-agenda-item__location"><EnvironmentOutlined /> {course.location}</span>}
-                {course.teachers?.length > 0 && <span className="timetable-extra-agenda-item__note">{course.teachers.join('、')}</span>}
-                {(course.course_nature || course.assessment_type) && <b className="timetable-extra-agenda-item__important">{[course.course_nature, course.assessment_type].filter(Boolean).join(' · ')}</b>}
-              </article>;
+            {sortAgendaCourses(agendaEventCourses.filter(course => !course.start_section && agendaEventMatchesDate(
+              { date: course.agenda_date },
+              context?.weeks || [],
+              displayedWeekNumber,
+              course.weekday,
+            ))).map(course => {
+              return (
+                <TimetableMobileCourseCard
+                  key={course.id}
+                  course={course}
+                  mode="personal"
+                  viewMode="week"
+                  currentTerm={termCode === currentTermCode}
+                  currentWeekNumber={effectiveCurrentWeekNumber}
+                  onCourseClick={() => setAgendaDate(course.agenda_date)}
+                  personalConflictMap={effectiveConflictMap}
+                  now={localDate}
+                />
+              );
             })}
           </div>}
         </>
@@ -5127,6 +5156,62 @@ export function MobileCompactWeekTimetable({
     />
   );
 }
+
+export function TimetableMobileCourseCard({
+  course,
+  index = 0,
+  mode = 'personal',
+  compact = false,
+  viewMode = 'week',
+  currentTerm = false,
+  currentWeekNumber = null,
+  onCourseClick,
+  personalConflictMap = {},
+  now = new Date(),
+}) {
+  const content = courseCardContent(course);
+  const context = mobileCourseContext(course, mode);
+  const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber });
+  const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
+  const agenda = Boolean(course.agenda_event_id);
+  const sectionLabel = agenda
+    ? '日程'
+    : course.start_section
+      ? `第${course.start_section}${course.end_section !== course.start_section ? `–${course.end_section}` : ''}节`
+      : '时间待定';
+  return (
+    <Card
+      key={`${course.id}-${course.start_section || 'agenda'}-${index}`}
+      size="small"
+      className={`timetable-mobile-card${courseLayerClass(course)}${agenda ? ' is-manual-agenda' : ''}${hasPersonalConflict ? ' has-personal-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
+      style={{ '--course-color': course.color }}
+      onClick={() => onCourseClick?.(course)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={event => {
+        if ((event.key === 'Enter' || event.key === ' ') && onCourseClick) {
+          event.preventDefault();
+          onCourseClick(course);
+        }
+      }}
+    >
+      <div className="mobile-course-time">
+        <strong>{sectionLabel}</strong>
+        {(course.start_time || course.end_time) && <span>{course.start_time || '?'}–{course.end_time || '?'}</span>}
+      </div>
+      <strong className="mobile-course-title">{content.name}</strong>
+      {!compact && !agenda && viewMode === 'term' && (
+        <span className="mobile-course-weeks">{formatWeekNumbers(course.weeks) || '周次待确认'}</span>
+      )}
+      {!compact && <span className="mobile-course-location"><EnvironmentOutlined /> {content.location}</span>}
+      {!compact && context.classes && <span className="mobile-course-classes">{context.classes}</span>}
+      {!compact && context.teacher && <span className="mobile-course-teacher">{context.teacher}</span>}
+      {!compact && content.type && <span className="mobile-course-type">{content.type}</span>}
+      {compact && course.layer && <span className="selection-course-state">{selectionCourseStateLabel(course)}</span>}
+    </Card>
+  );
+}
+
 export function MobileTimetable({
   coursesByDay,
   sections = [],
@@ -5149,7 +5234,7 @@ export function MobileTimetable({
   const now = useTimetableNow();
   const swipeStartRef = useRef(null);
   const suppressSwipeClickRef = useRef(false);
-  const courses = [...(coursesByDay[selectedDay] || [])].sort((a, b) => a.start_section - b.start_section);
+  const courses = sortAgendaCourses(coursesByDay[selectedDay] || []);
   const compact = presentation === 'selection';
   const canSwipeWeek = viewMode === 'week' && (compact || compactWeekView);
   const sectionNumbers = sections.length
@@ -5209,42 +5294,20 @@ export function MobileTimetable({
     );
   }
   const renderCourseCard = (course, index) => {
-    const content = courseCardContent(course);
-    const context = mobileCourseContext(course, mode);
-    const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber });
-    const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
     return (
-      <Card
-        key={`${course.id}-${course.start_section}-${index}`}
-        size="small"
-        className={`timetable-mobile-card${courseLayerClass(course)}${hasPersonalConflict ? ' has-personal-conflict' : ''}${happeningNow ? ' is-course-now' : ''}`}
-        style={{ '--course-color': course.color }}
-        onClick={() => onCourseClick(course)}
-        role="button"
-        tabIndex={0}
-        onKeyDown={event => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onCourseClick(course);
-          }
-        }}
-      >
-        <div className="mobile-course-time">
-          <strong>第{course.start_section}–{course.end_section}节</strong>
-          {(course.start_time || course.end_time) && <span>{course.start_time || '?'}–{course.end_time || '?'}</span>}
-        </div>
-        <strong className="mobile-course-title">{content.name}</strong>
-        {!compact && viewMode === 'term' && <span className="mobile-course-weeks">{formatWeekNumbers(course.weeks) || '周次待确认'}</span>}
-        {!compact && <span className="mobile-course-location"><EnvironmentOutlined /> {content.location}</span>}
-        {!compact && context.classes && (
-          <span className="mobile-course-classes">{context.classes}</span>
-        )}
-        {!compact && context.teacher && (
-          <span className="mobile-course-teacher">{context.teacher}</span>
-        )}
-        {!compact && content.type && <span className="mobile-course-type">{content.type}</span>}
-        {compact && course.layer && <span className="selection-course-state">{selectionCourseStateLabel(course)}</span>}
-      </Card>
+      <TimetableMobileCourseCard
+        course={course}
+        index={index}
+        key={`${course.id}-${course.start_section || 'agenda'}-${index}`}
+        mode={mode}
+        compact={compact}
+        viewMode={viewMode}
+        currentTerm={currentTerm}
+        currentWeekNumber={currentWeekNumber}
+        onCourseClick={onCourseClick}
+        personalConflictMap={personalConflictMap}
+        now={now}
+      />
     );
   };
   return (

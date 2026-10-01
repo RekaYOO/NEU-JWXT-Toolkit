@@ -32,7 +32,7 @@ def event(**changes):
     return {"id": "event-1", "date": "2026-09-17", "title": "日程", "start_time": "08:00", "end_time": "09:00", **changes}
 
 
-@pytest.mark.parametrize("changes", [{"title": " "}, {"end_time": "07:00"}, {"start_time": "25:00"}, {"id": "../escape"}, {"date": "2026-02-30"}, {"title": "x" * 121}])
+@pytest.mark.parametrize("changes", [{"title": " "}, {"end_time": "07:00"}, {"start_time": "25:00"}, {"id": "../escape"}, {"date": "2026-02-30"}, {"date": None, "dates": []}, {"selection_mode": "week", "weekday": 3, "weeks": []}, {"selection_mode": "week", "weekday": None, "weeks": [6]}, {"title": "x" * 121}])
 def test_invalid_events(changes):
     with pytest.raises(ValidationError):
         AgendaDocument(events=[event(**changes)])
@@ -46,6 +46,18 @@ def test_duplicates_and_copy_dates():
     with pytest.raises(ValidationError):
         AgendaDocument(moves=[{"source": "2026-09-20", "target": "2026-09-17"}, {"source": "2026-09-21", "target": "2026-09-17"}])
     assert len(AgendaDocument(moves=[{"source": "2026-09-20", "target": "2026-09-17"}, {"source": "2026-09-20", "target": "2026-09-18"}]).moves) == 2
+
+
+def test_agenda_event_supports_multiple_dates_and_week_ranges():
+    dates = AgendaDocument(events=[event(date=None, dates=["2026-09-24", "2026-09-17"])])
+    assert dates.events[0].date.isoformat() == "2026-09-17"
+    assert [item.isoformat() for item in dates.events[0].dates] == ["2026-09-17", "2026-09-24"]
+    recurring = AgendaDocument(events=[event(
+        date=None, selection_mode="week", weekday=3, weeks=[12, 6, 7],
+    )])
+    assert recurring.events[0].date is None
+    assert recurring.events[0].dates == []
+    assert recurring.events[0].weeks == [6, 7, 12]
 
 
 def test_persistence_account_term_isolation_and_revision(tmp_path):

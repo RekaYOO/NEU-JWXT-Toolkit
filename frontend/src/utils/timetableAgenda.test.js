@@ -1,4 +1,8 @@
-import { agendaDateForDay, agendaDayContext, agendaCoursesOnDate, projectAgendaCourses, agendaEventCourse, injectTimetableAgenda, agendaSemesterEnded } from './timetableAgenda';
+import {
+  agendaDateForDay, agendaDayContext, agendaCoursesOnDate, agendaEventCourse,
+  agendaEventCourses, agendaEventMatchesDate, agendaSemesterEnded, injectTimetableAgenda,
+  projectAgendaCourses, sortAgendaCourses,
+} from './timetableAgenda';
 
 const weeks = [{ number: 2, start_date: '2026-09-13', end_date: '2026-09-19' }, { number: 3, start_date: '2026-09-20', end_date: '2026-09-26' }];
 const courses = [{ id: 'a', course_name: '课程', weekday: 7, weeks: [2, 3], start_section: 1, end_section: 2, teachers: ['教师'] }];
@@ -9,6 +13,9 @@ test('maps Sunday-first teaching weeks to real calendar dates', () => {
   expect(agendaDateForDay(weeks, 2, 6)).toBe('2026-09-19');
   expect(agendaDayContext(weeks, '2026-09-20')).toEqual({ week: 3, day: 7 });
   expect(agendaDateForDay([{ number: 2 }], 2, 1)).toBeNull();
+  expect(agendaEventMatchesDate({ date: '2026-09-17' }, weeks, 2, 4)).toBe(true);
+  expect(agendaEventMatchesDate({ date: '2026-09-17' }, weeks, 2, 3)).toBe(false);
+  expect(agendaEventMatchesDate({ date: '2026-09-17' }, weeks, 3, 4)).toBe(false);
 });
 
 test('copies only the selected occurrence and never removes or changes the source', () => {
@@ -35,9 +42,27 @@ test('keeps target courses and custom events independent, and copies only offici
 test('places custom events by overlapping section times and retains out-of-section events', () => {
   const event = { id: 'e', date: '2026-09-17', title: '会议', start_time: '08:10', end_time: '09:10', note: '材料', important: '重要', location: '101' };
   expect(agendaEventCourse(event, weeks, [{ number: 1, start_time: '08:00', end_time: '08:45' }, { number: 2, start_time: '08:55', end_time: '09:40' }]))
-    .toEqual(expect.objectContaining({ start_section: 1, end_section: 2, course_name: '会议', teachers: ['材料'], course_nature: '重要', weekday: 4, weeks: [2] }));
+    .toEqual(expect.objectContaining({ start_section: 1, end_section: 2, course_name: '会议', teachers: ['材料'], course_nature: '重要', weekday: 4, weeks: [2], agenda_kind: 'manual', color: '#94a3b8' }));
   expect(agendaEventCourse({ ...event, start_time: '23:00', end_time: '23:30' }, weeks, [])?.start_section).toBeNull();
   expect(agendaEventCourse({ ...event, date: '2027-01-01' }, weeks, [])).toBeNull();
+});
+
+test('expands a recurring weekday event into only its selected teaching weeks', () => {
+  const recurring = {
+    id: 'weekly', selection_mode: 'week', weekday: 4, weeks: [3],
+    title: '每周会议', start_time: '08:00', end_time: '09:00',
+  };
+  expect(agendaEventCourses(recurring, weeks, []).map(item => item.agenda_date)).toEqual(['2026-09-24']);
+  expect(agendaEventMatchesDate(recurring, weeks, 2, 4)).toBe(false);
+  expect(agendaEventMatchesDate(recurring, weeks, 3, 4)).toBe(true);
+});
+
+test('sorts manual agenda entries by start time before section or id', () => {
+  expect(sortAgendaCourses([
+    { id: 'late', start_section: 1, start_time: '10:00' },
+    { id: 'unknown', start_section: 2 },
+    { id: 'early', start_section: 8, start_time: '08:00' },
+  ]).map(item => item.id)).toEqual(['early', 'late', 'unknown']);
 });
 
 test('rebuilds an injected view without duplication, recursion, or cache mutation', () => {

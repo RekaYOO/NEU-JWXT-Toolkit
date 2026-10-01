@@ -1,6 +1,7 @@
 .day-agenda-heading, .day-agenda-item-heading, .day-agenda-move { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .day-agenda-heading { margin-bottom: 16px; flex-wrap: wrap; }
 .day-agenda-heading strong { font-size: 16px; }
+.day-agenda-heading-meta { display: block; margin-top: 2px; color: var(--color-muted); font-size: 12px; }
 .day-agenda-list { display: grid; gap: 12px; margin: 16px 0; }
 .day-agenda-item { border: 1px solid var(--color-line); border-left: 3px solid var(--color-brand); border-radius: 6px; padding: 12px; display: grid; gap: 6px; overflow-wrap: anywhere; min-width: 0; }
 .day-agenda-item-heading > strong { min-width: 0; font-size: 15px; }
@@ -14,6 +15,54 @@
 .day-agenda-note { color: var(--color-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .day-agenda-location { font-weight: 600; }
 .day-agenda-important { font-size: 12px; }
+.day-agenda-scope { color: var(--color-brand-strong); font-size: 12px; font-weight: 600; }
+.day-agenda-occurrence-selector { display: grid; gap: 8px; margin-bottom: 14px; }
+.day-agenda-date-grid { display: grid; gap: 8px; max-height: 260px; overflow: auto; padding: 1px; }
+.day-agenda-date-week { display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: center; gap: 6px; }
+.day-agenda-date-week > strong { color: var(--color-muted); font-size: 11px; white-space: nowrap; }
+.day-agenda-date-week-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.day-agenda-date-week-days button,
+.day-agenda-week-grid button {
+  min-width: 0;
+  min-height: 42px;
+  padding: 4px 2px;
+  color: var(--color-ink);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  font: inherit;
+  text-align: center;
+  touch-action: manipulation;
+  user-select: none;
+  cursor: pointer;
+}
+.day-agenda-date-week-days button { display: grid; gap: 1px; }
+.day-agenda-date-week-days button b,
+.day-agenda-week-grid button b { font-size: 11px; line-height: 1.2; }
+.day-agenda-date-week-days button small,
+.day-agenda-week-grid button small { color: var(--color-muted); font-size: 10px; line-height: 1.2; }
+.day-agenda-date-week-days button:hover,
+.day-agenda-week-grid button:hover,
+.day-agenda-date-week-days button.is-selected,
+.day-agenda-week-grid button.is-selected {
+  color: var(--color-brand-strong);
+  background: color-mix(in srgb, var(--color-brand) 13%, var(--color-surface));
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-brand) 18%, transparent);
+}
+.day-agenda-week-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; max-height: 220px; overflow: auto; padding: 1px; }
+.day-agenda-week-grid button { display: grid; gap: 2px; }
+.day-agenda-occurrence-selector .is-range-anchor {
+  border-style: dashed;
+  outline: 1px solid var(--color-brand);
+  outline-offset: -3px;
+}
+.day-agenda-occurrence-selector button:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -3px;
+}
+.day-agenda-occurrence-selector button:disabled { cursor: default; opacity: .6; }
+.day-agenda-selection-hint { color: var(--color-muted); }
 .day-agenda-form, .day-agenda-adjustment { border-top: 1px solid var(--color-line); padding-top: 16px; margin-top: 16px; }
 .day-agenda-adjustment h3 { font-size: 15px; margin: 0 0 12px; }
 .day-agenda-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -28,27 +77,43 @@
 .timetable-day-heading:focus-visible { outline: 2px solid var(--color-brand, #1677ff); outline-offset: -2px; }
 .timetable-day-heading:hover { color: var(--color-brand, #1677ff); }
 .timetable-extra-agenda { padding: 12px 0; display: grid; gap: 10px; }
-.timetable-extra-agenda-item {
-  display: grid;
-  gap: 3px;
+.timetable-extra-agenda .timetable-mobile-card {
   min-width: 0;
-  padding: 10px 12px;
-  color: var(--color-ink);
-  background: color-mix(in srgb, var(--color-brand) 10%, var(--color-surface));
-  border: 1px solid color-mix(in srgb, var(--color-brand) 34%, var(--color-line));
-  border-left: 3px solid var(--color-brand);
-  border-radius: var(--radius-md, 8px);
-  box-shadow: 0 2px 6px rgb(15 23 42 / 10%);
-  text-align: left;
+  margin: 0;
+  background: color-mix(in srgb, var(--course-color, var(--color-brand)) 28%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--course-color, var(--color-brand)) 58%, var(--color-line));
   cursor: pointer;
 }
-.timetable-extra-agenda-item:hover,
-.timetable-extra-agenda-item:focus-visible { border-color: var(--color-brand); box-shadow: var(--shadow-md, 0 4px 12px rgb(15 23 42 / 14%)); outline: none; }
-.timetable-extra-agenda-item__time { color: var(--color-brand-strong, #1d4ed8); font-size: 12px; font-weight: 600; }
-.timetable-extra-agenda-item__title { min-width: 0; overflow-wrap: anywhere; font-size: 15px; line-height: 1.3; }
-.timetable-extra-agenda-item__location { min-width: 0; overflow-wrap: anywhere; font-size: 12px; font-weight: 600; }
-.timetable-extra-agenda-item__note { color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
-.timetable-extra-agenda-item__important { color: var(--color-ink-soft, #475569); font-size: 11px; overflow-wrap: anywhere; }
+.timetable-extra-agenda .timetable-mobile-card .ant-card-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1) var(--space-3);
+  padding: 12px;
+}
+.timetable-extra-agenda .mobile-course-time {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1 / -1;
+  flex-direction: column;
+  align-items: flex-end;
+  color: var(--color-brand-strong);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.timetable-extra-agenda .mobile-course-time span { color: var(--color-muted); font-size: 10px; }
+.timetable-extra-agenda .mobile-course-title,
+.timetable-extra-agenda .mobile-course-weeks,
+.timetable-extra-agenda .mobile-course-location,
+.timetable-extra-agenda .mobile-course-teacher,
+.timetable-extra-agenda .mobile-course-type {
+  min-width: 0;
+  grid-column: 1;
+  overflow-wrap: anywhere;
+}
+.timetable-extra-agenda .mobile-course-title { color: var(--color-ink); font-size: 15px; font-weight: 600; line-height: 1.4; }
+.timetable-extra-agenda .mobile-course-location { color: #475569; font-size: 13px; }
+.timetable-extra-agenda .mobile-course-weeks { color: var(--color-brand-strong); font-size: 11px; }
+.timetable-extra-agenda .mobile-course-type { color: var(--color-muted); font-size: 11px; font-weight: 600; }
 
 .day-agenda-time-popup .ant-picker-time-panel-column {
   touch-action: pan-y;
@@ -56,7 +121,16 @@
   -webkit-overflow-scrolling: touch;
 }
 .day-agenda-time-popup .ant-picker-time-panel-cell-inner { min-height: 36px; line-height: 36px; }
-@media (max-width: 480px) { .day-agenda-fields { grid-template-columns: minmax(0, 1fr); gap: 0; } .day-agenda-heading > .ant-btn { width: 100%; } .day-agenda-move-controls { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 480px) {
+  .day-agenda-fields { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .day-agenda-heading > .ant-btn { width: 100%; }
+  .day-agenda-move-controls { grid-template-columns: minmax(0, 1fr); }
+  .day-agenda-date-week { grid-template-columns: 38px minmax(0, 1fr); gap: 4px; }
+  .day-agenda-date-week-days { gap: 2px; }
+  .day-agenda-date-week-days button { min-height: 38px; }
+  .day-agenda-date-week-days button b { font-size: 10px; }
+  .day-agenda-date-week-days button small { font-size: 9px; }
+}
 @media (max-width: 480px) {
   .day-agenda-date-popup .ant-picker-date-panel { width: min(288px, calc(100vw - 16px)); }
   .day-agenda-date-popup .ant-picker-header > button { min-width: 32px; width: 32px; }

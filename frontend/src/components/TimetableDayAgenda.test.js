@@ -5,6 +5,11 @@ import zhCN from 'antd/locale/zh_CN';
 import TimetableDayAgenda from './TimetableDayAgenda';
 
 const weeks = [2, 3].map((number, index) => ({ number, start_date: `2026-09-${13 + index * 7}`, end_date: `2026-09-${19 + index * 7}` }));
+const fullWeeks = Array.from({ length: 12 }, (_, index) => ({
+  number: index + 2,
+  start_date: new Date(Date.UTC(2026, 8, 13 + index * 7)).toISOString().slice(0, 10),
+  end_date: new Date(Date.UTC(2026, 8, 19 + index * 7)).toISOString().slice(0, 10),
+}));
 const first = { id: 'first', date: '2026-09-17', title: '讨论会议', location: '101', note: '携带资料', important: '重要', start_time: '08:00', end_time: '09:00' };
 const other = { id: 'other', date: '2026-09-18', title: '其他日程', start_time: '09:00', end_time: '10:00' };
 const moves = [{ source: '2026-09-20', target: '2026-09-17' }];
@@ -14,9 +19,31 @@ describe('saved timetable agenda management', () => {
   let root;
   let saved;
   let onSave;
+  let viewportWidth;
+  let mediaQueries;
+  const matchesViewport = query => {
+    const bounds = [...query.matchAll(/(min|max)-width:\s*([\d.]+)px/g)];
+    return bounds.length > 0 && bounds.every(([, bound, width]) => (
+      bound === 'min' ? viewportWidth >= Number(width) : viewportWidth <= Number(width)
+    ));
+  };
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
-    window.matchMedia = () => ({ matches: false, addListener: jest.fn(), removeListener: jest.fn(), addEventListener: jest.fn(), removeEventListener: jest.fn() });
+    viewportWidth = 1024;
+    mediaQueries = [];
+    window.matchMedia = query => {
+      const listeners = new Set();
+      const media = {
+        media: query, matches: matchesViewport(query),
+        addListener: listener => listeners.add(listener),
+        removeListener: listener => listeners.delete(listener),
+        addEventListener: (type, listener) => { if (type === 'change') listeners.add(listener); },
+        removeEventListener: (type, listener) => { if (type === 'change') listeners.delete(listener); },
+        listeners,
+      };
+      mediaQueries.push(media);
+      return media;
+    };
     global.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
     Element.prototype.scrollIntoView = jest.fn();
     Element.prototype.scrollTo = jest.fn();
@@ -46,11 +73,36 @@ describe('saved timetable agenda management', () => {
     await act(async () => root.render(<ConfigProvider locale={zhCN}><Harness /></ConfigProvider>));
   };
   const flush = async () => { await act(async () => { await Promise.resolve(); await Promise.resolve(); }); };
+  const resize = async width => {
+    await act(async () => {
+      viewportWidth = width;
+      mediaQueries.forEach(media => {
+        const matches = matchesViewport(media.media);
+        if (matches === media.matches) return;
+        media.matches = matches;
+        media.listeners.forEach(listener => listener({ matches, media: media.media }));
+      });
+    });
+    await flush();
+  };
   const click = async element => {
     expect(element).toBeTruthy();
     await act(async () => element.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     await flush();
   };
+  const clickWithDetail = async (element, detail) => {
+    expect(element).toBeTruthy();
+    await act(async () => element.dispatchEvent(new MouseEvent('click', { bubbles: true, detail })));
+    await flush();
+  };
+  const pointer = async (target, type, pointerType, x = 0, y = 0) => {
+    const event = new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1 });
+    Object.defineProperties(event, { pointerType: { value: pointerType }, pointerId: { value: 1 } });
+    await act(async () => target.dispatchEvent(event));
+    await flush();
+  };
+  const selectedValues = () => [...document.querySelectorAll('[data-selection-value][aria-pressed="true"]')]
+    .map(item => item.dataset.selectionValue);
   const button = label => [...document.querySelectorAll('button')].find(item => item.textContent.replace(/\s/g, '') === label);
   const fill = async (id, value) => {
     const input = document.getElementById(id);
@@ -123,6 +175,365 @@ describe('saved timetable agenda management', () => {
     await click(button('保存日程'));
     expect(onSave).toHaveBeenCalledTimes(2);
     expect(saved.events.filter(item => item.id === first.id)).toEqual([{ ...first, title: '待重试会议' }]);
+  });
+
+  test('supports selecting multiple concrete dates for one managed event', async () => {
+    await mount({ revision: 4, events: [], moves: [] });
+    await click(button('添加日程'));
+    const dates = [...document.querySelectorAll('[data-selection-value]')];
+    const startDate = dates.find(item => item.dataset.selectionValue === '2026-09-17');
+    const extraDate = dates.find(item => item.dataset.selectionValue === '2026-09-18');
+    await click(startDate);
+    await click(extraDate);
+    await fill('title', '多日期日程');
+    await click(button('保存日程'));
+    expect(saved.events).toEqual([expect.objectContaining({
+      title: '多日期日程',
+      selection_mode: 'date',
+      dates: ['2026-09-17', '2026-09-18'],
+      date: '2026-09-17',
+    })]);
+  });
+
+  test('selects a concrete date range with start and end clicks', async () => {
+    await mount({ revision: 4, events: [], moves: [] });
+    await click(button('添加日程'));
+    const date = value => document.querySelector(`[data-selection-value="${value}"]`);
+    await click(date('2026-09-17'));
+    await click(date('2026-09-19'));
+    await fill('title', '日期范围日程');
+    await click(button('保存日程'));
+    expect(saved.events).toEqual([expect.objectContaining({
+      title: '日期范围日程',
+      selection_mode: 'date',
+      dates: ['2026-09-17', '2026-09-18', '2026-09-19'],
+      date: '2026-09-17',
+    })]);
+  });
+
+  test('supports selecting multiple teaching weeks for the opened weekday', async () => {
+    await mount({ revision: 4, events: [], moves: [] });
+    await click(button('添加日程'));
+    await click([...document.querySelectorAll('.ant-segmented-item')].find(item => item.textContent.includes('按周四')));
+    await click(document.querySelector('[data-selection-value="2"]'));
+    const weekThree = document.querySelector('[data-selection-value="3"]');
+    await click(weekThree);
+    await fill('title', '每周日程');
+    await click(button('保存日程'));
+    expect(saved.events).toEqual([expect.objectContaining({
+      title: '每周日程',
+      selection_mode: 'week',
+      weekday: 4,
+      weeks: [2, 3],
+      date: null,
+    })]);
+  });
+
+  test('selects a teaching week range with start and end clicks', async () => {
+    await mount({ revision: 4, events: [], moves: [] });
+    await click(button('添加日程'));
+    await click([...document.querySelectorAll('.ant-segmented-item')].find(item => item.textContent.includes('按周四')));
+    const weekTwo = document.querySelector('[data-selection-value="2"]');
+    const weekThree = document.querySelector('[data-selection-value="3"]');
+    await click(weekTwo);
+    await click(weekThree);
+    await fill('title', '周次范围日程');
+    await click(button('保存日程'));
+    expect(saved.events).toEqual([expect.objectContaining({
+      title: '周次范围日程',
+      selection_mode: 'week',
+      weekday: 4,
+      weeks: [2, 3],
+      date: null,
+    })]);
+  });
+
+  test.each([
+    ['date', 'mouse', 1024],
+    ['week', 'mouse', 1024],
+    ['date', 'mouse', 375],
+    ['week', 'mouse', 375],
+    ['date', 'touch', 375],
+    ['week', 'touch', 375],
+  ])('%s range clicks reach the buttons with %s input at %ipx', async (mode, input, width) => {
+    viewportWidth = width;
+    await mount({ revision: 4, events: [], moves: [] }, { weeks: fullWeeks });
+    await click(button('添加日程'));
+    if (mode === 'week') {
+      await click([...document.querySelectorAll('.ant-segmented-item')].find(item => item.textContent.includes('按周四')));
+    }
+    const grid = document.querySelector(mode === 'date' ? '.day-agenda-date-grid' : '.day-agenda-week-grid');
+    let captured = null;
+    grid.setPointerCapture = jest.fn(() => { captured = grid; });
+    const press = async value => {
+      const target = document.querySelector(`[data-selection-value="${value}"]`);
+      await pointer(target, 'pointerdown', input, 10, 10);
+      // A real browser targets click at the capture owner on pointer release.
+      const releaseTarget = captured || target;
+      await pointer(releaseTarget, 'pointerup', input, 10, 10);
+      captured = null;
+      await clickWithDetail(releaseTarget, 1);
+    };
+    const start = mode === 'date' ? '2026-09-17' : '2';
+    const end = mode === 'date' ? '2026-09-19' : '9';
+    await press(start);
+    expect(document.querySelector('.is-range-anchor')?.dataset.selectionValue).toBe(start);
+    await press(end);
+    expect(selectedValues()).toEqual(mode === 'date'
+      ? ['2026-09-17', '2026-09-18', '2026-09-19']
+      : ['2', '3', '4', '5', '6', '7', '8', '9']);
+    expect(grid.setPointerCapture).not.toHaveBeenCalled();
+    if (mode === 'week') {
+      await press('6');
+      await press('6');
+      expect(selectedValues()).toEqual(['2', '4', '6', '8']);
+    }
+  });
+
+  test('double-clicking a selected week switches the range to alternating weeks', async () => {
+    await mount({ revision: 4, events: [], moves: [] });
+    await click(button('添加日程'));
+    await click([...document.querySelectorAll('.ant-segmented-item')].find(item => item.textContent.includes('按周四')));
+    const weekTwo = document.querySelector('[data-selection-value="2"]');
+    const weekThree = document.querySelector('[data-selection-value="3"]');
+    await click(weekTwo);
+    await click(weekThree);
+    await clickWithDetail(weekThree, 1);
+    await clickWithDetail(weekThree, 2);
+    await fill('title', '隔周日程');
+    await click(button('保存日程'));
+    expect(saved.events).toEqual([expect.objectContaining({
+      title: '隔周日程',
+      selection_mode: 'week',
+      weekday: 4,
+      weeks: [2],
+      date: null,
+    })]);
+  });
+
+  test.each(['2', '6', '9'])('double-tapping selected week %s keeps 2,4,6,8 from the 2-9 range', async value => {
+    await mount({ revision: 4, events: [], moves: [] }, { weeks: fullWeeks });
+    await click(button('添加日程'));
+    await click([...document.querySelectorAll('.ant-segmented-item')].find(item => item.textContent.includes('按周四')));
+    await click(document.querySelector('[data-selection-value="2"]'));
+    await click(document.querySelector('[data-selection-value="9"]'));
+    const target = document.querySelector(`[data-selection-value="${value}"]`);
+    await clickWithDetail(target, 1);
+    expect(selectedValues()).toEqual(['2', '3', '4', '5', '6', '7', '8', '9']);
+    // Android/WebView double taps may both have detail=1.
+    await clickWithDetail(target, 1);
+    expect(selectedValues()).toEqual(['2', '4', '6', '8']);
+    await fill('title', '隔周日程');
+    await click(button('保存日程'));
+    expect(saved.events[0].weeks).toEqual([2, 4, 6, 8]);
+  });
+
+  test('reverse range selection keeps the original starting week when alternating', async () => {
+    await mount({ revision: 4, events: [], moves: [] }, { weeks: fullWeeks });
+    await click(button('添加日程'));
+    await click([...document.querySelectorAll('.ant-segmented-item')].find(item => item.textContent.includes('按周四')));
+    await click(document.querySelector('[data-selection-value="9"]'));
+    await click(document.querySelector('[data-selection-value="2"]'));
+    const target = document.querySelector('[data-selection-value="6"]');
+    await clickWithDetail(target, 1);
+    await clickWithDetail(target, 2);
+    expect(selectedValues()).toEqual(['3', '5', '7', '9']);
+  });
+
+  test('double taps outside the selection and date-mode double taps do not alternate', async () => {
+    await mount({ revision: 4, events: [], moves: [] }, { weeks: fullWeeks });
+    await click(button('添加日程'));
+    await click(document.querySelector('[data-selection-value="2026-09-17"]'));
+    await click(document.querySelector('[data-selection-value="2026-09-19"]'));
+    const date = document.querySelector('[data-selection-value="2026-09-18"]');
+    await clickWithDetail(date, 1);
+    await clickWithDetail(date, 2);
+    expect(selectedValues()).toEqual(['2026-09-18']);
+    await click([...document.querySelectorAll('.ant-segmented-item')].find(item => item.textContent.includes('按周四')));
+    await click(document.querySelector('[data-selection-value="2"]'));
+    await click(document.querySelector('[data-selection-value="9"]'));
+    const outside = document.querySelector('[data-selection-value="12"]');
+    await clickWithDetail(outside, 1);
+    await clickWithDetail(outside, 2);
+    expect(selectedValues()).toEqual(['12']);
+  });
+
+  test('touch scrolling does not change selection or continue a previous double tap', async () => {
+    await mount({ revision: 4, events: [], moves: [] }, { weeks: fullWeeks });
+    await click(button('添加日程'));
+    await click([...document.querySelectorAll('.ant-segmented-item')].find(item => item.textContent.includes('按周四')));
+    await click(document.querySelector('[data-selection-value="2"]'));
+    await click(document.querySelector('[data-selection-value="9"]'));
+    const target = document.querySelector('[data-selection-value="6"]');
+    await pointer(target, 'pointerdown', 'touch', 20, 100);
+    await pointer(target, 'pointermove', 'touch', 20, 40);
+    await pointer(target, 'pointercancel', 'touch', 20, 40);
+    await clickWithDetail(target, 1);
+    expect(selectedValues()).toEqual(['2', '3', '4', '5', '6', '7', '8', '9']);
+    await pointer(target, 'pointerdown', 'touch', 20, 100);
+    await pointer(target, 'pointerup', 'touch', 20, 100);
+    await clickWithDetail(target, 1);
+    await act(async () => document.querySelector('.day-agenda-week-grid').dispatchEvent(new Event('scroll')));
+    await clickWithDetail(target, 1);
+    expect(selectedValues()).toEqual(['6']);
+  });
+
+  test('desktop mouse dragging still selects a range and its release click is ignored', async () => {
+    await mount({ revision: 4, events: [], moves: [] });
+    await click(button('添加日程'));
+    const start = document.querySelector('[data-selection-value="2026-09-17"]');
+    const end = document.querySelector('[data-selection-value="2026-09-19"]');
+    const oldHitTest = document.elementFromPoint;
+    document.elementFromPoint = jest.fn(() => end);
+    const grid = document.querySelector('.day-agenda-date-grid');
+    grid.setPointerCapture = jest.fn();
+    try {
+      await pointer(start, 'pointerdown', 'mouse', 10, 10);
+      expect(grid.setPointerCapture).not.toHaveBeenCalled();
+      await pointer(end, 'pointermove', 'mouse', 80, 10);
+      expect(grid.setPointerCapture).toHaveBeenCalledWith(1);
+      await pointer(end, 'pointerup', 'mouse', 80, 10);
+      await clickWithDetail(end, 1);
+      expect(selectedValues()).toEqual(['2026-09-17', '2026-09-18', '2026-09-19']);
+    } finally {
+      document.elementFromPoint = oldHitTest;
+    }
+  });
+
+  test.each(['date', 'week'])('%s mode disables mouse drag at mobile widths but keeps range clicks and double taps', async mode => {
+    viewportWidth = 375;
+    await mount({ revision: 4, events: [], moves: [] }, { weeks: fullWeeks });
+    await click(button('添加日程'));
+    if (mode === 'week') {
+      await click([...document.querySelectorAll('.ant-segmented-item')].find(item => item.textContent.includes('按周四')));
+    }
+    const startValue = mode === 'date' ? '2026-09-17' : '2';
+    const endValue = mode === 'date' ? '2026-09-19' : '9';
+    const start = document.querySelector(`[data-selection-value="${startValue}"]`);
+    const end = document.querySelector(`[data-selection-value="${endValue}"]`);
+    const grid = start.closest('.day-agenda-date-grid, .day-agenda-week-grid');
+    grid.setPointerCapture = jest.fn();
+    const oldHitTest = document.elementFromPoint;
+    document.elementFromPoint = jest.fn(() => end);
+    try {
+      for (const width of [320, 375, 430, 767]) {
+        await resize(width);
+        await pointer(start, 'pointerdown', 'mouse', 10, 10);
+        await pointer(end, 'pointermove', 'mouse', 80, 10);
+        await pointer(end, 'pointerup', 'mouse', 80, 10);
+        await clickWithDetail(end, 1);
+        expect(selectedValues()).toEqual([startValue]);
+        expect(grid.setPointerCapture).not.toHaveBeenCalled();
+        expect(document.elementFromPoint).not.toHaveBeenCalled();
+      }
+      for (const target of [start, end]) {
+        await pointer(target, 'pointerdown', 'mouse', 10, 10);
+        await pointer(target, 'pointerup', 'mouse', 10, 10);
+        await clickWithDetail(target, 1);
+      }
+      expect(selectedValues()).toEqual(mode === 'date'
+        ? ['2026-09-17', '2026-09-18', '2026-09-19']
+        : ['2', '3', '4', '5', '6', '7', '8', '9']);
+      if (mode === 'week') {
+        const target = document.querySelector('[data-selection-value="6"]');
+        await clickWithDetail(target, 1);
+        await clickWithDetail(target, 2);
+        expect(selectedValues()).toEqual(['2', '4', '6', '8']);
+      }
+    } finally {
+      document.elementFromPoint = oldHitTest;
+    }
+  });
+
+  test('resizing to mobile stops a pending drag without losing the click range or saved draft', async () => {
+    await mount({ revision: 4, events: [], moves: [] });
+    await click(button('添加日程'));
+    await fill('title', '保留草稿');
+    const start = document.querySelector('[data-selection-value="2026-09-17"]');
+    const end = document.querySelector('[data-selection-value="2026-09-19"]');
+    const grid = document.querySelector('.day-agenda-date-grid');
+    grid.setPointerCapture = jest.fn();
+    const oldHitTest = document.elementFromPoint;
+    document.elementFromPoint = jest.fn(() => end);
+    try {
+      await click(start);
+      await pointer(start, 'pointerdown', 'mouse', 10, 10);
+      await resize(375);
+      await pointer(end, 'pointermove', 'mouse', 80, 10);
+      await pointer(end, 'pointerup', 'mouse', 80, 10);
+      expect(selectedValues()).toEqual(['2026-09-17']);
+      expect(grid.setPointerCapture).not.toHaveBeenCalled();
+      expect(document.getElementById('title').value).toBe('保留草稿');
+      await pointer(end, 'pointerdown', 'mouse', 80, 10);
+      await pointer(end, 'pointerup', 'mouse', 80, 10);
+      await clickWithDetail(end, 1);
+      expect(selectedValues()).toEqual(['2026-09-17', '2026-09-18', '2026-09-19']);
+      await resize(768);
+      await pointer(start, 'pointerdown', 'mouse', 10, 10);
+      await pointer(end, 'pointermove', 'mouse', 80, 10);
+      expect(grid.setPointerCapture).toHaveBeenCalledWith(1);
+      await pointer(end, 'pointerup', 'mouse', 80, 10);
+    } finally {
+      document.elementFromPoint = oldHitTest;
+    }
+  });
+
+  test('leaving before a mouse drag starts clears the pressed state', async () => {
+    await mount({ revision: 4, events: [], moves: [] });
+    await click(button('添加日程'));
+    const start = document.querySelector('[data-selection-value="2026-09-17"]');
+    const end = document.querySelector('[data-selection-value="2026-09-19"]');
+    const oldHitTest = document.elementFromPoint;
+    document.elementFromPoint = jest.fn(() => end);
+    try {
+      await pointer(start, 'pointerdown', 'mouse', 10, 10);
+      await act(async () => start.dispatchEvent(new MouseEvent('pointerout', { bubbles: true, relatedTarget: document.body })));
+      await pointer(end, 'pointermove', 'mouse', 80, 10);
+      expect(selectedValues()).toEqual(['2026-09-17']);
+      await pointer(end, 'pointerdown', 'mouse', 80, 10);
+      await pointer(end, 'pointerup', 'mouse', 80, 10);
+      await clickWithDetail(end, 1);
+      expect(selectedValues()).toEqual(['2026-09-19']);
+    } finally {
+      document.elementFromPoint = oldHitTest;
+    }
+  });
+
+  test('keyboard activation is not swallowed after a mouse drag release targets the grid', async () => {
+    await mount({ revision: 4, events: [], moves: [] });
+    await click(button('添加日程'));
+    const start = document.querySelector('[data-selection-value="2026-09-17"]');
+    const end = document.querySelector('[data-selection-value="2026-09-19"]');
+    const oldHitTest = document.elementFromPoint;
+    document.elementFromPoint = jest.fn(() => end);
+    try {
+      await pointer(start, 'pointerdown', 'mouse', 10, 10);
+      await pointer(end, 'pointermove', 'mouse', 80, 10);
+      await pointer(end, 'pointerup', 'mouse', 80, 10);
+      await clickWithDetail(document.querySelector('.day-agenda-date-grid'), 1);
+      await clickWithDetail(end, 0);
+      expect(document.querySelector('.is-range-anchor')?.dataset.selectionValue).toBe('2026-09-19');
+      await clickWithDetail(start, 0);
+      expect(selectedValues()).toEqual(['2026-09-17', '2026-09-18', '2026-09-19']);
+    } finally {
+      document.elementFromPoint = oldHitTest;
+    }
+  });
+
+  test('switching modes or editors clears an unfinished range without changing the draft selection', async () => {
+    const second = { ...other, date: first.date, dates: [first.date, other.date] };
+    await mount({ revision: 4, events: [first, second], moves: [] });
+    await click(document.querySelector('[aria-label="编辑讨论会议"]'));
+    await click(document.querySelector('[data-selection-value="2026-09-19"]'));
+    await click(document.querySelector('[aria-label="编辑其他日程"]'));
+    expect(selectedValues()).toEqual(['2026-09-17', '2026-09-18']);
+    expect(document.querySelector('.is-range-anchor')).toBeNull();
+    await click(document.querySelector('[data-selection-value="2026-09-18"]'));
+    await click([...document.querySelectorAll('.ant-segmented-item')].find(item => item.textContent.includes('按周四')));
+    expect(document.querySelector('.is-range-anchor')).toBeNull();
+    await click(document.querySelector('[data-selection-value="2"]'));
+    await click(document.querySelector('[data-selection-value="3"]'));
+    expect(selectedValues()).toEqual(['2', '3']);
   });
 
   test('readonly mode has no management controls and loading disables them', async () => {

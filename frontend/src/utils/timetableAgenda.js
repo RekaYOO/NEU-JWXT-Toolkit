@@ -1,6 +1,9 @@
 import dayjs from 'dayjs';
 
 const DAYS = [7, 1, 2, 3, 4, 5, 6];
+// Manual agenda entries use the same color-mix pipeline as official courses,
+// but start from a muted slate-blue so they do not fall back to vivid brand blue.
+const MANUAL_AGENDA_COLOR = '#94a3b8';
 export const agendaDateForDay = (weeks, week, day) => {
   const row = (weeks || []).find(item => Number(item.number) === Number(week));
   const offset = DAYS.indexOf(Number(day));
@@ -19,6 +22,47 @@ export const agendaDayContext = (weeks, date) => {
   }
   return null;
 };
+
+export const agendaEventDates = (event, weeks = []) => {
+  if (event?.selection_mode === 'week' || event?.mode === 'week') {
+    const weekday = Number(event.weekday);
+    if (!Number.isInteger(weekday)) return [];
+    return (weeks || [])
+      .filter(week => (event.weeks || []).map(Number).includes(Number(week.number)))
+      .map(week => agendaDateForDay(weeks, week.number, weekday))
+      .filter(Boolean);
+  }
+  return [...new Set((event?.dates || (event?.date ? [event.date] : []))
+    .map(value => String(value).slice(0, 10))
+    .filter(Boolean))];
+};
+
+export const agendaEventOccursOnDate = (event, weeks, date) => (
+  agendaEventDates(event, weeks).includes(String(date).slice(0, 10))
+);
+
+export const agendaEventMatchesDate = (event, weeks, week, day) => {
+  if (week == null || day == null) return false;
+  const date = agendaDateForDay(weeks, week, day);
+  return Boolean(date && agendaEventOccursOnDate(event, weeks, date));
+};
+
+export const agendaCourseSortKey = course => {
+  const time = String(course?.start_time || '').match(/^(\d{1,2}):(\d{2})/);
+  const minutes = time ? Number(time[1]) * 60 + Number(time[2]) : Number.POSITIVE_INFINITY;
+  const section = Number(course?.start_section);
+  return {
+    minutes,
+    section: Number.isFinite(section) && section > 0 ? section : Number.POSITIVE_INFINITY,
+    id: String(course?.id || ''),
+  };
+};
+
+export const sortAgendaCourses = courses => [...(courses || [])].sort((left, right) => {
+  const a = agendaCourseSortKey(left);
+  const b = agendaCourseSortKey(right);
+  return a.minutes - b.minutes || a.section - b.section || a.id.localeCompare(b.id);
+});
 
 export const agendaCoursesOnDate = (courses, weeks, date) => {
   const context = agendaDayContext(weeks, date);
@@ -70,23 +114,31 @@ export const injectTimetableAgenda = ({ courses = [], weeks = [], document, sect
       });
     }
   }
-  const events = (active?.events || []).map(event => agendaEventCourse(event, weeks, sections)).filter(Boolean);
+  const events = (active?.events || []).flatMap(event => agendaEventCourses(event, weeks, sections));
   return { courses: projected, events, ended };
 };
 
 export const projectAgendaCourses = (courses, weeks, document) => injectTimetableAgenda({ courses, weeks, document }).courses;
 
-export const agendaEventCourse = (event, weeks, sections) => {
-  const context = agendaDayContext(weeks, event.date);
+export const agendaEventCourse = (event, weeks, sections, dateOverride) => {
+  const date = dateOverride || agendaEventDates(event, weeks)[0];
+  const context = agendaDayContext(weeks, date);
   if (!context) return null;
   const overlap = (sections || []).filter(section => section.start_time && section.end_time
     && event.start_time < section.end_time && event.end_time > section.start_time);
   return {
-    id: `agenda-event-${event.id}`, agenda_event_id: event.id, agenda_date: event.date,
+    id: `agenda-event-${event.id}-${date}`, agenda_event_id: event.id, agenda_date: date,
+    agenda_selection_mode: event.selection_mode || 'date',
     course_name: event.title, location: event.location, teachers: event.note ? [event.note] : [],
     course_nature: event.important, weekday: context.day, weeks: [context.week],
     start_time: event.start_time, end_time: event.end_time,
     start_section: overlap[0]?.number || null, end_section: overlap[overlap.length - 1]?.number || null,
-    tags: ['日程'],
+    tags: ['日程'], agenda_kind: 'manual', color: MANUAL_AGENDA_COLOR,
   };
 };
+
+export const agendaEventCourses = (event, weeks, sections) => (
+  agendaEventDates(event, weeks)
+    .map(date => agendaEventCourse(event, weeks, sections, date))
+    .filter(Boolean)
+);

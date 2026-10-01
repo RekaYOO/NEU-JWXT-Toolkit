@@ -304,6 +304,52 @@ describe('TimetablePage helpers', () => {
     }
   });
 
+  test('renders a manual agenda in the same mobile course card and sorts by start time', async () => {
+    const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<MobileTimetable
+          coursesByDay={Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [
+            day,
+            day === 4 ? [
+              {
+                id: 'official-late', course_name: '晚课', weekday: 4, weeks: [2],
+                start_section: 3, end_section: 4, start_time: '10:30', end_time: '12:10',
+                location: '教学楼101',
+              },
+              {
+                id: 'agenda-early', agenda_event_id: 'agenda-early', agenda_date: '2026-09-17',
+                course_name: '当天会议', weekday: 4, weeks: [2], start_time: '08:00',
+                end_time: '09:00', location: '会议室',
+              },
+            ] : [],
+          ]))}
+          sections={[]}
+          selectedDay={4}
+          viewMode="week"
+          currentTerm
+          currentWeekNumber={2}
+          onDayChange={() => {}}
+          onCourseClick={() => {}}
+          personalConflictMap={{}}
+        />);
+      });
+      const cards = container.querySelectorAll('.timetable-mobile-card');
+      expect(cards).toHaveLength(2);
+      expect(cards[0].textContent).toContain('当天会议');
+      expect(cards[0].querySelector('.mobile-course-time strong').textContent).toBe('日程');
+      expect(cards[1].textContent).toContain('晚课');
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
   test('uses mode-aware context rows for queried mobile course cards', async () => {
     expect(courseClassText({ classes: ['工业工程2401', '工业工程2401'] }))
       .toBe('工业工程2401');

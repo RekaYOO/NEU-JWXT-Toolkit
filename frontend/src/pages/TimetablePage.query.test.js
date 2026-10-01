@@ -289,6 +289,37 @@ describe('query timetable request lifecycle', () => {
     expect(cached.courses[0].weeks).toEqual([3]);
   });
 
+  test('manual agenda events stay on their exact date when switching weeks', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-16T08:00:00'));
+    const datedWeeks = [2, 3].map((number, index) => ({
+      number, name: `第${number}周`, current: number === 2,
+      start_date: `2026-09-${13 + 7 * index}`, end_date: `2026-09-${19 + 7 * index}`,
+    }));
+    const cached = { ...personal, weeks: datedWeeks, courses: [] };
+    mockTimetableMemory.data = {
+      payload: cached, terms: [{ code: termCode, name: '测试学期', current: true }],
+      currentTermCode: termCode, campusCode: '00', weekNumber: 2, viewMode: 'week',
+    };
+    getPersonalTimetable.mockResolvedValue(cached);
+    getTimetableAgenda.mockResolvedValue({
+      revision: 1,
+      events: [{ id: 'event-1', date: '2026-09-17', title: '当天会议', start_time: '23:00', end_time: '23:30' }],
+      moves: [],
+    });
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <TimetablePage />
+      </MemoryRouter>,
+    ));
+    await flush();
+    await click([...container.querySelectorAll('.timetable-mobile-day-selector .ant-segmented-item')]
+      .find(item => item.textContent.includes('周四')));
+    expect(container.querySelector('.timetable-mobile-list').textContent).toContain('当天会议');
+    await click(week(3));
+    expect(container.querySelector('.timetable-mobile-list').textContent).not.toContain('当天会议');
+  });
+
   test('agenda loading does not block official courses or reset a manually previewed week', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-09-16T08:00:00'));
