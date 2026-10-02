@@ -412,6 +412,51 @@ describe('query timetable request lifecycle', () => {
     expect(highlightedDay()).toContain('星期五');
   });
 
+  test('switching weeks clears all live highlights without changing the current-course summary or fetching again', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-17T09:30:00'));
+    const datedWeeks = [1, 2, 3].map((number, index) => ({
+      number, name: `第${number}周`, current: number === 2,
+      start_date: `2026-09-${String(6 + index * 7).padStart(2, '0')}`,
+      end_date: `2026-09-${String(12 + index * 7).padStart(2, '0')}`,
+    }));
+    const cached = { ...personal, weeks: datedWeeks, courses: [
+      { ...course, weekday: 4, weeks: [1, 2, 3], start_time: '09:00', end_time: '10:00' },
+    ] };
+    mockTimetableMemory.data = {
+      payload: cached, terms: [{ code: termCode, name: '测试学期', current: true }],
+      currentTermCode: termCode, campusCode: '00', weekNumber: 2, viewMode: 'week',
+    };
+    getPersonalTimetable.mockResolvedValue(cached);
+    await act(async () => root.render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><TimetablePage /></MemoryRouter>,
+    ));
+    await flush();
+    const requestCount = getPersonalTimetable.mock.calls.length;
+    const summary = () => header.querySelector('.timetable-mobile-summary-trigger')?.textContent;
+    expect(container.querySelector('.is-course-now')).not.toBeNull();
+    expect(container.querySelector('.is-today')).not.toBeNull();
+    expect(summary()).toContain('当前');
+    expect(summary()).toContain('查询课程');
+    for (const otherWeek of [1, 3]) {
+      await click(week(otherWeek));
+      expect(container.querySelector('.is-course-now')).toBeNull();
+      expect(container.querySelector('.is-today')).toBeNull();
+      expect(summary()).toContain('当前');
+      expect(summary()).toContain('查询课程');
+    }
+    await click(week(2));
+    expect(container.querySelector('.is-course-now')).not.toBeNull();
+    expect(container.querySelector('.is-today')).not.toBeNull();
+    await click(week(3));
+    jest.setSystemTime(new Date('2026-09-20T09:30:00'));
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect(week(3)?.classList.contains('is-selected')).toBe(true);
+    expect(container.querySelector('.timetable-grid-header .is-today')?.textContent).toContain('星期日');
+    expect(container.querySelector('.is-course-now')).toBeNull();
+    expect(getPersonalTimetable).toHaveBeenCalledTimes(requestCount);
+  });
+
   test('moves the followed weekday and teaching week together at the Sunday boundary', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-09-19T08:00:00'));
@@ -833,7 +878,7 @@ describe('query timetable request lifecycle', () => {
     if (range === 'week') expect(week(expectedWeek)?.classList.contains('is-selected')).toBe(true);
     else expect(container.querySelector('.timetable-mobile-week-timeline')).toBeNull();
     if (compact) {
-      expect(container.querySelector('.is-mobile-compact .timetable-grid-header .is-today')?.textContent)
+      expect(container.querySelector('.is-mobile-compact .timetable-grid-header .is-selected-day')?.textContent)
         .toContain(expectedDay);
     } else {
       expect(container.querySelector('.timetable-mobile-day-selector .ant-segmented-item-selected')?.textContent)

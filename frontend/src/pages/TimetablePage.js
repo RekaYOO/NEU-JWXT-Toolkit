@@ -1042,9 +1042,13 @@ export const isCourseHappeningNow = (
     now = new Date(),
     currentTerm = false,
     currentWeekNumber = null,
+    viewMode,
+    weekNumber = null,
   } = {},
 ) => {
   if (!course || !currentTerm || !currentWeekNumber) return false;
+  if (viewMode === 'week' && weekNumber !== currentWeekNumber) return false;
+  if (course.agenda_date && course.agenda_date !== dateKey(now)) return false;
   if (course.weekday !== todayWeekday(now)) return false;
   if (
     course.recurrence_unknown
@@ -1322,6 +1326,7 @@ export const shouldHighlightToday = ({
 }) => Boolean(
   termCode
   && termCode === currentTermCode
+  && currentWeekNumber != null
   && (viewMode === 'term' || weekNumber === currentWeekNumber),
 );
 
@@ -4116,6 +4121,7 @@ function TimetablePage({
                   sections={resolvedSections}
                   selectedDay={mobileDay}
                   viewMode={displayedViewMode}
+                  weekNumber={displayedWeekNumber}
                   currentTerm={termCode === currentTermCode}
                   currentWeekNumber={effectiveCurrentWeekNumber}
                   onDayChange={handleMobileDayChange}
@@ -4140,6 +4146,7 @@ function TimetablePage({
                   coursesByDay={coursesByDay}
                   sections={resolvedSections}
                   viewMode={displayedViewMode}
+                  weekNumber={displayedWeekNumber}
                   mode={mode}
                   currentTerm={termCode === currentTermCode}
                   currentWeekNumber={effectiveCurrentWeekNumber}
@@ -4180,6 +4187,7 @@ function TimetablePage({
                   course={course}
                   mode="personal"
                   viewMode="week"
+                  weekNumber={displayedWeekNumber}
                   currentTerm={termCode === currentTermCode}
                   currentWeekNumber={effectiveCurrentWeekNumber}
                   onCourseClick={() => setAgendaDate(course.agenda_date)}
@@ -4550,6 +4558,7 @@ export function TimetableGrid({
   coursesByDay,
   sections = [],
   viewMode,
+  weekNumber = null,
   mode,
   currentTerm,
   currentWeekNumber,
@@ -4595,7 +4604,10 @@ export function TimetableGrid({
     setActiveClusterCourse(null);
     setExpandedCluster(null);
   }, [coursesByDay, presentation, viewMode]);
-  const today = Number(highlightedDay) || (showToday ? todayWeekday(now) : null);
+  const currentRange = Boolean(currentTerm && currentWeekNumber != null
+    && (viewMode === 'term' || weekNumber === currentWeekNumber));
+  const today = showToday && currentRange ? todayWeekday(now) : null;
+  const selectedDay = Number(highlightedDay) || null;
   const layoutsByDay = Object.fromEntries(
     TIMETABLE_DAY_ORDER.map(day => [day, groupDayCourses(coursesByDay[day])]),
   );
@@ -4620,7 +4632,7 @@ export function TimetableGrid({
         <div className="timetable-axis-heading">{mobileCompact ? '时间' : '节次'}</div>
         {TIMETABLE_DAY_ORDER.map(day => {
           const name = mobileCompact ? `周${SHORT_WEEKDAY_NAMES[day - 1]}` : WEEKDAY_NAMES[day - 1];
-          return <div className={today === day ? 'is-today' : ''} key={day}>{onDayAgenda && viewMode === 'week'
+          return <div className={[today === day && 'is-today', selectedDay === day && 'is-selected-day'].filter(Boolean).join(' ')} key={day}>{onDayAgenda && viewMode === 'week'
             ? <button type="button" className="timetable-day-heading" onClick={() => onDayAgenda(day)} aria-label={`查看${WEEKDAY_NAMES[day - 1]}当日日程`}>{name}{!mobileCompact && today === day && <small>今天</small>}</button>
             : <>{name}{!mobileCompact && today === day && <small>今天</small>}</>}</div>;
         })}
@@ -4670,7 +4682,7 @@ export function TimetableGrid({
               if (group.courses.length === 1) {
                 const course = group.courses[0];
                 const content = courseCardContent(course);
-                const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber });
+                const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber, viewMode, weekNumber });
                 const contextText = courseContextText(course, mode);
                 const sectionText = `第${course.start_section}${course.end_section !== course.start_section ? `–${course.end_section}` : ''}节`;
                 const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
@@ -4768,7 +4780,7 @@ export function TimetableGrid({
                 >
                   {visibleCourses.map((course, courseIndex) => {
                     const content = courseCardContent(course);
-                    const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber });
+                    const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber, viewMode, weekNumber });
                     const contextText = courseContextText(course, mode);
                     const sectionText = `第${course.start_section}${course.end_section !== course.start_section ? `–${course.end_section}` : ''}节`;
                     const isExpanded = courseIndex === activeIndex;
@@ -5132,6 +5144,7 @@ export function MobileCompactWeekTimetable({
   sections = [],
   selectedDay,
   viewMode = 'week',
+  weekNumber = null,
   mode = 'personal',
   currentTerm = false,
   currentWeekNumber = null,
@@ -5145,10 +5158,11 @@ export function MobileCompactWeekTimetable({
       sections={sections}
       highlightedDay={selectedDay}
       viewMode={viewMode}
+      weekNumber={weekNumber}
       mode={mode}
       currentTerm={currentTerm}
       currentWeekNumber={currentWeekNumber}
-      showToday={false}
+      showToday
       onCourseClick={onCourseClick}
       personalConflictMap={personalConflictMap}
       presentation="mobile-compact"
@@ -5163,6 +5177,7 @@ export function TimetableMobileCourseCard({
   mode = 'personal',
   compact = false,
   viewMode = 'week',
+  weekNumber = null,
   currentTerm = false,
   currentWeekNumber = null,
   onCourseClick,
@@ -5171,7 +5186,7 @@ export function TimetableMobileCourseCard({
 }) {
   const content = courseCardContent(course);
   const context = mobileCourseContext(course, mode);
-  const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber });
+  const happeningNow = isCourseHappeningNow(course, { now, currentTerm, currentWeekNumber, viewMode, weekNumber });
   const hasPersonalConflict = personalConflictForCourse(course, personalConflictMap)?.status === 'conflict';
   const agenda = Boolean(course.agenda_event_id);
   const sectionLabel = agenda
@@ -5217,6 +5232,7 @@ export function MobileTimetable({
   sections = [],
   selectedDay,
   viewMode,
+  weekNumber = null,
   mode = 'personal',
   currentTerm,
   currentWeekNumber,
@@ -5280,10 +5296,11 @@ export function MobileTimetable({
           sections={sections}
           highlightedDay={selectedDay}
           viewMode={viewMode}
+          weekNumber={weekNumber}
           mode={mode}
           currentTerm={currentTerm}
           currentWeekNumber={currentWeekNumber}
-          showToday={false}
+          showToday
           onCourseClick={onCourseClick}
           personalConflictMap={personalConflictMap}
           onDayAgenda={onDayAgenda}
@@ -5302,6 +5319,7 @@ export function MobileTimetable({
         mode={mode}
         compact={compact}
         viewMode={viewMode}
+        weekNumber={weekNumber}
         currentTerm={currentTerm}
         currentWeekNumber={currentWeekNumber}
         onCourseClick={onCourseClick}
@@ -5325,6 +5343,7 @@ export function MobileTimetable({
           sections={sections}
           selectedDay={selectedDay}
           viewMode={viewMode}
+          weekNumber={weekNumber}
           mode={mode}
           currentTerm={currentTerm}
           currentWeekNumber={currentWeekNumber}

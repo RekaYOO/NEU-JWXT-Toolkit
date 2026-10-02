@@ -1018,6 +1018,12 @@ describe('TimetablePage helpers', () => {
     expect(isCourseHappeningNow(course, { now, currentTerm: true, currentWeekNumber: 2 })).toBe(false);
     expect(isCourseHappeningNow(course, { now, currentTerm: false, currentWeekNumber: 3 })).toBe(false);
     expect(isCourseHappeningNow({ ...course, end_time: '10:00' }, { now, currentTerm: true, currentWeekNumber: 3 })).toBe(false);
+    const weekView = { now, currentTerm: true, currentWeekNumber: 3, viewMode: 'week' };
+    expect(isCourseHappeningNow(course, { ...weekView, weekNumber: 1 })).toBe(false);
+    expect(isCourseHappeningNow(course, { ...weekView, weekNumber: 3 })).toBe(true);
+    expect(isCourseHappeningNow(course, weekView)).toBe(false);
+    expect(isCourseHappeningNow(course, { ...weekView, viewMode: 'term', weekNumber: 1 })).toBe(true);
+    expect(isCourseHappeningNow({ ...course, agenda_date: '2026-08-16' }, { ...weekView, weekNumber: 3 })).toBe(false);
   });
 
   test('derives the mobile today summary from the current teaching week', () => {
@@ -1300,6 +1306,7 @@ describe('TimetablePage helpers', () => {
           viewMode="week"
           currentTerm
           currentWeekNumber={1}
+          weekNumber={1}
           onDayChange={() => {}}
           onSwipeDay={() => {}}
           onSwipeWeek={() => {}}
@@ -1428,6 +1435,72 @@ describe('TimetablePage helpers', () => {
       global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
     }
   });
+
+  test.each(['desktop', 'mobile-day', 'mobile-compact', 'mobile-selection'])(
+    '%s highlights today and ongoing courses only in the displayed current week',
+    async display => {
+      const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+      global.IS_REACT_ACT_ENVIRONMENT = true;
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date(2026, 8, 17, 10, 0, 0));
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      const coursesByDay = Object.fromEntries(TIMETABLE_DAY_ORDER.map(day => [day, []]));
+      const ongoing = {
+        id: 'ongoing', course_name: '每周四上课', location: 'A101', color: '#94b0c5',
+        weekday: 4, weeks: [1, 2, 3], start_section: 1, end_section: 2,
+        start_time: '09:30', end_time: '10:30',
+      };
+      coursesByDay[4] = [ongoing];
+      const render = async (weekNumber, overrides = {}) => {
+        const props = {
+          coursesByDay, sections: [{ number: 1 }, { number: 2 }], mode: 'personal',
+          currentTerm: true, currentWeekNumber: 2, weekNumber, viewMode: 'week',
+          onCourseClick: jest.fn(), ...overrides,
+        };
+        await act(async () => root.render(display === 'desktop'
+          ? <TimetableGrid {...props} showToday />
+          : <MobileTimetable {...props} selectedDay={display === 'mobile-day' ? 4 : 1} onDayChange={jest.fn()}
+            personalConflictMap={{}} compactWeekView={display === 'mobile-compact'}
+            presentation={display === 'mobile-selection' ? 'selection' : 'default'} />));
+      };
+      try {
+        // Grid selection remains Monday to distinguish navigation from today.
+        for (const entries of [[ongoing], [ongoing, { ...ongoing, id: 'overlapping', course_name: '重叠课程' }]]) {
+          coursesByDay[4] = entries;
+          await render(2);
+          expect(container.querySelectorAll('.is-course-now')).toHaveLength(entries.length);
+          if (display !== 'mobile-day') {
+            expect(container.querySelector('.timetable-grid-header .is-today')?.textContent)
+              .toContain(display === 'desktop' ? '星期四' : '周四');
+            expect(container.querySelectorAll('.timetable-day-column.is-today')).toHaveLength(1);
+          }
+          for (const otherWeek of [1, 3, null]) {
+            await render(otherWeek);
+            expect(container.querySelector('.is-course-now')).toBeNull();
+            expect(container.querySelector('.is-today')).toBeNull();
+            expect(container.textContent).toContain(ongoing.course_name);
+            if (display.startsWith('mobile') && display !== 'mobile-day') {
+              expect(container.querySelector('.is-selected-day')?.textContent).toContain('周一');
+            }
+          }
+          await render(2);
+          expect(container.querySelectorAll('.is-course-now')).toHaveLength(entries.length);
+          await render(2, { currentTerm: false });
+          expect(container.querySelector('.is-course-now')).toBeNull();
+          expect(container.querySelector('.is-today')).toBeNull();
+          await render(1, { viewMode: 'term' });
+          expect(container.querySelectorAll('.is-course-now')).toHaveLength(entries.length);
+        }
+      } finally {
+        await act(async () => root.unmount());
+        container.remove();
+        jest.useRealTimers();
+        global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+      }
+    },
+  );
 
   test('swiping the compact mobile week view changes weeks instead of days', async () => {
     const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
@@ -1786,6 +1859,8 @@ describe('TimetablePage helpers', () => {
     expect(shouldHighlightToday({ ...current, viewMode: 'week', weekNumber: 2 })).toBe(false);
     expect(shouldHighlightToday({ ...current, viewMode: 'term', weekNumber: 2 })).toBe(true);
     expect(shouldHighlightToday({ ...current, termCode: '2025-2026-2', viewMode: 'term', weekNumber: 3 })).toBe(false);
+    expect(shouldHighlightToday({ ...current, currentWeekNumber: null, viewMode: 'week', weekNumber: null })).toBe(false);
+    expect(shouldHighlightToday({ ...current, currentWeekNumber: null, viewMode: 'term' })).toBe(false);
   });
 
   test('appends every remote target page while de-duplicating stable ids', () => {
