@@ -10,6 +10,7 @@ from backend.core.cache.resources import (
     canonicalize_research_training,
     canonicalize_scores,
     canonicalize_personal_timetable,
+    personal_timetable_revision_payload,
     diff_personal_timetable,
     canonicalize_experiment_courses,
     diff_experiment_courses,
@@ -23,6 +24,59 @@ from backend.core.cache import MUTATION_POLICIES
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_timetable_revision_ignores_generated_ids_color_and_unordered_lists():
+    before = {"courses": [{
+        "id": "old", "meeting_id": "old-meeting", "course_code": "C1",
+        "color": "#112233", "weeks": [1, 2], "teachers": ["甲", "乙"], "location": "A101",
+    }]}
+    after = {"courses": [{
+        **before["courses"][0], "id": "new", "meeting_id": "new-meeting",
+        "color": "#445566", "weeks": [2, 1], "teachers": ["乙", "甲"],
+    }]}
+    assert personal_timetable_revision_payload(before) == personal_timetable_revision_payload(after)
+    assert canonicalize_personal_timetable(after)["courses"][0]["color"] == "#445566"
+    for field, value in [("location", "A102"), ("preselected", True), ("teachers", ["丙"])]:
+        changed = {"courses": [{**after["courses"][0], field: value}]}
+        assert personal_timetable_revision_payload(before) != personal_timetable_revision_payload(changed)
+
+
+def test_old_timetable_hash_remains_readable_while_scheduled_for_refresh(monkeypatch, tmp_path):
+    from backend.app import client_snapshot, dependencies
+    from backend.app.routers import timetable
+    from backend.core.cache import CacheCoordinator, CacheKey, CacheStore
+    from types import SimpleNamespace
+
+    store = CacheStore(tmp_path / "cache.db")
+    key = CacheKey("20240001", "personal-timetable", "term:2026-2027-1")
+    store.commit_success(
+        key=key, schema_version=3, revision_algorithm_version=1,
+        payload_type=dependencies._cache_registry.get(key.resource).payload_type,
+        payload=canonicalize_personal_timetable({"term_code": "2026-2027-1"}),
+        revision="v1:old", dependency_revisions={}, changes={}, reason="test",
+    )
+    coordinator = CacheCoordinator(store, dependencies._cache_registry, autostart=False)
+    submissions = []
+    monkeypatch.setattr(coordinator, "submit", lambda **kwargs: submissions.append(kwargs))
+    monkeypatch.setattr(client_snapshot, "_cache_coordinator", coordinator)
+    monkeypatch.setattr(timetable, "get_cache_coordinator", lambda: coordinator)
+    try:
+        snapshot = client_snapshot.timetable_bootstrap_snapshot(key.account_id)
+        assert len(snapshot.personal) == 1
+        assert snapshot.personal[0].is_fresh is False
+        response = timetable.get_personal_timetable(
+            term_code="2026-2027-1", refresh=False,
+            auth=SimpleNamespace(
+                username=key.account_id,
+                timetable=SimpleNamespace(get_cached_terms=lambda: None),
+            ),
+        )
+        assert response.term_code == "2026-2027-1"
+        assert response.is_fresh is False
+        assert submissions[0]["resource"] == "personal-timetable"
+    finally:
+        coordinator.shutdown(timeout=2)
 
 
 def test_score_identity_and_diff_cover_change_and_removal():

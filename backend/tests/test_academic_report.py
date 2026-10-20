@@ -1,5 +1,12 @@
 from backend.core.academic.report import AcademicReportAPI
 from backend.core.storage.integration import AcademicReportStorage
+from types import SimpleNamespace
+
+
+def test_success_code_without_program_tree_is_not_an_empty_report():
+    response = SimpleNamespace(json=lambda: {"code": "0", "datas": {"queryXyzhbx": {}}})
+    client = SimpleNamespace(post=lambda *args, **kwargs: response)
+    assert AcademicReportAPI(client).get_report() is None
 
 
 def _course(

@@ -80,7 +80,10 @@ import {
     acknowledgeAndSyncSystemMessagePrompts, unreadSystemMessagePrompts,
 } from '../utils/systemMessagePrompt';
 import { summarizeTimetableUpdate } from '../utils/resourceUpdateSummary';
+import { timetableContentSignature } from '../utils/timetableContent';
 import './TimetablePage.css';
+
+export { timetableContentSignature } from '../utils/timetableContent';
 
 const { useBreakpoint } = Grid;
 
@@ -1429,33 +1432,6 @@ export const timetableSnapshotIsNewer = (candidate, current) => {
   return Boolean(candidate.cache?.revision && candidate.cache.revision !== current.cache?.revision);
 };
 
-const timetableContentValue = value => {
-  if (Array.isArray(value)) {
-    return value
-      .map(timetableContentValue)
-      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
-  }
-  if (!value || typeof value !== 'object') return value;
-  return Object.keys(value)
-    .filter(key => !['cache', 'is_fresh', 'last_update', 'source', 'fetched_at'].includes(key))
-    .sort()
-    .reduce((result, key) => {
-      result[key] = timetableContentValue(value[key]);
-      return result;
-    }, {});
-};
-
-export const timetableContentSignature = payload => JSON.stringify(timetableContentValue({
-  term_code: payload?.term_code || '',
-  current_term: payload?.current_term || '',
-  campuses: payload?.campuses || [],
-  weeks: payload?.weeks || [],
-  sections_by_campus: payload?.sections_by_campus || {},
-  courses: payload?.courses || [],
-  unscheduled: payload?.unscheduled || [],
-  practices: payload?.practices || [],
-}));
-
 export const timetableContentChanged = (candidate, current) => Boolean(
   candidate && current && timetableContentSignature(candidate) !== timetableContentSignature(current),
 );
@@ -2057,7 +2033,7 @@ function TimetablePage({
     timetableMessageModal.current = null;
     pendingPersonalPayloadRef.current = payload;
     pendingPersonalSignatureRef.current = signature;
-    pendingPersonalChangesRef.current = summarizeTimetableUpdate(current, payload);
+    pendingPersonalChangesRef.current = summarizeTimetableUpdate(visibleCurrent, visibleNext);
     personalUpdateModal.current = Modal.confirm({
       title: '课表有更新',
       content: <MergedUpdateSummary

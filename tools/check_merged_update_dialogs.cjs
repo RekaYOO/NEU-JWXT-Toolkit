@@ -50,7 +50,9 @@ const server = http.createServer(async (request, response) => {
 });
 
 async function inspectModal(page, label, width, height, screenshots) {
-  const dialog = page.locator('.ant-modal:visible').filter({ has: page.locator('.merged-update-summary') });
+  // A message-only notice may still be closing when the change dialog opens.
+  const title = label === 'timetable' ? '课表有更新' : '培养计划已有更新';
+  const dialog = page.getByRole('dialog', { name: title, exact: true });
   await dialog.waitFor({ timeout: 15000 });
   const summary = dialog.locator('.merged-update-summary');
   await summary.getByText('教务系统未读消息（供对照）').waitFor();

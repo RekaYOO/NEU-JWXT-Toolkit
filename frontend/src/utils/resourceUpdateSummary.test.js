@@ -6,6 +6,26 @@ import {
   summarizeTimetableUpdate,
 } from './resourceUpdateSummary';
 
+test('timetable summary ignores color, IDs, object key order and collection order', () => {
+  const before = { courses: [{
+    id: 'old', meeting_id: 'old-m', course_code: 'C1', course_name: '课程甲',
+    color: '#112233', weeks: [1, 2], teachers: ['甲', '乙'],
+  }] };
+  const after = { courses: [{
+    ...before.courses[0], id: 'new', meeting_id: 'new-m', color: '#445566',
+    weeks: [2, 1], teachers: ['乙', '甲'],
+  }] };
+  expect(summarizeTimetableUpdate(before, after)).toEqual([]);
+});
+
+test('timetable summary describes a status or assessment change explicitly', () => {
+  const course = { id: 'a', course_code: 'A1', course_name: '课程甲', preselected: true, assessment_type: '考试' };
+  expect(summarizeTimetableUpdate(
+    { courses: [course] },
+    { courses: [{ ...course, preselected: false, assessment_type: '考查' }] },
+  )).toEqual(['课程甲：考核方式 考试 → 考查，预选状态 预选 → 已确认']);
+});
+
 test('timetable update reports changed meetings and non-meeting arrangements', () => {
   const before = {
     courses: [

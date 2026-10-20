@@ -9,6 +9,23 @@ from typing import Any, Dict, Optional
 
 
 _EVENT_TITLES = {
+    "timetable_remote_request": "课表请求上下文",
+    "timetable_remote_response": "课表原始响应指纹",
+    "timetable_remote_failed": "课表请求失败",
+    "timetable_source": "课表原始安排统计",
+    "cache_refresh_started": "后台刷新开始",
+    "cache_refresh_finished": "后台刷新结束",
+    "cache_refresh_committed": "缓存刷新提交",
+    "cache_refresh_failed": "后台刷新失败",
+    "cache_refresh_cancelled": "后台刷新取消",
+    "cache_refresh_skipped": "后台刷新跳过",
+    "academic_report_request": "培养计划请求上下文",
+    "academic_report_http": "培养计划 HTTP 响应",
+    "academic_report_response": "培养计划接口响应",
+    "academic_report_source": "培养计划原始响应统计",
+    "academic_report_parsed": "培养计划解析结果",
+    "academic_report_converted": "培养计划展示模型",
+    "academic_report_failed": "培养计划读取失败",
     "http_access": "HTTP 请求",
     "application_error": "应用异常",
     "unhandled_request_error": "未处理的请求异常",
@@ -142,6 +159,24 @@ _DETAIL_FIELDS = {
 
 
 def _safe_details(event: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if event.startswith(("cache_refresh_", "academic_report_", "timetable_")):
+        fields = {
+            "event", "job_id", "request_id", "resource", "variant", "identity_epoch",
+            "reason", "status", "stage", "changed", "previous_revision", "revision",
+            "schema_version", "revision_algorithm_version", "dependency_revisions",
+            "duration_ms", "error_id", "error_type", "trace", "before", "after",
+            "field_changes", "endpoint", "query_context", "program_selection",
+            "requested_program_ref", "http_status", "response_fingerprint",
+            "content_fingerprint", "program_ref", "required_field_present",
+            "declared_required", "required_source", "top_category_count", "category_count",
+            "legacy_course_rows", "modern_course_rows", "top_categories", "total_required",
+            "course_count", "outside_course_count", "credits", "diagnostic_error",
+            "success", "api_code", "query_fingerprint", "week_filtered",
+            "campus_filtered", "counts",
+            "causes", "previous_schema_version", "previous_revision_algorithm_version",
+            "dependencies_after", "dependency_changed_during_fetch",
+        }
+        return {key: value for key, value in payload.items() if key in fields}
     fields = _DETAIL_FIELDS.get(event)
     if fields is None:
         fields = {
@@ -157,6 +192,22 @@ def present_log_message(message: str, logger: str = "") -> LogPresentation:
     payload = _extract_json(message)
     if payload:
         event = str(payload.get("event") or "").strip()
+        if event in _EVENT_TITLES and event.startswith(("cache_refresh_", "academic_report_", "timetable_")):
+            parts = [str(payload.get("resource") or (
+                "personal-timetable" if event.startswith("timetable_") else "academic-report"))]
+            if payload.get("stage"):
+                parts.append(str(payload["stage"]))
+            if payload.get("changed") is not None:
+                parts.append("内容变化" if payload["changed"] else "内容未变")
+            if payload.get("total_required") is not None:
+                parts.append(f"应修 {payload['total_required']} 学分")
+            if payload.get("error_type"):
+                parts.append(str(payload["error_type"]))
+            if payload.get("job_id"):
+                parts.append(str(payload["job_id"]))
+            return LogPresentation(event_type=event, title=_EVENT_TITLES[event],
+                                   summary=" · ".join(parts),
+                                   details=_safe_details(event, payload), structured=True)
         if event == "http_access":
             return LogPresentation(
                 event_type=event,

@@ -28,6 +28,10 @@ from .models import (
 from .registry import CacheRegistry, VARIANT_NAME
 from .store import CacheStore
 from .system_message_merge import preserve_system_message_read_state
+from backend.core.log.context import get_request_context
+from backend.core.log.sync_diagnostics import (
+    cache_evidence, emit, failure_fields, safe_variant, sync_context,
+)
 
 
 IdentityValidator = Callable[[str, int], bool]
@@ -252,6 +256,7 @@ class CacheCoordinator:
                 created_at=now,
                 updated_at=now,
                 previous_revision=entry.revision if entry else None,
+                origin_request_id=get_request_context().get("request_id"),
             )
             self._jobs[job_id] = job
             self._inflight[inflight_key] = job_id
@@ -473,6 +478,28 @@ class CacheCoordinator:
 
     def _execute(self, job_id: str) -> None:
         with self._lock:
+            job = self._jobs.get(job_id)
+        if job is None or job.status != JobStatus.QUEUED:
+            return
+        started = time.monotonic()
+        with sync_context(job_id=job_id, request_id=job.origin_request_id,
+                          resource=job.key.resource, variant=safe_variant(job.key.variant),
+                          identity_epoch=job.identity_epoch,
+                          reason=job.reason if job.reason in PRIORITIES else "other"):
+            emit("cache_refresh_started", previous_revision=job.previous_revision)
+            try:
+                self._execute_job(job_id)
+            finally:
+                with self._lock:
+                    result = self._jobs.get(job_id)
+                emit("cache_refresh_finished", status=result.status.value if result else "expired",
+                     changed=result.changed if result else None,
+                     revision=result.revision if result else None,
+                     error_type=result.error_kind if result else None,
+                     duration_ms=round((time.monotonic() - started) * 1000, 1))
+
+    def _execute_job(self, job_id: str) -> None:
+        with self._lock:
             current = self._jobs[job_id]
             if current.status != JobStatus.QUEUED:
                 return
@@ -493,6 +520,7 @@ class CacheCoordinator:
             else None
         )
         dependencies_before = self._dependency_revisions(job)
+        stage = "mark_attempt"
         try:
             with self.identity_commit_guard(
                 job.key.account_id, job.identity_epoch
@@ -501,11 +529,13 @@ class CacheCoordinator:
                     raise _IdentityChanged
                 self.store.mark_attempt(job.key)
             context = FetchContext(job.key, job.identity_epoch, job.reason)
+            stage = "fetch"
             with self.remote_guard():
                 if not self._identity_valid(job) or self._job_cancelled(job):
                     raise _IdentityChanged
                 fetched = spec.fetch(context)
             if isinstance(fetched, CacheFetchSkipped):
+                emit("cache_refresh_skipped")
                 with self.identity_commit_guard(
                     job.key.account_id, job.identity_epoch
                 ):
@@ -528,13 +558,19 @@ class CacheCoordinator:
                     changes={"skipped": True, "reason": fetched.reason[:64]},
                 )
                 return
+            stage = "canonicalize"
             canonical = spec.canonicalize(fetched)
+            stage = "revision"
             revision = self._revision(
                 spec.payload_type,
                 spec.revision_payload(canonical),
                 spec.revision_algorithm_version,
             )
+            stage = "diff"
             changes = dict(spec.diff(previous_payload, canonical))
+            evidence = cache_evidence(job.key.resource,
+                                      previous.payload if previous else None, canonical)
+            stage = "commit"
             # Logout/switch-account must use this same guard. Validation and
             # SQLite commit are then one fenced critical section, so a result
             # cannot recreate cache after account cleanup.
@@ -582,7 +618,20 @@ class CacheCoordinator:
                         changes=changes,
                         reason=job.reason,
                     )
-            if dependencies_before != self._dependency_revisions(job):
+            dependencies_after = self._dependency_revisions(job)
+            emit("cache_refresh_committed", changed=event.changed,
+                 previous_revision=event.previous_revision, revision=event.revision,
+                 schema_version=spec.schema_version,
+                 revision_algorithm_version=spec.revision_algorithm_version,
+                 previous_schema_version=previous.schema_version if previous else None,
+                 previous_revision_algorithm_version=(
+                     previous.revision_algorithm_version if previous else None),
+                 dependency_revisions=dependencies_before,
+                 dependencies_after=dependencies_after,
+                 dependency_changed_during_fetch=dependencies_before != dependencies_after,
+                 **evidence)
+            stage = "invalidate_dependencies"
+            if dependencies_before != dependencies_after:
                 self.store.invalidate(job.key)
             if event.changed:
                 for dependent in self.registry.dependents_of(job.key.resource):
@@ -615,6 +664,7 @@ class CacheCoordinator:
                     # Notification failures must never roll back committed data.
                     continue
         except _IdentityChanged:
+            emit("cache_refresh_cancelled", stage=stage)
             self._finish(
                 job,
                 status=JobStatus.CANCELLED,
@@ -624,6 +674,8 @@ class CacheCoordinator:
                 ),
             )
         except Exception as exc:
+            emit("cache_refresh_failed", level=40, stage=stage,
+                 error_id=job.job_id, **failure_fields(exc))
             if self._job_cancelled(job):
                 self._finish(
                     job, status=JobStatus.CANCELLED, error_kind="resource_deleted"

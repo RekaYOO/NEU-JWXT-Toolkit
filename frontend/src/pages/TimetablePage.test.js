@@ -143,6 +143,20 @@ describe('TimetablePage helpers', () => {
     expect(timetableContentChanged(changed, current)).toBe(true);
   });
 
+  test('ignores paint and generated identities while detecting schedule and status changes', () => {
+    const before = { courses: [{
+      id: 'old', meeting_id: 'm-old', color: '#112233', course_code: 'C1',
+      teachers: ['甲', '乙'], weeks: [1, 2], location: 'A101', preselected: true,
+    }] };
+    const after = { courses: [{
+      ...before.courses[0], id: 'new', meeting_id: 'm-new', color: '#445566',
+      teachers: ['乙', '甲'], weeks: [2, 1],
+    }] };
+    expect(timetableContentChanged(after, before)).toBe(false);
+    expect(timetableContentChanged({ courses: [{ ...after.courses[0], location: 'A102' }] }, before)).toBe(true);
+    expect(timetableContentChanged({ courses: [{ ...after.courses[0], preselected: false }] }, before)).toBe(true);
+  });
+
   test('keeps background changes outside the displayed week out of the visible update', () => {
     const current = {
       term_code: '2026-2027-1',

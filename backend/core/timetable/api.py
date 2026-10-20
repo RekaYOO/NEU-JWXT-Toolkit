@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from backend.core.auth.client import NEULoginError
+from backend.core.log.sync_diagnostics import emit, failure_fields, fingerprint
 
 
 class TimetableError(RuntimeError):
@@ -222,6 +223,16 @@ class TimetableAPI:
         return body
 
     def _post(self, url: str, data: Optional[Mapping[str, Any]], operation: str) -> Any:
+        diagnostic = url in {self.PERSONAL_CAMPUS_URL, self.PERSONAL_SECTIONS_URL,
+                             self.PERSONAL_SCHEDULE_URL, self.WEEKS_URL}
+        started = time.monotonic()
+        stage = "request"
+        endpoint = url.rsplit("/", 1)[-1]
+        if diagnostic:
+            emit("timetable_remote_request", endpoint=endpoint,
+                 query_fingerprint=fingerprint(dict(data or {})),
+                 week_filtered="ZC" in (data or {}),
+                 campus_filtered=bool((data or {}).get("XQDM")))
         try:
             response = self._client.post(
                 url,
@@ -229,12 +240,27 @@ class TimetableAPI:
                 headers=self.HEADERS,
                 timeout=30,
             )
-            return self._response_json(response, operation)
-        except TimetableError:
+            stage = "response_json"
+            body = self._response_json(response, operation)
+            if diagnostic:
+                emit("timetable_remote_response", endpoint=endpoint,
+                     response_fingerprint=fingerprint(body),
+                     http_status=getattr(response, "status_code", 200),
+                     duration_ms=round((time.monotonic() - started) * 1000, 1))
+            return body
+        except TimetableError as error:
+            if diagnostic:
+                emit("timetable_remote_failed", level=40, endpoint=endpoint, stage=stage,
+                     **failure_fields(error))
             raise
         except NEULoginError:
+            if diagnostic:
+                emit("timetable_remote_failed", level=40, endpoint=endpoint, stage="authentication")
             raise
         except Exception as error:
+            if diagnostic:
+                emit("timetable_remote_failed", level=40, endpoint=endpoint, stage=stage,
+                     **failure_fields(error))
             raise TimetableError(f"{operation}失败") from error
 
     @classmethod
@@ -1049,6 +1075,8 @@ class TimetableAPI:
             url = self.TARGET_SCHEDULE_URL
         body = self._post(url, params, "获取课表")
         lists = self._schedule_lists(body)
+        if mode == "personal":
+            emit("timetable_source", counts={key: len(value) for key, value in lists.items()})
         return {
             "courses": [
                 self._course_from_row(row, index)

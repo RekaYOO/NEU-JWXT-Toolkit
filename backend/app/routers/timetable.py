@@ -247,7 +247,8 @@ def _cache_entry_is_compatible(entry, spec) -> bool:
     return bool(
         entry is not None
         and entry.schema_version == spec.schema_version
-        and entry.revision_algorithm_version == spec.revision_algorithm_version
+        # A new hash algorithm makes the entry stale, not unreadable. Preserve
+        # the previous snapshot until the background check can replace it.
         and entry.payload_type == spec.payload_type
     )
 

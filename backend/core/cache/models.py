@@ -118,6 +118,7 @@ class CacheJob:
     changed: bool | None = None
     changes: Mapping[str, Any] = field(default_factory=dict)
     error_kind: str | None = None
+    origin_request_id: str | None = None
 
     def with_updates(self, **changes: Any) -> "CacheJob":
         return replace(self, updated_at=utc_now(), **changes)

@@ -10,6 +10,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any, Iterable, Mapping
 
 from backend.core.academic.report import AcademicReportAPI
+from backend.core.log.sync_diagnostics import emit, failure_fields, payload_stats
 from backend.core.academic.research_training import ResearchTrainingAPI
 from backend.core.academic.experiment import ExperimentCourseAPI
 from backend.core.academic.system_messages import SystemMessageAPI
@@ -215,11 +216,31 @@ def diff_scores(previous: Any, current: Any) -> dict[str, Any]:
     }
 
 
+class AcademicReportIdentityError(RuntimeError):
+    """The remote report belongs to a different student."""
+
+
+def _validate_academic_report(payload: Mapping[str, Any], account: str) -> None:
+    student = str(payload.get("student_id") or "").strip()
+    if student and account and student != account:
+        raise AcademicReportIdentityError("培养计划账号不匹配")
+
+
 def fetch_academic_report(auth: Any, converter: Any) -> dict[str, Any]:
-    report = AcademicReportAPI(auth).get_report()
+    api = AcademicReportAPI(auth)
+    report = api.get_report(raise_errors=True)
     if report is None:
         raise RuntimeError("获取培养计划失败")
-    return converter(report)
+    stage = "convert_model"
+    try:
+        payload = converter(report)
+        stage = "validate_identity"
+        _validate_academic_report(payload, str(auth.username or "").strip())
+    except Exception as error:
+        emit("academic_report_failed", level=40, stage=stage, **failure_fields(error))
+        raise
+    emit("academic_report_converted", **payload_stats("academic-report", payload))
+    return payload
 
 
 def canonicalize_academic_report(payload: Any) -> dict[str, Any]:
@@ -678,13 +699,37 @@ def diff_personal_timetable(previous: Any, current: Any) -> dict[str, Any]:
         "changed_meeting_ids": sorted(
             key
             for key in old_courses.keys() & new_courses.keys()
-            if old_courses[key] != new_courses[key]
+            if _timetable_course_content(old_courses[key]) != _timetable_course_content(new_courses[key])
         ),
         "context_changed": any(
             previous.get(key) != current.get(key)
             for key in ("campuses", "weeks", "sections_by_campus", "unscheduled", "practices")
         ),
     }
+
+
+def _timetable_course_content(course: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value for key, value in course.items()
+        if key not in {"id", "meeting_id", "color"}
+    }
+
+
+def personal_timetable_revision_payload(payload: Any) -> dict[str, Any]:
+    """Ignore generated IDs and paint while retaining the original payload."""
+    result = canonicalize_personal_timetable(payload)
+
+    def stable(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {key: stable(item) for key, item in sorted(value.items())}
+        if isinstance(value, list):
+            return sorted((stable(item) for item in value), key=lambda item: json.dumps(
+                item, ensure_ascii=False, sort_keys=True,
+            ))
+        return value
+
+    result["courses"] = [_timetable_course_content(course) for course in result["courses"]]
+    return stable(result)
 
 
 def canonicalize_timetable_index(payload: Any) -> dict[str, Any]:

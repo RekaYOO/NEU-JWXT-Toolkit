@@ -24,6 +24,12 @@ const ACTIVE_SYNC_STATES = new Set(['starting', 'queued', 'running']);
 const IDENTITY_RETRY_ERRORS = new Set(['identity_changed']);
 const IDENTITY_RETRY_DELAY_MS = 250;
 const jobErrorMessage = job => {
+  if (job.error_kind === 'AcademicReportResponseError') {
+    return '培养计划接口未返回有效报告，已保留上次数据，请稍后重试';
+  }
+  if (job.error_kind === 'AcademicReportIdentityError') {
+    return '学校返回的培养计划账号不匹配，已保留上次数据，请重新登录后重试';
+  }
   if (job.auth_scope === 'cxcy') return ({
     CXCY_LOGIN_REQUIRED: '创院系统登录已失效，请在创院系统线路中恢复登录',
     CXCY_NETWORK_UNREACHABLE: '创院系统当前线路不可达，请重新检测或切换线路',

@@ -81,7 +81,7 @@ def _compatible(entry: Any, spec: Any) -> bool:
     return bool(
         entry
         and entry.schema_version == spec.schema_version
-        and entry.revision_algorithm_version == spec.revision_algorithm_version
+        # Freshness still checks the revision algorithm in the coordinator.
         and entry.payload_type == spec.payload_type
     )
 

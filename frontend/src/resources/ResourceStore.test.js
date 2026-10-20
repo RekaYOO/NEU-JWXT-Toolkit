@@ -21,7 +21,7 @@ import {
   ResourceProvider, deriveCachedResourceLoading, useCachedResource,
 } from './ResourceStore';
 import {
-  getFestivalActivitiesCache, requestCacheRefresh, waitForCacheRefreshJob,
+  getCachedAcademicReport, getFestivalActivitiesCache, requestCacheRefresh, waitForCacheRefreshJob,
 } from '../services/api';
 import { subscribeClientUpdates } from '../services/ClientUpdateScheduler';
 
@@ -35,6 +35,11 @@ const FestivalResourceProbe = () => {
   );
 };
 
+const ReportResourceProbe = () => {
+  const resource = useCachedResource('academic-report');
+  return <div>{resource.data?.credit_summary?.total_required}|{resource.syncError}</div>;
+};
+
 describe('cached resource loading state', () => {
   beforeAll(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -43,6 +48,23 @@ describe('cached resource loading state', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     subscribeClientUpdates.mockReturnValue(() => {});
+  });
+
+  test('preserves the cached plan when the report API response is invalid', async () => {
+    getCachedAcademicReport.mockResolvedValue({
+      categories: [{ name: '专业课' }], credit_summary: { total_required: 160 },
+      cache: { revision: 'complete-plan', is_stale: true },
+    });
+    requestCacheRefresh.mockResolvedValue({ status: 'queued', job_id: 'report-job' });
+    waitForCacheRefreshJob.mockResolvedValue({ status: 'failed', error_kind: 'AcademicReportResponseError' });
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<ResourceProvider><ReportResourceProbe /></ResourceProvider>);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(container.textContent).toBe('160|培养计划接口未返回有效报告，已保留上次数据，请稍后重试');
+    await act(async () => root.unmount());
   });
 
   test('keeps a cache miss loading while its automatic refresh is active', () => {

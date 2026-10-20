@@ -9,9 +9,17 @@ neu_academic/report.py
 import csv
 import json
 import os
+import time
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
+from backend.core.log.sync_diagnostics import (
+    emit, failure_fields, fingerprint, report_source,
+)
+
+
+class AcademicReportResponseError(RuntimeError):
+    """The official API did not return the documented report object."""
 
 
 @dataclass
@@ -152,17 +160,26 @@ class AcademicReportAPI:
         """
         self._client = auth_client
     
-    def get_report(self, program_code: Optional[str] = None) -> Optional[AcademicReport]:
+    def get_report(self, program_code: Optional[str] = None, *,
+                   raise_errors: bool = False) -> Optional[AcademicReport]:
         """
         获取学业监测报告
 
         Args:
             program_code: 可选培养方案代码（PYFADM）。不传时由教务系统
                 根据当前登录学生选择默认方案。
+            raise_errors: 后台刷新设为 True，保留请求/解析异常供统一任务记录；
+                兼容调用默认记录失败后返回 None。
         
         Returns:
             AcademicReport 对象，失败返回 None
         """
+        started = time.monotonic()
+        stage = "request"
+        emit("academic_report_request", endpoint="queryXyzhbx.do",
+             query_context=dict(self.DEFAULT_QUERY_DATA),
+             program_selection="explicit" if program_code else "default",
+             requested_program_ref=fingerprint(program_code)[:16] if program_code else None)
         try:
             query_data = self.DEFAULT_QUERY_DATA.copy()
             if program_code:
@@ -172,13 +189,38 @@ class AcademicReportAPI:
                 data=query_data,
                 headers=self.HEADERS,
             )
+            emit("academic_report_http", http_status=resp.status_code
+                 if isinstance(getattr(resp, "status_code", None), int) else None,
+                 duration_ms=round((time.monotonic() - started) * 1000, 1))
+            stage = "decode_json"
             data = resp.json()
+            stage = "response_shape"
+            emit("academic_report_response", response_fingerprint=fingerprint(data),
+                 success=isinstance(data, dict) and data.get("code") == "0",
+                 api_code=str(data.get("code"))
+                 if isinstance(data, dict) and str(data.get("code", "")).lstrip("-").isdigit()
+                 and len(str(data.get("code"))) <= 10 else None)
             
-            if data.get("code") != "0":
-                return None
-            
-            return self._parse_report(data["datas"]["queryXyzhbx"])
-        except Exception as e:
+            if not isinstance(data, dict) or data.get("code") != "0":
+                raise AcademicReportResponseError("official report rejected")
+
+            datas = data.get("datas")
+            report_data = datas.get("queryXyzhbx") if isinstance(datas, dict) else None
+            if not isinstance(report_data, dict) or not isinstance(report_data.get("fanbx"), dict):
+                raise AcademicReportResponseError("missing fanbx object")
+            emit("academic_report_source", **report_source(report_data))
+            stage = "parse_report"
+            report = self._parse_report(report_data)
+            emit("academic_report_parsed", total_required=report.total_required,
+                 top_category_count=len(report.categories),
+                 duration_ms=round((time.monotonic() - started) * 1000, 1))
+            return report
+        except Exception as error:
+            emit("academic_report_failed", level=40, stage=stage,
+                 duration_ms=round((time.monotonic() - started) * 1000, 1),
+                 **failure_fields(error))
+            if raise_errors:
+                raise
             return None
     
     def _parse_report(self, data: Dict[str, Any]) -> AcademicReport:

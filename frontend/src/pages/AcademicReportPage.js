@@ -518,8 +518,9 @@ const AcademicReportPage = ({ offlineMode = false }) => {
   }, [reportResource.error]);
 
   useEffect(() => {
-    if (!reportResource.data && reportResource.syncError) {
-      message.error(`加载培养计划失败: ${reportResource.syncError}`);
+    if (reportResource.syncError) {
+      if (reportResource.data) message.warning(`后台更新失败: ${reportResource.syncError}`);
+      else message.error(`加载培养计划失败: ${reportResource.syncError}`);
       setDataLoaded(true);
     }
   }, [reportResource.data, reportResource.syncError]);

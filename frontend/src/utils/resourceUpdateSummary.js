@@ -1,3 +1,5 @@
+import { stableTimetableValue, timetableCourseContent } from './timetableContent';
+
 const hasValue = value => value !== null && value !== undefined && value !== '';
 
 const displayValue = value => hasValue(value) ? String(value) : '无';
@@ -140,9 +142,11 @@ const mapTimetableMeetings = courses => {
   return result;
 };
 
-const timetableValue = (value) => (
-  Array.isArray(value) ? value.join('、') : String(value ?? '')
-);
+const timetableValue = (value, field) => {
+  if (field === 'preselected') return value ? '预选' : '已确认';
+  if (field === 'recurrence_unknown') return value ? '待确认' : '已确认';
+  return Array.isArray(value) ? value.join('、') : String(value ?? '');
+};
 
 export const summarizeTimetableUpdate = (beforePayload, afterPayload) => {
   const before = mapTimetableMeetings(beforePayload?.courses);
@@ -152,6 +156,16 @@ export const summarizeTimetableUpdate = (beforePayload, afterPayload) => {
   const added = [...after].filter(([key]) => !before.has(key)).map(([, course]) => course);
   const removed = [...before].filter(([key]) => !after.has(key)).map(([, course]) => course);
   const paired = [];
+  // Generated IDs can change for several meetings of the same course. Cancel
+  // identical content first so another real change does not expose that churn.
+  for (let index = removed.length - 1; index >= 0; index -= 1) {
+    const content = JSON.stringify(timetableCourseContent(removed[index]));
+    const next = added.findIndex(course => JSON.stringify(timetableCourseContent(course)) === content);
+    if (next >= 0) {
+      removed.splice(index, 1);
+      added.splice(next, 1);
+    }
+  }
   const fallbackKey = course => String(course?.course_code || course?.course_name || '').trim();
   // Missing official class IDs can change when a section changes. Pair only
   // unambiguous one-to-one courses; multiple meetings retain add/remove labels.
@@ -162,7 +176,10 @@ export const summarizeTimetableUpdate = (beforePayload, afterPayload) => {
     const sameNew = added.filter(course => fallbackKey(course) === key);
     if (sameOld.length !== 1 || sameNew.length !== 1) continue;
     const next = added.indexOf(sameNew[0]);
-    paired.push({ previous: removed[index], course: added[next] });
+    if (JSON.stringify(timetableCourseContent(removed[index]))
+      !== JSON.stringify(timetableCourseContent(added[next]))) {
+      paired.push({ previous: removed[index], course: added[next] });
+    }
     removed.splice(index, 1);
     added.splice(next, 1);
   }
@@ -174,31 +191,41 @@ export const summarizeTimetableUpdate = (beforePayload, afterPayload) => {
     ['end_section', '结束节次'], ['weeks', '周次'], ['week_text', '周次说明'],
     ['start_time', '开始时间'], ['end_time', '结束时间'],
     ['teachers', '教师'], ['course_name', '课程名称'],
+    ['classes', '上课班级'], ['campus', '校区'], ['course_code', '课程代码'],
+    ['teaching_class_id', '教学班'], ['course_nature', '课程性质'],
+    ['assessment_type', '考核方式'], ['grading_scheme', '成绩分制'],
+    ['preselected', '预选状态'], ['activity_type_label', '课程类型'],
+    ['activity_type', '课程类型代码'], ['recurrence_unknown', '周次待确认'],
+    ['cell_details', '课程详情'], ['title_details', '安排详情'], ['tags', '课程标签'],
   ];
   const changed = [...after].filter(([key, course]) => (
     before.has(key)
-    && JSON.stringify(before.get(key)) !== JSON.stringify(course)
+    && JSON.stringify(timetableCourseContent(before.get(key)))
+      !== JSON.stringify(timetableCourseContent(course))
   )).map(([key, course]) => ({ previous: before.get(key), course })).concat(paired);
   changed.slice(0, 3).forEach(({ previous, course }) => {
     const details = fields.filter(([field]) => (
-      timetableValue(previous[field]) !== timetableValue(course[field])
+      JSON.stringify(stableTimetableValue(previous[field]))
+        !== JSON.stringify(stableTimetableValue(course[field]))
     )).slice(0, 3).map(([field, label]) => (
-      `${label} ${displayValue(timetableValue(previous[field]))} → ${displayValue(timetableValue(course[field]))}`
+      `${label} ${displayValue(timetableValue(previous[field], field))} → ${displayValue(timetableValue(course[field], field))}`
     ));
     items.push(`${name(course)}：${details.length ? details.join('，') : '课程安排信息有调整'}`);
   });
   if (changed.length > 3) items.push(`另有 ${changed.length - 3} 条课程安排发生变化`);
 
-  if (JSON.stringify(beforePayload?.unscheduled || []) !== JSON.stringify(afterPayload?.unscheduled || [])) {
+  if (JSON.stringify(stableTimetableValue(beforePayload?.unscheduled || []))
+    !== JSON.stringify(stableTimetableValue(afterPayload?.unscheduled || []))) {
     items.push('未安排节次的课程发生变化');
   }
-  if (JSON.stringify(beforePayload?.practices || []) !== JSON.stringify(afterPayload?.practices || [])) {
+  if (JSON.stringify(stableTimetableValue(beforePayload?.practices || []))
+    !== JSON.stringify(stableTimetableValue(afterPayload?.practices || []))) {
     items.push('集中实践安排发生变化');
   }
   if (['campuses', 'weeks', 'sections_by_campus'].some(field => (
-    JSON.stringify(beforePayload?.[field] || []) !== JSON.stringify(afterPayload?.[field] || [])
+    JSON.stringify(stableTimetableValue(beforePayload?.[field] || []))
+      !== JSON.stringify(stableTimetableValue(afterPayload?.[field] || []))
   ))) items.push('校区、教学周或节次配置发生变化');
-  if (!items.length) items.push('课表其他内容发生变化');
   return items;
 };
 
