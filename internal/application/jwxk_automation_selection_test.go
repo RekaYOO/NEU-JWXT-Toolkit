@@ -174,9 +174,13 @@ func TestSelectionTaskUnknownSubmissionSurvivesRestartAndRoundEnd(t *testing.T) 
 	writesBeforeRecovery := client.writes
 	client.account = "student-a"
 	fresh, handler := testApplicationAt(t, "remote-multi", directory)
-	fresh.accounts.mutex.Lock()
-	fresh.accounts.automationTick = nil
-	fresh.accounts.mutex.Unlock()
+	if phase == "recover" {
+		client.visible = true
+	} else {
+		fresh.accounts.mutex.Lock()
+		fresh.accounts.automationTick = nil
+		fresh.accounts.mutex.Unlock()
+	}
 	fresh.accounts.factory = func(string) (CampusClient, error) { return client, nil }
 	cookie := loginCookie(t, handler, "student-a")
 	generation, err := fresh.database.Generation(context.Background(), "student-a")
@@ -184,6 +188,20 @@ func TestSelectionTaskUnknownSubmissionSurvivesRestartAndRoundEnd(t *testing.T) 
 		t.Fatal(err)
 	}
 	session := store.Session{Account: "student-a", Generation: generation}
+	if phase == "recover" {
+		deadline := time.Now().Add(90 * time.Second)
+		for time.Now().Before(deadline) {
+			task := readSelectionTask(t, fresh, session, id)
+			if task.Status == "success" {
+				if task.PendingSelection != nil || client.writes != 0 {
+					t.Fatal("recovery did not reconcile read-only", task, client.writes)
+				}
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		t.Fatal("background scheduler did not reconcile the persisted selection")
+	}
 	body := `{"task_id":"` + id + `"}`
 	task := runSelectionTaskTick(t, fresh, session, id)
 	if task.PendingSelection == nil || client.writes != writesBeforeRecovery {
