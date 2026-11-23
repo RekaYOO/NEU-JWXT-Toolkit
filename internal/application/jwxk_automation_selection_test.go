@@ -46,7 +46,12 @@ func (client *selectionTaskClient) RequestService(ctx context.Context, input cam
 
 func selectionTaskSetup(t *testing.T, client *selectionTaskClient) (*API, http.Handler, *http.Cookie, store.Session, string) {
 	t.Helper()
-	api, handler := testApplication(t, "remote-multi")
+	return selectionTaskSetupAt(t, client, t.TempDir())
+}
+
+func selectionTaskSetupAt(t *testing.T, client *selectionTaskClient, directory string) (*API, http.Handler, *http.Cookie, store.Session, string) {
+	t.Helper()
+	api, handler := testApplicationAt(t, "remote-multi", directory)
 	api.accounts.mutex.Lock()
 	api.accounts.automationTick = nil
 	api.accounts.mutex.Unlock()
@@ -135,18 +140,30 @@ func TestSelectionTaskRunsOnlyAfterStartAndStopsAtConfirmedGoal(t *testing.T) {
 
 func TestSelectionTaskUnknownSubmissionSurvivesRestartAndRoundEnd(t *testing.T) {
 	client := &selectionTaskClient{jwxkMutationClient: jwxkMutationClient{uncertain: true}}
-	api, handler, cookie, session, id := selectionTaskSetup(t, client)
-	body := `{"task_id":"` + id + `"}`
-	apiRequest(handler, "POST", "/api/course-selection/jwxk/automation/tasks/start", body, cookie)
-	task := runSelectionTaskTick(t, api, session, id)
-	if task.PendingSelection == nil || client.writes != 1 {
-		t.Fatal(task, client.writes)
+	directory := t.TempDir()
+	var id string
+	t.Run("before restart", func(t *testing.T) {
+		api, handler, cookie, session, taskID := selectionTaskSetupAt(t, client, directory)
+		id = taskID
+		apiRequest(handler, "POST", "/api/course-selection/jwxk/automation/tasks/start", `{"task_id":"`+id+`"}`, cookie)
+		task := runSelectionTaskTick(t, api, session, id)
+		if task.PendingSelection == nil || client.writes != 1 {
+			t.Fatal(task, client.writes)
+		}
+	})
+	fresh, handler := testApplicationAt(t, "remote-multi", directory)
+	fresh.accounts.mutex.Lock()
+	fresh.accounts.automationTick = nil
+	fresh.accounts.mutex.Unlock()
+	fresh.accounts.factory = func(string) (CampusClient, error) { return client, nil }
+	cookie := loginCookie(t, handler, "student-a")
+	generation, err := fresh.database.Generation(context.Background(), "student-a")
+	if err != nil {
+		t.Fatal(err)
 	}
-	fresh := NewAPI(api.database, api.accounts, "test")
-	api.accounts.mutex.Lock()
-	api.accounts.automationTick = nil
-	api.accounts.mutex.Unlock()
-	task = runSelectionTaskTick(t, fresh, session, id)
+	session := store.Session{Account: "student-a", Generation: generation}
+	body := `{"task_id":"` + id + `"}`
+	task := runSelectionTaskTick(t, fresh, session, id)
 	if task.PendingSelection == nil || client.writes != 1 {
 		t.Fatal("restart replayed pending write", task, client.writes)
 	}
