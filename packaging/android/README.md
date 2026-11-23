@@ -6,6 +6,8 @@ does not create a runnable local APK.
 
 ## Layout
 
+For the Go remote-client candidate, download `android-client-debug-<commit>` from the branch's **Android remote client check** run. Install the arm64 client APK on the phone and configure the HTTPS origin of the running toolbox. The separate `androidTest` APK contains instrumentation tests. The API 35 emulator report is in `android-client-device-results-<commit>`. Choose the desktop or server bundle built from the same commit when reproducing a candidate acceptance result.
+
 - `shared`: WebView, origin confinement, Axios bridge and document picker.
 - `client-app`: HTTPS configuration and encrypted, origin-scoped cookies.
 - `local-app`: Chaquopy/FastAPI process lifecycle, foreground tasks and notification outbox.
