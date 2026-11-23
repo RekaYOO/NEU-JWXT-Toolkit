@@ -46,3 +46,26 @@ jobs:
           path: packaging/android/client-app/build/outputs/apk/**/*.apk
           if-no-files-found: error
           retention-days: 7
+      - name: Run client device tests on Android API 35
+        working-directory: packaging/android
+        run: |
+          set -euo pipefail
+          image='system-images;android-35;google_apis;x86_64'
+          sdkmanager emulator "$image"
+          echo no | avdmanager create avd --name client-ci --package "$image" --device pixel_5
+          sudo chmod 666 /dev/kvm
+          "$ANDROID_HOME/emulator/emulator" @client-ci -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect > "$RUNNER_TEMP/client-emulator.log" 2>&1 &
+          trap 'adb emu kill || true' EXIT
+          timeout 180 adb wait-for-device
+          timeout 240 bash -c 'until adb shell getprop sys.boot_completed | grep -q 1; do sleep 2; done'
+          adb shell input keyevent KEYCODE_WAKEUP
+          adb shell wm dismiss-keyguard
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          bash gradlew --no-daemon :client-app:connectedX86TestDebugAndroidTest
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: android-client-device-results-${{ github.sha }}
+          path: packaging/android/client-app/build/outputs/androidTest-results/connected/**/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
