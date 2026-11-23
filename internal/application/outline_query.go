@@ -69,7 +69,7 @@ func (api *API) registerOutlineQuery(router *http.ServeMux) {
 			writeJSON(response, 422, map[string]string{"detail": "附件标识或名称无效"})
 			return
 		}
-		payload, err := runtime.Request(request.Context(), http.MethodGet, "https://jwxt.neu.edu.cn/jwapp/sys/emapcomponent/file/getUploadedAttachment/"+input.Token+".do", nil)
+		payload, err := runtime.Request(request.Context(), http.MethodGet, "https://jwxt.neu.edu.cn/jwapp/sys/emapcomponent/file/getAttachmentFile/"+input.Token, nil)
 		if err != nil {
 			api.resourceError(response, err)
 			return

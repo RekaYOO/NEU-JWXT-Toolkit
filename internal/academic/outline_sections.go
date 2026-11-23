@@ -2,7 +2,9 @@ package academic
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +39,34 @@ var outlineSections = map[string][]outlineSection{
 
 func ValidOutlineGroup(group string) bool { _, ok := outlineSections[group]; return ok }
 
+var outlineGroupToken = regexp.MustCompile(`^[A-Za-z0-9_-]{1,160}$`)
+var outlineFileRoute = regexp.MustCompile(`^/jwapp/sys/emapcomponent/file/getAttachmentFile/([A-Za-z0-9_-]+(?:\.do)?)$`)
+
+func outlineAttachments(ctx context.Context, requester Requester, group string) ([]map[string]any, bool) {
+	if !outlineGroupToken.MatchString(group) {
+		return []map[string]any{{"name": group}}, true
+	}
+	payload, err := requester.Request(ctx, "GET", "https://jwxt.neu.edu.cn/jwapp/sys/emapcomponent/file/getUploadedAttachment/"+group+".do", nil)
+	var listing struct {
+		Success bool `json:"success"`
+		Items []struct { Name string `json:"name"`; URL string `json:"fileUrl"` } `json:"items"`
+	}
+	if err != nil || json.Unmarshal(payload, &listing) != nil || !listing.Success {
+		return nil, false
+	}
+	var items []map[string]any
+	for _, file := range listing.Items {
+		if file.Name == "" { continue }
+		item := map[string]any{"name": file.Name}
+		path, _, _ := strings.Cut(file.URL, "?")
+		if parts := outlineFileRoute.FindStringSubmatch(path); parts != nil && len(parts[1]) <= 160 {
+			item["token"] = parts[1]
+		}
+		items = append(items, item)
+	}
+	return items, true
+}
+
 func OutlineSections(ctx context.Context, requester Requester, code, group string) (map[string]any, error) {
 	if !ValidCourseCode(code) || !ValidOutlineGroup(group) {
 		return nil, &campus.Error{Code: "INVALID_OUTLINE_QUERY", Message: "大纲课程或分组无效"}
@@ -60,12 +90,10 @@ func OutlineSections(ctx context.Context, requester Requester, code, group strin
 		if section.key == "attachments" {
 			items := []map[string]any{}
 			for _, row := range raw[section.key] {
-				if name := Text(row["FJ"]); name != "" {
-					item := map[string]any{"name": name}
-					for _, key := range []string{"FJID", "FJBH", "WID", "ATTACHMENT_ID", "FILE_ID", "TOKEN"} {
-						if token := Text(row[key]); token != "" { item["token"] = token; break }
-					}
-					items = append(items, item)
+				if groupToken := Text(row["FJ"]); groupToken != "" {
+					files, ok := outlineAttachments(ctx, requester, groupToken)
+					if !ok { failures[section.key] = "unavailable" }
+					items = append(items, files...)
 				}
 			}
 			if len(items) > 0 {

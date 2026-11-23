@@ -15,7 +15,7 @@ type outlineTestClient struct {
 
 func (client *outlineTestClient) Request(_ context.Context, method, target string, _ url.Values) ([]byte, error) {
 	client.calls.Add(1)
-	if method == "GET" && strings.HasSuffix(target, "/getUploadedAttachment/safe-token.do") {
+	if method == "GET" && strings.HasSuffix(target, "/getAttachmentFile/safe-token") {
 		return []byte("anonymous attachment"), nil
 	}
 	return []byte(`{"rows":[]}`), nil

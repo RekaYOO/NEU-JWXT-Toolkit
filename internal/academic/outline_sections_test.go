@@ -38,6 +38,25 @@ func TestOutlineAssessmentResolvesRelationKeys(t *testing.T) {
 	}
 }
 
+func TestOutlineGovernanceResolvesAttachmentList(t *testing.T) {
+	requester := requestFunc(func(_ context.Context, method, target string, _ url.Values) ([]byte, error) {
+		switch {
+		case strings.HasSuffix(target, "cxkcdgfj.do"):
+			return []byte(`{"rows":[{"FJ":"group-id","WID":"record-id"}]}`), nil
+		case method == "GET" && strings.HasSuffix(target, "/getUploadedAttachment/group-id.do"):
+			return []byte(`{"success":true,"items":[{"name":"course.doc","fileUrl":"/jwapp/sys/emapcomponent/file/getAttachmentFile/file-id.do?123"},{"name":"legacy.pdf","fileUrl":"https://other.invalid/file"}]}`), nil
+		default:
+			return []byte(`{"rows":[]}`), nil
+		}
+	})
+	result, err := OutlineSections(context.Background(), requester, "TEST", "governance")
+	if err != nil { t.Fatal(err) }
+	sections := result["sections"].([]map[string]any)
+	if len(sections) != 1 { t.Fatal(sections) }
+	items := sections[0]["items"].([]map[string]any)
+	if len(items) != 2 || items[0]["name"] != "course.doc" || items[0]["token"] != "file-id.do" || items[1]["token"] != nil { t.Fatal(items) }
+}
+
 func TestOutlineTeachingLabelsAndPartialFailure(t *testing.T) {
 	requester := requestFunc(func(_ context.Context, _, target string, _ url.Values) ([]byte, error) {
 		if strings.HasSuffix(target, "cxkcmbhnrdgx.do") {
