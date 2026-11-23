@@ -468,10 +468,16 @@ jobs:
             rm -f -- "$ANDROID_KEYSTORE_FILE"
           fi
 
+  go-platforms:
+    needs: validate
+    uses: ./.github/workflows/go-platform-check.yml
+    permissions:
+      contents: read
+
   publish:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [validate, windows, linux, android]
+    needs: [validate, windows, linux, android, go-platforms]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -488,6 +494,19 @@ jobs:
           pattern: "*-release"
           path: release
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: go-web-${{ github.sha }}
+          path: verified-go
+      - name: Include verified Go archives and updater manifest
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd verified-go
+          sha256sum --check SHA256SUMS
+          cp "NEU-JWXT-Toolkit-$RELEASE_VERSION-windows-amd64-go.zip" "NEU-JWXT-Toolkit-$RELEASE_VERSION-linux-amd64-go.tar.gz" go-release-manifest.json ../release/
       - name: Generate checksums
         working-directory: release
         shell: bash

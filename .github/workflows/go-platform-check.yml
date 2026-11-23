@@ -1,5 +1,6 @@
 name: Go Linux and Docker acceptance
 on:
+  workflow_call:
   push:
     branches: [refactor/go-web-toolbox]
   workflow_dispatch:
@@ -152,7 +153,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
   docker-runtime:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.workflow == 'Go Linux and Docker acceptance'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
