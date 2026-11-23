@@ -17,6 +17,7 @@ def main():
         parser.add_argument(name, type=Path)
     parser.add_argument('--docker-engine', type=Path)
     parser.add_argument('--kvm', action='store_true')
+    parser.add_argument('--selection-test', type=Path)
     parser.add_argument('--docker-bases', type=Path)
     parser.add_argument('--docker-source-tar', type=Path)
     args = parser.parse_args()
@@ -29,6 +30,8 @@ def main():
         listener.listen(1)
         listener.settimeout(30)
         shutil.copyfile(args.archive, Path(directory) / 'bundle.tgz')
+        if args.selection_test:
+            shutil.copyfile(args.selection_test, Path(directory) / 'selection.test')
         if args.docker_engine:
             if args.docker_source_tar:
                 shutil.copyfile(args.docker_source_tar, Path(directory) / 'source.tar')
@@ -102,6 +105,10 @@ def main():
                 'test "$(curl -so /dev/null -w %{http_code} 127.0.0.1:8000/api/status)" = 401',
                 'systemctl is-active --quiet neu-toolbox', 'echo TOOLBOX_SYSTEMD_OK',
             ]
+            fixture_command = 'TOOLBOX_TEST_REBOOT_DIR=/root/selection-fixture /root/selection.test -test.run=^TestSelectionTaskUnknownSubmissionSurvivesRestartAndRoundEnd$ -test.v'
+            if args.selection_test:
+                commands[-1:-1] = ['install -m 0700 /mnt/bundle/selection.test /root/selection.test',
+                                    'TOOLBOX_TEST_REBOOT_PHASE=prepare ' + fixture_command]
             Path(directory, 'verify.sh').write_bytes(('\n'.join(commands) + '\n').encode())
             reboot_check = r'''set -eu
 test "$(cat /root/previous-boot)" != "$(cat /proc/sys/kernel/random/boot_id)"
@@ -129,6 +136,8 @@ login admin "$NEU_JWXT_ADMIN_PASSWORD"
 curl -4fsS -b "$jar" "$base/admin/accounts" >/dev/null
 echo TOOLBOX_REBOOT_OK
 '''
+            if args.selection_test:
+                reboot_check = reboot_check.replace('echo TOOLBOX_REBOOT_OK', 'TOOLBOX_TEST_REBOOT_PHASE=recover ' + fixture_command + '\necho TOOLBOX_REBOOT_OK')
             Path(directory, 'reboot.sh').write_bytes(reboot_check.encode())
             process = subprocess.Popen(launch, stdin=subprocess.DEVNULL)
             console, _ = listener.accept()

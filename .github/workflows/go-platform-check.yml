@@ -89,6 +89,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: CGO_ENABLED=0 go test -c -o "$RUNNER_TEMP/selection.test" ./internal/application
       - uses: actions/download-artifact@v4
         with:
           name: go-web-${{ github.sha }}
@@ -103,7 +107,7 @@ jobs:
           curl -fsSL --retry 3 "$base/SHA512SUMS" -o "$RUNNER_TEMP/debian-sums"
           (cd "$RUNNER_TEMP" && grep "  $image$" debian-sums | sha512sum -c -)
           sudo chmod 666 /dev/kvm
-          python3 tools/check_debian_service.py --kvm /usr/bin/qemu-system-x86_64 "$RUNNER_TEMP/$image" dist/go-release/*-linux-amd64-go.tar.gz
+          python3 tools/check_debian_service.py --kvm --selection-test "$RUNNER_TEMP/selection.test" /usr/bin/qemu-system-x86_64 "$RUNNER_TEMP/$image" dist/go-release/*-linux-amd64-go.tar.gz
   windows-archive:
     needs: linux-archive
     runs-on: windows-latest

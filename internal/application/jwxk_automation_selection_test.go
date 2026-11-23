@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -141,8 +143,16 @@ func TestSelectionTaskRunsOnlyAfterStartAndStopsAtConfirmedGoal(t *testing.T) {
 func TestSelectionTaskUnknownSubmissionSurvivesRestartAndRoundEnd(t *testing.T) {
 	client := &selectionTaskClient{jwxkMutationClient: jwxkMutationClient{uncertain: true}}
 	directory := t.TempDir()
+	phase := os.Getenv("TOOLBOX_TEST_REBOOT_PHASE")
+	if phase != "" {
+		directory = os.Getenv("TOOLBOX_TEST_REBOOT_DIR")
+		if !filepath.IsAbs(directory) || (phase != "prepare" && phase != "recover") {
+			t.Fatal("invalid guest reboot fixture")
+		}
+	}
 	var id string
-	t.Run("before restart", func(t *testing.T) {
+	if phase != "recover" {
+	prepared := t.Run("before restart", func(t *testing.T) {
 		api, handler, cookie, session, taskID := selectionTaskSetupAt(t, client, directory)
 		id = taskID
 		apiRequest(handler, "POST", "/api/course-selection/jwxk/automation/tasks/start", `{"task_id":"`+id+`"}`, cookie)
@@ -151,6 +161,17 @@ func TestSelectionTaskUnknownSubmissionSurvivesRestartAndRoundEnd(t *testing.T) 
 			t.Fatal(task, client.writes)
 		}
 	})
+	if !prepared { t.FailNow() }
+	if phase == "prepare" {
+		if err := os.WriteFile(filepath.Join(directory, "fixture-task-id"), []byte(id), 0600); err != nil { t.Fatal(err) }
+		return
+	}
+	} else {
+		stored, err := os.ReadFile(filepath.Join(directory, "fixture-task-id"))
+		if err != nil { t.Fatal(err) }
+		id = string(stored)
+	}
+	writesBeforeRecovery := client.writes
 	fresh, handler := testApplicationAt(t, "remote-multi", directory)
 	fresh.accounts.mutex.Lock()
 	fresh.accounts.automationTick = nil
@@ -164,18 +185,18 @@ func TestSelectionTaskUnknownSubmissionSurvivesRestartAndRoundEnd(t *testing.T) 
 	session := store.Session{Account: "student-a", Generation: generation}
 	body := `{"task_id":"` + id + `"}`
 	task := runSelectionTaskTick(t, fresh, session, id)
-	if task.PendingSelection == nil || client.writes != 1 {
+	if task.PendingSelection == nil || client.writes != writesBeforeRecovery {
 		t.Fatal("restart replayed pending write", task, client.writes)
 	}
 	client.ended = true
 	task = runSelectionTaskTick(t, fresh, session, id)
-	if task.Status != "needs_review" || task.Desired != "paused" || client.writes != 1 {
+	if task.Status != "needs_review" || task.Desired != "paused" || client.writes != writesBeforeRecovery {
 		t.Fatal(task, client.writes)
 	}
 	client.visible = true
 	apiRequest(handler, "POST", "/api/course-selection/jwxk/automation/tasks/start", body, cookie)
 	task = runSelectionTaskTick(t, fresh, session, id)
-	if task.Status != "success" || task.PendingSelection != nil || client.writes != 1 {
+	if task.Status != "success" || task.PendingSelection != nil || client.writes != writesBeforeRecovery {
 		t.Fatal("ended round did not reconcile read-only", task, client.writes)
 	}
 }
