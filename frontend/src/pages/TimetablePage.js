@@ -1721,6 +1721,8 @@ function TimetablePage({
   const [agendaDate, setAgendaDate] = useState(null);
   const [agendaState, setAgendaState] = useState({ identity: '', term: '', document: { revision: 0, events: [], moves: [] }, loading: false, error: '' });
   const agendaGeneration = useRef(0);
+  const exportNeedsAgenda = mode === 'personal' && !offlineMode && !recoveryMode;
+  const agendaPending = exportNeedsAgenda && (agendaState.identity !== resourceIdentity || agendaState.term !== termCode || agendaState.loading);
   const agendaDocument = agendaState.identity === resourceIdentity && agendaState.term === termCode ? agendaState.document : { revision: 0, events: [], moves: [] };
   const loadAgenda = useCallback(async () => {
     const safeTermCode = normalizeTimetableTermCode(termCode);
@@ -4156,7 +4158,11 @@ function TimetablePage({
           )}
           <OtherCourses schedule={schedule} />
           {!embedded && !loading && !error && (usesPersonalTimetableEndpoint ? personalPayload?.term_code === termCode : queryScheduleMatches) && (
-            <Button onClick={() => downloadTimetable({ termCode, mode, view: displayedViewMode, week: displayedWeekNumber, days: mobileCoursesByDay, schedule })}>导出当前课表（JSON）</Button>
+            exportNeedsAgenda && agendaState.error && !agendaPending ? (
+              <Button onClick={loadAgenda}>重新读取日程后导出</Button>
+            ) : (
+              <Button disabled={agendaPending} onClick={() => downloadTimetable({ termCode, mode, view: displayedViewMode, week: displayedWeekNumber, days: mobileCoursesByDay, schedule })}>导出当前课表（JSON）</Button>
+            )
           )}
           {mode === 'personal' && !embedded && displayedViewMode === 'week' && <div className="timetable-extra-agenda">
             {sortAgendaCourses(agendaEventCourses.filter(course => !course.start_section && agendaEventMatchesDate(

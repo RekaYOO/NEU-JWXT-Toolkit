@@ -39,6 +39,9 @@ async function checkBounds(page) {
         let document = { revision: 0, events: [], moves: [] };
         const errors = [];
         const requests = [];
+        let releaseAgenda;
+        let failFirstRead = width === 1440;
+        const agendaGate = new Promise(resolve => { releaseAgenda = resolve; });
         const page = await browser.newPage({ viewport: { width, height }, serviceWorkers: 'block' });
         await page.clock.install({ time: new Date('2026-09-16T08:00:00+08:00') });
         await page.addInitScript(({ compact }) => localStorage.setItem('neu_toolbox:mobileCompactWeekView', JSON.stringify(compact)), { compact });
@@ -58,6 +61,11 @@ async function checkBounds(page) {
           else if (['/api/timetable/terms', '/api/timetable/bootstrap'].includes(url.pathname)) data = timetable;
           else if (url.pathname === '/api/timetable/personal') data = personal;
           else if (url.pathname === '/api/timetable/agenda') {
+            await agendaGate;
+            if (failFirstRead && route.request().method() === 'GET') {
+              failFirstRead = false;
+              return route.fulfill({ status: 503, json: { detail: '模拟日程读取失败' } });
+            }
             if (route.request().method() === 'PUT') document = { ...route.request().postDataJSON(), revision: document.revision + 1 };
             data = document;
           } else if (url.pathname === '/api/timetable/sync') data = { jobs: [] };
@@ -65,6 +73,11 @@ async function checkBounds(page) {
           return route.fulfill({ json: data });
         });
         await page.goto(`${origin}/timetable?week=2`);
+        const exportButton = page.getByRole('button', { name: '导出当前课表（JSON）' });
+        await exportButton.waitFor();
+        assert.equal(await exportButton.isDisabled(), true, 'wait for the current term agenda before exporting');
+        releaseAgenda();
+        if (width === 1440) await page.getByRole('button', { name: '重新读取日程后导出' }).click();
         try { await page.locator('.timetable-page').waitFor({ state: 'attached' }); }
         catch (error) {
           console.error({ errors, pageText: await page.locator('body').innerText() });
