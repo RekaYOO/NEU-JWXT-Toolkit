@@ -67,7 +67,7 @@ func (query OutlineSearch) Valid() bool {
 				return false
 			}
 		case []any:
-			if (key != "XF" && key != "XS") || len(typed) != 2 {
+			if (key != "XF" && key != "XS") || (len(typed) != 0 && len(typed) != 2) {
 				return false
 			}
 			for _, bound := range typed {
@@ -108,7 +108,7 @@ func SearchOutlines(ctx context.Context, requester Requester, query OutlineSearc
 			continue
 		}
 		if bounds, ok := value.([]any); ok {
-			if Text(bounds[0]) != "" || Text(bounds[1]) != "" {
+			if len(bounds) == 2 && (Text(bounds[0]) != "" || Text(bounds[1]) != "") {
 				add(field, Text(bounds[0])+","+Text(bounds[1]), "between")
 			}
 		} else {

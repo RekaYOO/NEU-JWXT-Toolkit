@@ -30,6 +30,19 @@ func TestOutlineSearchUsesOfficialRulesAndStableFields(t *testing.T) {
 	}
 }
 
+func TestOutlineSearchWithClearedPageFilters(t *testing.T) {
+	requester := requestFunc(func(_ context.Context, _, _ string, form url.Values) ([]byte, error) {
+		if form.Get("querySetting") != "[]" {
+			t.Fatalf("unexpected filter rules: %s", form.Get("querySetting"))
+		}
+		return []byte(`{"rows":[]}`), nil
+	})
+	_, err := SearchOutlines(context.Background(), requester, OutlineSearch{Page: 1, PageSize: 20, Filters: map[string]any{"XF": []any{}, "XS": []any{}, "KKDWDM": "", "KCCCDM": "", "KCJBDM": ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOutlineOverviewPartialFailureRetainsOtherSections(t *testing.T) {
 	requester := requestFunc(func(_ context.Context, _, target string, _ url.Values) ([]byte, error) {
 		switch {
