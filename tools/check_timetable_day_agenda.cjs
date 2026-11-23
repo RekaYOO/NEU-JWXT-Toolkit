@@ -9,7 +9,7 @@ const term = { code: '2026-2027-1', name: '2026-2027学年秋季学期', current
 const weeks = [2, 3].map((number, index) => ({ number, name: `第${number}周`, current: number === 2,
   start_date: `2026-09-${13 + index * 7}`, end_date: `2026-09-${19 + index * 7}` }));
 const courses = [{ id: 'course-a', course_name: '源日课程', weekday: 7, weeks: [3], start_section: 1,
-  end_section: 2, start_time: '08:00', end_time: '09:40', teachers: ['测试教师'], location: '教学楼101', course_nature: '必修', assessment_type: '考试' },
+  end_section: 2, start_time: '08:00', end_time: '09:40', teachers: ['测试教师'], location: '教学楼101', campus: '南湖校区', cell_details: ['实验说明'], course_nature: '必修', assessment_type: '考试' },
   { id: 'course-b', course_name: '本周课程', weekday: 3, weeks: [2], start_section: 3, end_section: 4,
     start_time: '10:00', end_time: '11:40', teachers: ['测试教师'], location: '教学楼102' }];
 const personal = { term_code: term.code, campuses: [{ code: '00', name: '南湖校区' }], weeks,
@@ -140,6 +140,21 @@ async function checkBounds(page) {
         await confirm('原日期不变');
         await modal.getByText('源日课程', { exact: true }).waitFor();
         assert.deepEqual(document.moves, [{ source: '2026-09-20', target: '2026-09-17' }]);
+        await modal.locator('.ant-modal-close').click();
+        await modal.waitFor({ state: 'hidden' });
+        const [download] = await Promise.all([
+          page.waitForEvent('download'),
+          page.getByRole('button', { name: '导出当前课表（JSON）' }).click(),
+        ]);
+        const exported = JSON.parse(await fs.readFile(await download.path(), 'utf8'));
+        const moved = exported.courses.find(course => course.agenda_source === '2026-09-20');
+        assert.equal(moved?.campus, '南湖校区');
+        assert.deepEqual(moved.cell_details, ['实验说明']);
+        const manual = exported.courses.find(course => course.agenda_kind === 'manual');
+        assert.equal(manual?.agenda_date, '2026-09-17');
+        assert.equal(manual.location, '教学楼 A202 · 已修改');
+        if (width < 992 && !compact) await page.locator('.timetable-mobile-day-selector .ant-segmented-item').filter({ hasText: '周四' }).click();
+        else await page.getByRole('button', { name: '查看星期四当日日程', exact: true }).click();
         await checkBounds(page);
         await page.screenshot({ path: path.join(screenshots, `${width}-${compact}-list.png`) });
         await modal.getByRole('button', { name: '撤销调休' }).click();
