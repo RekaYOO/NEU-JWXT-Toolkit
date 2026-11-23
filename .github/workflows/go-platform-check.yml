@@ -19,6 +19,7 @@ on:
       - 'tools/frontend_performance_budget.json'
       - 'tools/*go_release.py'
       - 'tools/check_go_https.go'
+      - 'tools/check_appearance.cjs'
       - 'packaging/go/**'
       - '.github/workflows/go-platform-check.yml'
 permissions:
@@ -125,6 +126,19 @@ jobs:
           name: go-web-${{ github.sha }}
           path: dist/go-release
       - run: python tools/check_go_release.py dist/go-release --smoke --report dist/windows-verification.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --prefix frontend
+      - name: Check appearance in the packaged web client
+        shell: pwsh
+        env:
+          NEU_QA_BROWSER: msedge
+        run: |
+          $archive = Get-Item dist/go-release/*-windows-amd64-go.zip
+          $destination = Join-Path $env:RUNNER_TEMP 'appearance-package'
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $destination
+          node tools/check_appearance.cjs (Join-Path $destination $archive.BaseName)
       - uses: actions/upload-artifact@v4
         with:
           name: windows-verification-${{ github.sha }}
