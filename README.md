@@ -5,7 +5,7 @@
 # NEU 教务系统工具箱
 
 当前重构分支正在迁移至Go＋SQLite后端和Vite前端，尚未完成整版交付。
-当前候选包为 RC35（2.2.4）。Windows、Linux、Android 安装文件、独立 Linux 验收包与 `SHA256SUMS` 位于 `dist/go-release-candidate-35/`。启动方式、已知限制与验证结果见 [RC35 交付说明](docs/部署/RC35交付说明.md)。
+三平台验收包使用同一提交 `1525a63`（2.2.4）。本地合集位于 `dist/delivery-1525a63.zip`。登录 GitHub 后可分别下载 [Windows 与 Linux 包](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45242758434/artifacts/14850869677)和 [Android ARM64 调试客户端](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45242758484/artifacts/14853310142)。这两个云端附件均在北京时间 2026 年 12 月 1 日凌晨到期。启动方式、合集校验和与待验项目见[交付说明](docs/部署/RC35交付说明.md)。
 已接入的Go直连登录、账号会话及GPA方案版本保护与验证入口见
 [Go迁移说明](docs/开发/Go迁移.md)。下方原版安装与Python运行说明仍用于旧版和迁移对照。
 
