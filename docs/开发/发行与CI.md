@@ -218,6 +218,8 @@ SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Acti
 存储。GitHub Secrets 无法作为可下载恢复的密钥备份。可通过 GitHub Secrets API 的
 公开密钥和标准 sealed-box 加密一次配置四项，无需修改工作流或为每次构建生成新密码。
 
+`refactor/go-web-toolbox` 分支每次推送后，平台检查会构建 Windows 和 Linux 运行包。Linux 服务验收通过后，在该次 Actions 运行的 Artifacts 区下载 `go-web-<提交哈希>`，保留 7 天。解压后可用 `sha256sum -c SHA256SUMS` 核对两个运行包，`verification.json` 记录该次检查结果。
+
 候选构建先递增 `VERSION` 和 `ANDROID_VERSION_CODE`，再手动运行 `Release` 工作流。
 全部成功后，`android-release` artifact 包含两个固定签名、正式包名的 APK；
 Windows/Linux 成品分别位于对应的 release artifact。候选 artifact 默认保留 7 天，

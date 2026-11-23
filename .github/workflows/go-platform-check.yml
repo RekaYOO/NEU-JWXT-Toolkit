@@ -71,6 +71,18 @@ jobs:
           test "$(curl -4s -b "$cookies" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
           jq -nc '{password:env.TEST_ADMIN_PASSWORD}' | curl -4fsS -b "$cookies" -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" | jq -e '.success == true'
           curl -4fsS -b "$cookies" "$base/admin/accounts" >/dev/null
+      - name: Upload verified Windows and Linux bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-web-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            dist/go-release/*-windows-amd64-go.zip
+            dist/go-release/*-linux-amd64-go.tar.gz
+            dist/go-release/go-release-manifest.json
+            dist/go-release/SHA256SUMS
+            dist/go-release/verification.json
   docker-runtime:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
