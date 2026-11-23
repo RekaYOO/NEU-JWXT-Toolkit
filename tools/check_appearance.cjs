@@ -154,24 +154,44 @@ async function textContrast(locator) {
     }
     for (const width of [320, 1440]) {
       for (const [theme, primaryColor] of [['sakura', '#a83264'], ['blue', '#2563eb'], ['garden', '#0f766e']]) {
-        for (const surface of ['access', 'school', 'admin']) {
+        for (const surface of ['access', 'school', 'admin', 'credits']) {
           const context = await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
           const page = await context.newPage(); activePage = page; page.setDefaultTimeout(10000);
           const errors = []; page.on('pageerror', error => errors.push(error.message));
           let privateReads = 0;
+          const auth = surface === 'credits' ? { is_logged_in: true, current_user: 'credit-fixture' } : { is_logged_in: false };
           await page.route('**/*', async route => {
             const url = new URL(route.request().url());
             if (url.origin !== origin) return route.abort();
             if (!url.pathname.startsWith('/api/')) return route.continue();
             let data = {};
             if (url.pathname === '/api/access/status') data = { required: surface === 'access', configured: true, authenticated: surface !== 'access', site_default: theme };
-            else if (url.pathname === '/api/client/bootstrap') data = { runtime: { profile: 'development' }, auth: { is_logged_in: false } };
-            else if (url.pathname === '/api/status') data = { is_logged_in: false };
+            else if (url.pathname === '/api/client/bootstrap') data = { runtime: { profile: 'development' }, auth };
+            else if (url.pathname === '/api/status') data = auth;
             else if (url.pathname === '/api/admin/status') data = { configured: true, authenticated: false, deployment_mode: 'remote-multi' };
             else if (url.pathname === '/api/offline/status') data = { available: false };
-            else if (url.pathname === '/api/appearance') privateReads += 1;
+            else if (url.pathname === '/api/appearance') {
+              privateReads += 1;
+              data = { revision: 0, selected: theme, effective: theme, site_default: theme, templates: [] };
+            } else if (url.pathname === '/api/academic-report/cache') {
+              data = { categories: [], credit_summary: { total_required: 40, total_passed: 10, total_selected: 2, total_remaining: 30, completion_rate: 25 } };
+            }
             return route.fulfill({ json: data });
           });
+          if (surface === 'credits') {
+            await page.goto(`${origin}/academic-report`);
+            await page.getByRole('button', { name: /学分统计/ }).click();
+            const percent = page.locator('.progress-text .percent');
+            await percent.waitFor();
+            assert.equal(await percent.innerText(), '25%');
+            const rgb = `rgb(${primaryColor.slice(1).match(/../g).map(value => parseInt(value, 16)).join(', ')})`;
+            assert.equal(await percent.evaluate(node => getComputedStyle(node).color), rgb);
+            assert.equal(await page.locator('.credit-progress .ant-progress-circle-path').first().evaluate(node => getComputedStyle(node).stroke), rgb);
+            assert.equal(await page.locator('.credit-progress-bar .ant-progress-bg').evaluate(node => getComputedStyle(node).backgroundColor), rgb);
+            assert.deepEqual(errors, []);
+            await context.close();
+            continue;
+          }
           await page.goto(`${origin}${surface === 'admin' ? '/admin' : '/'}`);
           await page.locator(surface === 'access' ? '.access-login-page' : surface === 'school' ? '.login-page' : '.admin-login').waitFor();
           await page.waitForFunction(color => getComputedStyle(document.documentElement).getPropertyValue('--color-brand').trim() === color, primaryColor);
@@ -192,7 +212,7 @@ async function textContrast(locator) {
         }
       }
     }
-    console.log(JSON.stringify({ passed: true, widths: [320, 375, 430, 768, 1440], publicThemes: 18, screenshots }));
+    console.log(JSON.stringify({ passed: true, widths: [320, 375, 430, 768, 1440], publicThemes: 18, creditCharts: 6, screenshots }));
   } catch (error) { if (activePage && !activePage.isClosed()) console.error(await activePage.locator('body').innerText()); throw error; }
   finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
