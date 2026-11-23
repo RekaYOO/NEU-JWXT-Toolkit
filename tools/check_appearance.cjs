@@ -159,6 +159,8 @@ async function textContrast(locator) {
           const page = await context.newPage(); activePage = page; page.setDefaultTimeout(10000);
           const errors = []; page.on('pageerror', error => errors.push(error.message));
           let privateReads = 0;
+          let finishSave;
+          const savePending = new Promise(resolve => { finishSave = resolve; });
           const auth = surface === 'credits' ? { is_logged_in: true, current_user: 'credit-fixture' } : { is_logged_in: false };
           await page.route('**/*', async route => {
             const url = new URL(route.request().url());
@@ -172,6 +174,7 @@ async function textContrast(locator) {
             else if (url.pathname === '/api/offline/status') data = { available: false };
             else if (url.pathname === '/api/appearance') {
               privateReads += 1;
+              if (route.request().method() === 'PUT') await savePending;
               data = { revision: 0, selected: theme, effective: theme, site_default: theme, templates: [] };
             } else if (url.pathname === '/api/academic-report/cache') {
               data = { categories: [], credit_summary: { total_required: 40, total_passed: 10, total_selected: 2, total_remaining: 30, completion_rate: 25 } };
@@ -188,6 +191,20 @@ async function textContrast(locator) {
             assert.equal(await percent.evaluate(node => getComputedStyle(node).color), rgb);
             assert.equal(await page.locator('.credit-progress .ant-progress-circle-path').first().evaluate(node => getComputedStyle(node).stroke), rgb);
             assert.equal(await page.locator('.credit-progress-bar .ant-progress-bg').evaluate(node => getComputedStyle(node).backgroundColor), rgb);
+            await page.getByRole('button', { name: width === 320 ? '打开导航' : '展开导航' }).click();
+            const currentItem = page.locator('.main-nav:visible .ant-menu-item-selected .ant-menu-title-content');
+            await currentItem.waitFor();
+            assert.match(await currentItem.innerText(), /培养计划/);
+            const navContrast = await textContrast(currentItem);
+            assert.ok(navContrast >= 4.5, `${theme} ${width}px navigation: ${navContrast.toFixed(2)}:1`);
+            await page.goto(`${origin}/system-settings?tab=appearance`);
+            await page.getByRole('button', { name: '恢复站点默认' }).click();
+            const disabled = page.getByRole('button', { name: '创建自定义模板', disabled: true });
+            try {
+              await disabled.waitFor();
+              const ratio = await textContrast(disabled.locator('span').last());
+              assert.ok(ratio >= 4.5, `${theme} ${width}px disabled text: ${ratio.toFixed(2)}:1`);
+            } finally { finishSave(); }
             assert.deepEqual(errors, []);
             await context.close();
             continue;
