@@ -35,3 +35,30 @@ test('offline recovery never reuses another server identity', () => {
   expect(loadStore('https://first.test/').browserTimetableRecoveryIdentity()).toBe('__browser_namespace__:account:abcd');
   expect(loadStore('https://second.test/').browserTimetableRecoveryIdentity()).toBe('');
 });
+
+test('offline pointer follows committed writes and only its owner can clear it', async () => {
+  let abort = false;
+  const store = { put: jest.fn(), index: () => ({ openCursor: () => ({}) }) };
+  window.indexedDB = { open: () => {
+    const request = { result: { close: jest.fn(), transaction: () => {
+      const tx = { objectStore: () => store };
+      Promise.resolve().then(() => abort ? tx.onabort() : tx.oncomplete());
+      return tx;
+    } } };
+    Promise.resolve().then(() => request.onsuccess());
+    return request;
+  } };
+  const cache = loadStore(null);
+  expect(await cache.writeBrowserTimetableCache('second')).toBe(true);
+  const second = cache.browserTimetableRecoveryIdentity();
+  expect(second).toBe(`__browser_namespace__:${cache.browserTimetableCacheNamespace('second')}`);
+  abort = true;
+  expect(await cache.writeBrowserTimetableCache('first')).toBe(false);
+  expect(await cache.clearBrowserTimetableCache('second')).toBe(false);
+  expect(cache.browserTimetableRecoveryIdentity()).toBe(second);
+  abort = false;
+  expect(await cache.clearBrowserTimetableCache('first')).toBe(true);
+  expect(cache.browserTimetableRecoveryIdentity()).toBe(second);
+  expect(await cache.clearBrowserTimetableCache('second')).toBe(true);
+  expect(cache.browserTimetableRecoveryIdentity()).toBe('');
+});

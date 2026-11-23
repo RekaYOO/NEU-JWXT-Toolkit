@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Drawer, Empty, Skeleton, Spin, Tag, Typography, message } from 'antd';
 import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
-import { getCourseOutlineOverview, getCourseOutlineSections } from '../services/api';
+import { getCourseOutlineOverview, getCourseOutlineSections, downloadCourseOutlineAttachment } from '../services/api';
 import { downloadCourseOutlineHtml } from '../utils/courseOutlineExport';
 import './CourseOutlineDrawer.css';
 
@@ -14,7 +14,7 @@ const GROUPS = [
 
 const TextValue = ({ value }) => <Paragraph className="outline-paragraph">{value || <Text type="secondary">暂无内容</Text>}</Paragraph>;
 
-const PresentedSection = ({ section }) => {
+const PresentedSection = ({ section, onAttachmentDownload }) => {
   if (!section) return null;
   if (section.kind === 'table') return (
     <article className="outline-section-card">
@@ -26,7 +26,7 @@ const PresentedSection = ({ section }) => {
   );
   if (section.kind === 'attachments') return (
     <article className="outline-section-card"><Title level={4}>{section.title}</Title>
-      {section.items.length ? <div className="outline-attachment-list">{section.items.map((item, index) => <div key={index}>{item.name}</div>)}</div> : <Text type="secondary">暂无历史附件</Text>}
+      {section.items.length ? <div className="outline-attachment-list">{section.items.map((item, index) => item.token ? <Button key={index} type="link" icon={<DownloadOutlined />} onClick={() => onAttachmentDownload(item)}>{item.name}</Button> : <div key={index}>{item.name}</div>)}</div> : <Text type="secondary">暂无历史附件</Text>}
     </article>
   );
   return (
@@ -96,6 +96,9 @@ export default function CourseOutlineDrawer({ open, course, onClose, embedded = 
     } catch (_error) { message.error('部分大纲内容尚未加载成功，请重试后下载'); }
     finally { setDownloading(false); }
   };
+  const downloadAttachment = async item => {
+    try { await downloadCourseOutlineAttachment(item.token, item.name); } catch (_error) { message.error('附件下载失败，请重试'); }
+  };
 
   const content = (
     <>
@@ -122,7 +125,7 @@ export default function CourseOutlineDrawer({ open, course, onClose, embedded = 
               <Title level={3}>{group.label}</Title>
               {states[group.key] === 'loading' && <div className="outline-loading"><Spin /><span>正在读取{group.label}…</span></div>}
               {states[group.key] === 'error' && <Alert type="warning" showIcon message={`${group.label}加载失败`} action={<Button icon={<ReloadOutlined />} size="small" onClick={() => loadGroup(group.key)}>重试</Button>} />}
-              {states[group.key] === 'done' && ((groups[group.key]?.sections || []).length ? <div className="outline-section-list">{groups[group.key].sections.map((section, index) => <PresentedSection key={`${section.title}-${index}`} section={section} />)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无内容" />)}
+              {states[group.key] === 'done' && ((groups[group.key]?.sections || []).length ? <div className="outline-section-list">{groups[group.key].sections.map((section, index) => <PresentedSection key={`${section.title}-${index}`} section={section} onAttachmentDownload={downloadAttachment} />)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无内容" />)}
             </section>)}
           </div>
         </div>

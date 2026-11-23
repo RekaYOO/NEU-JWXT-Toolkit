@@ -9,6 +9,7 @@ import {
 import LoginPage from './pages/LoginPage';
 import MainLayout from './layouts/MainLayout';
 import AccessLoginPage from './pages/AccessLoginPage';
+const AdminPage = React.lazy(() => import('./pages/AdminPage'));
 import ScoresPage from './pages/ScoresPage';
 import AuthRecoveryPage from './pages/AuthRecoveryPage';
 import { nativeShellInfo } from './services/nativeBridge';
@@ -23,6 +24,7 @@ import {
   markAuthSessionAuthenticated,
 } from './services/api';
 import { ResourceProvider } from './resources/ResourceStore';
+import ApplicationTheme from './theme/ApplicationTheme';
 import { isExportToolAvailable } from './export/exportTools';
 import {
   featureAvailable,
@@ -121,6 +123,10 @@ const appTheme = {
   },
 };
 
+function PublicTheme({ children, publicTheme }) {
+  return <ConfigProvider theme={appTheme} locale={zhCN}><ApplicationTheme publicTheme={publicTheme}>{children}</ApplicationTheme></ConfigProvider>;
+}
+
 function AppContent({
   isLoggedIn,
   userInfo,
@@ -194,7 +200,7 @@ function AppContent({
 
   if (accessState.required && !accessState.authenticated) {
     return (
-      <ConfigProvider theme={appTheme} locale={zhCN}>
+      <ConfigProvider locale={zhCN}>
         <AccessLoginPage
           configured={accessState.configured}
           onSuccess={onAccessSuccess}
@@ -206,7 +212,7 @@ function AppContent({
   return (
     <ResourceProvider
       identity={isLoggedIn
-        ? String(userInfo || 'authenticated')
+        ? String(userInfo || '')
         : (showTimetableRecovery ? timetableRecoveryIdentity : '')}
       offlineMode={offlineMode}
       recoveryMode={showTimetableRecovery}
@@ -367,6 +373,7 @@ function App() {
   const loadApplicationState = async () => {
     const access = await getAccessStatus();
     setAccessState(access);
+    if (/^\/admin\/?$/.test(window.location.pathname)) return access;
     let bootstrap = null;
     let health = null;
     if (!access.required || access.authenticated) {
@@ -405,7 +412,7 @@ function App() {
           setOfflineMode(true);
           setOfflineCapabilities(offline);
           setIsLoggedIn(true);
-          setUserInfo(offline.username || '离线用户');
+          setUserInfo(offline.username || null);
           setTimetableRecoveryActive(false);
           return access;
         }
@@ -548,7 +555,7 @@ function App() {
           setOfflineMode(true);
           setOfflineCapabilities(localStatus);
           setIsLoggedIn(true);
-          setUserInfo(localStatus.username || '离线用户');
+          setUserInfo(localStatus.username || null);
           authRecoveryPromptRef.current = false;
           authRecoveryModalRef.current = null;
         },
@@ -712,7 +719,7 @@ function App() {
       if (['jwxk', 'cxcy'].includes(result.target_service || pendingAuthFlow.target_service)) {
         message.success('业务系统 WebVPN 登录已恢复');
       } else {
-        handleLoginSuccess(result.username || userInfo || '已登录');
+        handleLoginSuccess(result.username);
       }
     } catch (error) {
       if (isCampusNetworkBlocked(error)) {
@@ -734,7 +741,7 @@ function App() {
   };
 
   const handleLoginSuccess = useCallback((username) => {
-    const normalizedUsername = String(username || '已登录');
+    const normalizedUsername = String(username || '').trim();
     const now = Date.now();
     const previousSuccess = authSuccessNoticeRef.current;
     const duplicate = previousSuccess.username === normalizedUsername
@@ -780,7 +787,7 @@ function App() {
     setOfflineMode(true);
     setOfflineCapabilities(status);
     setIsLoggedIn(true);
-    setUserInfo(status.username || '离线用户');
+    setUserInfo(status.username || null);
     setTimetableRecoveryActive(false);
     setTimetableRecoveryNotice('');
     message.success('已进入只读离线模式');
@@ -798,25 +805,25 @@ function App() {
   );
   if (isLoading && !canStartTimetableFromLocal) {
     return (
-      <div className="loading" role="status" aria-live="polite">
+      <PublicTheme publicTheme={accessState.site_default || 'blue'}><div className="loading" role="status" aria-live="polite">
         <Spin size="large" />
         <span>{initialAuthSlow ? '正在恢复登录状态，请稍候' : '正在连接教务服务'}</span>
         <NativeServerSettingsButton />
-      </div>
+      </div></PublicTheme>
     );
   }
 
   if (recoveryToken) {
     return (
-      <ConfigProvider theme={appTheme} locale={zhCN}>
+      <PublicTheme>
         <AuthRecoveryPage token={recoveryToken} />
-      </ConfigProvider>
+      </PublicTheme>
     );
   }
 
   if (accessState.required && !accessState.authenticated) {
     return (
-      <ConfigProvider theme={appTheme} locale={zhCN}>
+      <PublicTheme publicTheme={accessState.site_default || 'blue'}>
         <AccessLoginPage
           configured={accessState.configured}
           onSuccess={async () => {
@@ -828,12 +835,23 @@ function App() {
             }
           }}
         />
-      </ConfigProvider>
+      </PublicTheme>
+    );
+  }
+
+  if (/^\/admin\/?$/.test(window.location.pathname)) {
+    return (
+      <PublicTheme publicTheme={accessState.site_default || 'blue'}>
+        <React.Suspense fallback={<div className="loading" role="status">正在加载管理页面</div>}>
+          <AdminPage siteAccessRequired={accessState.required} />
+        </React.Suspense>
+      </PublicTheme>
     );
   }
 
   return (
     <ConfigProvider theme={appTheme} locale={zhCN}>
+      <ApplicationTheme identity={isLoggedIn && !offlineMode ? String(userInfo || '') : ''} publicTheme={accessState.site_default || 'blue'}>
         <Router>
           <AppContent
             isLoggedIn={isLoggedIn}
@@ -873,6 +891,7 @@ function App() {
             onCancel={cancelPendingSms}
           />
         </Router>
+      </ApplicationTheme>
     </ConfigProvider>
   );
 }

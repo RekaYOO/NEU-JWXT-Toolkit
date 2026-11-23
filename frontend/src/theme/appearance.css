@@ -1,0 +1,14 @@
+.appearance-settings { display: grid; gap: 16px; min-width: 0; }
+.appearance-settings .ant-form-item { margin-bottom: 12px; }
+.appearance-template-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 12px; }
+.appearance-template { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--color-line); border-radius: var(--radius-lg); }
+.appearance-template[data-selected="true"] { border-color: var(--color-brand); box-shadow: inset 0 0 0 1px var(--color-brand); }
+.appearance-swatches { display: flex; gap: 6px; }
+.appearance-swatches span { width: 24px; height: 24px; border: 1px solid var(--color-line); border-radius: 50%; }
+.appearance-editor { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 0 16px; }
+.appearance-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.appearance-actions .ant-btn { min-height: 44px; }
+:root[data-theme-motion="reduced"] *, :root[data-theme-motion="reduced"] *::before, :root[data-theme-motion="reduced"] *::after {
+  animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important;
+}
+@media (max-width: 600px) { .appearance-actions .ant-btn { flex: 1 1 120px; } }

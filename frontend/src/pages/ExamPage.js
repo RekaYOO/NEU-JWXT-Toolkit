@@ -16,6 +16,7 @@ import SystemMessageNotice from '../components/SystemMessageNotice';
 import './ExamPage.css';
 
 const { Option } = Select;
+const emptyStats = { total: 0, upcoming: 0, ongoing: 0, finished: 0 };
 
 const STATUS_MAP = {
   0: { label: '待考', color: 'blue', icon: <HourglassOutlined /> },
@@ -28,7 +29,7 @@ const ExamPage = () => {
   const [currentTerm, setCurrentTerm] = useState('');
   const [selectedTerm, setSelectedTerm] = useState('');
   const [exams, setExams] = useState([]);
-  const [stats, setStats] = useState({ total: 0, upcoming: 0, ongoing: 0, finished: 0 });
+  const [stats, setStats] = useState(emptyStats);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState(null);
@@ -60,6 +61,8 @@ const ExamPage = () => {
     const loadExams = async () => {
       setLoading(true);
       setError(null);
+      setExams([]);
+      setStats(emptyStats);
       try {
         const data = await getExams(selectedTerm);
         if (generation !== examRequestGeneration.current) return;
@@ -81,6 +84,9 @@ const ExamPage = () => {
       }
     };
     loadExams();
+    return () => {
+      examRequestGeneration.current += 1;
+    };
   }, [selectedTerm]);
 
   const handleExportICS = async () => {

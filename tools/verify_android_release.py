@@ -84,7 +84,8 @@ def _check_entries(
         if (name.endswith((".map", ".jks", ".keystore", ".key"))
             or (name.endswith(".pem") and not public_ca)
             or ".git" in parts or "__pycache__" in parts or ".env" in parts
-            or basename in {"runtime.json", "config.json", "mobile_notification_outbox.json"}
+            or basename in {"runtime.json", "config.json", "mobile_notification_outbox.json",
+                            "credentials.json", "session.json", "grade_tracking_snapshot.json", "system_mail_outbox.json"}
             or "backend/tests/" in name):
             raise SystemExit(f"Sensitive or development entry: {prefix}{entry.filename}")
         if abi and name.endswith(".so"):

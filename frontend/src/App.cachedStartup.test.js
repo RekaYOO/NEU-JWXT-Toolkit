@@ -12,8 +12,8 @@ jest.mock('./layouts/MainLayout', () => {
   return () => <Outlet />;
 });
 jest.mock('./pages/TimetablePage', () => {
-  const { useResourceRecoveryMode } = require('./resources/ResourceStore');
-  return () => <div data-testid="timetable">{useResourceRecoveryMode() ? '只读课表' : '在线课表'}</div>;
+  const { useResourceRecoveryMode, useResourceIdentity } = require('./resources/ResourceStore');
+  return () => <div data-testid="timetable" data-identity={useResourceIdentity()}>{useResourceRecoveryMode() ? '只读课表' : '在线课表'}</div>;
 });
 
 describe('cached timetable while the native backend is still starting', () => {
@@ -51,7 +51,7 @@ describe('cached timetable while the native backend is still starting', () => {
     expect(getClientBootstrap).not.toHaveBeenCalled();
   });
 
-  test('does not flash the global startup screen while auth finishes after the timetable is mounted', async () => {
+  test.each(['20990001', null])('switches from recovery to the confirmed cache identity: %s', async username => {
     let resolveBootstrap;
     getAccessStatus.mockResolvedValue({
       required: false,
@@ -70,12 +70,13 @@ describe('cached timetable while the native backend is still starting', () => {
     await act(async () => {
       resolveBootstrap({
         runtime: { profile: 'development' },
-        auth: { is_logged_in: true, current_user: '20241643' },
+        auth: { is_logged_in: true, current_user: username },
       });
       await Promise.resolve();
     });
     expect(container.querySelector('.loading')).toBeNull();
     expect(container.textContent).toContain('在线课表');
+    expect(container.querySelector('[data-testid="timetable"]').dataset.identity).toBe(username || '');
   });
 
   test.each(['manual logout', 'missing cache', 'another page'])(

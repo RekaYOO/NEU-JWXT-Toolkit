@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { Modal } from 'antd';
 import { clearSystemMessagePromptMemory } from '../utils/systemMessagePrompt';
+import { downloadTimetable } from '../utils/timetableExport';
 import TimetablePage, {
   MobileTimetableNotices,
   TIMETABLE_LOGIN_ERROR_TEXT,
@@ -19,6 +20,7 @@ import {
   readBrowserTimetableCache, writeBrowserTimetableCache, subscribeBrowserTimetableCache,
 } from '../resources/BrowserTimetableStore';
 
+jest.mock('../utils/timetableExport', () => ({ downloadTimetable: jest.fn() }));
 jest.mock('../services/api', () => ({
   getTimetableTerms: jest.fn(),
   getPersonalTimetable: jest.fn(),
@@ -34,13 +36,14 @@ jest.mock('../services/api', () => ({
   checkScheduleConflicts: jest.fn(),
 }));
 let mockRecoveryMode = false;
+let mockOfflineMode = false;
 const mockTimetableMemory = { data: null, publish: jest.fn() };
 const mockSystemMessagesResource = { data: { messages: [] } };
 jest.mock('../resources/ResourceStore', () => {
   return {
     useResourceMemory: () => mockTimetableMemory,
     useResourceIdentity: () => 'query-fixture',
-    useResourceOfflineMode: () => false,
+    useResourceOfflineMode: () => mockOfflineMode,
     useResourceRecoveryMode: () => mockRecoveryMode,
     useCachedResource: () => mockSystemMessagesResource,
   };
@@ -83,6 +86,7 @@ describe('query timetable request lifecycle', () => {
     mockSystemMessagesResource.data = { messages: [] };
     mockSystemMessagesResource.availableData = null;
     mockRecoveryMode = false;
+    mockOfflineMode = false;
     mockTimetableMemory.data = null;
     global.IS_REACT_ACT_ENVIRONMENT = true;
     window.matchMedia = () => ({
@@ -271,6 +275,19 @@ describe('query timetable request lifecycle', () => {
     modal = document.querySelector('.timetable-day-agenda-modal');
     expect(modal.textContent).toContain('讨论会议');
     expect(modal.querySelector('[aria-label="编辑讨论会议"]')).not.toBeNull();
+    mockOfflineMode = true;
+    const readsBeforeOffline = getTimetableAgenda.mock.calls.length;
+    await act(async () => root.render(renderPage()));
+    await flush();
+    expect(getTimetableAgenda).toHaveBeenCalledTimes(readsBeforeOffline);
+    getTimetableAgenda.mockResolvedValue({ revision: saved.revision + 1, events: [], moves: [] });
+    mockOfflineMode = false;
+    await act(async () => root.render(renderPage()));
+    await flush();
+    expect(getTimetableAgenda.mock.calls.length).toBeGreaterThan(readsBeforeOffline);
+    await click(container.querySelector('[aria-label="查看星期四当日日程"]'));
+    expect(document.querySelector('.timetable-day-agenda-modal').textContent).not.toContain('讨论会议');
+    expect(saveTimetableAgenda).toHaveBeenCalledTimes(1);
   });
 
   test('copied courses appear only at their added date and leave the original week untouched', async () => {
@@ -284,8 +301,10 @@ describe('query timetable request lifecycle', () => {
     await act(async () => root.render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><TimetablePage /></MemoryRouter>));
     await flush();
     expect(container.querySelector('.timetable-grid [aria-label="星期四"]').textContent).toContain('查询课程');
+    expect(container.querySelector('.timetable-grid [aria-label="星期日"]').textContent).not.toContain('查询课程');
     await click(week(3));
     expect(container.querySelector('.timetable-grid [aria-label="星期日"]').textContent).toContain('查询课程');
+    expect(container.querySelector('.timetable-grid [aria-label="星期四"]').textContent).not.toContain('查询课程');
     expect(cached.courses[0].weeks).toEqual([3]);
   });
 
@@ -623,8 +642,13 @@ describe('query timetable request lifecycle', () => {
     expect(modal.querySelectorAll('.timetable-target-result-card')).toHaveLength(3);
     expect(modal.textContent).toContain('空教室 2');
     expect(modal.textContent).toContain('已找到 3 间');
+    getRoomAvailability.mockRejectedValueOnce(new Error('教室课表暂时不可用'));
     await click([...modal.querySelectorAll('button')].find(button => button.textContent === '继续查找'));
-    expect(getRoomAvailability).toHaveBeenCalledTimes(4);
+    expect(modal.textContent).toContain('教室课表暂时不可用');
+    expect(modal.querySelectorAll('.timetable-target-result-card')).toHaveLength(3);
+    await click([...modal.querySelectorAll('button')].find(button => button.textContent === '继续查找'));
+    expect(getRoomAvailability).toHaveBeenCalledTimes(5);
+    expect(getRoomAvailability.mock.calls[4][0]).toEqual(getRoomAvailability.mock.calls[3][0]);
     expect(getRoomAvailability.mock.calls[3][0]).toEqual(expect.objectContaining({
       cursor: 3,
       seen_room_ids: ['room-1', 'room-2', 'room-3'],
@@ -636,7 +660,7 @@ describe('query timetable request lifecycle', () => {
       .find(button => button.textContent.includes('空教室 4')));
     await click([...container.querySelectorAll('button')].find(button => button.textContent === '筛选'));
     expect(modal.querySelectorAll('.timetable-target-result-card')).toHaveLength(4);
-    expect(getRoomAvailability).toHaveBeenCalledTimes(4);
+    expect(getRoomAvailability).toHaveBeenCalledTimes(5);
   });
 
   test('corrects the weekday when the current term arrives after a cached timetable', async () => {
@@ -1047,8 +1071,12 @@ describe('query timetable request lifecycle', () => {
   test('keeps failed week changes in one bottom notice without repeating the error above old results', async () => {
     getTimetableSchedule.mockImplementation(async request => ({ ...empty(request), courses: [course] }));
     await mountQuery('教室课表');
+    const exportButton = () => [...container.querySelectorAll('button')].find(button => button.textContent.includes('导出当前课表'));
+    await click(exportButton());
+    expect(downloadTimetable).toHaveBeenCalledWith(expect.objectContaining({ termCode, days: expect.objectContaining({ 7: [expect.objectContaining({ course_name: course.course_name })] }) }));
     getTimetableSchedule.mockRejectedValueOnce({ response: { data: { detail: '课表服务暂时不可用' } } });
     await click(week(2));
+    expect(exportButton()).toBeUndefined();
     expect(container.querySelector('.timetable-query-transition').textContent)
       .toContain('并非当前选择范围');
     expect(container.querySelector('.timetable-query-transition').textContent).not.toContain('失败');
@@ -1219,6 +1247,9 @@ describe('query timetable request lifecycle', () => {
       expect(container.querySelector('.timetable-desktop')).toBe(grid);
       expect(mobile.classList.contains('is-term-view')).toBe(termView);
       expect(container.querySelector('.timetable-query-transition')).toBeNull();
+      const exportButton = [...container.querySelectorAll('button')].find(button => button.textContent.includes('导出当前课表'));
+      await click(exportButton);
+      expect(downloadTimetable).toHaveBeenLastCalledWith(expect.objectContaining({ termCode, view: termView ? 'term' : 'week' }));
       if (!desktop) {
         expect(header.querySelector('.timetable-mobile-summary')).toBe(summary);
         expect(summary.classList.contains('expanded')).toBe(true);

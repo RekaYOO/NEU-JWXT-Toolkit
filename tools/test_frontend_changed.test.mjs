@@ -17,10 +17,10 @@ test('source, style and new test files use dependency selection without duplicat
 test('shared, configuration, backend and unknown changes never silently skip regression', () => {
   for (const file of [
     'frontend/package-lock.json', 'frontend/package.json', 'frontend/.env.test',
-    'frontend/src/setupTests.js', 'frontend/src/App.js', 'frontend/src/index.js',
+    'frontend/src/setupTests.js', 'frontend/src/App.js', 'frontend/src/index.js', 'frontend/src/main.tsx',
     'frontend/src/services/api.js', 'frontend/src/resources/ResourceStore.js',
     'backend/app/routers/auth.py', '.github/workflows/ci.yml',
-    'tools/test_frontend_changed.mjs', 'frontend/public/index.html',
+    'tools/test_frontend_changed.mjs', 'frontend/public/index.html', 'frontend/index.html', 'frontend/vite.config.ts',
   ]) {
     assert.equal(selectTests([file], () => true).mode, 'full', file);
   }

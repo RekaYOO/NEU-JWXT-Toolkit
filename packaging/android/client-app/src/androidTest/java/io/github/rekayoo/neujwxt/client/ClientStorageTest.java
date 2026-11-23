@@ -38,6 +38,12 @@ public class ClientStorageTest {
         assertEquals("fake-test-session", restored.loadForRequest(origin).get(0).value());
         assertTrue(restored.loadForRequest(HttpUrl.get("https://server.example:444/")).isEmpty());
         assertTrue(restored.loadForRequest(HttpUrl.get("https://sub.server.example/")).isEmpty());
+        HttpUrl otherPort = HttpUrl.get("https://server.example:444/");
+        restored.setOrigin(otherPort);
+        assertTrue(restored.loadForRequest(otherPort).isEmpty());
+        restored.setOrigin(origin);
+        assertTrue(restored.loadForRequest(origin).isEmpty());
+        restored.saveFromResponse(origin, Collections.singletonList(cookie));
         restored.setOrigin(HttpUrl.get("https://other.example/"));
         restored.saveFromResponse(origin, Collections.singletonList(cookie));
         restored.setOrigin(origin);

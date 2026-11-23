@@ -1,0 +1,29 @@
+Package: toggle-selection 1.0.6
+Declared license: MIT (package.json)
+Author: sudodoki <smd.deluzion@gmail.com> (sudodoki.name)
+Contributor: Aleksej Shvajka (https://github.com/shvaikalesh)
+Source: https://github.com/sudodoki/toggle-selection/tree/466460c75ca40630d8de940490718247fce79a3e
+
+The published package and corresponding source commit contain the MIT declaration
+in package.json but no standalone LICENSE file or copyright notice. The original
+package.json and README.md are included alongside this notice. The standard MIT
+license terms corresponding to that declaration are reproduced below; no copyright
+holder or copyright year has been inferred.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

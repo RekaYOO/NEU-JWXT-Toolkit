@@ -156,6 +156,7 @@ const MainLayout = ({
       : () => {};
     return () => {
       active = false;
+      avatarGeneration.current += 1;
       unsubscribe();
     };
   }, [userInfo, offlineMode, showAvatar]);
@@ -167,7 +168,8 @@ const MainLayout = ({
   }, [avatarUrl]);
 
   useEffect(() => {
-    if (offlineMode) return undefined;
+    if (offlineMode || !userInfo) return undefined;
+    const generation = avatarGeneration.current;
     const onCacheEvent = async (event) => {
       const update = event.detail || {};
       if (update.resource !== 'avatar' || update.changed !== true) return;
@@ -180,7 +182,7 @@ const MainLayout = ({
       ) return;
       try {
         const cached = await getUserAvatarCache();
-        if (cached?.blob) {
+        if (generation === avatarGeneration.current && cached?.blob) {
           showAvatar(identity, cached);
           await writeBrowserAvatarCache(identity, cached);
         }
@@ -194,11 +196,13 @@ const MainLayout = ({
 
   // 刷新头像（点击头像时调用）
   const refreshAvatar = async () => {
-    if (offlineMode || isRefreshingAvatar) return;
+    if (!userInfo || offlineMode || isRefreshingAvatar) return;
+    const generation = avatarGeneration.current;
     
     setIsRefreshingAvatar(true);
     try {
       const avatarBlob = await getUserAvatar(true);
+      if (generation !== avatarGeneration.current) return;
       if (avatarBlob && avatarBlob.size > 0) {
         showAvatar(String(userInfo || ''), {
           blob: avatarBlob,
@@ -206,7 +210,7 @@ const MainLayout = ({
         });
         try {
           const cached = await getUserAvatarCache();
-          if (cached?.blob) await writeBrowserAvatarCache(String(userInfo || ''), cached);
+          if (generation === avatarGeneration.current && cached?.blob) await writeBrowserAvatarCache(String(userInfo), cached);
         } catch (_error) { /* freshly displayed avatar remains usable */ }
         message.success('头像已更新');
       } else {
@@ -452,8 +456,8 @@ const MainLayout = ({
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight" trigger={['click']}>
               <Button type="text" className="user-info" aria-label="打开用户菜单">
                 <Avatar 
-                  src={avatarUrl} 
-                  icon={!avatarUrl && <UserOutlined />}
+                  src={userInfo && avatarSnapshot.current.identity === userInfo ? avatarUrl : undefined}
+                  icon={<UserOutlined />}
                   onClick={offlineMode ? undefined : refreshAvatar}
                   title={offlineMode ? '离线模式不加载头像' : '点击刷新头像'}
                 />

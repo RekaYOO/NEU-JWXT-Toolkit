@@ -103,7 +103,7 @@ export const columnSettings = {
     }
     
     // 将保存的配置映射为对象便于查找
-    const savedMap = new Map(saved.map(col => [col.key, col]));
+    const savedMap = new Map(saved.filter(col => typeof col?.key === 'string').map(col => [col.key, col]));
     
     // 合并默认配置和保存的配置
     return defaultColumns.map(col => {
@@ -111,8 +111,8 @@ export const columnSettings = {
       if (savedCol) {
         return {
           ...col,
-          visible: savedCol.visible !== undefined ? savedCol.visible : col.visible,
-          width: savedCol.width || col.width,
+          visible: typeof savedCol.visible === 'boolean' ? savedCol.visible : col.visible,
+          width: Number.isFinite(savedCol.width) && savedCol.width > 0 ? savedCol.width : col.width,
         };
       }
       return col;

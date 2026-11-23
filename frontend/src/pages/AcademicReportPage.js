@@ -12,7 +12,7 @@ import {
   SafetyOutlined, ClockCircleOutlined, CheckOutlined, DownOutlined,
   RightOutlined, FolderOutlined, FileOutlined, PercentageOutlined,
   ExclamationCircleOutlined, FilterOutlined, DownCircleOutlined, UpCircleOutlined,
-  CheckSquareOutlined, SearchOutlined
+  CheckSquareOutlined, SearchOutlined, DownloadOutlined
 } from '@ant-design/icons';
 import { useCachedResource, useResourceIdentity } from '../resources/ResourceStore';
 import { columnSettings, loadSetting, saveSetting } from '../utils/settings';
@@ -47,6 +47,8 @@ import {
   cloneDefaultColumns,
 } from '../utils/defaultColumnConfigs';
 import './AcademicReportPage.css';
+import { exportAcademicReport } from '../services/api';
+import { saveNativeFile } from '../services/nativeBridge';
 
 const { Title, Text } = Typography;
 const { useBreakpoint } = Grid;
@@ -557,6 +559,29 @@ const AcademicReportPage = ({ offlineMode = false }) => {
     reportResource.updateAvailable,
     reportResource.applyAvailable,
   ]);
+
+  const [exporting, setExporting] = useState(false);
+  const downloadReport = async () => {
+    if (offlineMode || exporting) return;
+    setExporting(true);
+    try {
+      const blob = await exportAcademicReport();
+      const filename = '培养计划.zip';
+      if (saveNativeFile(filename, 'application/zip', blob)) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch {
+      message.error('培养计划导出失败，请检查登录状态后重试');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // 刷新数据
   const handleRefresh = async () => {
@@ -1460,6 +1485,11 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                   </Button>
                 </Dropdown>}
                 
+                <Tooltip title={offlineMode ? '离线模式无法导出官方报告' : '下载培养计划 ZIP'}>
+                  <Button aria-label="导出培养计划" icon={<DownloadOutlined />} loading={exporting} disabled={offlineMode} onClick={downloadReport}>
+                    {isMobile ? null : '导出'}
+                  </Button>
+                </Tooltip>
                 <Tooltip title={offlineMode
                   ? '离线模式不会连接教务系统'
                   : (dataInfo.last_update

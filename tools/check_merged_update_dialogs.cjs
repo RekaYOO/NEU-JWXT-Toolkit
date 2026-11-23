@@ -4,9 +4,9 @@ const fs = require('node:fs/promises');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || require.resolve('playwright', { paths: [path.resolve(__dirname, '../frontend')] }));
 
-const build = path.resolve(__dirname, '../frontend/build');
+const build = path.resolve(process.env.QA_FRONTEND_BUILD || path.join(__dirname, '../frontend/build'));
 const term = { code: '2026-2027-1', name: '测试学期', current: true };
 const weeks = [{ number: 2, name: '第2周', current: true, start_date: '2026-09-13', end_date: '2026-09-19' }];
 const oldTimetable = {
@@ -110,9 +110,12 @@ async function inspectModal(page, label, width, height, screenshots) {
   let browser;
   try {
     browser = await chromium.launch({ headless: true, channel: process.env.QA_BROWSER || 'msedge' });
-    const viewports = [[320, 800], [375, 812], [430, 932], [768, 900], [1440, 900]];
+    const downloadOnly = process.argv.includes('--report-download');
+    const deferUpdate = process.argv.includes('--defer-update');
+    const archive = Buffer.from('504b0506000000000000000000000000000000000000', 'hex');
+    const viewports = downloadOnly ? [[320, 800], [1440, 900]] : [[320, 800], [375, 812], [430, 932], [768, 900], [1440, 900]];
     for (const [width, height] of viewports) {
-      for (const label of ['timetable', 'academic']) {
+      for (const label of downloadOnly ? ['academic'] : ['timetable', 'academic']) {
         const page = await browser.newPage({ viewport: { width, height }, serviceWorkers: 'block' });
         const pageErrors = [];
         let updated = false;
@@ -122,6 +125,7 @@ async function inspectModal(page, label, width, height, screenshots) {
           if (url.origin !== origin) return route.abort();
           if (!url.pathname.startsWith('/api/')) return route.continue();
           let data = {};
+          if (downloadOnly && url.pathname === '/api/academic-report/export') return route.fulfill({ contentType: 'application/zip', body: archive });
           if (url.pathname === '/api/access/status') data = { required: false, authenticated: true };
           else if (url.pathname === '/api/client/bootstrap') data = {
             runtime: { profile: 'development' }, auth,
@@ -144,6 +148,14 @@ async function inspectModal(page, label, width, height, screenshots) {
         });
         try {
           await page.goto(`${origin}/${label === 'timetable' ? 'timetable' : 'academic-report'}`);
+          if (downloadOnly) {
+            const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '导出培养计划' }).click()]);
+            assert.equal(download.suggestedFilename(), '培养计划.zip');
+            assert.deepEqual(await fs.readFile(await download.path()), archive);
+            assert.deepEqual(pageErrors, []);
+            console.log(`Verified browser download at ${width}x${height}`);
+            continue;
+          }
           if (label === 'academic') {
             await page.locator('.academic-report-page').waitFor({ timeout: 15000 });
             await page.waitForFunction(() => document.querySelector('.credit-summary-float')?.textContent.includes('0/20'));
@@ -158,6 +170,25 @@ async function inspectModal(page, label, width, height, screenshots) {
             })));
           }
           await inspectModal(page, label, width, height, screenshots);
+          if (deferUpdate) {
+            const academicPage = label === 'academic';
+            const dialog = page.getByRole('dialog', { name: academicPage ? '培养计划已有更新' : '课表有更新', exact: true });
+            await dialog.getByRole('button', { name: academicPage ? /^稍\s*后$/ : /^保持当前$/ }).click();
+            await dialog.waitFor({ state: 'hidden' });
+            const displayed = await page.locator(academicPage ? '.credit-summary-float' : '.timetable-page').innerText();
+            assert(academicPage ? /(?:0\/|要求\s*)20\b/.test(displayed) : displayed.includes('旧教室'));
+            assert(!(academicPage ? /(?:0\/|要求\s*)22\b/.test(displayed) : displayed.includes('新教室')));
+            assert.deepEqual(pageErrors, []);
+            console.log(`PASS deferred ${label} ${width}x${height}`);
+            continue;
+          }
+          const confirmation = label === 'academic' ? '刷新当前显示' : '更新课表';
+          await page.getByRole('dialog').getByRole('button', { name: confirmation, exact: true }).click();
+          if (label === 'academic') {
+            await page.waitForFunction(() => document.querySelector('.credit-summary-float')?.textContent.includes('0/22'));
+          } else {
+            await page.waitForFunction(() => document.querySelector('.timetable-page')?.textContent.includes('新教室'));
+          }
           assert.deepEqual(pageErrors, [], `${label} ${width}: browser exceptions`);
           console.log(`PASS ${label} ${width}x${height}`);
         } catch (error) {

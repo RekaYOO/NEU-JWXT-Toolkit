@@ -11,7 +11,7 @@ import {
 } from '@ant-design/icons';
 import GPACalculator from '../components/GPACalculator';
 import ResourceUpdateSummary from '../components/ResourceUpdateSummary';
-import { useCachedResource } from '../resources/ResourceStore';
+import { useCachedResource, useResourceIdentity } from '../resources/ResourceStore';
 import {
   getOfflineScoreDetail,
   getScoreDetailCache,
@@ -212,6 +212,7 @@ const compareNullableNumbers = (a, b, order) => {
 };
 
 const ScoresPage = ({ offlineMode = false }) => {
+  const resourceIdentity = useResourceIdentity();
   const screens = useBreakpoint();
   const isMobile = !screens.md;
   const [allScores, setAllScores] = useState([]);
@@ -261,6 +262,7 @@ const ScoresPage = ({ offlineMode = false }) => {
 
   // GPA计算器
   const [isSimulating, setIsSimulating] = useState(false);
+  useEffect(() => { setIsSimulating(false); }, [resourceIdentity]);
   const gpaCalculatorRef = useRef(null);
   const dismissedRevisionRef = useRef('');
   const scoreResource = useCachedResource('scores');
@@ -1069,7 +1071,7 @@ const ScoresPage = ({ offlineMode = false }) => {
           <Col xs={24} sm={12} md={6}><Card><Statistic title="总学分" value="--" /></Card></Col>
         </Row>
         <Card className="scores-table-card" title="成绩明细">
-          <div style={{ textAlign: 'center', padding: '40px', color: '#999' }}>
+          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-muted)' }}>
             正在加载本地数据...
           </div>
         </Card>
@@ -1162,6 +1164,7 @@ const ScoresPage = ({ offlineMode = false }) => {
 
       {/* GPA模拟计算器 */}
       <GPACalculator
+        key={resourceIdentity}
         ref={gpaCalculatorRef}
         realScores={scoresWithOutlineMetadata}
         gpaPolicy={gpaPolicy}
@@ -1610,7 +1613,7 @@ const ScoresPage = ({ offlineMode = false }) => {
       <Modal
         title={
           <Space>
-            <ExclamationCircleOutlined style={{ color: '#faad14' }} />
+            <ExclamationCircleOutlined style={{ color: 'var(--color-warning)' }} />
             <span>发现新成绩</span>
           </Space>
         }

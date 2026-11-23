@@ -31,11 +31,11 @@ jest.mock('../resources/BrowserTimetableStore', () => ({
   writeBrowserAvatarCache: jest.fn().mockResolvedValue(true),
 }));
 
-const renderLayout = async (runtimeProfile) => {
+const renderLayout = async (runtimeProfile, userInfo = '测试用户') => {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
-  await act(async () => {
+  const switchAccount = async identity => act(async () => {
     root.render(
       <MemoryRouter
         initialEntries={['/scores']}
@@ -47,7 +47,7 @@ const renderLayout = async (runtimeProfile) => {
             element={(
               <MainLayout
                 runtimeProfile={runtimeProfile}
-                userInfo="测试用户"
+                userInfo={identity}
                 onLogout={jest.fn()}
               />
             )}
@@ -58,8 +58,10 @@ const renderLayout = async (runtimeProfile) => {
       </MemoryRouter>,
     );
   });
+  await switchAccount(userInfo);
   return {
     container,
+    switchAccount,
     unmount: async () => {
       await act(async () => root.unmount());
       container.remove();
@@ -186,6 +188,30 @@ describe('MainLayout desktop lifecycle controls', () => {
       await Promise.resolve();
     });
     expect(getUserAvatarCache).toHaveBeenCalledTimes(1);
+    await page.unmount();
+  });
+
+  test('ignores avatar notifications until account identity is known', async () => {
+    const page = await renderLayout('development', '');
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('neu-cache-event', { detail: { resource: 'avatar', changed: true } }));
+    });
+    expect(getUserAvatarCache).not.toHaveBeenCalled();
+    expect(readBrowserAvatarCache).not.toHaveBeenCalled();
+    await page.unmount();
+  });
+
+  test('discards an avatar notification result after an account switch', async () => {
+    const page = await renderLayout('development', 'first');
+    let finish;
+    getUserAvatarCache.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('neu-cache-event', { detail: { resource: 'avatar', changed: true } }));
+    });
+    await page.switchAccount('second');
+    await act(async () => finish({ blob: new Blob(['first']), revision: 'old' }));
+    expect(writeBrowserAvatarCache).not.toHaveBeenCalled();
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
     await page.unmount();
   });
 

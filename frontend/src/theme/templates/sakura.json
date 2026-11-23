@@ -1,0 +1,5 @@
+{
+  "schema_version": 1, "id": "sakura", "name": "樱空",
+  "colors": { "primary": "#a83264", "canvas": "#fcf6f8", "surface": "#ffffff", "text": "#30202a", "muted": "#705361", "border": "#dbc6d0" },
+  "radius": 8, "decoration": "soft", "font": "system", "motion": "full"
+}

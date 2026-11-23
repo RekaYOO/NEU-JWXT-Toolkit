@@ -63,7 +63,12 @@ select {
 }
 
 :focus-visible {
-  outline: 3px solid rgba(37, 99, 235, 0.22);
+  outline: 3px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.appearance-settings button.ant-btn:focus-visible {
+  outline: 3px solid var(--color-text);
   outline-offset: 2px;
 }
 
@@ -215,7 +220,7 @@ select {
 }
 
 .ant-table-wrapper .ant-table-thead > tr > th {
-  color: #34414b;
+  color: var(--color-ink);
   font-size: 13px;
   font-weight: 600;
 }
@@ -234,15 +239,15 @@ select {
 }
 
 .ant-btn-default {
-  color: #334155;
-  border-color: #cbd5e1;
-  background: #ffffff;
+  color: var(--color-ink);
+  border-color: var(--color-line);
+  background: var(--color-surface);
 }
 
 .ant-btn-default:not(:disabled):not(.ant-btn-dangerous):hover {
   color: var(--color-brand);
-  border-color: #93b4f8;
-  background: #f8fbff;
+  border-color: var(--color-brand);
+  background: var(--color-surface-muted);
 }
 
 .ant-btn-primary {
@@ -289,9 +294,9 @@ select {
   display: inline-flex;
   align-items: center;
   padding-inline: 7px;
-  color: #475569;
-  background: #f8fafc;
-  border-color: #cbd5e1;
+  color: var(--color-muted);
+  background: var(--color-surface-muted);
+  border-color: var(--color-line);
   border-radius: 4px;
   font-weight: 600;
   line-height: 20px;
@@ -308,9 +313,9 @@ select {
 .ant-tag-blue,
 .ant-tag-geekblue,
 .ant-tag-cyan {
-  color: #1d4ed8 !important;
-  background: #eff6ff !important;
-  border-color: #bfdbfe !important;
+  color: var(--color-brand) !important;
+  background: var(--color-surface) !important;
+  border-color: var(--color-brand) !important;
 }
 
 .ant-tag-warning,

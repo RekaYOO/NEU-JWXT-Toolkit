@@ -91,7 +91,14 @@ public class ClientFileSaveTest {
             byte[] content = new byte[2 * 1024 * 1024 + 31];
             for (int index = 0; index < content.length; index++) content[index] = (byte) (index % 251);
             String token = registry.store(new ByteArrayInputStream(content));
-            scenario.onActivity(activity -> activity.saveFile(filename, "application/octet-stream", "@native:" + token));
+            String overlapping = registry.store(new ByteArrayInputStream(new byte[]{4, 5}));
+            scenario.onActivity(activity -> {
+                activity.saveFile(filename, "application/octet-stream", "@native:" + token);
+                activity.saveFile(filename, "application/octet-stream", "@native:" + token);
+                activity.saveFile("overlapping.bin", "application/octet-stream", "@native:" + overlapping);
+            });
+            assertEquals(content.length, registry.size(token));
+            assertEquals(0, registry.size(overlapping));
             assertTrue(saveButton(ui).performAction(AccessibilityNodeInfo.ACTION_CLICK));
             byte[] saved = new byte[0];
             for (int attempt = 0; attempt < 100; attempt++) {

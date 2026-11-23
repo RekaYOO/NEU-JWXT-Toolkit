@@ -17,6 +17,7 @@ import {
 } from '../services/api';
 import { synchronizeEvaluationViews } from '../features/evaluationConsistency';
 import { evaluationConfirmationText } from '../features/evaluationConfirmation';
+import { evaluationOptions, evaluationGradeLabel, applyEvaluationStrategy, evaluationInputErrors } from '../features/evaluationScoring';
 import { MobileActionBar } from '../components/mobile/MobileUX';
 import './EvaluationPage.css';
 
@@ -24,24 +25,19 @@ const { Text, Title } = Typography;
 const { TextArea } = Input;
 const { useBreakpoint } = Grid;
 
-// dfdj 评分等级映射
-const SCORE_MAP = { 6: 100, 5: 90, 4: 80, 3: 70, 2: 60, 1: 50 };
-const SCORE_LABELS = {
-  6: '优秀 (100)', 5: '很好 (90)', 4: '好 (80)',
-  3: '较好 (70)', 2: '一般 (60)', 1: '较差 (50)',
-};
-const SCORE_OPTIONS = [
-  { value: 6, label: '优秀 (100)' },
-  { value: 5, label: '很好 (90)' },
-  { value: 4, label: '好 (80)' },
-  { value: 3, label: '较好 (70)' },
-  { value: 2, label: '一般 (60)' },
-  { value: 1, label: '较差 (50)' },
-];
 
 const EvaluationPage = () => {
   // ── 状态 ────────────────────────────────────────────────────────────────
   const [tasks, setTasks] = useState([]);
+  const [evaluationNotice, setEvaluationNotice] = useState('');
+  const [evaluationReason, setEvaluationReason] = useState('');
+  const evaluationNoticeRef = useRef(null);
+  useEffect(() => {
+    if (evaluationNotice && evaluationNoticeRef.current) {
+      evaluationNoticeRef.current.focus();
+      evaluationNoticeRef.current.scrollIntoView({ block: 'nearest' });
+    }
+  }, [evaluationNotice]);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [selectedTask, setSelectedTask] = useState(null);
   const [courses, setCourses] = useState([]);
@@ -169,6 +165,8 @@ const EvaluationPage = () => {
     setEvaluateModalVisible(true);
     setEvaluateLoading(true);
     setEvaluateIndicators([]);
+    setEvaluationNotice('');
+    setEvaluationReason('');
     setEvaluateStrategy('custom');
     try {
       const data = await getEvaluationIndicators(record.xspjid, record.task_id);
@@ -208,28 +206,7 @@ const EvaluationPage = () => {
   // ── 应用策略填充到评价弹窗 ──────────────────────────────────────────────
   const handleApplyStrategy = (strategy) => {
     setEvaluateStrategy(strategy);
-    setEvaluateIndicators(prev => {
-      let selectionCount = 0;
-      return prev.map(ind => {
-        if (ind.evaltype !== 1) return ind;
-        let dfdj;
-        if (strategy === 'highest') {
-          if (ind.sfdx === 1) {
-            dfdj = [6, 5];
-          } else {
-            dfdj = selectionCount === 0 ? 5 : 6;
-          }
-        } else {
-          if (ind.sfdx === 1) {
-            dfdj = selectionCount === 0 ? [1, 2] : [1];
-          } else {
-            dfdj = selectionCount === 0 ? 2 : 1;
-          }
-        }
-        selectionCount += 1;
-        return { ...ind, _customDfdj: dfdj };
-      });
-    });
+    setEvaluateIndicators(prev => applyEvaluationStrategy(prev, strategy));
   };
 
   // ── 提交单独评价 ────────────────────────────────────────────────────────
@@ -237,27 +214,7 @@ const EvaluationPage = () => {
     if (!evaluateCourse || !selectedTask) return;
 
     // 验证
-    const errors = [];
-    const selectionScores = [];
-    for (const ind of evaluateIndicators) {
-      if (ind.evaltype === 1) {
-        if (ind.sfbt === 1 && (ind._customDfdj === undefined || ind._customDfdj === null)) {
-          errors.push(`必填指标未评分: ${ind.zbmc}`);
-        }
-        if (ind._customDfdj !== undefined && ind._customDfdj !== null) {
-          if (Array.isArray(ind._customDfdj)) {
-            selectionScores.push(...ind._customDfdj);
-          } else {
-            selectionScores.push(ind._customDfdj);
-          }
-        }
-      } else if (ind.sfbt === 1 && !ind._customResult) {
-        errors.push(`必填文本指标未填写: ${ind.zbmc}`);
-      }
-    }
-    if (selectionScores.length > 1 && new Set(selectionScores.map(String)).size === 1) {
-      errors.push('评价选项不能全部相同');
-    }
+    const errors = evaluationInputErrors(evaluateIndicators);
     if (errors.length > 0) {
       Modal.error({ title: '评分验证失败', content: errors.join('；') });
       return;
@@ -302,6 +259,7 @@ const EvaluationPage = () => {
             customScores,
             textResults,
             false,
+            evaluationReason,
           );
           if (result.success) {
             message.success(`${evaluateCourse.course_name} 评教提交成功`);
@@ -314,12 +272,14 @@ const EvaluationPage = () => {
             } catch (_refreshError) {
               message.warning('评教已提交成功，但页面状态刷新失败，请稍后手动刷新');
             }
+          } else if (result.unknown) {
+            setEvaluationNotice(result.message || '提交结果尚未确认，请核对学校记录。');
           } else {
-            throw new Error(result.message || '提交失败');
+            message.error(result.message || '提交失败，请检查评分内容');
           }
         } catch (error) {
-          message.error(error?.message ? `提交失败: ${error.message}` : '提交异常');
-          throw error;
+          if (!error.response || (error.response.status >= 500 && !error.response.data?.error_code)) setEvaluationNotice('提交结果尚未确认，填写内容已保留，请先核对学校记录。');
+          message.error(error.response?.data?.detail || error.message || '提交异常');
         } finally {
           setEvaluateSubmitting(false);
           submissionIntentLockRef.current = false;
@@ -397,6 +357,7 @@ const EvaluationPage = () => {
               course_name: course.course_name,
               teacher_name: course.teacher_name,
               success: result.success,
+              unknown: Boolean(result.unknown),
               message: result.message || (result.success ? '提交成功' : '处理失败'),
               avg_score: result.preview?.average_score ?? result.summary?.average_score,
             };
@@ -406,6 +367,9 @@ const EvaluationPage = () => {
 
             if (result.success) {
               message.success(`${course.course_name} 提交成功`);
+            } else if (result.unknown) {
+              abortBatchRef.current = true;
+              message.warning(`${course.course_name} 结果待核对，已停止后续提交`);
             } else {
               message.error(`${course.course_name} 提交失败: ${result.message}`);
             }
@@ -414,10 +378,12 @@ const EvaluationPage = () => {
               course_name: course.course_name,
               teacher_name: course.teacher_name,
               success: false,
-              message: '提交异常',
+              unknown: !error.response || (error.response.status >= 500 && !error.response.data?.error_code),
+              message: error.response?.data?.detail || '提交结果未确认，请核对学校记录',
             };
             results.push(item);
             setProgressResults(prev => [...prev, item]);
+            if (item.unknown) abortBatchRef.current = true;
             message.error(`${course.course_name} 提交异常`);
           }
 
@@ -662,12 +628,12 @@ const EvaluationPage = () => {
       dataIndex: 'dfdj',
       key: 'dfdj',
       width: 120,
-      render: (val) => {
+      render: (val, indicator) => {
         if (val === undefined || val === null) return <Text type="secondary">-</Text>;
         if (Array.isArray(val)) {
-          return val.map(v => <Tag key={v} color="blue">{SCORE_LABELS[v] || v}</Tag>);
+          return val.map(v => <Tag key={v} color="blue">{evaluationGradeLabel(indicator, v)}</Tag>);
         }
-        return <Tag color="blue">{SCORE_LABELS[val] || val}</Tag>;
+        return <Tag color="blue">{evaluationGradeLabel(indicator, val)}</Tag>;
       },
     },
     {
@@ -706,10 +672,10 @@ const EvaluationPage = () => {
       dataIndex: 'dfdj',
       key: 'dfdj',
       width: 120,
-      render: (val) => {
+      render: (val, indicator) => {
         if (!val && val !== 0) return '-';
-        if (Array.isArray(val)) return val.map(v => SCORE_LABELS[v] || v).join(', ');
-        return SCORE_LABELS[val] || `${val}`;
+        if (Array.isArray(val)) return val.map(v => evaluationGradeLabel(indicator, v)).join(', ');
+        return evaluationGradeLabel(indicator, val);
       },
     },
     {
@@ -870,8 +836,8 @@ const EvaluationPage = () => {
             onChange={setGlobalStrategy}
             className="evaluation-strategy-select"
             options={[
-              { value: 'highest', label: '最高分（首题5其余6）' },
-              { value: 'lowest', label: '最低分（首题2其余1）' },
+              { value: 'highest', label: '最高分（按官方选项预填）' },
+              { value: 'lowest', label: '最低分（按官方选项预填）' },
             ]}
           />
           {selectedTask && (
@@ -1097,8 +1063,8 @@ const EvaluationPage = () => {
                     </div>
                     <div className="mobile-indicator-result">
                       <span>等级：{Array.isArray(indicator.dfdj)
-                        ? indicator.dfdj.map(value => SCORE_LABELS[value] || value).join('、')
-                        : SCORE_LABELS[indicator.dfdj] || indicator.dfdj || '-'}</span>
+                        ? indicator.dfdj.map(value => evaluationGradeLabel(indicator, value)).join('、')
+                        : evaluationGradeLabel(indicator, indicator.dfdj)}</span>
                       <span>分数：{Array.isArray(indicator.score)
                         ? indicator.score.join('、')
                         : indicator.score ?? '-'}</span>
@@ -1136,7 +1102,7 @@ const EvaluationPage = () => {
         width={isMobile ? 'calc(100vw - 16px)' : 800}
         confirmLoading={evaluateSubmitting}
         okText="提交评教"
-        okButtonProps={{ danger: true }}
+        okButtonProps={{ danger: true, 'aria-label': '提交评教', 'aria-busy': evaluateSubmitting, disabled: evaluateLoading || !evaluateIndicators.length || Boolean(evaluationNotice) }}
         cancelText="取消"
         onOk={handleSubmitEvaluate}
         styles={{ body: { maxHeight: '70vh', overflow: 'auto' } }}
@@ -1147,6 +1113,19 @@ const EvaluationPage = () => {
           </div>
         ) : evaluateCourse ? (
           <div>
+            {evaluationNotice && <div className="evaluation-result-notice" ref={evaluationNoticeRef} tabIndex={-1} aria-label="结果待核对" style={{ marginBottom: 16 }}><Alert type="warning" showIcon role="alert" message="结果待核对" description={evaluationNotice}
+              action={<Button onClick={async () => {
+                try {
+                  const data = await getEvaluationCourses(evaluateCourse.task_id);
+                  const course = (data.courses || []).find(item => item.xspjid === evaluateCourse.xspjid);
+                  if (course?.is_evaluated) {
+                    message.success('学校记录已确认评价完成');
+                    setEvaluateModalVisible(false);
+                    setCourses(data.courses);
+                    await loadTasks();
+                  } else setEvaluationNotice('学校尚未确认完成，内容已保留。请稍后再次核对，或在学校网站检查该课程。');
+                } catch (_error) { message.error('暂时无法核对，填写内容已保留'); }
+              }}>核对提交结果</Button>} /></div>}
             <Descriptions bordered size="small" column={isMobile ? 1 : 2} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="课程">{evaluateCourse.course_name}</Descriptions.Item>
               <Descriptions.Item label="教师">{evaluateCourse.teacher_name}</Descriptions.Item>
@@ -1197,8 +1176,13 @@ const EvaluationPage = () => {
                     {ind.weight > 0 && <Text type="secondary" style={{ marginLeft: 8 }}>权重 {ind.weight}%</Text>}
                   </div>
 
-                  {ind.evaltype === 1 ? (
+                  {ind.evaltype === 1 && ind.sfdx === 1 ? (
+                    <Checkbox.Group aria-label={ind.zbmc} className="evaluation-score-options"
+                      options={evaluationOptions(ind)} value={Array.isArray(ind._customDfdj) ? ind._customDfdj : []}
+                      onChange={values => handleScoreChange(ind.zbid, values)} />
+                  ) : ind.evaltype === 1 ? (
                     <Radio.Group
+                      aria-label={ind.zbmc}
                       className="evaluation-score-options"
                       value={
                         Array.isArray(ind._customDfdj)
@@ -1207,14 +1191,10 @@ const EvaluationPage = () => {
                       }
                       onChange={(e) => {
                         const val = e.target.value;
-                        if (ind.sfdx === 1) {
-                          handleScoreChange(ind.zbid, [val, val === 6 ? 5 : val + 1]);
-                        } else {
-                          handleScoreChange(ind.zbid, val);
-                        }
+                        handleScoreChange(ind.zbid, val);
                       }}
                     >
-                      {SCORE_OPTIONS.map(opt => (
+                      {evaluationOptions(ind).map(opt => (
                         <Radio.Button key={opt.value} value={opt.value}>
                           {opt.label}
                         </Radio.Button>
@@ -1222,15 +1202,19 @@ const EvaluationPage = () => {
                     </Radio.Group>
                   ) : (
                     <TextArea
+                      aria-label={ind.zbmc}
                       rows={2}
                       maxLength={2000}
-                      placeholder="请输入评价内容（选填）"
+                      placeholder={ind.sfbt === 1 ? '请输入评价内容（必填）' : '请输入评价内容（选填）'}
                       value={ind._customResult}
                       onChange={(e) => handleResultChange(ind.zbid, e.target.value)}
                     />
                   )}
                 </div>
               ))}
+              <Form.Item label="评分原因（选填）">
+                <TextArea aria-label="评分原因" maxLength={2000} rows={2} value={evaluationReason} onChange={event => setEvaluationReason(event.target.value)} />
+              </Form.Item>
             </div>
           </div>
         ) : (
@@ -1264,7 +1248,7 @@ const EvaluationPage = () => {
         <div style={{ marginBottom: 16 }}>
           <Progress
             percent={progressTotal > 0 ? Math.round((progressCurrent / progressTotal) * 100) : 0}
-            status={batchRunning ? 'active' : 'success'}
+            status={batchRunning ? 'active' : progressResults.some(item => !item.success) ? 'exception' : progressCurrent === progressTotal ? 'success' : 'normal'}
             format={() => `${progressCurrent} / ${progressTotal}`}
           />
           {batchRunning && progressCourseName && (
@@ -1293,6 +1277,7 @@ const EvaluationPage = () => {
                   <Tag color="blue">均分 {item.avg_score}</Tag>
                 )}
                 <Text type={item.success ? 'secondary' : 'danger'}>{item.message}</Text>
+                {item.unknown && <Tag color="warning">结果待核对</Tag>}
               </div>
             </List.Item>
           )}
@@ -1303,7 +1288,7 @@ const EvaluationPage = () => {
         {!batchRunning && progressResults.length > 0 && (
           <div style={{ marginTop: 16, textAlign: 'center' }}>
             <Text strong>
-              完成：成功 {progressResults.filter(r => r.success).length} / {progressResults.length}
+              已处理 {progressResults.length} / {progressTotal}，成功 {progressResults.filter(r => r.success).length} 门
             </Text>
           </div>
         )}

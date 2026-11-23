@@ -17,6 +17,7 @@ import {
   getResearchJournals,
   getResearchTopic,
   setResearchTopicFavorite,
+  verifyResearchOperation,
 } from '../services/api';
 import { useCachedResource } from '../resources/ResourceStore';
 import ResourceUpdateSummary from '../components/ResourceUpdateSummary';
@@ -42,7 +43,11 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
   const [refreshing, setRefreshing] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [pendingOperation, setPendingOperation] = useState(null);
+  const operationLockRef = useRef(false);
+  const detailRequest = useRef(0);
   const [favoriteLoading, setFavoriteLoading] = useState('');
+  const favoriteLock = useRef(false);
   const [activeTab, setActiveTab] = useState('topics');
   const [page, setPage] = useState(1);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
@@ -233,20 +238,27 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
 
   const showDetail = async (topic) => {
     if (topic.expired || offlineMode) return;
+    const request = ++detailRequest.current;
+    setJournalTopic(null);
+    setJournals([]);
+    setJournalsError('');
     setDetailLoading(true);
     setDetail({ title: topic.title });
     try {
-      setDetail(await getResearchTopic(topic.topic_id));
+      const next = await getResearchTopic(topic.topic_id);
+      if (request === detailRequest.current) setDetail(next);
     } catch (requestError) {
+      if (request !== detailRequest.current) return;
       message.error(requestError.response?.data?.detail || '获取课题详情失败');
       setDetail(null);
     } finally {
-      setDetailLoading(false);
+      if (request === detailRequest.current) setDetailLoading(false);
     }
   };
 
   const showConfirmedTopic = async (topic) => {
     if (offlineMode) return;
+    const request = ++detailRequest.current;
     setJournalTopic(topic);
     setJournals([]);
     setJournalsError('');
@@ -266,16 +278,18 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
     }
     try {
       const journalResult = await getResearchJournals(topic.record_id);
-      setJournals(journalResult?.journals || []);
+      if (request === detailRequest.current) setJournals(journalResult?.journals || []);
     } catch (requestError) {
+      if (request !== detailRequest.current) return;
       setJournalsError(requestError.response?.data?.detail || '科研记录读取失败');
     } finally {
-      setJournalsLoading(false);
+      if (request === detailRequest.current) setJournalsLoading(false);
     }
   };
 
   const toggleFavorite = async (topic, currentlyFavorite) => {
-    if (offlineMode) return;
+    if (offlineMode || favoriteLock.current) return;
+    favoriteLock.current = true;
     const batchId = topic.favorite_batch_id || data?.batch?.batch_id;
     const requestKey = `${batchId}:${topic.topic_id}`;
     setFavoriteLoading(requestKey);
@@ -285,12 +299,11 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
         topic_id: topic.topic_id,
         favorite: !currentlyFavorite,
       });
-      const nextData = {
-        ...data,
+      setData(current => ({
+        ...current,
         favorite_topic_ids: result.favorite_topic_ids,
         favorite_topics: result.favorite_topics,
-      };
-      setData(nextData);
+      }));
       resource.updateData((current) => ({
         ...current,
         favorite_topic_ids: result.favorite_topic_ids,
@@ -300,12 +313,13 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
     } catch (requestError) {
       message.error(requestError.response?.data?.detail || '更新收藏失败');
     } finally {
+      favoriteLock.current = false;
       setFavoriteLoading('');
     }
   };
 
   const openEnroll = (topic) => {
-    if (offlineMode) return;
+    if (offlineMode || pendingOperation || operationLockRef.current) return;
     if (!data?.eligibility?.available) {
       message.warning(data?.eligibility?.reason || '当前资格信息不完整，暂时无法报名');
       return;
@@ -315,9 +329,13 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
   };
 
   const submitEnrollment = async () => {
-    if (offlineMode) return;
+    if (offlineMode || pendingOperation || operationLockRef.current) return;
+    let ownsLock = false;
     try {
       const values = await form.validateFields();
+      if (operationLockRef.current) return;
+      operationLockRef.current = true;
+      ownsLock = true;
       setSubmitting(true);
       const result = await enrollResearchTopic({
         topic_id: enrollTopic.topic_id,
@@ -326,19 +344,32 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
         email: values.email,
         reason: values.reason || '',
       });
+      if (result.state === 'unknown') {
+        setPendingOperation({ topicId: enrollTopic.topic_id, message: result.message });
+        setEnrollTopic(null);
+        return;
+      }
+      if (result.success === false) {
+        message.error(result.message || '学校未接受报名，请刷新后核对');
+        return;
+      }
       message.success(result.message || '报名成功');
       setEnrollTopic(null);
       await refreshNow({ silentSuccess: true });
     } catch (requestError) {
       if (requestError?.errorFields) return;
+      if (ownsLock && (!requestError.response || requestError.response.status >= 500)) {
+        setPendingOperation({ topicId: enrollTopic.topic_id, message: '连接异常，报名结果尚未确认，请核验官方记录。' });
+        setEnrollTopic(null);
+      }
       message.error(requestError.response?.data?.detail || '报名失败');
     } finally {
-      setSubmitting(false);
+      if (ownsLock) { operationLockRef.current = false; setSubmitting(false); }
     }
   };
 
   const cancelEnrollment = (topic) => {
-    if (offlineMode) return;
+    if (offlineMode || pendingOperation || operationLockRef.current) return;
     Modal.confirm({
       title: '确认取消报名？',
       content: `将取消“${topic.title}”的报名记录。`,
@@ -346,15 +377,48 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
       okButtonProps: { danger: true },
       cancelText: '返回',
       onOk: async () => {
+        if (operationLockRef.current) return;
+        operationLockRef.current = true;
+        setSubmitting(true);
         try {
           const result = await cancelResearchEnrollment(topic.topic_id);
+          if (result.state === 'unknown') {
+            setPendingOperation({ topicId: topic.topic_id, message: result.message });
+            return;
+          }
+          if (result.success === false) { message.error(result.message || '学校未接受取消请求'); return; }
           message.success(result.message || '已取消报名');
           await refreshNow({ silentSuccess: true });
         } catch (requestError) {
+          if (!requestError.response || requestError.response.status >= 500) setPendingOperation({ topicId: topic.topic_id, message: '连接异常，取消结果尚未确认，请核验官方记录。' });
           message.error(requestError.response?.data?.detail || '取消报名失败');
+        } finally {
+          operationLockRef.current = false;
+          setSubmitting(false);
         }
       },
     });
+  };
+
+  const verifyPendingOperation = async () => {
+    if (offlineMode || !pendingOperation || operationLockRef.current) return;
+    operationLockRef.current = true;
+    setSubmitting(true);
+    try {
+      const result = await verifyResearchOperation(pendingOperation.topicId);
+      if (result.state === 'confirmed' || result.state === 'not_sent') {
+        setPendingOperation(null);
+        message.info(result.message);
+        await refreshNow({ silentSuccess: true });
+      } else {
+        setPendingOperation(current => ({ ...current, message: result.message }));
+      }
+    } catch (requestError) {
+      message.error(requestError.response?.data?.detail || '暂时无法核验，请稍后重试');
+    } finally {
+      operationLockRef.current = false;
+      setSubmitting(false);
+    }
   };
 
   const renderTopic = (topic, { favoriteView = false } = {}) => {
@@ -397,7 +461,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
                 aria-label={isFavorite ? '取消收藏课题' : '收藏课题'}
                 icon={isFavorite ? <HeartFilled /> : <HeartOutlined />}
                 loading={favoriteLoading === requestKey}
-                disabled={offlineMode}
+                disabled={offlineMode || Boolean(favoriteLoading && favoriteLoading !== requestKey)}
                 onClick={() => toggleFavorite(topic, isFavorite)}
               />
             </Tooltip>
@@ -427,7 +491,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
               : offlineMode ? '详情需在线查看' : '查看详情'}
           </Button>
           {!topic.expired && (topic.is_registered ? (
-            <Button danger disabled={offlineMode || !topic.can_cancel}
+            <Button danger disabled={offlineMode || submitting || Boolean(pendingOperation) || !topic.can_cancel}
               onClick={() => cancelEnrollment(topic)}>
               取消报名
             </Button>
@@ -435,6 +499,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
             <Button type="primary"
               disabled={
                 offlineMode
+                || submitting || Boolean(pendingOperation)
                 || !topic.can_enroll
                 || !data?.eligibility?.available
               }
@@ -485,6 +550,7 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
         />
       )}
       {error && <Alert type="error" showIcon message={error} />}
+      {pendingOperation && <Alert className="research-operation-notice" type="warning" showIcon message="科研报名操作结果待核验" description={pendingOperation.message} action={<Button loading={submitting} disabled={offlineMode} onClick={verifyPendingOperation}>核验报名结果</Button>} />}
       {syncWarning && <Alert className="research-sync-alert" type="warning"
         showIcon message={syncWarning} />}
       {eligibility && !eligibility.available && (
@@ -648,6 +714,8 @@ const ResearchTrainingPage = ({ offlineMode = false }) => {
 
       <Drawer title="课题详情" width={isMobile ? '100%' : 640}
         open={Boolean(detail)} onClose={() => {
+          detailRequest.current += 1;
+          setDetailLoading(false);
           setDetail(null);
           setJournalTopic(null);
           setJournals([]);

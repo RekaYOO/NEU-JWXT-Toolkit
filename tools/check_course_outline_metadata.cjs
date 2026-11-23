@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
-const build = path.resolve(__dirname, '../frontend/build');
+const build = path.resolve(process.env.QA_FRONTEND_BUILD || path.join(__dirname, '../frontend/build'));
 const courses = ['A100', 'B200'].map((code, index) => ({
   course_code: code, course_name: `测试课程${index + 1}`, credit: 2,
   course_nature: '必修', term_code: '2026-2027-1', status: '未修读',
@@ -57,6 +57,7 @@ const saved = code => ({
       let reads = 0;
       let submissions = 0;
       let completed = false;
+      let activePolls = 0;
       let initialReadSeen = false;
       page.on('pageerror', error => pageErrors.push(error.message));
       await page.addInitScript(() => history.replaceState(null, '', '/academic-report'));
@@ -76,8 +77,12 @@ const saved = code => ({
           data = { items: completed ? [saved('A100'), saved('B200')] : [saved('A100')] };
         } else if (url.pathname === '/api/course-outlines/metadata/sync/status') {
           assert(initialReadSeen, 'status must not block the first cache read');
-          if (submissions) completed = true;
-          data = { running: false, total: submissions ? 1 : 0, completed: submissions ? 1 : 0, failed: 0, errors: [] };
+          if (submissions) {
+            activePolls++;
+            assert.equal(reads, 1, 'pending job must not reread metadata');
+            completed = activePolls >= 2;
+          }
+          data = { running: Boolean(submissions && !completed), total: submissions ? 1 : 0, completed: completed ? 1 : 0, failed: 0, errors: [] };
         } else if (url.pathname === '/api/course-outlines/metadata/sync') {
           submissions += 1;
           assert.deepEqual(route.request().postDataJSON().courses.map(course => course.course_code), ['B200']);

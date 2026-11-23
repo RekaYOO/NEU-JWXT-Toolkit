@@ -1,6 +1,7 @@
 # Course weight optimizer: third-party notice
 
-`weight_optimizer.py` contains a modified mathematical core from
+`weight_optimizer.py` and its Go port
+`internal/academic/weight_optimizer.go` contain a modified mathematical core from
 [rtb-1005/Course_Weight-Optimizer](https://github.com/rtb-1005/Course_Weight-Optimizer),
 fixed at commit `d70349b1e8cd5bef2ab73bdcce712614813243e6`.
 

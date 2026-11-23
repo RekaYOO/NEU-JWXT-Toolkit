@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
-const root = path.resolve(__dirname, '../frontend/build');
+const root = path.resolve(process.env.QA_FRONTEND_BUILD || path.join(__dirname, '../frontend/build'));
 const output = process.env.CXCY_UI_OUTPUT || fs.mkdtempSync(path.join(os.tmpdir(), 'cxcy-ui-'));
 const server = http.createServer((request, response) => {
   const pathname = new URL(request.url, 'http://localhost').pathname;

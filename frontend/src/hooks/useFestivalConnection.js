@@ -71,14 +71,15 @@ export default function useFestivalConnection(offline) {
       message: '校园网环境下学校 WebVPN 不可用，请将创院线路切换为直连或跟随教务。',
     }));
   }, []);
-  const unavailable = useCallback(() => {
+  const gatewayResult = useCallback(state => {
+    const loginRequired = state === 'login_required';
     generation.current += 1;
     currentProbe.current = null;
     setBusy(false);
     setStatus(previous => ({
-      ...previous, service_authenticated: false, service_auth_state: 'service_unavailable',
-      error_code: 'CXCY_SERVICE_UNAVAILABLE',
-      message: 'WebVPN 认证已完成，但创院系统暂时不可用；无需重复提交短信，已保存的活动仍可查看。',
+      ...previous, service_authenticated: false, service_auth_state: state,
+      error_code: loginRequired ? 'CXCY_LOGIN_REQUIRED' : 'CXCY_SERVICE_UNAVAILABLE',
+      message: loginRequired ? 'WebVPN 已登录，但创院系统仍需认证。已保存的活动仍可查看。' : 'WebVPN 认证已完成，但创院系统暂时不可用；无需重复提交短信，已保存的活动仍可查看。',
     }));
   }, []);
   useEffect(() => {
@@ -88,5 +89,5 @@ export default function useFestivalConnection(offline) {
     check();
     return () => { generation.current += 1; currentProbe.current = null; };
   }, [check]);
-  return { status, busy, saving: savingState, check, change, block, unavailable };
+  return { status, busy, saving: savingState, check, change, block, gatewayResult };
 }

@@ -1,0 +1,5 @@
+{
+  "schema_version": 1, "id": "blue", "name": "晴蓝",
+  "colors": { "primary": "#2563eb", "canvas": "#f4f6f8", "surface": "#ffffff", "text": "#1e293b", "muted": "#526277", "border": "#d8e0e8" },
+  "radius": 6, "decoration": "none", "font": "system", "motion": "full"
+}

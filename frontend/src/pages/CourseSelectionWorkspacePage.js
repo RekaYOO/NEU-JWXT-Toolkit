@@ -12,7 +12,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  actionJwxkAutomationTask, applyJwxkWeights, createJwxkAutomationTask,
+  actionJwxkAutomationTask, applyJwxkWeights, cancelJwxkWeightApplication, createJwxkAutomationTask,
   checkJwxkCatalogEligibility,
   deselectJwxkCourse, getJwxkCatalogDetail, getJwxkCatalogFilterOptions,
   getJwxkSelected, getJwxkStatus, getJwxkWeightBudget,
@@ -426,6 +426,7 @@ const CourseSelectionWorkspacePage = () => {
   const requestGeneration = useRef(0);
   const workspaceGeneration = useRef(0);
   const planSaveQueue = useRef(Promise.resolve());
+  const planRevision = useRef({ value: undefined });
   const filterOptionsPromiseRef = useRef(null);
   const catalogRef = useRef(null);
   const scheduleRef = useRef(null);
@@ -1046,9 +1047,11 @@ const CourseSelectionWorkspacePage = () => {
     setFocusedGroupId('');
     setSelectedRefreshing(false);
     planSaveQueue.current = Promise.resolve();
+    planRevision.current = { value: undefined };
     setScope('ALL');
     readJwxkPlan(batchCode).then(saved => {
       if (generation !== workspaceGeneration.current || saved.batch_code !== batchCode) return;
+      planRevision.current.value = saved.revision;
       const savedItems = (saved.items || []).map(item => {
         const planGroupId = item.plan_group_id || item.group_id || item.course_code || item.class_id;
         return planGroupId ? { ...item, plan_group_id: planGroupId } : item;
@@ -1251,6 +1254,7 @@ const CourseSelectionWorkspacePage = () => {
   ) => {
     const targetBatchCode = batchCode;
     const targetTermCode = termCode || 'unknown';
+    const targetRevision = planRevision.current;
     setPlan(next); setPlanGroupConfigs(nextGroups);
     experimentSelectionsRef.current = nextExperimentSelections;
     setExperimentSelections(nextExperimentSelections);
@@ -1260,7 +1264,11 @@ const CourseSelectionWorkspacePage = () => {
       groups: nextGroups,
       items: next,
       experiment_selections: nextExperimentSelections,
-    }));
+      ...(Number.isInteger(targetRevision.value) ? { revision: targetRevision.value } : {}),
+    })).then(saved => {
+      targetRevision.value = saved?.revision;
+      return saved;
+    });
     planSaveQueue.current = operation.catch(() => undefined);
     try { await operation; return true; }
     catch (error) { message.error(error.message || '保存方案失败'); return false; }
@@ -1883,9 +1891,13 @@ const CourseSelectionWorkspacePage = () => {
   });
 
   const openWeightPlanner = async () => {
-    if (!plan.length || !planGroups.length) return message.warning('请先配置方案组候选课程');
     try {
-      const saved = await getJwxkWeightConfig(termCode);
+      const saved = await getJwxkWeightConfig(termCode, batchCode);
+      if (saved.pending_application) {
+        setWeightPlan(saved.pending_application);
+        return;
+      }
+      if (!plan.length || !planGroups.length) return message.warning('请先配置方案组候选课程');
       setGradeSizeDraft(saved.grade_size || 5000);
       // Each opening starts from the least surprising choice: include every
       // currently available plan group, then let the user narrow it here.
@@ -1927,15 +1939,20 @@ const CourseSelectionWorkspacePage = () => {
     const used = items.reduce((sum, item) => sum + Number(item.weight || 0), 0);
     if (!items.length) return message.warning('当前策略没有可提交的课程');
     if (used > Number(weightPlan?.budget || 0)) return message.error(`当前方案使用 ${used} 点，超过官方剩余权重 ${weightPlan?.budget || 0}`);
-    if (items.some(item => Number(item.weight || 0) < Number(weightPlan?.minimum || 5))) return message.error('存在低于官方最低值的课程权重');
+    if (items.some(item => !(item.withdraw_only && Number(item.weight) === 0) && Number(item.weight || 0) < Number(weightPlan?.minimum || 5))) return message.error('存在低于官方最低值的课程权重');
     return Modal.confirm({
       title: '确认批量投放权重？', width: 620,
-      content: <div>{items.map(item => <p key={item.class_id}><b>{item.course_name}</b> · {item.teacher || '教师待定'} · {item.weight} 点{item.reapply_required ? `（先撤回当前 ${item.current_weight ?? '-'} 点，再重新投放）` : ''}</p>)}</div>,
+      content: <div>{items.map(item => <p key={item.class_id}><b>{item.course_name}</b> · {item.teacher || '教师待定'} · {item.withdraw_only ? '仅撤回原志愿，本次不再投放' : `${item.weight} 点`}{item.reapply_required && !item.withdraw_only ? `（先撤回当前 ${item.current_weight ?? '-'} 点，再重新投放）` : ''}</p>)}</div>,
       okText: '确认并逐项提交', cancelText: '取消',
       onOk: async () => {
         const result = await applyJwxkWeights({ batch_code: batchCode, term_code: termCode, items });
-        result.completed ? message.success('投权方案已全部提交至官方队列') : message.warning('批量投权已停止，请核验已完成项目');
-        setWeightPlan(null);
+        if (result.completed) {
+          message.success('投权方案已全部完成，官方结果已确认');
+          setWeightPlan(null);
+        } else {
+          message.warning('批量投权已停止，方案已保留；再次确认将继续核验，不重复提交已发送操作');
+          setWeightPlan(previous => previous ? { ...previous, recovery: true } : previous);
+        }
         refreshSelectionSnapshotInBackground();
       },
     });
@@ -3424,7 +3441,45 @@ const CourseSelectionWorkspacePage = () => {
         <Text type="secondary">模型只在所选方案组内满足目标并分配权重。每门课程的 1–10 分意愿值在方案组列表中修改；分数越高表示越重视该课程。</Text>
       </div>
     </Modal>
-    <Modal title="策略投权建议" open={!!weightPlan} onCancel={() => setWeightPlan(null)} onOk={applyWeights} okText="确认并逐项提交" width={760}>{weightPlan && <><Alert type="info" showIcon message={`本次可重分配 ${weightPlan.budget} 点，推荐使用 ${weightPlan.used} 点`} description={`官方当前剩余 ${weightPlan.official_remaining ?? weightPlan.budget} 点，可撤回并重分配 ${weightPlan.reclaimable_weight || 0} 点。最低投放 ${weightPlan.minimum}，步长 ${weightPlan.step}。已有投权课程会先撤回、确认后再按建议值重新投放。概率为未校准的模型代理值，不代表真实录取概率。${weightPlan.approximate ? ' 当前为限时搜索得到的最佳可行解。' : ''}`} />{(weightPlan.warnings || []).map(value => <Alert key={value} type="warning" showIcon message={value} />)}<div className="jwxk-weight-groups">{(weightPlan.groups || []).map(group => <Tag key={group.group_id} color={group.satisfied ? 'success' : 'warning'}>{group.name} {group.selected_count}/{group.target_count}</Tag>)}</div>{(weightPlan.courses || []).map(item => <div className="jwxk-weight-row" key={item.class_id || item.course_id}><span><b>{item.course_name || item.name}</b><small>{item.teacher || '教师待定'} · 意愿 {item.utility} · {item.classification}</small><small>{item.current_participant_label || '已投注人数'} {item.current_participant_count ?? item.weight_participant_count ?? '-'} / 可选容量 {item.current_capacity ?? item.capacity ?? '-'}</small>{item.reapply_required && <small>当前已投 {item.current_weight ?? '-'} 点，提交时将先撤回再重投</small>}{item.recommendation_reason && <small>{item.recommendation_reason}</small>}<small>{modelForecastText(item) || '终局人数预测待计算'}</small><small>代理值：保守 {(Number(item.scenario_success_rates?.conservative || 0) * 100).toFixed(1)}% · 中性 {(Number(item.scenario_success_rates?.neutral || 0) * 100).toFixed(1)}% · 激进 {(Number(item.scenario_success_rates?.aggressive || 0) * 100).toFixed(1)}%</small></span>{item.weight > 0 && !item.already_selected ? <InputNumber min={weightPlan.minimum} step={weightPlan.step} max={weightPlan.budget} value={item.weight} onChange={value => setWeightPlan(previous => { const items = previous.items.map(row => row.class_id === item.class_id ? { ...row, weight: value || previous.minimum } : row); return { ...previous, items, used: items.reduce((sum, row) => sum + Number(row.weight || 0), 0) }; })} /> : <Tag>{item.already_selected ? '已形成最终选课结果' : '本次不投'}</Tag>}</div>)}</>}</Modal>
+    <Modal title={weightPlan?.recovery ? '继续未完成的投权方案' : '策略投权建议'} open={!!weightPlan} onCancel={() => setWeightPlan(null)} onOk={applyWeights} okText={weightPlan?.recovery ? '继续核验并完成' : '确认并逐项提交'} width={760}>
+      {weightPlan && <>
+        <Alert type="info" showIcon
+          message={weightPlan.recovery ? `恢复原方案，共 ${weightPlan.used} 点` : `本次可重分配 ${weightPlan.budget} 点，推荐使用 ${weightPlan.used} 点`}
+          description={weightPlan.recovery
+            ? '继续后先核验已发送步骤，再执行尚未发送的步骤。完成前保留原投权目标；关闭窗口不会取消已提交的操作。'
+            : `官方当前剩余 ${weightPlan.official_remaining ?? weightPlan.budget} 点，可撤回并重分配 ${weightPlan.reclaimable_weight || 0} 点。最低投放 ${weightPlan.minimum}，步长 ${weightPlan.step}。需要调整的旧投权先逐门撤回并确认，再按建议值重新投放。概率为未校准的模型代理值，不代表真实录取概率。${weightPlan.approximate ? ' 当前为限时搜索得到的最佳可行解。' : ''}`} />
+        {(weightPlan.warnings || []).map(value => <Alert key={value} type="warning" showIcon message={value} />)}
+        {weightPlan.recovery && <Button onClick={() => Modal.confirm({
+          title: '结束这份未完成的方案？',
+          content: '已经确认的投权或撤回会保留，不会自动回退。仍有结果未知的操作时，需要先继续核验才能结束方案。',
+          okText: '结束方案', cancelText: '保留方案',
+          onOk: async () => {
+            try {
+              await cancelJwxkWeightApplication(batchCode);
+              setWeightPlan(null);
+              message.success('方案已结束，可重新生成建议；已确认的学校操作保持不变');
+            } catch (error) {
+              message.error(error.message || '暂时无法结束方案');
+              throw error;
+            }
+          },
+        })}>结束此方案并重新规划</Button>}
+        <div className="jwxk-weight-groups">{(weightPlan.groups || []).map(group => <Tag key={group.group_id} color={group.satisfied ? 'success' : 'warning'}>{group.name} {group.selected_count}/{group.target_count}</Tag>)}</div>
+        {(weightPlan.courses || []).map(item => <div className="jwxk-weight-row" key={item.class_id || item.course_id}>
+          <span><b>{item.course_name || item.name}</b>
+            {!weightPlan.recovery && <>
+              <small>{item.teacher || '教师待定'} · 意愿 {item.utility} · {item.classification}</small>
+              <small>{item.current_participant_label || '已投注人数'} {item.current_participant_count ?? item.weight_participant_count ?? '-'} / 可选容量 {item.current_capacity ?? item.capacity ?? '-'}</small>
+              {item.reapply_required && <small>当前已投 {item.current_weight ?? '-'} 点，{item.withdraw_only ? '提交时仅撤回，本次不再投放' : '提交时将先撤回再重投'}</small>}
+              <small>{modelForecastText(item) || '终局人数预测待计算'}</small>
+              <small>代理值：保守 {(Number(item.scenario_success_rates?.conservative || 0) * 100).toFixed(1)}% · 中性 {(Number(item.scenario_success_rates?.neutral || 0) * 100).toFixed(1)}% · 激进 {(Number(item.scenario_success_rates?.aggressive || 0) * 100).toFixed(1)}%</small>
+            </>}
+            {item.recommendation_reason && <small>{item.recommendation_reason}</small>}
+          </span>
+          {item.weight > 0 && !item.already_selected ? <InputNumber disabled={Boolean(weightPlan.recovery)} aria-label={`${item.course_name || item.name}投权`} min={weightPlan.minimum} step={weightPlan.step} max={weightPlan.budget} value={weightPlan.items.find(row => row.class_id === item.class_id)?.weight ?? item.weight} onChange={value => setWeightPlan(previous => { const items = previous.items.map(row => row.class_id === item.class_id ? { ...row, weight: value || previous.minimum } : row); return { ...previous, items, used: items.reduce((sum, row) => sum + Number(row.weight || 0), 0) }; })} /> : <Tag>{item.already_selected ? '已形成最终选课结果' : item.withdraw_only ? '仅撤回原志愿' : '本次不投'}</Tag>}
+        </div>)}
+      </>}
+    </Modal>
   </main>;
 };
 

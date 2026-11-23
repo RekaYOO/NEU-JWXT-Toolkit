@@ -48,6 +48,8 @@ const retryFileOperation = operation => {
 };
 
 const optimizeMainBundle = async () => {
+  const manifestPath = path.join(buildDir, 'asset-manifest.json');
+  if (fs.existsSync(manifestPath) && JSON.parse(fs.readFileSync(manifestPath, 'utf8')).buildTool === 'vite') return 0;
   const jsDir = path.join(buildDir, 'static', 'js');
   if (!fs.existsSync(jsDir)) return 0;
   const mainFiles = fs.readdirSync(jsDir).filter(name => /^main\.[0-9a-f]+\.js$/.test(name));
@@ -131,7 +133,8 @@ for (const file of files.sort()) {
     mapsRemoved += 1;
     continue;
   }
-  if (!suffixes.has(path.extname(file).toLowerCase()) || fs.statSync(file).size < minimumSize) continue;
+  if (!suffixes.has(path.extname(file).toLowerCase())) continue;
+  if (path.extname(file) !== '.js' && fs.statSync(file).size < minimumSize) continue;
   const data = fs.readFileSync(file);
   fs.writeFileSync(`${file}.gz`, gzipSync(data, { level: 9, mtime: 0 }));
   fs.writeFileSync(`${file}.br`, brotliCompressSync(data, {

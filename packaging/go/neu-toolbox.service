@@ -1,0 +1,25 @@
+[Unit]
+Description=NEU JWXT Toolbox Go Web service
+After=network.target
+
+[Service]
+Type=simple
+User=neu-toolbox
+Group=neu-toolbox
+StateDirectory=neu-toolbox
+StateDirectoryMode=0700
+WorkingDirectory=/opt/neu-toolbox
+EnvironmentFile=/etc/neu-toolbox.env
+ExecStart=/opt/neu-toolbox/toolbox --mode remote-multi --listen 127.0.0.1:8000 --data /var/lib/neu-toolbox
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/neu-toolbox
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

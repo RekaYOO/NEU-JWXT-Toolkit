@@ -35,7 +35,7 @@ describe('AuthRecoveryPage', () => {
 
   test('verified SMS can resume session establishment without a code or new SMS', async () => {
     getAuthRecoveryStatus.mockResolvedValue({
-      status: 'sms_required', flow_id: 'sms-flow', sms_verified: true, expires_in: 180,
+      status: 'session_pending', flow_id: 'sms-flow', sms_verified: true, expires_in: 180,
     });
     verifyAuthRecoverySMS.mockResolvedValueOnce({
       status: 'session_pending', sms_verified: true, message: '教务服务暂不可用',

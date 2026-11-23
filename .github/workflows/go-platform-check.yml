@@ -1,0 +1,111 @@
+name: Go Linux and Docker acceptance
+on:
+  push:
+    branches: [refactor/go-web-toolbox]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'frontend/**'
+      - 'go.*'
+      - 'go.Dockerfile*'
+      - '.dockerignore'
+      - 'VERSION'
+      - 'LICENSE'
+      - 'backend/core/course_selection/THIRD_PARTY_NOTICE.md'
+      - 'tools/prepare_frontend_assets.mjs'
+      - 'tools/check_performance_budget.mjs'
+      - 'tools/frontend_performance_budget.json'
+      - 'tools/*go_release.py'
+      - 'tools/check_go_https.go'
+      - 'packaging/go/**'
+      - '.github/workflows/go-platform-check.yml'
+permissions:
+  contents: read
+jobs:
+  linux-archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --prefix frontend
+      - run: go test ./internal/... ./cmd/...
+      - run: python3 tools/build_go_release.py
+      - run: python3 tools/check_go_release.py dist/go-release --smoke
+      - name: Start the packaged systemd service on a clean host
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(cat VERSION)
+          bundle="NEU-JWXT-Toolkit-${version}-linux-amd64-go"
+          sudo install -d -m 0755 /opt/neu-toolbox
+          sudo tar -xzf "dist/go-release/$bundle.tar.gz" --strip-components=1 --no-same-owner -C /opt/neu-toolbox
+          go run tools/check_go_https.go /opt/neu-toolbox/toolbox
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin neu-toolbox
+          sudo install -m 0644 /opt/neu-toolbox/neu-toolbox.service /etc/systemd/system/neu-toolbox.service
+          sudo install -m 0600 /dev/null /etc/neu-toolbox.env
+          export TEST_ACCESS_PASSWORD="$(openssl rand -hex 24)"
+          export TEST_ADMIN_PASSWORD="$(openssl rand -hex 24)"
+          printf 'NEU_JWXT_PUBLIC_ORIGIN=https://toolbox.example.invalid\nNEU_JWXT_ACCESS_PASSWORD=%s\nNEU_JWXT_ADMIN_PASSWORD=%s\n' "$TEST_ACCESS_PASSWORD" "$TEST_ADMIN_PASSWORD" | sudo tee /etc/neu-toolbox.env >/dev/null
+          sudo systemctl daemon-reload
+          trap 'sudo systemctl stop neu-toolbox' EXIT
+          sudo systemctl start neu-toolbox
+          curl -fsS --retry 20 --retry-delay 1 --retry-connrefused http://127.0.0.1:8000/api/health | jq -e --arg version "$version" '.backend == "go" and .version == $version'
+          test "$(stat -c '%a %U %G' /var/lib/neu-toolbox)" = '700 neu-toolbox neu-toolbox'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/status)" = 401
+          printf 'NEU_JWXT_PUBLIC_ORIGIN=https://toolbox.example.invalid\n' | sudo tee /etc/neu-toolbox.env >/dev/null
+          sudo systemctl restart neu-toolbox
+          curl -fsS --retry 20 --retry-delay 1 --retry-connrefused http://127.0.0.1:8000/api/health | jq -e --arg version "$version" '.backend == "go" and .version == $version'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/status)" = 401
+          cookies=$(mktemp)
+          trap 'rm -f "$cookies"; sudo systemctl stop neu-toolbox' EXIT
+          base=http://localhost:8000/api
+          jq -nc '{password:env.TEST_ACCESS_PASSWORD}' | curl -4fsS -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/access/login" | jq -e '.success == true'
+          test "$(curl -4s -b "$cookies" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
+          jq -nc '{password:env.TEST_ADMIN_PASSWORD}' | curl -4fsS -b "$cookies" -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" | jq -e '.success == true'
+          curl -4fsS -b "$cookies" "$base/admin/accounts" >/dev/null
+  docker-runtime:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check startup, access boundary and restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          export NEU_JWXT_ACCESS_PASSWORD="$(openssl rand -hex 24)"
+          export NEU_JWXT_ADMIN_PASSWORD="$(openssl rand -hex 24)"
+          export NEU_JWXT_PUBLIC_ORIGIN=https://toolbox.example.invalid
+          compose=(docker compose -p "toolbox-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -f packaging/go/compose.yaml)
+          version=$(cat VERSION)
+          trap '"${compose[@]}" down -v' EXIT
+          "${compose[@]}" up --build -d
+          for pass in 1 2; do
+            container=$("${compose[@]}" ps -q toolbox)
+            curl -fsS --retry 20 --retry-delay 1 --retry-connrefused http://127.0.0.1:8000/api/health | jq -e --arg version "$version" '.backend == "go" and .version == $version and (.shutdown_token // "") == ""'
+            curl -fsS http://127.0.0.1:8000/ | grep -q 'id="root"'
+            test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/status)" = 401
+            test "$(docker exec "$container" id -u)" = 10001
+            test "$(docker exec "$container" stat -c '%a %u %g' /data)" = '700 10001 10001'
+            docker exec "$container" cat /app/licenses/dependencies.json | jq -er 'select(any(.[]; .ecosystem == "go") and any(.[]; .ecosystem == "npm")) | .[].license_files[]' > "$RUNNER_TEMP/toolbox-license-paths"
+            docker exec -i "$container" sh -ec 'while IFS= read -r file; do test -s "/app/licenses/$file"; done' < "$RUNNER_TEMP/toolbox-license-paths"
+            cookies=$(mktemp)
+            base=http://localhost:8000/api
+            jq -nc '{password:env.NEU_JWXT_ACCESS_PASSWORD}' | curl -4fsS -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/access/login" | jq -e '.success == true'
+            test "$(curl -4s -b "$cookies" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
+            jq -nc '{password:env.NEU_JWXT_ADMIN_PASSWORD}' | curl -4fsS -b "$cookies" -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" | jq -e '.success == true'
+            curl -4fsS -b "$cookies" "$base/admin/accounts" >/dev/null
+            rm -f "$cookies"
+            if [ "$pass" = 1 ]; then
+              NEU_JWXT_ACCESS_PASSWORD= NEU_JWXT_ADMIN_PASSWORD= "${compose[@]}" up -d --force-recreate
+              test "$("${compose[@]}" ps -q toolbox)" != "$container"
+            fi
+          done

@@ -549,7 +549,13 @@
   .gpa-mobile-toolbar-actions .ant-btn {
     width: 100%;
     min-width: 0;
-    min-height: 42px;
+    min-height: 44px;
+    padding-inline: 6px;
+    white-space: nowrap;
+  }
+
+  .gpa-mobile-toolbar-actions .ant-btn > span {
+    white-space: nowrap;
   }
 
   .gpa-unsaved-badge {

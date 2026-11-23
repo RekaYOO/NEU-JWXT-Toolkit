@@ -838,7 +838,7 @@ class EvaluationAPI:
                 "issave": "0",
                 "issubmit": 0,
                 "libid": target.libid,
-                "dfyy": "",
+                "dfyy": target.raw_data.get("submission_reason", ""),
                 "pjsc": course.pjsc,
             },
         }

@@ -36,6 +36,7 @@ class EvaluationSubmitRequest(EvaluationRequest):
     """Submit one teaching evaluation."""
 
     xspjid: Identifier = Field(description="Student evaluation record ID")
+    reason: str = Field(default="", max_length=2_000)
     text_results: Annotated[
         dict[Identifier, Annotated[str, Field(max_length=2_000)]],
         Field(max_length=50),

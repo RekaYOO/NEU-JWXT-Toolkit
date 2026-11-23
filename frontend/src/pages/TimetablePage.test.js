@@ -56,6 +56,7 @@ import {
   conflictCandidateFromCourse,
   conflictMeetingText,
   buildConflictCourseScheduleMap,
+  termConflictDetails,
   personalConflictMapFromResponse,
   mergeScheduleWithSelectionOverlays,
   requestErrorText,
@@ -248,6 +249,18 @@ describe('TimetablePage helpers', () => {
       expect.objectContaining({ weeks: [1, 2], weekday: 2, start_section: 1, end_section: 2 }),
       expect.objectContaining({ weeks: [5, 6], weekday: 4, start_section: 7, end_section: 8 }),
     ]));
+  });
+
+  test('isolates same-code course details by selection term', () => {
+    const personal = { course_code: 'A1', course_name: '分段课程', weeks: [1], weekday: 2, start_section: 1, end_section: 2 };
+    const overlay = { ...personal, weekday: 5 };
+    const details = term => termConflictDetails(term, '2026-2', [personal], [overlay], { A1: '个人课表' }, { A1: '选课轮次' });
+    const current = details('2026-2');
+    expect(current.effectiveConflictMap.A1).toBe('选课轮次');
+    expect(current.conflictCourseScheduleMap['name:分段课程']).toHaveLength(2);
+    const historical = details('2026-1');
+    expect(historical.effectiveConflictMap.A1).toBe('个人课表');
+    expect(historical.conflictCourseScheduleMap['name:分段课程'].map(meeting => meeting.weekday)).toEqual([2]);
   });
 
   test('recognizes the official preselection tag for blue course names', () => {

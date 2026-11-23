@@ -398,6 +398,7 @@
   .evaluation-fill-actions > .ant-space-item,
   .evaluation-fill-actions button {
     width: 100%;
+    min-height: 44px;
   }
 
   .evaluation-score-options {
@@ -409,9 +410,13 @@
 
   .evaluation-score-options .ant-radio-button-wrapper {
     width: 100%;
-    height: 38px;
+    min-height: 44px;
+    height: auto;
     padding-inline: 6px;
-    line-height: 36px;
+    line-height: 22px;
+    padding-block: 10px;
+    white-space: normal;
+    overflow-wrap: anywhere;
     text-align: center;
     border: 1px solid var(--color-line-soft);
     border-radius: var(--radius-sm);
@@ -419,6 +424,13 @@
 
   .evaluation-score-options .ant-radio-button-wrapper::before {
     display: none;
+  }
+
+  .evaluation-score-options .ant-checkbox-wrapper {
+    min-height: 44px;
+    margin: 0;
+    align-items: center;
+    overflow-wrap: anywhere;
   }
 
   .evaluation-modal .ant-modal {
@@ -449,7 +461,31 @@
 
   .evaluation-modal .ant-modal-footer button {
     width: 100%;
+    min-height: 44px;
     margin-inline-start: 0 !important;
+  }
+
+  .evaluation-modal .ant-alert-action button {
+    min-height: 44px;
+    white-space: normal;
+  }
+
+  .evaluation-result-notice .ant-alert {
+    flex-wrap: wrap;
+  }
+
+  .evaluation-result-notice .ant-alert-content {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .evaluation-result-notice .ant-alert-action {
+    flex: 0 0 100%;
+    margin: 12px 0 0;
+  }
+
+  .evaluation-result-notice .ant-alert-action button {
+    width: 100%;
   }
 
   .evaluation-modal .ant-descriptions-view {

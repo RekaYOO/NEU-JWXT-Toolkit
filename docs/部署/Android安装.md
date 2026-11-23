@@ -1,8 +1,27 @@
 # Android 安装与运行
 
-> 当前状态：v1.6.96 两个固定签名候选 APK 已完成混淆构建与成品检查，
+> Go 重构版 2.2.4（RC31）提供 ARM64 客户端调试 APK 和设备测试 APK。两份文件通过相同证书的签名验证。客户端版本码为 `2002004`，最低支持 Android 7.0（API 24）。交付目录内的 `SHA256SUMS` 可核对两个文件。见 [RC31 验收记录](Go候选包31验收记录.md)。
+>
+> 历史版本：v1.6.96 两个固定签名候选 APK 已完成混淆构建与成品检查，
 > 同源调试包已通过 API 35 模拟器功能门禁，仍待正式包真机验收。
 > 候选构建不等于已经公开发布 GitHub Release；调试包仅用于测试。
+
+## RC31 真机验收
+
+在 `dist/go-release-candidate-31` 中使用 Android 平台工具。选择一台用于测试的 ARM64 手机，打开 USB 调试。使用独立的测试用户空间，设备测试会修改调试客户端的服务器设置并打开系统文件选择器。以下为 PowerShell 命令。
+
+```powershell
+adb devices
+$testDevice = Read-Host '输入列表中状态为 device 的测试手机序列号'
+$testOrigin = Read-Host '输入手机信任且可访问的独立 Go 测试服务 HTTPS 根地址'
+adb -s $testDevice install -r NEU-JWXT-Toolkit-2.2.4-android-arm64-client-debug.apk
+adb -s $testDevice install -r android-arm64-device-tests.apk
+adb -s $testDevice shell am instrument -w -r -e toolboxHttpsOrigin $testOrigin io.github.rekayoo.neujwxt.client.debug.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+保留运行器输出，检查 `TrustedServerTest` 实际执行成功。省略 `toolboxHttpsOrigin` 会跳过该用例。该用例会重开应用核对服务器地址，结束时恢复原设置。
+
+文件选择器用例假定初始保存位置是本机「下载」目录。它保存一个 2 MiB 加 31 字节的合成文件，逐字节核对内容，测试取消保存，再清理测试文件。要验收用户实际操作，请在客户端连接提供合成数据的测试服务，从选课历史页导出一轮归档。记下系统选择器中的目录和文件名，断网后从文件管理器重新打开 JSON，核对轮次和教学班数量。
 
 目标是在同一个 GitHub Release 提供两个 Android 7.0（API 24）及以上可安装包，正式包仅支持
 `arm64-v8a`：
@@ -20,6 +39,12 @@
 维护者提供的候选摘要；不能把候选包说成已经完成公开 Release 的来源证明。
 
 ## 客户端版
+
+不在本机安装 Android 环境时，可在包含目标提交的分支手动运行 `Android remote client check`。它构建同一提交的网页，运行客户端单元测试和静态检查，并提供 ARM64 调试 APK 和设备测试 APK，不构建手机本地 Python 后端。产物名带提交号；此流程不会发布正式包，也不会自动运行设备上的 HTTPS 验收。工作区中尚未提交的代码不会进入远程构建。
+
+GitHub 手动运行的前提是默认分支已有此工作流，且选择的目标分支也包含它。构建成功后仍需将产物安装到隔离设备验证。
+
+开发验收可在专用测试设备安装调试版，使用系统信任证书的隔离测试服务端（不使用个人账号）。在 `packaging/android` 运行 `./gradlew :client-app:connectedX86TestDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.rekayoo.neujwxt.client.TrustedServerTest -Pandroid.testInstrumentationRunnerArguments.toolboxHttpsOrigin=https://测试服务域名`（Windows 使用 `gradlew.bat`，域名替换为实际测试地址）。测试从首次设置界面检测并保存地址，关闭并重新打开 Activity，再核对设置框中保存的地址。未提供地址时跳过，不算通过；此检查不覆盖进程被杀后重连或教务登录。
 
 首次启动输入 Linux 服务端的 HTTPS 根地址，例如 `https://jwxt.example.com`。地址必须使用
 系统信任的证书，不能包含用户名、密码、查询串、片段或子路径；HTTP 和自签名证书会被拒绝。

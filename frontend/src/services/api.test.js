@@ -5,6 +5,7 @@ const loadApiWithAxios = () => {
     get: jest.fn(),
     post: jest.fn(),
     put: jest.fn(),
+    delete: jest.fn(),
     request: jest.fn(),
     interceptors: {
       response: {
@@ -27,6 +28,71 @@ const loadApiWithAxios = () => {
 };
 
 describe('JWXK automation settings API', () => {
+  test('experiment writes and verification never replay through auth recovery', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.post.mockResolvedValue({ data: { code: '0' } });
+    client.get.mockResolvedValue({ data: {} });
+    const input = { term: '2026-2027-1', task_id: 'task', project_code: 'project', round_id: 'round' };
+    await apiModule.selectExperimentRound(input);
+    await apiModule.deselectExperimentRound(input);
+    await apiModule.verifyExperimentOperation(input);
+    for (const [, , options] of client.post.mock.calls) expect(options.authRecoveryRetry).toBe(false);
+    await apiModule.getExperimentRounds('task/id', 'course', 'project', input.term);
+    expect(client.get).toHaveBeenCalledWith('/api/experiment-courses/task%2Fid/rounds', expect.any(Object));
+  });
+  test('token recovery endpoints stay outside school session recovery', async () => {
+    const { client, apiModule, rejectResponse } = loadApiWithAxios();
+    client.get.mockResolvedValue({ data: {} });
+    client.post.mockResolvedValue({ data: {} });
+    await apiModule.getAuthRecoveryStatus('synthetic-token');
+    await apiModule.startAuthRecovery('synthetic-token');
+    await apiModule.pollAuthRecovery('synthetic-token');
+    await apiModule.refreshAuthRecoveryCaptcha('synthetic-token');
+    await apiModule.sendAuthRecoverySMS('synthetic-token', 'captcha');
+    await apiModule.verifyAuthRecoverySMS('synthetic-token', 'code');
+    await apiModule.cancelAuthRecovery('synthetic-token');
+    for (const [, options] of client.get.mock.calls) expect(options.skipAuthRedirect).toBe(true);
+    for (const [, , options] of client.post.mock.calls) expect(options.skipAuthRedirect).toBe(true);
+    const failure = { response: { status: 401, data: {} }, config: { url: '/api/auth-recovery/synthetic-token/status', skipAuthRedirect: true } };
+    const before = client.get.mock.calls.length;
+    await expect(rejectResponse(failure)).rejects.toBe(failure);
+    expect(client.get.mock.calls.length).toBe(before);
+  });
+  test('administrator endpoints never start school authentication recovery', async () => {
+    const { client, apiModule, rejectResponse } = loadApiWithAxios();
+    client.get.mockResolvedValue({ data: {} });
+    client.post.mockResolvedValue({ data: {} });
+    await apiModule.getAdminStatus();
+    await apiModule.getAdminAccounts();
+    await apiModule.loginAdmin('synthetic-admin-password');
+    await apiModule.logoutAdmin();
+    await apiModule.addAdminAccount('20990001');
+    await apiModule.changeAdminAccount('20990001', 'stop');
+    for (const [, options] of client.get.mock.calls) expect(options.skipAuthRedirect).toBe(true);
+    for (const [, , options] of client.post.mock.calls) expect(options.skipAuthRedirect).toBe(true);
+    const failure = { response: { status: 401, data: { error_code: 'ADMIN_REQUIRED' } }, config: { url: '/api/admin/accounts', skipAuthRedirect: true } };
+    const before = client.get.mock.calls.length;
+    await expect(rejectResponse(failure)).rejects.toBe(failure);
+    expect(client.get.mock.calls.length).toBe(before);
+  });
+  test('GPA file writes preserve revisions and escape filenames', async () => {
+    const { client, apiModule } = loadApiWithAxios();
+    client.post.mockResolvedValue({ data: { revision: 3 } });
+    client.get.mockResolvedValue({ data: { courses: [], _document_revision: 3 } });
+    client.delete.mockResolvedValue({ data: { success: true } });
+    await apiModule.exportGPASimulation('方案#.json', { courses: [] }, 2);
+    expect(client.post).toHaveBeenCalledWith('/api/gpa-simulation/export', {
+      filename: '方案#.json', data: { courses: [] }, revision: 2,
+    });
+    await apiModule.getGPASimulationFile('方案#.json');
+    expect(client.get).toHaveBeenCalledWith(`/api/gpa-simulation/file/${encodeURIComponent('方案#.json')}`);
+    await apiModule.deleteGPASimulationFile('方案#.json', 3);
+    expect(client.delete).toHaveBeenCalledWith(`/api/gpa-simulation/file/${encodeURIComponent('方案#.json')}`, { headers: { 'If-Match': '3' } });
+    await apiModule.renameGPASimulationFile('方案#.json', '新方案.json', 3);
+    expect(client.post).toHaveBeenLastCalledWith('/api/gpa-simulation/rename', {
+      filename: '方案#.json', new_filename: '新方案.json', revision: 3,
+    });
+  });
   test('does not send an invalid timetable term during page bootstrap', async () => {
     const { client, apiModule } = loadApiWithAxios();
     await expect(apiModule.getPersonalTimetable('undefined')).rejects.toMatchObject({
@@ -608,4 +674,21 @@ describe('CXCY service authentication scope', () => {
     expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'neu-auth-required' }));
     dispatch.mockRestore();
   });
+});
+test('research mutations and verification disable authentication replay', async () => {
+  const { client, apiModule } = loadApiWithAxios();
+  client.post.mockResolvedValue({ data: { success: true } });
+  client.get.mockResolvedValue({ data: {} });
+  await apiModule.enrollResearchTopic({ topic_id: 'topic' });
+  await apiModule.cancelResearchEnrollment('topic');
+  await apiModule.verifyResearchOperation('topic');
+  expect(client.post.mock.calls.every(call => call[2]?.authRecoveryRetry === false)).toBe(true);
+  await apiModule.getResearchTopic('topic/id');
+  expect(client.get).toHaveBeenCalledWith('/api/research-training/topics/topic%2Fid');
+});
+test('document generation never replays during authentication recovery', async () => {
+  const { client, apiModule } = loadApiWithAxios();
+  client.post.mockResolvedValue({ data: new Blob(['%PDF-test'], { type: 'application/pdf' }), headers: { 'x-academic-document-format': 'pdf' } });
+  await apiModule.generateAcademicDocument('document');
+  expect(client.post).toHaveBeenCalledWith('/api/export/academic-documents/generate', { document_id: 'document' }, expect.objectContaining({ authRecoveryRetry: false, responseType: 'blob' }));
 });

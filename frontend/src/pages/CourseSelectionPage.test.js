@@ -134,7 +134,7 @@ describe('CourseSelectionPage mobile recovery notice', () => {
     expect(container.textContent).not.toContain('账号密码恢复');
   });
 
-  test.each(['not_in_selection_round', 'service_unavailable'])(
+  test.each(['not_in_selection_round', 'service_unavailable', 'login_required'])(
     'keeps authenticated service result %s and ignores an earlier expired response',
     async state => {
       const probe = deferred();
@@ -148,6 +148,11 @@ describe('CourseSelectionPage mobile recovery notice', () => {
       }));
       expect(getJwxkStatus).toHaveBeenCalledTimes(2);
       expect(container.textContent).not.toContain('过期的登录失效结果');
+      if (state === 'login_required') {
+        expect(container.textContent).toContain('账号密码恢复');
+        expect(container.textContent).toContain('选课系统仍需认证');
+        return;
+      }
       expect(container.textContent).not.toContain('账号密码恢复');
       expect(container.textContent).toContain(
         state === 'not_in_selection_round' ? '不在学校开放的选课轮次中' : '无需重复认证',

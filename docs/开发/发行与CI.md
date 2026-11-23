@@ -1,5 +1,43 @@
 # 发行与 CI/CD
 
+Go 的 `GET /api/runtime/update` 已接通设置页的主动版本检查，固定访问官方 GitHub latest Release，
+只接受 `go-release-manifest.json` 的 `runtime=go-web`、版本/标签一致以及 Windows/Linux 资产名称、
+大小和 SHA-256 格式全部匹配。不会将旧 Python 发布包视为新版更新。检查结果缓存十分钟，
+强制刷新至少间隔三十秒；网络/元数据错误明确返回，不冒充“已是最新版本”。
+`POST /api/runtime/update/download` 已接通主动下载，`GET /api/runtime/update/{job_id}` 返回进度。
+本机可操作，远程需要管理员身份；普通用户仍可检查版本，下载能力不向其开放。
+下载目标固定来自已校验清单，不读取调用者提交的地址；流式读取限制为清单大小，校验 SHA-256，
+成功才发布完整文件到数据目录 `updates/download-*/`。失败清理部分文件，不执行安装。
+能力声明为 `go-manual`，页面提示备份、停止服务及保留数据目录；自动安装仍待完成。
+任务和最多十六条状态历史持久化到 SQLite 站点设置，比较原值后写入，拒绝并发旧任务覆盖。
+重启后正在下载/校验的任务标为中断失败，不自动重放下载；已完成任务重新校验文件所在目录、
+大小和摘要，文件缺失、变更或越出更新目录则标为失败。数据备份不包含下载包，恢复后会据此
+重新判断文件是否存在，不把旧数据库中的成功记录当作文件仍然可用的证明。
+
+Go重构入口现支持三种部署模式、HTTPS公开地址、可信代理范围、容器监听、仅初始化和站点密码重置，
+详见[账号与远程管理](../功能/账号与远程管理.md)。`cmd/toolbox/main_test.go`核验参数边界；
+`--init-only`可在不启动服务、无需前端文件时初始化，部署模式不可通过改参数混用同一数据目录。
+Go/Web 打包入口为 `tools/build_go_release.py`，生成同版本 Windows/Linux amd64 压缩包，
+包含网页、许可证、依赖许可证清单、操作说明和 SHA-256。运行资源按可执行文件目录定位；
+本机发行默认使用用户目录下独立 `data-go` 数据路径，`--version` 无需初始化数据。
+Docker 配置在 `go.Dockerfile` 与 `packaging/go/compose.yaml`，以非 root 用户运行并挂载持久卷。
+使用说明见[Go运行包](../部署/Go运行包.md)。自动安装、Linux及Docker实际环境验收仍待完成，
+这些重构验收包不等于完整正式发行。旧自动更新清单保持独立，尚不指向这些包。
+
+Windows 托盘使用 `fyne.io/systray v1.11.0`，只在 Windows 编译入口引用；Linux 构建无需 GUI 或 CGO。
+发行包默认开启托盘和浏览器，开发可执行文件默认关闭，两项可由参数显式控制。托盘退出与页面退出
+共享取消信号和 HTTP 优雅停机。发行包包含 `app.ico`，依赖许可由构建脚本自动归集。
+数据目录使用 Windows LockFileEx / Linux flock 防止多个运行实例；Windows 重复启动且启用浏览器时
+核验目录内实例地址为回环 Go 桌面服务后重新打开页面。实例文件不保存认证令牌，进程退出删除。
+Windows 已实测原生托盘窗口、托盘退出命令、页面退出、重复实例拒绝及停机后锁释放。
+
+验证入口 `python tools/check_go_release.py OUTPUT --smoke`：核对两个包的版本、SHA-256、
+必需文件、依赖许可证、网页资源完整性与归档路径；在当前系统从另一工作目录启动本机包，
+使用临时合成数据核验版本命令不创建数据、健康接口及网页。结果写入输出目录 `verification.json`。
+2026-11-16 的 `dist/go-release-candidate-3` 已完成上述 Windows 验证及页面优雅退出，两个包各登记 114 项依赖，
+包含更新检查/下载/重启恢复、认证验证码纠错、桌面托盘和数据目录锁。前端体积预算检查通过。
+Linux 仅完成交叉编译和包结构验证；当前主机无可用 Docker/WSL 发行环境，未据此宣称平台运行通过。
+
 正式 Windows 和 Linux 发行包必须同时包含根目录 `LICENSE`，以及位于
 `backend/core/course_selection/THIRD_PARTY_NOTICE.md` 的选课策略模型上游许可说明。
 `tools/check_release_bundle.py` 会把两者作为发行结构的一部分校验。
@@ -35,6 +73,10 @@ Windows 多尺寸 ICO 位于 `packaging/windows/app.ico`。Nuitka 将同一 ICO 
 不得只替换其中一个派生文件。
 
 ## 本地构建
+
+重构分支前端由 Vite 构建，输出目录、资源清单和压缩变体保持现有发行契约。
+`npm run typecheck` 检查新增 TypeScript 入口。react-scripts 当前仅用于已有 Jest 回归，
+不参与生产资源生成；旧 Python/Android 发行链在 Go 迁移完成前保留作对照。
 
 发行环境固定使用 Python 3.11 和 Node.js 20：
 

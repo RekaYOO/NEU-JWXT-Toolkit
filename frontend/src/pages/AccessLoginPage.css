@@ -4,7 +4,7 @@
   place-items: center;
   padding: 24px;
   background:
-    radial-gradient(circle at 20% 10%, rgba(37, 99, 235, 0.08), transparent 34%),
+    radial-gradient(circle at 20% 10%, color-mix(in srgb, var(--color-brand) 8%, transparent), transparent 34%),
     var(--color-canvas);
 }
 
@@ -28,7 +28,7 @@
 
 .access-login-brand > span {
   padding: 6px 8px 4px;
-  border: 1px solid #bfdbfe;
+  border: 1px solid var(--color-brand);
   border-bottom: 3px solid var(--color-accent);
   border-radius: var(--radius-sm);
   font-size: 14px;

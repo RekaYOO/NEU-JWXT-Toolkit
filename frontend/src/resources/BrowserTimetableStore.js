@@ -113,7 +113,7 @@ const transaction = (database, mode, operation) => new Promise((resolve, reject)
   try {
     const tx = database.transaction(STORE_NAME, mode);
     request = operation(tx.objectStore(STORE_NAME));
-    tx.oncomplete = () => resolve(request?.result);
+    tx.oncomplete = () => resolve(mode === 'readwrite' ? true : request?.result);
     tx.onerror = () => resolve(null);
     tx.onabort = () => resolve(null);
   } catch (_error) {
@@ -191,14 +191,13 @@ export const writeBrowserTimetableCache = async (identity, {
   terms = [], current = '', personal = [], viewState = null,
 } = {}) => {
   const namespace = namespaceFor(identity);
-  rememberRecoveryNamespace(namespace);
   const database = await openDatabase();
   if (!database) return false;
   const allowedTerms = allowedPersonalTerms(terms, current);
   const bounded = (personal || []).filter(item => (
     item?.term_code && (!allowedTerms.size || allowedTerms.has(String(item.term_code)))
   )).slice(-2);
-  await transaction(database, 'readwrite', store => {
+  const committed = await transaction(database, 'readwrite', store => {
     store.put({
       key: `${namespace}:index`,
       namespace,
@@ -228,6 +227,8 @@ export const writeBrowserTimetableCache = async (identity, {
     return request;
   });
   close(database);
+  if (!committed) return false;
+  rememberRecoveryNamespace(namespace);
   bounded.forEach(payload => postUpdate(namespace, payload.term_code));
   return true;
 };
@@ -236,7 +237,7 @@ export const clearBrowserTimetableCache = async identity => {
   const namespace = namespaceFor(identity);
   const database = await openDatabase();
   if (!database) return false;
-  await transaction(database, 'readwrite', store => {
+  const committed = await transaction(database, 'readwrite', store => {
     const request = store.index('namespace').openCursor(namespace);
     request.onsuccess = event => {
       const cursor = event.target.result;
@@ -247,8 +248,11 @@ export const clearBrowserTimetableCache = async identity => {
     return request;
   });
   close(database);
+  if (!committed) return false;
   try {
-    window.localStorage.removeItem(RECOVERY_NAMESPACE_KEY);
+    if (window.localStorage.getItem(RECOVERY_NAMESPACE_KEY) === namespace) {
+      window.localStorage.removeItem(RECOVERY_NAMESPACE_KEY);
+    }
   } catch (_error) {
     // Browser storage is optional.
   }
@@ -279,7 +283,7 @@ export const writeBrowserAvatarCache = async (identity, payload) => {
   const namespace = namespaceFor(identity);
   const database = await openDatabase();
   if (!database) return false;
-  await transaction(database, 'readwrite', store => store.put({
+  const committed = await transaction(database, 'readwrite', store => store.put({
     key: `${namespace}:avatar`,
     namespace,
     kind: 'avatar',
@@ -293,6 +297,7 @@ export const writeBrowserAvatarCache = async (identity, payload) => {
     },
   }));
   close(database);
+  if (!committed) return false;
   postUpdate(namespace, '', 'avatar');
   return true;
 };
@@ -301,8 +306,9 @@ export const clearBrowserAvatarCache = async identity => {
   const namespace = namespaceFor(identity);
   const database = await openDatabase();
   if (!database) return false;
-  await transaction(database, 'readwrite', store => store.delete(`${namespace}:avatar`));
+  const committed = await transaction(database, 'readwrite', store => store.delete(`${namespace}:avatar`));
   close(database);
+  if (!committed) return false;
   postUpdate(namespace, '', 'avatar');
   return true;
 };

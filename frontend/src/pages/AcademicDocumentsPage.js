@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Breadcrumb, Button, Card, Empty, Modal, Skeleton, Space, Tag, Typography, message,
 } from 'antd';
@@ -22,9 +22,17 @@ const saveOrOpen = ({ blob, filename, format }, previewWindow = null) => {
   }
   const url = URL.createObjectURL(blob);
   if (format === 'html') {
-    const opened = previewWindow || window.open(url, '_blank');
+    const opened = previewWindow || window.open('', '_blank');
     if (opened) {
-      if (previewWindow) previewWindow.location.replace(url);
+      opened.opener = null;
+      opened.document.title = filename;
+      const frame = opened.document.createElement('iframe');
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-downloads allow-popups');
+      frame.setAttribute('title', filename);
+      frame.style.cssText = 'width:100%;height:100vh;border:0;display:block';
+      frame.src = url;
+      opened.document.body.style.margin = '0';
+      opened.document.body.replaceChildren(frame);
       window.setTimeout(() => URL.revokeObjectURL(url), 60000);
       return;
     }
@@ -44,6 +52,8 @@ const AcademicDocumentsPage = () => {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [generatingId, setGeneratingId] = useState('');
+  const confirmationRef = useRef(false);
+  const requestRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -65,6 +75,8 @@ const AcademicDocumentsPage = () => {
   ), [groups]);
 
   const generate = useCallback((document) => {
+    if (confirmationRef.current) return;
+    confirmationRef.current = true;
     Modal.confirm({
       title: `生成${document.name}`,
       icon: <FileDoneOutlined />,
@@ -78,9 +90,13 @@ const AcademicDocumentsPage = () => {
       ),
       okText: '确认生成',
       cancelText: '取消',
+      onCancel() { confirmationRef.current = false; },
       async onOk() {
+        if (requestRef.current) return;
+        requestRef.current = true;
         const previewWindow = isNativeShell() ? null : window.open('', '_blank');
         if (previewWindow) {
+          previewWindow.opener = null;
           previewWindow.document.title = `正在生成${document.name}`;
           previewWindow.document.body.textContent = '正在从教务系统生成证明，请稍候…';
         }
@@ -92,8 +108,9 @@ const AcademicDocumentsPage = () => {
         } catch (error) {
           if (previewWindow && !previewWindow.closed) previewWindow.close();
           message.error(error.response?.data?.detail || error.message || '证明生成失败');
-          throw error;
         } finally {
+          confirmationRef.current = false;
+          requestRef.current = false;
           setGeneratingId('');
         }
       },

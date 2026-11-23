@@ -1,0 +1,5 @@
+{
+  "schema_version": 1, "id": "garden", "name": "青庭",
+  "colors": { "primary": "#0f766e", "canvas": "#f3f8f5", "surface": "#ffffff", "text": "#18372f", "muted": "#4d695e", "border": "#c7dcd2" },
+  "radius": 8, "decoration": "soft", "font": "system", "motion": "full"
+}

@@ -61,6 +61,10 @@ def test_submit_evaluation_bounds_text_and_scores():
     assert valid.custom_scores == {"indicator": [5, 6]}
     assert valid.dry_run is True
 
+    assert EvaluationSubmitRequest(task_id="task", xspjid="course", reason="评分原因").reason == "评分原因"
+    with pytest.raises(ValidationError):
+        EvaluationSubmitRequest(task_id="task", xspjid="course", reason="x" * 2_001)
+
     # Preserve the previous contract: the core business validation decides
     # whether a partially populated custom map is sufficient for a target.
     assert EvaluationSubmitRequest(

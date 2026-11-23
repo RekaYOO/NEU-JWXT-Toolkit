@@ -43,14 +43,15 @@ describe('CXCY connection request ordering', () => {
     expect(updateFestivalSettings).not.toHaveBeenCalled();
   });
 
-  test('gateway success with a service outage invalidates old login-required probes', async () => {
+  test.each([['service_unavailable', '无需重复提交短信'], ['login_required', '创院系统仍需认证']])('gateway result %s invalidates old probes', async (state, message) => {
     let finish;
     getFestivalServiceStatus.mockReturnValue(new Promise(resolve => { finish = resolve; }));
     await act(async () => root.render(<Probe />));
-    await act(async () => connection.unavailable());
-    await act(async () => finish({ service_auth_state: 'login_required' }));
-    expect(connection.status.service_auth_state).toBe('service_unavailable');
-    expect(connection.status.message).toContain('无需重复提交短信');
+    await act(async () => connection.gatewayResult(state));
+    await act(async () => finish({ service_auth_state: 'authenticated', service_authenticated: true }));
+    expect(connection.status.service_auth_state).toBe(state);
+    expect(connection.status.service_authenticated).toBe(false);
+    expect(connection.status.message).toContain(message);
     expect(getFestivalServiceStatus).toHaveBeenCalledTimes(1);
   });
 

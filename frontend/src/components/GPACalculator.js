@@ -20,6 +20,7 @@ import {
   listGPASimulationFiles,
   getGPASimulationFile,
   deleteGPASimulationFile,
+  renameGPASimulationFile,
 } from '../services/api';
 import useCourseOutlineMetadata from '../hooks/useCourseOutlineMetadata';
 import { calculateGpaImpacts, gpaExclusionReason, summarizeGpa } from '../utils/gpaPolicy';
@@ -141,13 +142,25 @@ export const isGpaCoursePending = (course) => {
   return !hasCredit || !hasGpa;
 };
 
+const optionalGpa = value => {
+  if (value == null || String(value).trim() === '') return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+export const simulationGpaChanged = (original, edited) => {
+  const before = optionalGpa(original);
+  const after = optionalGpa(edited);
+  return before === null || after === null ? before !== after : Math.abs(before - after) > 0.01;
+};
+
 const simulationCourseFromScore = (score) => ({
   key: `real_${stableCourseKey(score)}`,
   name: score.name,
   code: score.code,
   credit: parseFloat(score.credit) || 0,
   score: score.score,
-  gpa: parseFloat(score.gpa) || 0,
+  gpa: optionalGpa(score.gpa),
   term: score.term_display || score.term,
   term_code: score.term,
   courseType: score.course_type,
@@ -200,6 +213,8 @@ const GPACalculator = forwardRef(({
   const isMobile = !screens.md;
   // ===== 状态管理 =====
   const [courses, setCourses] = useState([]);
+  const currentCourses = useRef(courses);
+  currentCourses.current = courses;
   const [editingKey, setEditingKey] = useState(null);
   const [tableFilteredKeys, setTableFilteredKeys] = useState(null);
   const [activeTab, setActiveTab] = useState('all');
@@ -253,6 +268,10 @@ const GPACalculator = forwardRef(({
   // 保存文件Modal
   const [saveModalVisible, setSaveModalVisible] = useState(false);
   const [saveFilename, setSaveFilename] = useState('');
+  const serverRevisions = useRef(new Map());
+  const fileMutation = useRef(false);
+  const [fileSaving, setFileSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   // 重命名Modal
   const [renameModalVisible, setRenameModalVisible] = useState(false);
@@ -434,7 +453,7 @@ const GPACalculator = forwardRef(({
     if (!courses.length) return {
       totalCourses: 0,
       totalCredits: 0,
-      weightedGPA: 0,
+      weightedGPA: null,
       passedCount: 0,
       realCount: 0,
       customCount: 0,
@@ -445,15 +464,14 @@ const GPACalculator = forwardRef(({
       && !course.hidden
     ));
     const validCourses = scopedCourses.filter(c => !isGpaCoursePending(c) && c.gpa > 0);
-    const totalCredits = validCourses.reduce((sum, c) => sum + (c.credit || 0), 0);
-    const weightedGPA = gpaPolicy ? summarizeGpa(scopedCourses.map(course => ({
+    const summary = gpaPolicy ? summarizeGpa(scopedCourses.map(course => ({
       ...course, gradingScale: gpaCourseGradingScale(course, outlineMetadata),
-    })), gpaPolicy).average || 0 : null;
+    })), gpaPolicy) : null;
 
     return {
       totalCourses: scopedCourses.length,
-      totalCredits,
-      weightedGPA,
+      totalCredits: summary?.credits ?? 0,
+      weightedGPA: summary?.average ?? null,
       passedCount: validCourses.filter(c => c.gpa > 0).length,
       realCount: scopedCourses.filter(c => c.isReal).length,
       customCount: scopedCourses.filter(c => !c.isReal).length,
@@ -501,11 +519,11 @@ const GPACalculator = forwardRef(({
   );
 
   const handleGPAChange = (key, newGPA) => {
-    const gpa = newGPA === null || newGPA === '' ? null : parseFloat(newGPA) || 0;
+    const gpa = optionalGpa(newGPA);
     const newCourses = courses.map(c => {
       if (c.key !== key) return c;
       // 如果真实课程的GPA被修改，变为模拟状态
-      const isModified = c.isReal && c.originalData && Math.abs((c.originalData.gpa || 0) - gpa) > 0.01;
+      const isModified = c.isReal && c.originalData && simulationGpaChanged(c.originalData.gpa, gpa);
       return { 
         ...c, 
         gpa,
@@ -590,18 +608,16 @@ const GPACalculator = forwardRef(({
         const nextGpaValue = editForm.gpa === undefined ? c.gpa : editForm.gpa;
         const newCredit = nextCreditValue === null || nextCreditValue === ''
           ? 0 : parseFloat(nextCreditValue) || 0;
-        const newGPA = nextGpaValue === null || nextGpaValue === ''
-          ? null : parseFloat(nextGpaValue) || 0;
+        const newGPA = optionalGpa(nextGpaValue);
         
         // 检查真实课程是否被修改
         let isModified = false;
         if (c.isReal && c.originalData) {
           const origCredit = parseFloat(c.originalData.credit) || 0;
-          const origGPA = parseFloat(c.originalData.gpa) || 0;
           if (c.originalData.name !== (nextName || c.name) ||
               c.originalData.code !== nextCode ||
               Math.abs(origCredit - newCredit) > 0.01 ||
-              Math.abs(origGPA - newGPA) > 0.01) {
+              simulationGpaChanged(c.originalData.gpa, newGPA)) {
             isModified = true;
           }
         }
@@ -1016,11 +1032,13 @@ const GPACalculator = forwardRef(({
   const handleOpenSaveModal = () => {
     const defaultName = `GPA模拟_${new Date().toISOString().slice(0, 10)}`;
     setSaveFilename(defaultName);
+    setSaveError('');
     setSaveModalVisible(true);
   };
 
   // ===== 执行保存到服务器 =====
   const handleConfirmSave = async () => {
+    if (fileMutation.current) return;
     if (!saveFilename.trim()) {
       message.error('请输入文件名');
       return;
@@ -1064,15 +1082,25 @@ const GPACalculator = forwardRef(({
       })),
     };
     
+    fileMutation.current = true;
+    setFileSaving(true);
+    setSaveError('');
     try {
-      await exportGPASimulation(filename, data);
-      setHasUnsavedChanges(false);
-      message.success('已保存到服务器');
+      const result = await exportGPASimulation(filename, data, serverRevisions.current.get(filename) || 0);
+      if (Number.isInteger(result.revision)) serverRevisions.current.set(filename, result.revision);
+      const unchangedSinceSave = currentCourses.current === courses;
+      if (unchangedSinceSave) setHasUnsavedChanges(false);
+      message.success(unchangedSinceSave ? '已保存到服务器' : '已保存提交时的版本，后续修改仍保留在当前草稿中');
       setSaveModalVisible(false);
       // 刷新文件列表
       loadServerFiles();
     } catch (e) {
-      message.error('保存失败: ' + e.message);
+      setSaveError(e.response?.status === 409
+        ? '同名方案已存在或已在其他设备更新。当前草稿已保留，请修改文件名另存；也可取消保存后从服务器重新打开最新方案。'
+        : `未能确认保存结果，当前草稿已保留。请在服务器文件列表核对：${e.response?.data?.detail || e.message}`);
+    } finally {
+      fileMutation.current = false;
+      setFileSaving(false);
     }
   };
 
@@ -1084,6 +1112,7 @@ const GPACalculator = forwardRef(({
   };
 
   const handleConfirmRename = async () => {
+    if (fileMutation.current) return;
     if (!renameNewName.trim()) {
       message.error('请输入新文件名');
       return;
@@ -1094,19 +1123,23 @@ const GPACalculator = forwardRef(({
       newFilename += '.json';
     }
 
+    fileMutation.current = true;
+    setFileSaving(true);
     try {
-      // 先获取旧文件内容
-      const data = await getGPASimulationFile(renameOldFile);
-      // 保存为新文件名
-      await exportGPASimulation(newFilename, data);
-      // 删除旧文件
-      await deleteGPASimulationFile(renameOldFile);
+      const source = serverFiles.find(file => file.filename === renameOldFile);
+      const result = await renameGPASimulationFile(renameOldFile, newFilename, source?.revision);
+      serverRevisions.current.delete(renameOldFile);
+      if (Number.isInteger(result.revision)) serverRevisions.current.set(newFilename, result.revision);
       
       message.success('重命名成功');
       setRenameModalVisible(false);
       loadServerFiles();
     } catch (e) {
-      message.error('重命名失败: ' + e.message);
+      message.error('未能确认重命名结果，请刷新文件列表核对：' + (e.response?.data?.detail || e.message));
+      loadServerFiles();
+    } finally {
+      fileMutation.current = false;
+      setFileSaving(false);
     }
   };
 
@@ -1139,6 +1172,7 @@ const GPACalculator = forwardRef(({
         message.error('无效的成绩单文件');
         return;
       }
+      if (Number.isInteger(data._document_revision)) serverRevisions.current.set(filename, data._document_revision);
 
       const imported = data.courses.map((c, idx) => ({
         key: `imported_${Date.now()}_${idx}`,
@@ -1254,28 +1288,20 @@ const GPACalculator = forwardRef(({
   };
 
   const handleDeleteServerFile = async (filename) => {
+    if (fileMutation.current) return;
+    fileMutation.current = true;
     try {
-      await deleteGPASimulationFile(filename);
+      const source = serverFiles.find(file => file.filename === filename);
+      await deleteGPASimulationFile(filename, source?.revision);
+      serverRevisions.current.delete(filename);
       message.success('文件已删除');
       loadServerFiles();
     } catch (e) {
-      message.error('删除失败');
+      message.error(e.response?.data?.detail || '未能确认删除结果，请在刷新后的文件列表核对');
+      loadServerFiles();
+    } finally {
+      fileMutation.current = false;
     }
-  };
-
-  // ===== 保存到浏览器本地 =====
-  const saveSimulation = () => {
-    localStorage.setItem('neu_toolbox:gpa_simulation', JSON.stringify({
-      version: '2.0',
-      timestamp: new Date().toISOString(),
-      stats,
-      courses: courses.map(({ hidden, ...course }) => course),
-      base_scores_revision: baseScoresRevision,
-      base_report_revision: baseReportRevision,
-      base_real_scores: baseRealScores,
-    }));
-    setHasUnsavedChanges(false);
-    message.success('已保存到浏览器');
   };
 
   // ===== 冲突解决 =====
@@ -1504,7 +1530,7 @@ const GPACalculator = forwardRef(({
             />
           );
         }
-        const gpa = text === null || text === '' || text === undefined ? null : parseFloat(text) || 0;
+        const gpa = optionalGpa(text);
         return isSimulating ? (
           <InputNumber
             key={`${record.key}-gpa-${gpa}`}
@@ -1522,7 +1548,7 @@ const GPACalculator = forwardRef(({
           />
         ) : (
           <span className={gpa >= 3 ? 'gpa-high' : gpa >= 2 ? 'gpa-normal' : 'gpa-low'}>
-            {gpa ? gpa.toFixed(2) : '-'}
+            {gpa !== null ? gpa.toFixed(2) : '-'}
           </span>
         );
       },
@@ -2480,11 +2506,13 @@ const GPACalculator = forwardRef(({
         rootClassName="gpa-mobile-modal"
         title="保存GPA模拟"
         open={saveModalVisible}
+        confirmLoading={fileSaving}
         onOk={handleConfirmSave}
         onCancel={() => setSaveModalVisible(false)}
         okText="保存"
         cancelText="取消"
       >
+        {saveError && <Alert type="error" showIcon message={saveError} role="alert" style={{ marginBottom: 16 }} />}
         <div style={{ marginBottom: 16 }}>
           <Typography.Text type="secondary">文件名（无需添加.json后缀）</Typography.Text>
         </div>
@@ -2502,6 +2530,7 @@ const GPACalculator = forwardRef(({
         rootClassName="gpa-mobile-modal"
         title="重命名文件"
         open={renameModalVisible}
+        confirmLoading={fileSaving}
         onOk={handleConfirmRename}
         onCancel={() => setRenameModalVisible(false)}
         okText="确认"

@@ -1,0 +1,19 @@
+.admin-page { max-width: 960px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; }
+.admin-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.admin-header h2 { margin: 0 0 4px; }
+.admin-login { max-width: 400px; width: 100%; }
+.admin-loading { display: flex; gap: 12px; align-items: center; padding: 24px 0; }
+.admin-add { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.admin-add .ant-form-item { margin-bottom: 0; flex: 1 1 220px; }
+.admin-accounts { list-style: none; margin: 0; padding: 0; }
+.admin-accounts li { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 16px 0; border-bottom: 1px solid var(--color-line); }
+.admin-account-identity, .admin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.admin-account-identity strong { overflow-wrap: anywhere; }
+.admin-page .ant-btn { min-height: 44px; }
+.admin-page .ant-input, .admin-page .ant-input-affix-wrapper { min-height: 44px; }
+@media (max-width: 600px) {
+  .admin-page { padding: 16px; }
+  .admin-add .ant-form-item { flex-basis: 100%; }
+  .admin-add > .ant-btn, .admin-actions .ant-btn { flex: 1; }
+  .admin-actions { width: 100%; }
+}

@@ -68,7 +68,7 @@ const AuthRecoveryPage = ({ token }) => {
     setSmsSent(false);
     setAuthError('');
     setStage('sms_required');
-    setMessage('请完成短信二次认证');
+    setMessage(result.sms_verified ? '短信已验证，请继续建立业务会话' : '请完成短信二次认证');
   }, [setCountdown, stopPolling]);
 
   const finishAuthenticated = useCallback(() => {
@@ -103,7 +103,7 @@ const AuthRecoveryPage = ({ token }) => {
       if (authenticatedRef.current) return;
       if (result.status === 'authenticated') {
         finishAuthenticated();
-      } else if (result.status === 'sms_required') {
+      } else if (result.status === 'sms_required' || result.status === 'session_pending') {
         enterSMSStage(result);
       } else if (result.status === 'expired') {
         stopPolling();
@@ -149,7 +149,7 @@ const AuthRecoveryPage = ({ token }) => {
       if (result.status === 'authenticated') {
         finishAuthenticated();
         return;
-      } else if (result.status === 'sms_required') {
+      } else if (result.status === 'sms_required' || result.status === 'session_pending') {
         enterSMSStage(result);
         return;
       }
@@ -177,7 +177,7 @@ const AuthRecoveryPage = ({ token }) => {
         setStage('qr_pending');
         setMessage('请使用微信扫码并确认登录');
         beginPolling(result.poll_interval);
-      } else if (result.status === 'sms_required') {
+      } else if (result.status === 'sms_required' || result.status === 'session_pending') {
         enterSMSStage(result);
       } else {
         await start();

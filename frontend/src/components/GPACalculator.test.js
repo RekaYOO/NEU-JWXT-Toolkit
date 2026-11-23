@@ -1,6 +1,13 @@
-import { gpaCourseGradingScale, isGpaCoursePending, selectGpaBusinessColumnKeys } from './GPACalculator';
+import { gpaCourseGradingScale, isGpaCoursePending, selectGpaBusinessColumnKeys, simulationGpaChanged } from './GPACalculator';
 
 jest.mock('../services/api', () => ({}));
+
+test('空绩点和零分双向编辑均标记为模拟修改', () => {
+  expect(simulationGpaChanged(null, 0)).toBe(true);
+  expect(simulationGpaChanged('0.00', '')).toBe(true);
+  expect(simulationGpaChanged('0.00', 0)).toBe(false);
+  expect(simulationGpaChanged(undefined, ' ')).toBe(false);
+});
 
 test('GPA 业务列严格跟随成绩页的可见状态与顺序', () => {
   const scoreColumns = [

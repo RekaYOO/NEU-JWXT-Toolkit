@@ -4,9 +4,9 @@ const fs = require('node:fs/promises');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || require.resolve('playwright', { paths: [path.resolve(__dirname, '../frontend')] }));
 
-const build = path.resolve(__dirname, '../frontend/build');
+const build = path.resolve(process.env.QA_FRONTEND_BUILD || path.join(__dirname, '../frontend/build'));
 const score = (code, gpa, credit) => ({
   code, name: `测试课程${code}`, gpa, credit, score: String(gpa * 10 + 50),
   score_value: gpa * 10 + 50, term: '2026-2027-1', term_display: '测试学期',
@@ -58,11 +58,15 @@ const scales = { CORE: '百分制', FAIL: '百分制', GE: '五级制', BIN: '�
   try {
     browser = await chromium.launch({ headless: true, channel: process.env.QA_BROWSER || 'msedge' });
     for (const [width, height] of [[320, 800], [375, 812], [430, 932], [768, 900], [1440, 900]]) {
-      const page = await browser.newPage({ viewport: { width, height }, serviceWorkers: 'block' });
+      const context = await browser.newContext({ viewport: { width, height }, serviceWorkers: 'block' });
+      const page = await context.newPage();
       const errors = [];
       let mode = 'from_2025';
       let override = null;
       let savedFile = null;
+      let savedFilename = '';
+      let conflictNextSave = true;
+      const plans = new Map();
       let failSave = false;
       let detailQueries = 0;
       const policy = () => ({
@@ -70,8 +74,8 @@ const scales = { CORE: '百分制', FAIL: '百分制', GE: '五级制', BIN: '�
         grading_scales: scales, report_available: true, missing_grading_scales: 0,
       });
       page.on('pageerror', error => errors.push(error.message));
-      await page.addInitScript(() => history.replaceState(null, '', '/scores'));
-      await page.route('**/*', async route => {
+      await page.context().addInitScript(() => history.replaceState(null, '', '/scores'));
+      await page.context().route('**/*', async route => {
         const url = new URL(route.request().url());
         if (url.origin !== origin) return route.abort();
         if (!url.pathname.startsWith('/api/')) return route.continue();
@@ -100,11 +104,23 @@ const scales = { CORE: '百分制', FAIL: '百分制', GE: '五级制', BIN: '�
           item_scores: [{ code: 'FINAL', name: '期末', value: '90' }],
         };
         else if (url.pathname === '/api/gpa-simulation/export') {
-          savedFile = route.request().postDataJSON().data;
-          data = { success: true };
+          const submission = route.request().postDataJSON();
+          if ((width !== 1440 && conflictNextSave) || plans.has(submission.filename)) {
+            conflictNextSave = false;
+            return route.fulfill({ status: 409, json: { detail: '方案已被其他设备更新' } });
+          }
+          assert.equal(submission.revision, 0);
+          savedFile = submission.data;
+          savedFilename = submission.filename;
+          plans.set(savedFilename, savedFile);
+          data = { success: true, revision: 1 };
         } else if (url.pathname === '/api/gpa-simulation/files') {
-          data = savedFile ? [{ filename: 'fixture.json', size: 100, modified_time: '2026-09-06', stats: savedFile.stats }] : [];
-        } else if (url.pathname === '/api/gpa-simulation/file/fixture.json') data = savedFile;
+          data = Array.from(plans, ([filename, plan]) => ({ filename, revision: 1, size: 100, modified_time: '2026-09-06', stats: plan.stats }));
+        } else if (url.pathname.startsWith('/api/gpa-simulation/file/')) {
+          const plan = plans.get(decodeURIComponent(url.pathname.split('/').pop()));
+          if (!plan) return route.fulfill({ status: 404, json: { detail: '方案不存在' } });
+          data = { ...plan, _document_revision: 1 };
+        }
         else if (url.pathname.includes('/user/avatar')) return route.fulfill({ status: 204 });
         return route.fulfill({ json: data });
       });
@@ -132,6 +148,20 @@ const scales = { CORE: '百分制', FAIL: '百分制', GE: '五级制', BIN: '�
       await simAverage.waitFor();
       assert((await simAverage.textContent()).includes('2.4000'));
       assert.equal(await page.locator('.gpa-table th').filter({ hasText: /^成绩$/ }).count(), 0);
+      const failedCourse = page.locator(width < 768 ? '.gpa-mobile-course' : '.gpa-table .ant-table-row').filter({ hasText: '测试课程FAIL' });
+      const failedGpa = width < 768 ? failedCourse.locator('.gpa-mobile-course__inputs input').last() : failedCourse.locator('td').nth((await page.locator('.gpa-table .ant-table-thead th').allTextContents()).findIndex(text => text.trim() === '绩点')).locator('input');
+      assert.match(await failedGpa.inputValue(), /^0(?:\.0+)?$/);
+      await failedGpa.fill('');
+      await failedGpa.blur();
+      await simAverage.getByText('4.0000', { exact: true }).waitFor();
+      if (width < 768) {
+        await page.getByRole('button', { name: /更\s*多$/ }).click();
+        await page.getByText('撤销上一步', { exact: true }).click();
+      } else {
+        await page.getByRole('button', { name: /撤\s*销$/ }).click();
+      }
+      await simAverage.getByText('2.4000', { exact: true }).waitFor();
+      assert.match(await failedGpa.inputValue(), /^0(?:\.0+)?$/);
       if (width < 768) {
         const card = page.locator('.gpa-mobile-course').filter({ hasText: '测试课程CORE' });
         const labels = card.locator('.gpa-mobile-course__inputs label');
@@ -175,6 +205,26 @@ const scales = { CORE: '百分制', FAIL: '百分制', GE: '五级制', BIN: '�
         await gpaCell.locator('input').blur();
         await page.getByRole('button', { name: /保\s*存$/ }).first().click();
       }
+      let peerFilename;
+      let peerDraft;
+      if (width === 1440) {
+        peerFilename = 'two-window-plan';
+        await page.getByRole('dialog').getByPlaceholder('输入文件名').fill(peerFilename);
+        const peer = await page.context().newPage();
+        await peer.goto(origin);
+        await peer.getByRole('button', { name: /GPA模拟$/ }).click();
+        await peer.getByRole('button', { name: /保\s*存$/ }).first().click();
+        await peer.getByRole('dialog').getByPlaceholder('输入文件名').fill(peerFilename);
+        await peer.getByRole('dialog').getByRole('button', { name: /保\s*存$/ }).click();
+        await peer.getByText('已保存到服务器', { exact: false }).first().waitFor();
+        peerDraft = structuredClone(savedFile);
+        await peer.close();
+      }
+      await page.getByRole('dialog').getByRole('button', { name: /保\s*存$/ }).click();
+      await page.getByRole('dialog').getByRole('alert').filter({ hasText: '当前草稿已保留' }).waitFor();
+      await page.screenshot({ path: path.join(screenshots, `${width}-save-conflict.png`), animations: 'disabled' });
+      assert.deepEqual(savedFile, peerDraft ?? null, 'conflicted save must preserve the earlier document');
+      await page.getByRole('dialog').getByPlaceholder('输入文件名').fill('fixture-copy');
       await page.getByRole('dialog').getByRole('button', { name: /保\s*存$/ }).click();
       await page.waitForFunction(() => document.body.textContent.includes('已保存到服务器'));
       assert.equal(savedFile.courses.find(course => course.code === 'PGE').gpa_general_elective, true);
@@ -182,6 +232,11 @@ const scales = { CORE: '百分制', FAIL: '百分制', GE: '五级制', BIN: '�
       assert.equal(savedFile.courses.find(course => course.code === 'PGE').gpa, 5);
       assert.equal(savedFile.courses.find(course => course.code === 'PGE').credit, 2);
       assert.equal(savedFile.stats.weightedGPA, 2.4);
+      if (peerDraft) {
+        assert.deepEqual(plans.get(savedFilename), savedFile);
+        assert.equal(plans.size, 2);
+        assert.notDeepEqual(savedFile.courses, peerDraft.courses);
+      }
       assert.equal(detailQueries, 0);
       await page.getByRole('dialog').waitFor({ state: 'hidden' });
       await page.reload();
@@ -197,7 +252,7 @@ const scales = { CORE: '百分制', FAIL: '百分制', GE: '五级制', BIN: '�
       } else {
         await page.getByRole('button', { name: /从文件导入$/ }).click();
       }
-      await page.getByRole('dialog').getByRole('button', { name: /导\s*入$/ }).click();
+      await page.getByRole('dialog').locator('.ant-list-item').filter({ hasText: 'fixture-copy' }).getByRole('button', { name: /导\s*入$/ }).click();
       await page.getByRole('dialog').waitFor({ state: 'hidden' });
       await page.waitForFunction(() => (
         [...document.querySelectorAll('.gpa-mobile-summary,.gpa-stats-row')]
@@ -212,11 +267,12 @@ const scales = { CORE: '百分制', FAIL: '百分制', GE: '五级制', BIN: '�
       }
       const bounds = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth }));
       assert(bounds.scroll <= bounds.width + 1, `overflow at ${width}px`);
+      await page.mouse.move(0, height - 1);
       await page.locator('.ant-message-notice').last().waitFor({ state: 'hidden' });
       await page.screenshot({ path: path.join(screenshots, `${width}-simulation.png`), fullPage: true });
       assert.deepEqual(errors, []);
       console.log(`PASS GPA policy, inputs and plan snapshot ${width}x${height}`);
-      await page.close();
+      await context.close();
     }
     console.log(`Screenshots: ${screenshots}`);
   } finally {

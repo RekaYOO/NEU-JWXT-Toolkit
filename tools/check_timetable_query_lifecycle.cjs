@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
-const build = path.resolve(__dirname, '../frontend/build');
+const build = path.resolve(process.env.QA_FRONTEND_BUILD || path.join(__dirname, '../frontend/build'));
 const term = { code: '2026-2027-1', name: '测试学期', current: true };
 const weeks = Array.from({ length: 5 }, (_, index) => ({
   number: index + 1, name: `第${index + 1}周`, current: index === 0,
@@ -55,11 +55,12 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
       : [[320, 800], [375, 812], [430, 932], [768, 900], [1440, 900]];
     for (const [width, height] of viewports) {
       for (const compact of width < 992 ? [false, true] : [false]) {
-        for (const label of process.env.QA_FOCUS_ONLY === '1' ? ['我的课表']
+        for (const label of process.env.QA_ROOM_SCAN === '1' ? ['教室课表'] : process.env.QA_FOCUS_ONLY === '1' ? ['我的课表']
           : process.env.QA_VIEW_ONLY === '1' ? ['我的课表', '教室课表', '教师课表', '班级课表']
           : ['教室课表', '教师课表', '班级课表']) {
           const page = await browser.newPage({ viewport: { width, height }, serviceWorkers: 'block' });
           const errors = [];
+          const scanRequests = [];
           let releaseSchedule = null;
           let delayNextSchedule = false;
           let queryContext = context;
@@ -102,6 +103,13 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
               items: [{ id: 'query-fixture', name: '测试查询对象', details: { campus: '南湖校区' } }],
               page: 1, total: 1,
             };
+            else if (url.pathname === '/api/timetable/rooms/availability') {
+              const query = route.request().postDataJSON();
+              scanRequests.push(query);
+              if (scanRequests.length === 4) return route.fulfill({ status: 503, json: { detail: '教室课表暂时不可用' } });
+              const next = query.cursor + 1;
+              data = { items: [{ id: `room-${next}`, name: `可用教室 ${next}` }], scanned: 1, cursor: next, candidate_total: 4, complete: next === 4, scanned_room_ids: [`room-${next}`] };
+            }
             else if (url.pathname === '/api/user/avatar') return route.fulfill({ status: 204 });
             else if (url.pathname === '/api/timetable/schedule') {
               scheduleRequests += 1;
@@ -127,6 +135,26 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
             await page.locator('.timetable-target-result-card').first().click();
           };
           await page.goto(`${origin}/`);
+          if (process.env.QA_ROOM_SCAN === '1') {
+            await openQuery();
+            await page.locator('.timetable-target-search-row button').last().click();
+            const modal = page.locator('.timetable-target-filter-modal');
+            await modal.getByRole('button', { name: '开始扫描' }).click();
+            await modal.getByText(/已找到 3 间/).first().waitFor();
+            const resume = modal.getByRole('button', { name: '继续查找' });
+            await resume.click();
+            await modal.getByText('教室课表暂时不可用', { exact: false }).first().waitFor();
+            assert.equal(await modal.locator('.timetable-target-result-card').count(), 3);
+            await resume.click();
+            await modal.getByText(/已完成：共检查 4 间教室/).first().waitFor();
+            assert.deepEqual(scanRequests.map(query => query.cursor), [0, 1, 2, 3, 3]);
+            assert.deepEqual(scanRequests[3], scanRequests[4]);
+            assert.equal(await modal.locator('.timetable-target-result-card').count(), 4);
+            assert.deepEqual(errors, []);
+            console.log(`PASS room scan recovery ${width}x${height} compact=${compact}`);
+            await page.close();
+            continue;
+          }
           if (process.env.QA_FOCUS_ONLY === '1') {
             await page.locator('.timetable-desktop').first().waitFor({ state: 'attached' });
             await page.waitForFunction(() => document.querySelector('.timetable-page')?.textContent.includes('第1周课程'));
@@ -376,6 +404,41 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
           await refreshContext();
           await empty.waitFor();
           assert.equal(scheduleRequests, requestCount + 1);
+          delayNextSchedule = true;
+          const earlierQuery = page.waitForRequest(request => request.url().endsWith('/api/timetable/schedule') && request.postDataJSON().week === 3);
+          await selectWeek(3);
+          const delayed = await earlierQuery;
+          await page.locator('.timetable-query-transition').waitFor();
+          await selectWeek(5);
+          await empty.waitFor();
+          assert.equal(typeof releaseSchedule, 'function');
+          releaseSchedule();
+          releaseSchedule = null;
+          const lateResponse = await delayed.response();
+          if (lateResponse) await lateResponse.finished();
+          else assert(delayed.failure(), 'obsolete request must complete or be cancelled');
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          assert(await empty.isVisible(), 'late week 3 result must not replace empty week 5');
+          assert.equal(scheduleRequests, requestCount + 3);
+          delayNextContext = true;
+          const leavingQuery = page.waitForRequest(request => request.url().endsWith('/api/timetable/context'));
+          await page.goto(`${origin}/`);
+          await openQuery();
+          const pendingContext = await leavingQuery;
+          const countBeforeLeaving = scheduleRequests;
+          await page.evaluate(() => {
+            history.pushState(null, '', '/scores');
+            dispatchEvent(new PopStateEvent('popstate'));
+          });
+          await page.locator('.timetable-page').waitFor({ state: 'detached' });
+          assert.equal(typeof releaseContext, 'function');
+          releaseContext();
+          releaseContext = null;
+          const departedResponse = await pendingContext.response();
+          if (departedResponse) await departedResponse.finished();
+          else assert(pendingContext.failure());
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          assert.equal(scheduleRequests, countBeforeLeaving, 'released context must not query a departed timetable');
           assert.equal(await page.locator('.timetable-error').count(), 0);
           assert.deepEqual(errors, []);
           console.log(`PASS ${label} ${width}x${height} ${compact ? 'compact' : 'default'}: loading, empty campus, weeks 2-3-2, range, refresh`);

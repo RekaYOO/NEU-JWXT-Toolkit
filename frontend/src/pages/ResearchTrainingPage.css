@@ -366,3 +366,10 @@
     width: 100% !important;
   }
 }
+.research-operation-notice { margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
+.research-operation-notice .ant-alert-content { min-width: 0; flex-basis: 180px; }
+.research-operation-notice .ant-btn { min-height: 44px; }
+@media (max-width: 600px) {
+  .research-operation-notice .ant-alert-action { width: 100%; margin-left: 0; }
+  .research-operation-notice .ant-btn { width: 100%; }
+}

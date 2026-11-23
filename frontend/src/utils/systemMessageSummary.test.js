@@ -26,8 +26,9 @@ describe('system message summaries', () => {
   ];
 
   test('filters timetable and academic messages independently', () => {
-    expect(relatedSystemMessages(messages, 'timetable').map(item => item.id)).toEqual(['timetable']);
-    expect(relatedSystemMessages(messages, 'academic').map(item => item.id)).toEqual(['plan']);
+    const now = new Date('2026-09-23T12:00:00');
+    expect(relatedSystemMessages(messages, 'timetable', { now }).map(item => item.id)).toEqual(['timetable']);
+    expect(relatedSystemMessages(messages, 'academic', { now }).map(item => item.id)).toEqual(['plan']);
   });
 
   test('adds unread and fallback text without mutating source messages', () => {

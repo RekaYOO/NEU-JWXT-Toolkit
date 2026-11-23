@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Card, Empty, Input, Modal, Pagination, Select, Space, Spin, Tag, Typography, message } from 'antd';
+import { Alert, Badge, Button, Card, Empty, Input, Modal, Pagination, Select, Space, Spin, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, FilterOutlined, HistoryOutlined, SearchOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getJwxkCatalogArchive } from '../services/api';
+import { saveNativeFile } from '../services/nativeBridge';
 import TimetablePage from './TimetablePage';
 import {
   courseCampusLabels, isGeneralElectiveCategory, matchesArchivedCourseFilters,
@@ -80,6 +81,8 @@ export default function CourseSelectionArchivePage() {
   const navigate = useNavigate();
   const [archive, setArchive] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [attempt, setAttempt] = useState(0);
   const [keywordDraft, setKeywordDraft] = useState('');
   const [keyword, setKeyword] = useState('');
   const [scope, setScope] = useState('all');
@@ -96,8 +99,10 @@ export default function CourseSelectionArchivePage() {
   useEffect(() => {
     const normalizedArchiveId = String(archiveId || '').trim();
     let active = true;
+    setArchive(null);
+    setLoadError('');
+    setPreview(null);
     if (!/^[A-Za-z0-9]{32}$/.test(normalizedArchiveId)) {
-      setArchive(null);
       setLoading(false);
       return () => { active = false; };
     }
@@ -105,12 +110,12 @@ export default function CourseSelectionArchivePage() {
     getJwxkCatalogArchive(normalizedArchiveId).then(result => {
       if (active) setArchive(result || null);
     }).catch(error => {
-      if (active) message.error(error.message || '读取课程备份失败');
+      if (active && error.response?.status !== 404) setLoadError(error.message || '请检查网络连接后重试');
     }).finally(() => {
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [archiveId]);
+  }, [archiveId, attempt]);
 
   const filterOptions = useMemo(() => {
     const courses = archive?.courses || [];
@@ -171,6 +176,7 @@ export default function CourseSelectionArchivePage() {
   };
 
   if (loading) return <main className="course-selection-page"><Spin tip="读取历史轮次课程…" /></main>;
+  if (loadError) return <main className="course-selection-page"><Alert type="error" showIcon message="读取课程备份失败" description={loadError} action={<Space><Button onClick={() => setAttempt(value => value + 1)}>重试</Button><Button onClick={() => navigate('/course-selection')}>返回批次</Button></Space>} /></main>;
   if (!archive) return <main className="course-selection-page"><Alert type="error" showIcon message="课程备份不存在或已经删除" action={<Button onClick={() => navigate('/course-selection')}>返回批次</Button>} /></main>;
 
   return <main className="course-selection-page jwxk-workspace">
@@ -180,6 +186,17 @@ export default function CourseSelectionArchivePage() {
       <Tag icon={<HistoryOutlined />}>只读</Tag>
     </header>
     <Alert type="info" showIcon message="这是轮次结束时保留的课程数据，可检索、筛选和预览课表，但不提供选课、退课、投权或自动任务操作。" />
+    <Button onClick={() => {
+      const filename = `选课历史_${archiveId}.json`;
+      const blob = new Blob([JSON.stringify(archive, null, 2)], { type: 'application/json' });
+      if (saveNativeFile(filename, blob.type, blob)) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }}>导出完整轮次 JSON</Button>
     <section className="jwxk-live-schedule">
       <div className="jwxk-live-schedule__head">
         <div><Title level={4}>历史轮次课表预览</Title><Text type="secondary">选择教学班后叠加到对应学期的课表中比较时间。</Text></div>

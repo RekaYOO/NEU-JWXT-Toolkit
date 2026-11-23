@@ -121,7 +121,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
         }
         if (result.status === 'authenticated') {
           setQrFlow(null);
-          onLoginSuccess(result.username || form.getFieldValue('username') || '已登录');
+          onLoginSuccess(result.username || form.getFieldValue('username'));
         } else if (result.status === 'sms_required') {
           // QR login and password login share the official second-auth form.
           // Keep the candidate Session alive and hand the same flow to the

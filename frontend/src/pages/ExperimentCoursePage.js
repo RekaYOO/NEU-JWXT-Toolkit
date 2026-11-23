@@ -9,7 +9,7 @@ import {
   TeamOutlined, CalendarOutlined, EnvironmentOutlined,
   UserOutlined, ExclamationCircleOutlined, ReloadOutlined
 } from '@ant-design/icons';
-import { getExperimentRounds, selectExperimentRound, deselectExperimentRound } from '../services/api';
+import { getExperimentRounds, selectExperimentRound, deselectExperimentRound, verifyExperimentOperation } from '../services/api';
 import { useCachedResource, useResourceOfflineMode } from '../resources/ResourceStore';
 import SystemMessageNotice from '../components/SystemMessageNotice';
 import './ExperimentCoursePage.css';
@@ -55,6 +55,7 @@ const ExperimentCoursePage = () => {
   const [roundsLoading, setRoundsLoading] = useState(false);
   const [roundsModalVisible, setRoundsModalVisible] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [pendingOperation, setPendingOperation] = useState(null);
   const [coursesError, setCoursesError] = useState('');
   const [liveLoading, setLiveLoading] = useState(false);
   const [selectedResults, setSelectedResults] = useState([]);
@@ -144,23 +145,32 @@ const ExperimentCoursePage = () => {
     if (!actionLockRef.current) actionLockRef.current = true;
     setActionLoading(true);
     try {
-      const result = await selectExperimentRound({
+      const input = {
         term,
         task_id: selectedCourse.task_id,
         project_code: selectedProject.project_code,
         round_id: round.wid,
-      });
+      };
+      const result = await selectExperimentRound(input);
       
       if (result.code === '0') {
         message.success('选课成功');
+        setPendingOperation(null);
         setRoundsModalVisible(false);
         loadCourses(); // 刷新课程列表
+      } else if (result.state === 'unknown') {
+        setPendingOperation({ input, message: result.msg });
+        setRoundsModalVisible(false);
       } else {
         message.error(result.msg || '选课失败');
       }
     } catch (error) {
       console.error('选课失败:', error);
-      message.error('选课失败');
+      message.error(error.message || '选课失败');
+      if (!error.response) {
+        setPendingOperation({ input: { term, task_id: selectedCourse.task_id, project_code: selectedProject.project_code, round_id: round.wid }, message: '连接中断，提交结果尚未确认，请核验官方结果。' });
+        setRoundsModalVisible(false);
+      }
     } finally {
       setActionLoading(false);
       actionLockRef.current = false;
@@ -168,7 +178,7 @@ const ExperimentCoursePage = () => {
   };
 
   const handleSelect = (round) => {
-    if (actionLockRef.current) return;
+    if (actionLockRef.current || pendingOperation) return;
     actionLockRef.current = true;
     const unknown = round.conflict_status === 'unknown';
     Modal.confirm({
@@ -185,26 +195,50 @@ const ExperimentCoursePage = () => {
 
   // 退课
   const handleDeselect = async (project) => {
-    if (actionLockRef.current) return;
+    if (actionLockRef.current || pendingOperation) return;
     actionLockRef.current = true;
     setActionLoading(true);
     try {
-      const result = await deselectExperimentRound({
+      const input = {
         term,
         task_id: project.task_id,
         project_code: project.project_code,
         round_id: project.selected_round_id,
-      });
+      };
+      const result = await deselectExperimentRound(input);
       
       if (result.code === '0') {
         message.success('退课成功');
+        setPendingOperation(null);
         loadCourses(); // 刷新课程列表
+      } else if (result.state === 'unknown') {
+        setPendingOperation({ input, message: result.msg });
       } else {
         message.error(result.msg || '退课失败');
       }
     } catch (error) {
       console.error('退课失败:', error);
-      message.error('退课失败');
+      message.error(error.message || '退课失败');
+      if (!error.response) setPendingOperation({ input: { term, task_id: project.task_id, project_code: project.project_code, round_id: project.selected_round_id }, message: '连接中断，提交结果尚未确认，请核验官方结果。' });
+    } finally {
+      setActionLoading(false);
+      actionLockRef.current = false;
+    }
+  };
+
+  const verifyPendingOperation = async () => {
+    if (!pendingOperation || actionLockRef.current) return;
+    actionLockRef.current = true;
+    setActionLoading(true);
+    try {
+      const result = await verifyExperimentOperation(pendingOperation.input);
+      if (result.code === '0' || result.state === 'not_sent') {
+        setPendingOperation(null);
+        message.info(result.msg);
+        await loadCourses();
+      } else setPendingOperation(current => ({ ...current, message: result.msg }));
+    } catch (error) {
+      setPendingOperation(current => ({ ...current, message: error.message || '核验暂时失败，请稍后重试' }));
     } finally {
       setActionLoading(false);
       actionLockRef.current = false;
@@ -290,7 +324,7 @@ const ExperimentCoursePage = () => {
                       okText="确认"
                       cancelText="取消"
                     >
-                      <Button size="small" danger loading={actionLoading}>
+                      <Button size="small" danger loading={actionLoading} disabled={Boolean(pendingOperation)}>
                         退课
                       </Button>
                     </Popconfirm>
@@ -418,6 +452,7 @@ const ExperimentCoursePage = () => {
       </div>
 
       <SystemMessageNotice kind="experiment" messages={systemMessagesResource.data?.messages} />
+      {pendingOperation && <Alert className="experiment-operation-notice" type="warning" showIcon message="实验操作结果待核验" description={pendingOperation.message} action={<Button loading={actionLoading} onClick={verifyPendingOperation}>核验操作结果</Button>} />}
 
       {/* 统计卡片 */}
       <div className="stats-row">
@@ -495,6 +530,7 @@ const ExperimentCoursePage = () => {
               rowKey="task_id"
               expandable={{ expandedRowRender }}
               pagination={false}
+              scroll={{ x: 800 }}
               size="middle"
             />
           )
@@ -574,7 +610,7 @@ const ExperimentCoursePage = () => {
                   )}
                   <Button
                     type="primary"
-                    disabled={!round.can_select}
+                    disabled={!round.can_select || Boolean(pendingOperation)}
                     onClick={() => handleSelect(round)}
                     loading={actionLoading}
                   >

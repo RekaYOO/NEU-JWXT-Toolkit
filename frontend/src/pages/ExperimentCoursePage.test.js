@@ -1,6 +1,13 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import ExperimentCoursePage from './ExperimentCoursePage';
+import { Modal } from 'antd';
+import { getExperimentRounds, selectExperimentRound, verifyExperimentOperation } from '../services/api';
+
+jest.mock('../services/api', () => ({
+  ...jest.requireActual('../services/api'),
+  getExperimentRounds: jest.fn(), selectExperimentRound: jest.fn(), verifyExperimentOperation: jest.fn(),
+}));
 
 let mockSnapshot = null;
 const mockRefresh = jest.fn();
@@ -35,12 +42,16 @@ describe('experiment selection cache-first states', () => {
     mockSnapshot = null;
     mockRefresh.mockReset();
     mockReloadCache.mockReset();
+    getExperimentRounds.mockReset();
+    selectExperimentRound.mockReset();
+    verifyExperimentOperation.mockReset();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
   });
 
   afterEach(async () => {
+    jest.restoreAllMocks();
     await act(async () => root.unmount());
     container.remove();
     global.IS_REACT_ACT_ENVIRONMENT = false;
@@ -108,5 +119,25 @@ describe('experiment selection cache-first states', () => {
     expect(container.textContent).toContain('实验课程读取失败');
     expect(container.textContent).toContain('实验选课结果尚未确认');
     expect(container.textContent).not.toContain('当前没有已形成的实验选课结果');
+  });
+
+  test('unknown selection exposes verification without resubmitting', async () => {
+    mockSnapshot = { term: '2026-2027-1', selected_results: [], courses: [{ task_id: 'task', course_name: '实验课程', course_no: 'course', selected_count: 0, must_do_count: 1, projects: [{ project_code: 'project', project_name: '实验项目', is_selected: false }] }] };
+    getExperimentRounds.mockResolvedValue({ rounds: [{ wid: 'round', round_name: '实验班', can_select: true, conflict_status: 'unknown', selected_count: 0, capacity: 20 }] });
+    selectExperimentRound.mockResolvedValue({ code: '-1', state: 'unknown', msg: '结果待核验，不会重复提交' });
+    verifyExperimentOperation.mockResolvedValue({ code: '0', state: 'confirmed', msg: '官方结果已确认' });
+    let confirmation;
+    jest.spyOn(Modal, 'confirm').mockImplementation(options => { confirmation = options; return { destroy() {} }; });
+    await act(async () => root.render(<ExperimentCoursePage />));
+    await act(async () => container.querySelector('.ant-collapse-header').click());
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent.replace(/\s/g, '') === '选课').click());
+    await act(async () => [...document.querySelectorAll('button')].find(button => button.textContent.includes('确认后选择')).click());
+    expect(selectExperimentRound).not.toHaveBeenCalled();
+    await act(async () => confirmation.onOk());
+    expect(container.textContent).toContain('实验操作结果待核验');
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '核验操作结果').click());
+    expect(selectExperimentRound).toHaveBeenCalledTimes(1);
+    expect(verifyExperimentOperation).toHaveBeenCalledWith({ term: '2026-2027-1', task_id: 'task', project_code: 'project', round_id: 'round' });
+    expect(container.textContent).not.toContain('实验操作结果待核验');
   });
 });

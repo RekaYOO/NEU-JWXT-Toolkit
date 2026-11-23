@@ -179,16 +179,18 @@ const CourseSelectionPage = () => {
 
   const onServiceAuthenticated = async result => {
     const state = result?.service_auth_state;
-    if (['not_in_selection_round', 'service_unavailable'].includes(state)) {
+    const notices = {
+      not_in_selection_round: ['JWXK_NOT_IN_SELECTION_ROUND', '当前账号不在学校开放的选课轮次中，暂时不能进入选课系统。历史课程备份仍可查看。'],
+      service_unavailable: ['JWXK_SERVICE_UNAVAILABLE', 'WebVPN 认证已完成，但选课系统暂不可用；无需重复认证，历史课程备份仍可查看。'],
+      login_required: ['SERVICE_AUTH_REQUIRED', 'WebVPN 已登录，但选课系统仍需认证。历史课程备份仍可查看。'],
+    };
+    if (Object.hasOwn(notices, state)) {
       statusRequestGeneration.current += 1;
       setLoading(false);
       setStatus(previous => ({
         ...previous, service_authenticated: false, authenticated: false,
         service_auth_state: state,
-        error_code: state === 'not_in_selection_round' ? 'JWXK_NOT_IN_SELECTION_ROUND' : 'JWXK_SERVICE_UNAVAILABLE',
-        message: state === 'not_in_selection_round'
-          ? '当前账号不在学校开放的选课轮次中，暂时不能进入选课系统。历史课程备份仍可查看。'
-          : 'WebVPN 认证已完成，但选课系统暂不可用；无需重复认证，历史课程备份仍可查看。',
+        error_code: notices[state][0], message: notices[state][1],
       }));
       return;
     }

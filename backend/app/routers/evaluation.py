@@ -274,6 +274,9 @@ def submit_evaluation(
         if not target:
             raise RuntimeError("evaluation target unavailable")
 
+        if request.reason:
+            target.raw_data["submission_reason"] = request.reason
+
         # 应用文本型指标内容
         if request.text_results:
             for ind in target.indicators:

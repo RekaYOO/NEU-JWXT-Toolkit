@@ -14,7 +14,7 @@ export function selectTests(files, exists = file => existsSync(path.join(root, f
     if (/^docs\/.*\.md$/.test(file) || /^(README|AGENTS)\.md$/.test(file)) continue;
     // Deleted files and shared/runtime/config changes require full regression.
     if (!file.startsWith('frontend/src/') || !exists(file)
-        || /^frontend\/src\/(setupTests\.js|index\.[jt]sx?|App\.[jt]sx?|services\/|resources\/)/.test(file)) {
+        || /^frontend\/src\/(setupTests\.js|(?:index|main)\.[jt]sx?|App\.[jt]sx?|services\/|resources\/)/.test(file)) {
       return { mode: 'full', files: [] };
     }
     related.push(file.slice('frontend/'.length));

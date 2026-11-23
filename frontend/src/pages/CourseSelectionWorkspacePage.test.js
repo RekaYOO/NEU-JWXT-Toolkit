@@ -10,6 +10,7 @@ import { useCachedResource } from '../resources/ResourceStore';
 import {
   checkJwxkCatalogEligibility, getJwxkCatalogFilterOptions, getJwxkSelected, getJwxkStatus,
   readJwxkPlan, searchJwxkCatalog,
+  getJwxkWeightConfig, applyJwxkWeights,
 } from '../services/api';
 
 let mockTimetableProps;
@@ -21,6 +22,8 @@ jest.mock('../services/api', () => ({
   getJwxkStatus: jest.fn(),
   readJwxkPlan: jest.fn(),
   searchJwxkCatalog: jest.fn(),
+  getJwxkWeightConfig: jest.fn(),
+  applyJwxkWeights: jest.fn(),
 }));
 jest.mock('../resources/ResourceStore', () => ({ useCachedResource: jest.fn() }));
 jest.mock('./TimetablePage', () => props => {
@@ -288,5 +291,42 @@ describe('selection workspace independent resource loading', () => {
     expect(clearExperimentSelectionsForClasses(['class'], {
       class: ['exp-1'], other: ['exp-2'],
     })).toEqual({ other: ['exp-2'] });
+  });
+
+  test.each([false, true])('restores an unfinished weight application, including withdraw-only targets: %s', async withdrawOnly => {
+    const weightBatch = { ...batch, selection_type_code: '04' };
+    readJwxkPlan.mockResolvedValue({ batch_code: 'batch', batch: weightBatch, items: [], groups: [] });
+    getJwxkStatus.mockResolvedValue({ batches: [weightBatch] });
+    const items = [{ class_id: 'class', course_code: 'C1', course_name: '待核验课程', teaching_class_type: 'FANKC', weight: 20 }];
+    if (withdrawOnly) items.push({ class_id: 'old-class', course_code: 'C2', course_name: '待撤回课程', teaching_class_type: 'FANKC', weight: 0, withdraw_only: true });
+    getJwxkWeightConfig.mockResolvedValue({ grade_size: 5000, pending_application: {
+      recovery: true, budget: 20, used: 20, minimum: 5, step: 1, items, courses: items, groups: [], warnings: [],
+    } });
+    applyJwxkWeights.mockResolvedValue({ completed: false, results: [] });
+    await render();
+    const open = [...container.querySelectorAll('button')].find(button => button.textContent === '策略投权');
+    expect(open).toBeDefined();
+    await act(async () => {
+      open.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+    expect(getJwxkWeightConfig).toHaveBeenCalledWith('2026-2027-1', 'batch');
+    expect(document.body.textContent).toContain('继续未完成的投权方案');
+    expect(document.body.textContent).not.toContain('代理值：保守');
+    expect(document.body.querySelector('input[aria-label="待核验课程投权"]').disabled).toBe(true);
+    const resume = [...document.body.querySelectorAll('button')].find(button => button.textContent === '继续核验并完成');
+    await act(async () => {
+      resume.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+    const confirm = [...document.body.querySelectorAll('.ant-modal-confirm button')].find(button => button.textContent === '确认并逐项提交');
+    expect(confirm).toBeDefined();
+    if (withdrawOnly) expect(document.body.textContent).toContain('仅撤回原志愿，本次不再投放');
+    await act(async () => {
+      confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve, 100));
+    });
+    expect(applyJwxkWeights).toHaveBeenCalledWith({ batch_code: 'batch', term_code: '2026-2027-1', items });
+    expect(document.body.textContent).toContain('继续未完成的投权方案');
   });
 });

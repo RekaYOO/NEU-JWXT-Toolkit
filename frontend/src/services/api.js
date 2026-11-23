@@ -187,6 +187,13 @@ export const logoutAccessGateway = async () => {
   return response.data;
 };
 
+export const getAdminStatus = async () => (await api.get('/api/admin/status', { skipAuthRedirect: true })).data;
+export const loginAdmin = async password => (await api.post('/api/admin/login', { password }, { skipAuthRedirect: true })).data;
+export const logoutAdmin = async () => (await api.post('/api/admin/logout', null, { skipAuthRedirect: true })).data;
+export const getAdminAccounts = async () => (await api.get('/api/admin/accounts', { skipAuthRedirect: true })).data;
+export const addAdminAccount = async account => (await api.post('/api/admin/accounts', { account }, { skipAuthRedirect: true })).data;
+export const changeAdminAccount = async (account, action) => (await api.post(`/api/admin/accounts/${encodeURIComponent(account)}/${encodeURIComponent(action)}`, null, { skipAuthRedirect: true })).data;
+
 export const shutdownRuntime = async () => {
   const health = await getHealth();
   if (!health.shutdown_token) {
@@ -432,6 +439,13 @@ export const getCourseOutlineSections = async (courseCode, group, config = {}) =
   return response.data;
 };
 
+export const downloadCourseOutlineAttachment = async (token, filename) => {
+  const response = await api.post('/api/course-outlines/attachments/download', { token, filename }, { responseType: 'blob' });
+  const url = URL.createObjectURL(response.data);
+  const link = document.createElement('a'); link.href = url; link.download = filename; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+};
+
 export const getCourseOutlinePlanMetadata = async () => {
   const response = await api.get('/api/course-outlines/metadata/plan');
   return response.data;
@@ -622,7 +636,7 @@ export const generateAcademicDocument = async (documentId) => {
     const response = await api.post(
       '/api/export/academic-documents/generate',
       { document_id: documentId },
-      { responseType: 'blob', nativeDownload: true, timeout: 180000 },
+      { responseType: 'blob', nativeDownload: true, timeout: 180000, authRecoveryRetry: false },
     );
     const format = response.headers['x-academic-document-format']
       || (response.data?.type?.includes('pdf') ? 'pdf' : 'html');
@@ -667,6 +681,10 @@ export const checkGradesNow = async () => {
 };
 
 export const getSystemCacheSettings = async () => (await api.get('/api/system-settings/cache')).data;
+export const getAppearance = async () => (await api.get('/api/appearance')).data;
+export const saveAppearance = async payload => (await api.put('/api/appearance', payload)).data;
+export const getSiteAppearance = async () => (await api.get('/api/admin/appearance')).data;
+export const saveSiteAppearance = async payload => (await api.put('/api/admin/appearance', payload)).data;
 export const updateSystemCacheSettings = async (payload) => (await api.put('/api/system-settings/cache', payload)).data;
 export const getSystemMailSettings = async () => (await api.get('/api/system-settings/mail')).data;
 export const updateSystemMailSettings = async (payload) => (await api.put('/api/system-settings/mail', payload)).data;
@@ -675,32 +693,39 @@ export const getAuthRecoverySettings = async () => (await api.get('/api/system-s
 export const updateAuthRecoverySettings = async (payload) => (await api.put('/api/system-settings/auth-recovery', payload)).data;
 export const getRuntimeUpdate = async (force = false) => (await api.get('/api/runtime/update', { params: force ? { force: true } : undefined, skipAuthRedirect: true })).data;
 export const startRuntimeUpdateDownload = async () => (await api.post('/api/runtime/update/download', null, { skipAuthRedirect: true })).data;
+export const installDesktopUpdate = async jobId => {
+  const health = await getHealth();
+  if (!health.shutdown_token) throw new Error('当前服务不支持本机安装');
+  return (await api.post(`/api/runtime/update/${encodeURIComponent(jobId)}/install`, null, {
+    headers: { 'X-NEU-Shutdown-Token': health.shutdown_token }, timeout: 120000,
+  })).data;
+};
 export const getRuntimeUpdateJob = async jobId => (await api.get(`/api/runtime/update/${encodeURIComponent(jobId)}`, { skipAuthRedirect: true })).data;
 
 export const getAuthRecoveryStatus = async (token) => {
   const response = await api.get(
-    `/api/auth-recovery/${encodeURIComponent(token)}/status`
+    `/api/auth-recovery/${encodeURIComponent(token)}/status`, { skipAuthRedirect: true }
   );
   return response.data;
 };
 
 export const startAuthRecovery = async (token) => {
   const response = await api.post(
-    `/api/auth-recovery/${encodeURIComponent(token)}/start`
+    `/api/auth-recovery/${encodeURIComponent(token)}/start`, null, { skipAuthRedirect: true }
   );
   return response.data;
 };
 
 export const pollAuthRecovery = async (token) => {
   const response = await api.get(
-    `/api/auth-recovery/${encodeURIComponent(token)}/poll`
+    `/api/auth-recovery/${encodeURIComponent(token)}/poll`, { skipAuthRedirect: true }
   );
   return response.data;
 };
 
 export const refreshAuthRecoveryCaptcha = async (token) => {
   const response = await api.post(
-    `/api/auth-recovery/${encodeURIComponent(token)}/captcha/refresh`
+    `/api/auth-recovery/${encodeURIComponent(token)}/captcha/refresh`, null, { skipAuthRedirect: true }
   );
   return response.data;
 };
@@ -708,7 +733,7 @@ export const refreshAuthRecoveryCaptcha = async (token) => {
 export const sendAuthRecoverySMS = async (token, captchaCode) => {
   const response = await api.post(
     `/api/auth-recovery/${encodeURIComponent(token)}/sms/send`,
-    { captcha_code: captchaCode }
+    { captcha_code: captchaCode }, { skipAuthRedirect: true }
   );
   return response.data;
 };
@@ -720,14 +745,14 @@ export const verifyAuthRecoverySMS = async (
 ) => {
   const response = await api.post(
     `/api/auth-recovery/${encodeURIComponent(token)}/sms/verify`,
-    { code, trust_device: trustDevice }
+    { code, trust_device: trustDevice }, { skipAuthRedirect: true }
   );
   return response.data;
 };
 
 export const cancelAuthRecovery = async (token) => {
   const response = await api.post(
-    `/api/auth-recovery/${encodeURIComponent(token)}/cancel`
+    `/api/auth-recovery/${encodeURIComponent(token)}/cancel`, null, { skipAuthRedirect: true }
   );
   return response.data;
 };
@@ -931,7 +956,7 @@ export const getCacheEvents = async (after = '', options = {}) => {
  * 导出培养计划为 CSV
  */
 export const exportAcademicReport = async () => {
-  const response = await api.get('/api/academic-report/export');
+  const response = await api.get('/api/academic-report/export', { responseType: 'blob', nativeDownload: true, timeout: 180000 });
   return response.data;
 };
 
@@ -956,7 +981,7 @@ export const getExperimentCourses = async (term = null) => {
  * @param {string} term - 学年学期代码
  */
 export const getExperimentRounds = async (taskId, courseNo, projectCode, term) => {
-  const response = await api.get(`/api/experiment-courses/${taskId}/rounds`, {
+  const response = await api.get(`/api/experiment-courses/${encodeURIComponent(taskId)}/rounds`, {
     params: { course_no: courseNo, project_code: projectCode, term }
   });
   return response.data;
@@ -967,7 +992,7 @@ export const getExperimentRounds = async (taskId, courseNo, projectCode, term) =
  * @param {Object} data - { term, task_id, project_code, round_id }
  */
 export const selectExperimentRound = async (data) => {
-  const response = await api.post('/api/experiment-courses/select', data);
+  const response = await api.post('/api/experiment-courses/select', data, { authRecoveryRetry: false });
   return response.data;
 };
 
@@ -976,9 +1001,13 @@ export const selectExperimentRound = async (data) => {
  * @param {Object} data - { term, task_id, project_code, round_id }
  */
 export const deselectExperimentRound = async (data) => {
-  const response = await api.post('/api/experiment-courses/deselect', data);
+  const response = await api.post('/api/experiment-courses/deselect', data, { authRecoveryRetry: false });
   return response.data;
 };
+
+export const verifyExperimentOperation = async data => (
+  await api.post('/api/experiment-courses/verify', data, { authRecoveryRetry: false })
+).data;
 
 // ── 科研训练 API ─────────────────────────────────────────────────────────────
 
@@ -1015,7 +1044,7 @@ export const setResearchTopicFavorite = async (data) => {
 };
 
 export const getResearchTopic = async (topicId) => {
-  const response = await api.get(`/api/research-training/topics/${topicId}`);
+  const response = await api.get(`/api/research-training/topics/${encodeURIComponent(topicId)}`);
   return response.data;
 };
 
@@ -1032,16 +1061,20 @@ export const getResearchJournals = async (recordId) => {
 };
 
 export const enrollResearchTopic = async (data) => {
-  const response = await api.post('/api/research-training/enroll', data);
+  const response = await api.post('/api/research-training/enroll', data, { authRecoveryRetry: false });
   return response.data;
 };
 
 export const cancelResearchEnrollment = async (topicId) => {
   const response = await api.post('/api/research-training/cancel', {
     topic_id: topicId,
-  });
+  }, { authRecoveryRetry: false });
   return response.data;
 };
+
+export const verifyResearchOperation = async (topicId) => (
+  await api.post('/api/research-training/verify', { topic_id: topicId }, { authRecoveryRetry: false })
+).data;
 
 // ── 用户头像 API ─────────────────────────────────────────────────────────────
 
@@ -1075,10 +1108,11 @@ export const getUserAvatar = async (refresh = false) => {
  * @param {string} filename - 文件名
  * @param {Object} data - 模拟数据
  */
-export const exportGPASimulation = async (filename, data) => {
+export const exportGPASimulation = async (filename, data, revision = 0) => {
   const response = await api.post('/api/gpa-simulation/export', {
     filename,
-    data
+    data,
+    revision,
   });
   return response.data;
 };
@@ -1096,7 +1130,7 @@ export const listGPASimulationFiles = async () => {
  * @param {string} filename - 文件名
  */
 export const getGPASimulationFile = async (filename) => {
-  const response = await api.get(`/api/gpa-simulation/file/${filename}`);
+  const response = await api.get(`/api/gpa-simulation/file/${encodeURIComponent(filename)}`);
   return response.data;
 };
 
@@ -1104,10 +1138,16 @@ export const getGPASimulationFile = async (filename) => {
  * 删除GPA模拟文件
  * @param {string} filename - 文件名
  */
-export const deleteGPASimulationFile = async (filename) => {
-  const response = await api.delete(`/api/gpa-simulation/file/${filename}`);
+export const deleteGPASimulationFile = async (filename, revision) => {
+  const response = await api.delete(`/api/gpa-simulation/file/${encodeURIComponent(filename)}`, {
+    headers: Number.isInteger(revision) ? { 'If-Match': String(revision) } : {},
+  });
   return response.data;
 };
+
+export const renameGPASimulationFile = async (filename, newFilename, revision) => (
+  await api.post('/api/gpa-simulation/rename', { filename, new_filename: newFilename, revision })
+).data;
 
 // ── 考试安排 API ─────────────────────────────────────────────────────────────
 
@@ -1480,9 +1520,9 @@ export const planJwxkWeights = async (payload) => {
   return response.data;
 };
 
-export const getJwxkWeightConfig = async (termCode) => {
+export const getJwxkWeightConfig = async (termCode, batchCode) => {
   const response = await api.get('/api/course-selection/jwxk/weights/config', {
-    params: { term_code: termCode },
+    params: { term_code: termCode, ...(batchCode ? { batch_code: batchCode } : {}) },
   });
   return response.data;
 };
@@ -1496,6 +1536,11 @@ export const applyJwxkWeights = async (payload) => {
   const response = await api.post('/api/course-selection/jwxk/weights/apply', payload, {
     skipAuthRedirect: true,
   });
+  return response.data;
+};
+
+export const cancelJwxkWeightApplication = async (batchCode) => {
+  const response = await api.post('/api/course-selection/jwxk/weights/application/cancel', { batch_code: batchCode });
   return response.data;
 };
 
@@ -1598,8 +1643,10 @@ export const submitEvaluation = async (
   customScores = null,
   textResults = null,
   dryRun = true,
+  reason = '',
 ) => {
   const data = { task_id: taskId, xspjid, strategy, dry_run: dryRun };
+  if (reason) data.reason = reason;
   if (customScores) data.custom_scores = customScores;
   if (textResults) data.text_results = textResults;
   const response = await api.post('/api/evaluation/submit', data);

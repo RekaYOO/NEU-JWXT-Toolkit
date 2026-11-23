@@ -40,6 +40,17 @@ describe('VersionUpdateCard', () => {
     expect(container.textContent).toContain('已是最新');
   });
 
+  test('Go download explains the backup and directory replacement workflow', async () => {
+    getRuntimeUpdate.mockResolvedValueOnce({ current_version: '2.2.4', latest_version: '3.0.0', update_available: true, capability: 'go-manual' });
+    await act(async () => root.render(<VersionUpdateCard />));
+    await act(async () => container.querySelector('button').click());
+    expect(container.textContent).toContain('先备份、停止程序');
+    expect(container.textContent).not.toContain('install.sh');
+    const download = [...container.querySelectorAll('button')].find(button => button.textContent.includes('下载更新'));
+    await act(async () => download.click());
+    expect(startRuntimeUpdateDownload).toHaveBeenCalledTimes(1);
+  });
+
   test('shows a release-check error instead of claiming the app is current', async () => {
     getRuntimeUpdate.mockResolvedValueOnce({
       current_version: '1.0.0', latest_version: null, update_available: false,
@@ -49,6 +60,27 @@ describe('VersionUpdateCard', () => {
     await act(async () => container.querySelector('button').click());
     expect(container.textContent).toContain('无法连接 GitHub Release');
     expect(container.textContent).not.toContain('已是最新');
+  });
+
+  test('desktop download rejection remains visible on the desktop card', async () => {
+    getRuntimeUpdate.mockResolvedValueOnce({ update_available: true, capability: 'go-manual' });
+    startRuntimeUpdateDownload.mockRejectedValueOnce(new Error('无法创建下载任务'));
+    await act(async () => root.render(<VersionUpdateCard />));
+    await act(async () => container.querySelector('button').click());
+    const download = [...container.querySelectorAll('button')].find(button => button.textContent.includes('下载更新'));
+    await act(async () => download.click());
+    expect(container.textContent).toContain('无法创建下载任务');
+    expect(download.disabled).toBe(false);
+  });
+
+  test('client APK metadata error is not shown as up to date', async () => {
+    nativeShellInfo.mockReturnValue({ kind: 'client', version: '1.0.0' });
+    checkNativeAppUpdate.mockResolvedValue({ available: false, error: 'APK 清单不可用' });
+    await act(async () => root.render(<VersionUpdateCard />));
+    await act(async () => container.querySelector('button').click());
+    const panel = container.querySelector('[aria-label="手机客户端更新"]');
+    expect(panel.textContent).toContain('APK 清单不可用');
+    expect(panel.textContent).not.toContain('已是最新');
   });
 
   test('client checks both its APK and the connected server only after a click', async () => {
@@ -117,6 +149,17 @@ describe('VersionUpdateCard', () => {
     expect(panel.textContent).toContain('更新包已下载，请手动安装');
     expect(panel.textContent).toContain('自动更新器未运行');
     expect(panel.textContent).not.toContain('更新已完成');
+  });
+
+  test.each([true, false])('desktop shows the actual staging result after a download: %s', async prepared => {
+    const job = { job_id: 'a'.repeat(32), state: 'downloaded', path: 'C:/updates/toolbox.zip',
+      ...(prepared ? { prepared_path: 'C:/updates/new-program' } : { message: '暂存目录不可用；已下载的更新包仍可手动安装' }) };
+    getRuntimeUpdate.mockResolvedValue({ current_version: '1.0.0', latest_version: '2.0.0', update_available: true, capability: 'go-manual', job });
+    await act(async () => root.render(<VersionUpdateCard />));
+    await act(async () => container.querySelector('button').click());
+    expect(container.textContent).toContain(`更新包位置：${job.path}`);
+    expect(container.textContent).toContain(prepared ? '新版已暂存，尚未安装' : job.message);
+    expect(container.textContent.includes('暂存目录：C:/updates/new-program')).toBe(prepared);
   });
 
   test('client accepts a server job without claiming success or polling it twice', async () => {

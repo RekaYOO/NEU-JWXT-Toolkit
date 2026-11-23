@@ -360,8 +360,8 @@ const FestivalActivitiesPage = ({ offlineMode = false }) => {
   };
 
   const onServiceAuthenticated = async result => {
-    if (result?.service_auth_state === 'service_unavailable') {
-      connection.unavailable();
+    if (['service_unavailable', 'login_required'].includes(result?.service_auth_state)) {
+      connection.gatewayResult(result.service_auth_state);
       return;
     }
     const status = await connection.check();
@@ -376,7 +376,7 @@ const FestivalActivitiesPage = ({ offlineMode = false }) => {
         onChange={changeServiceRoute} onCheck={connection.check} />
       <ServiceAuthNotice status={connection.status} busy={connection.busy} offline={offlineMode}
         onChange={changeServiceRoute} onCheck={connection.check}
-        onLogin={view => serviceLogin.current?.open(view)} />
+        onLogin={view => view === 'pending' ? serviceLogin.current?.continuePending() : serviceLogin.current?.open(view)} />
     </section>
   );
 

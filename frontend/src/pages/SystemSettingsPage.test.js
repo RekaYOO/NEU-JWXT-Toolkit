@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import SystemSettingsPage from './SystemSettingsPage';
 import {
   getAuthRecoverySettings, updateAuthRecoverySettings,
-  getSystemCacheSettings, getSystemMailSettings,
+  getSystemCacheSettings, getSystemMailSettings, updateSystemCacheSettings,
 } from '../services/api';
 
 jest.mock('./LogsPage', () => () => null);
@@ -85,5 +85,20 @@ describe('recovery link lifetime settings', () => {
     await submit();
     expect(updateAuthRecoverySettings).not.toHaveBeenCalled();
     expect(container.textContent).toContain('请输入 1 到 168 小时的整数');
+  });
+
+  test('shows actual freshness behavior and saves account cache settings', async () => {
+    const cache = { scores: { enabled: false, interval_minutes: 60 } };
+    getSystemCacheSettings.mockResolvedValue({ cache });
+    updateSystemCacheSettings.mockResolvedValue({ cache });
+    await render({ public_base_url: '', link_ttl_hours: 3 });
+    expect(container.textContent).toContain('快照仍保留用于离线查看');
+    expect(container.textContent).toContain('仅影响当前账号');
+    const save = Array.from(container.querySelectorAll('button')).find(button => button.textContent.includes('保存缓存配置'));
+    await act(async () => {
+      save.click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(updateSystemCacheSettings).toHaveBeenCalledWith({ resources: cache });
   });
 });

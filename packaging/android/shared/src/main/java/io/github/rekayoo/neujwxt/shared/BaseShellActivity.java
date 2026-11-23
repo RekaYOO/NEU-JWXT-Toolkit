@@ -250,13 +250,18 @@ public abstract class BaseShellActivity extends AppCompatActivity {
     }
 
     public void saveFile(String filename, String mediaType, String base64) {
+        String incomingToken = base64 != null && base64.startsWith("@native:")
+            ? base64.substring("@native:".length()) : null;
         if (choosingSave) {
+            if (incomingToken != null && !incomingToken.equals(pendingNativeToken)) {
+                nativeFiles().discard(incomingToken);
+            }
             showError("请先完成当前文件保存");
             return;
         }
         pendingNativeToken = null;
-        if (base64 != null && base64.startsWith("@native:")) {
-            pendingNativeToken = base64.substring("@native:".length());
+        if (incomingToken != null) {
+            pendingNativeToken = incomingToken;
             pendingFile = null;
         } else {
         try {
@@ -277,6 +282,7 @@ public abstract class BaseShellActivity extends AppCompatActivity {
         } catch (ActivityNotFoundException exception) {
             choosingSave = false;
             pendingFile = null;
+            if (pendingNativeToken != null) nativeFiles().discard(pendingNativeToken);
             pendingNativeToken = null;
             showError("系统文件选择器不可用");
         }

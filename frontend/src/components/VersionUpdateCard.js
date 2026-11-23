@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Modal, Space, Tag, Typography, message } from 'antd';
 import { CloudDownloadOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons';
-import { getRuntimeUpdate, getRuntimeUpdateJob, startRuntimeUpdateDownload } from '../services/api';
+import { getRuntimeUpdate, getRuntimeUpdateJob, startRuntimeUpdateDownload, installDesktopUpdate } from '../services/api';
 import { checkNativeAppUpdate, installNativeAppUpdate, nativeShellInfo } from '../services/nativeBridge';
 
 const { Text } = Typography;
@@ -9,6 +9,7 @@ const stateText = state => ({
   downloading: '正在下载更新包', verifying: '正在校验更新包',
   staged: '更新包已准备', requested: '等待服务端更新器接管',
   installing: '正在安装并检查新版本', downloaded: '更新包已下载，请手动安装',
+  selected: '安装记录：当时已选定新版程序', install_unknown: '安装结果待核对，请检查启动版本',
   completed: '更新已完成', failed: '更新失败',
 }[state] || '尚未检查');
 const errorText = reason => reason?.response?.data?.detail || reason?.message || '版本检查失败';
@@ -30,6 +31,8 @@ export default function VersionUpdateCard() {
   const [job, setJob] = useState(null);
   const [serverJob, setServerJob] = useState(null);
   const [checking, setChecking] = useState(false);
+  const [selectedJob, setSelectedJob] = useState('');
+  const [installing, setInstalling] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [serverDownloading, setServerDownloading] = useState(false);
   const [error, setError] = useState('');
@@ -42,14 +45,14 @@ export default function VersionUpdateCard() {
     if (isClient) {
       await Promise.all([
         checkNativeAppUpdate().then(
-          value => setAppSnapshot(value || null),
-          reason => setAppError(errorText(reason)),
+          value => { setAppSnapshot(value?.error ? null : value || null); setAppError(value?.error || ''); },
+          reason => { setAppSnapshot(null); setAppError(errorText(reason)); },
         ),
         getRuntimeUpdate(force).then(value => {
           setServerSnapshot(value || null);
           setServerJob(value?.job || null);
           if (value?.error) setServerError(value.error);
-        }, reason => setServerError(errorText(reason))),
+        }, reason => { setServerSnapshot(null); setServerError(errorText(reason)); }),
       ]);
       setChecking(false);
       return;
@@ -59,7 +62,7 @@ export default function VersionUpdateCard() {
       setSnapshot(value || null);
       if (!nativeApp) setJob(value?.job || null);
       if (value?.error) setError(value.error);
-    } catch (reason) { setError(errorText(reason)); }
+    } catch (reason) { setSnapshot(null); setError(errorText(reason)); }
     finally { setChecking(false); }
   }, [isClient, nativeApp]);
 
@@ -103,13 +106,14 @@ export default function VersionUpdateCard() {
   useEffect(() => pollJob(serverJobId, serverJobState, setServerJob, setServerError), [serverJobId, serverJobState, pollJob]);
 
   const startServerDownload = async () => {
-    setServerDownloading(true); setServerError('');
+    const setDownloadError = isClient ? setServerError : setError;
+    setServerDownloading(true); setDownloadError('');
     try {
       const value = await startRuntimeUpdateDownload();
       if (isClient) setServerJob(value);
       else setJob(value);
       message.info('更新任务已开始，请在下方查看实际进度');
-    } catch (reason) { setServerError(errorText(reason)); }
+    } catch (reason) { setDownloadError(errorText(reason)); }
     finally { setServerDownloading(false); }
   };
   const downloadApp = async () => {
@@ -136,7 +140,7 @@ export default function VersionUpdateCard() {
 
   const renderStatus = (value, status, valueError) => (
     <div className="version-update-status" aria-live="polite">
-      {status && <Text strong type={value?.state === 'failed' ? 'danger' : undefined}>{status}</Text>}
+      {status && <Text strong type={value?.state === 'failed' ? 'danger' : undefined}>{value?.state === 'downloaded' && value.prepared_path ? '新版已暂存，尚未安装' : status}</Text>}
       {value?.state === 'downloading' && value.bytes_total > 0 && (
         <Text type="secondary">已下载 {Math.min(100, Math.round((value.bytes_downloaded || 0) / value.bytes_total * 100))}%</Text>
       )}
@@ -147,7 +151,9 @@ export default function VersionUpdateCard() {
         </li>)}
       </ol>}
       {value?.error && <Text type="danger">{value.error}</Text>}
-      {value?.state === 'downloaded' && value.path && <Text type="secondary">文件位置：{value.path}</Text>}
+      {value?.state === 'downloaded' && !value.prepared_path && value.message && <Text type="secondary">{value.message}</Text>}
+      {value?.state === 'downloaded' && value.path && <Text type="secondary" style={{ overflowWrap: 'anywhere' }}>更新包位置：{value.path}</Text>}
+      {value?.state === 'downloaded' && value.prepared_path && <Text type="secondary" style={{ overflowWrap: 'anywhere' }}>暂存目录：{value.prepared_path}</Text>}
       {valueError && <Text type="danger">{valueError}</Text>}
     </div>
   );
@@ -163,7 +169,9 @@ export default function VersionUpdateCard() {
         {available && serverSnapshot?.capability !== 'none' && <Button type="primary" icon={<CloudDownloadOutlined />} loading={serverDownloading} disabled={busy || serverJob?.state === 'completed'} onClick={downloadServer}>{serverSnapshot.capability === 'linux-auto' ? '下载并升级服务端' : '下载服务端更新'}</Button>}
         <Button icon={<LinkOutlined />} href={serverSnapshot?.release_url || 'https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest'} target="_blank" rel="noreferrer">查看服务端 Release</Button>
       </div>
-       <Text type="secondary" className="version-update-hint">{serverSnapshot?.capability === 'linux-manual'
+       <Text type="secondary" className="version-update-hint">{serverSnapshot?.capability === 'go-manual'
+         ? '更新包会在服务端下载并校验。完成后请先备份、停止服务，再按运行包说明替换程序目录并保留数据目录。'
+         : serverSnapshot?.capability === 'linux-manual'
          ? '此服务端的自动更新器未运行。点击后只会下载更新包，需要在服务器解压并执行 sudo ./install.sh --upgrade。'
          : '服务端升级只在你确认后开始；安装结果和失败原因会显示在上方。'}</Text>
      </section>;
@@ -199,11 +207,23 @@ export default function VersionUpdateCard() {
       <div className="version-update-panel__heading">{available ? <Tag color="blue">有新版本</Tag> : snapshot && !error ? <Tag color="green">已是最新</Tag> : <Tag>尚未检查</Tag>}</div>
        <div className="version-update-version"><span>当前版本：<b>{current}</b></span><span>最新版本：<b>{latest || '—'}</b></span></div>
       {renderStatus(job, status, error)}
+      {selectedJob && selectedJob === job?.job_id && <Text role="status">新版已选定。退出程序后，请从原目录的启动工具箱.cmd 重新打开。</Text>}
       <div className="version-update-actions">
+        {snapshot?.can_install_on_restart && job?.state === 'downloaded' && job.job_id !== selectedJob && <Button loading={installing} onClick={() => Modal.confirm({
+          title: '安装并在下次启动时使用新版？', content: '请先备份数据。确认后将重新校验更新包并试运行新版；当前程序不会退出。', okText: '确认安装', cancelText: '取消',
+          onOk: async () => {
+            setInstalling(true); setError('');
+            try { const result = await installDesktopUpdate(job.job_id); if (!result?.restart_required) throw new Error('未确认安装结果'); setJob(previous => previous?.job_id === job.job_id ? { ...previous, state: 'selected' } : previous); setSelectedJob(job.job_id); }
+            catch (reason) { setError(errorText(reason)); }
+            finally { setInstalling(false); }
+          },
+        })}>安装更新</Button>}
         {available && capability !== 'none' && <Button type="primary" icon={<CloudDownloadOutlined />} loading={downloading || serverDownloading} disabled={busy || job?.state === 'completed'} onClick={() => { if (nativeApp) return downloadApp(); return capability === 'linux-auto' ? downloadServer() : startServerDownload(); }}>{capability === 'linux-auto' ? '下载并升级' : capability === 'android-install' ? '下载并安装' : '下载更新'}</Button>}
         <Button icon={<LinkOutlined />} href={releaseUrl} target="_blank" rel="noreferrer">查看 Release</Button>
       </div>
-      <Text type="secondary" className="version-update-hint">{capability === 'linux-manual'
+      <Text type="secondary" className="version-update-hint">{capability === 'go-manual'
+        ? '更新包下载并校验后，请先备份、停止程序，再替换程序目录并保留原数据目录。'
+        : capability === 'linux-manual'
         ? '自动更新器未运行，下载完成后需在服务器解压并执行 sudo ./install.sh --upgrade。'
         : '更新只在你手动点击后执行，不会自动下载；任务进度和结果显示在上方。'}</Text>
     </div>

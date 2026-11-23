@@ -66,6 +66,7 @@ import { mergeSelectionConflictMatches, sameSelectionCourse } from '../utils/jwx
 import { jwxkScheduleOverlayMeta } from '../utils/jwxkModes';
 import { loadSetting, saveSetting } from '../utils/settings';
 import { resolveTimetableSections } from '../utils/timetableSections';
+import { downloadTimetable } from '../utils/timetableExport';
 import TimetableDayAgenda from '../components/TimetableDayAgenda';
 import MergedUpdateSummary from '../components/MergedUpdateSummary';
 import {
@@ -269,6 +270,14 @@ export const buildConflictCourseScheduleMap = courses => {
     });
   });
   return result;
+};
+
+export const termConflictDetails = (term, roundTerm, personalCourses, overlayCourses, personalConflicts, roundConflicts) => {
+  const inRoundTerm = Boolean(roundTerm) && term === roundTerm;
+  return {
+    conflictCourseScheduleMap: buildConflictCourseScheduleMap(inRoundTerm ? [...personalCourses, ...overlayCourses] : personalCourses),
+    effectiveConflictMap: inRoundTerm ? { ...personalConflicts, ...roundConflicts } : personalConflicts,
+  };
 };
 
 const fullConflictSchedule = (course, scheduleMap, fallback) => (
@@ -3431,13 +3440,9 @@ function TimetablePage({
       visibleOverlayCourses,
     );
   }, [agendaProjection, campusCode, mode, overlayCourses, personalPayload, preferredTermCode, termCode]);
-  const conflictCourseScheduleMap = useMemo(() => buildConflictCourseScheduleMap([
-    ...(personalPayload?.courses || schedule?.courses || []),
-    ...(overlayCourses || []),
-  ]), [overlayCourses, personalPayload, schedule]);
-  const effectiveConflictMap = useMemo(
-    () => ({ ...personalConflictMap, ...(externalConflictMap || {}) }),
-    [externalConflictMap, personalConflictMap],
+  const { conflictCourseScheduleMap, effectiveConflictMap } = useMemo(
+    () => termConflictDetails(termCode, preferredTermCode, personalPayload?.courses || schedule?.courses || [], overlayCourses || [], personalConflictMap, externalConflictMap),
+    [termCode, preferredTermCode, personalPayload, schedule, overlayCourses, personalConflictMap, externalConflictMap],
   );
 
   useEffect(() => {
@@ -4150,6 +4155,9 @@ function TimetablePage({
             />
           )}
           <OtherCourses schedule={schedule} />
+          {!embedded && !loading && !error && (usesPersonalTimetableEndpoint ? personalPayload?.term_code === termCode : queryScheduleMatches) && (
+            <Button onClick={() => downloadTimetable({ termCode, mode, view: displayedViewMode, week: displayedWeekNumber, days: mobileCoursesByDay, schedule })}>导出当前课表（JSON）</Button>
+          )}
           {mode === 'personal' && !embedded && displayedViewMode === 'week' && <div className="timetable-extra-agenda">
             {sortAgendaCourses(agendaEventCourses.filter(course => !course.start_section && agendaEventMatchesDate(
               { date: course.agenda_date },

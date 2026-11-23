@@ -49,11 +49,18 @@ data/logs/
 # Session and credential files
 *.pkl
 session.pkl
+vault.key
+toolbox.db
+toolbox.db-wal
+toolbox.db-shm
+*.age
 
 # Node.js
 node_modules/
 frontend/node_modules/
 frontend/build/
+frontend/build.staging/
+frontend/build.previous/
 frontend/dist/
 npm-debug.log*
 yarn-debug.log*
