@@ -19,7 +19,9 @@ func (api *API) registerExams(router *http.ServeMux) {
 			api.resourceError(response, err)
 			return
 		}
-		writeJSON(response, 200, payload)
+		if api.allowRuntimeResponse(response, request, runtime) {
+			writeJSON(response, 200, payload)
+		}
 	})
 	for _, path := range []string{"/api/exams", "/api/exams/export-ics"} {
 		router.HandleFunc("GET "+path, api.exams)
@@ -42,7 +44,9 @@ func (api *API) exams(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if request.URL.Path == "/api/exams" {
-		writeJSON(response, 200, payload)
+		if api.allowRuntimeResponse(response, request, runtime) {
+			writeJSON(response, 200, payload)
+		}
 		return
 	}
 	exams := payload["exams"].([]map[string]any)
@@ -53,6 +57,9 @@ func (api *API) exams(response http.ResponseWriter, request *http.Request) {
 	calendar, count := academic.ExamsCalendar(exams, runtime.Client.Account(), academic.Text(payload["term_code"]), time.Now())
 	if count == 0 {
 		writeJSON(response, 422, map[string]string{"detail": "考试时间尚未明确，无法导出日历"})
+		return
+	}
+	if !api.allowRuntimeResponse(response, request, runtime) {
 		return
 	}
 	response.Header().Set("Content-Type", "text/calendar; charset=utf-8")

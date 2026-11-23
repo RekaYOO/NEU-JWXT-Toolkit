@@ -11,11 +11,15 @@ import (
 type outlineTestClient struct {
 	testCampusClient
 	calls atomic.Int32
+	afterRead func()
 }
 
 func (client *outlineTestClient) Request(_ context.Context, method, target string, _ url.Values) ([]byte, error) {
 	client.calls.Add(1)
 	if method == "GET" && strings.HasSuffix(target, "/getAttachmentFile/safe-token") {
+		if client.afterRead != nil {
+			client.afterRead()
+		}
 		return []byte("anonymous attachment"), nil
 	}
 	return []byte(`{"rows":[]}`), nil
@@ -53,3 +57,23 @@ func TestOutlineAttachmentBoundaryAndNoPersistence(t *testing.T) {
 }
 
 var _ CampusClient = (*outlineTestClient)(nil)
+
+func TestOutlineAttachmentRevokedBeforeDelivery(t *testing.T) {
+	api, handler := testApplication(t, "remote-multi")
+	ctx := context.Background()
+	client := &outlineTestClient{testCampusClient: testCampusClient{account: "20250001"}}
+	if err := api.database.AddAccount(ctx, client.account); err != nil {
+		t.Fatal(err)
+	}
+	api.accounts.factory = func(string) (CampusClient, error) { return client, nil }
+	cookie := loginCookie(t, handler, client.account)
+	client.afterRead = func() {
+		if err := api.database.RevokeSession(ctx, cookie.Value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response := apiRequest(handler, "POST", "/api/course-outlines/attachments/download", `{"token":"safe-token"}`, cookie)
+	if client.calls.Load() != 1 || response.Code == 200 || response.Header().Get("Content-Disposition") != "" || strings.Contains(response.Body.String(), "anonymous attachment") {
+		t.Fatal("unexpected attachment response", response.Code)
+	}
+}

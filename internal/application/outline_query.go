@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/academic"
+	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/store"
 )
 
 var outlineAttachmentPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,160}$`)
@@ -26,6 +27,15 @@ func (api *API) outlineRuntime(response http.ResponseWriter, request *http.Reque
 		return nil
 	}
 	return runtime
+}
+
+func (api *API) allowRuntimeResponse(response http.ResponseWriter, request *http.Request, runtime *Runtime) bool {
+	session, err := api.session(request)
+	if err != nil || api.accounts.Runtime(session) != runtime {
+		api.resourceError(response, store.ErrAccess)
+		return false
+	}
+	return true
 }
 
 func (api *API) registerOutlineQuery(router *http.ServeMux) {
@@ -72,6 +82,9 @@ func (api *API) registerOutlineQuery(router *http.ServeMux) {
 		payload, err := runtime.Request(request.Context(), http.MethodGet, "https://jwxt.neu.edu.cn/jwapp/sys/emapcomponent/file/getAttachmentFile/"+input.Token, nil)
 		if err != nil {
 			api.resourceError(response, err)
+			return
+		}
+		if !api.allowRuntimeResponse(response, request, runtime) {
 			return
 		}
 		response.Header().Set("Content-Type", "application/octet-stream")
