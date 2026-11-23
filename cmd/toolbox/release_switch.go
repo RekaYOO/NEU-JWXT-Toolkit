@@ -314,7 +314,11 @@ func previousDesktopExecutable(stage, original string) string {
 	if err != nil || !slotName.MatchString(name) || name == filepath.Base(stage) {
 		return original
 	}
-	previous := filepath.Join(filepath.Dir(stage), name)
+	root, err := filepath.EvalSymlinks(filepath.Dir(stage))
+	if err != nil {
+		return original
+	}
+	previous := filepath.Join(root, name)
 	resolved, err := filepath.EvalSymlinks(previous)
 	if err != nil || !strings.EqualFold(resolved, previous) || probeRelease(previous) != nil {
 		return original
