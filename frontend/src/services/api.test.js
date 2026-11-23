@@ -27,6 +27,22 @@ const loadApiWithAxios = () => {
   return { client, rejectResponse, apiModule };
 };
 
+test('outline attachments hand the downloaded file token to the Android picker', async () => {
+  const { client, apiModule } = loadApiWithAxios();
+  const saveFile = jest.fn();
+  window.NeuNative = { saveFile };
+  try {
+    const blob = new Blob([], { type: 'application/pdf' });
+    blob.__neuNativeFileToken = 'fixture-file';
+    client.post.mockResolvedValue({ data: blob });
+    await apiModule.downloadCourseOutlineAttachment('fixture-id', 'outline.pdf');
+    expect(client.post).toHaveBeenCalledWith('/api/course-outlines/attachments/download', { token: 'fixture-id', filename: 'outline.pdf' }, { responseType: 'blob', nativeDownload: true });
+    expect(saveFile).toHaveBeenCalledWith('outline.pdf', 'application/pdf', '@native:fixture-file');
+  } finally {
+    delete window.NeuNative;
+  }
+});
+
 describe('JWXK automation settings API', () => {
   test('experiment writes and verification never replay through auth recovery', async () => {
     const { client, apiModule } = loadApiWithAxios();

@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { isManualLogoutActive } from '../utils/authSessionPolicy';
-import { isNativeShell, nativeAxiosAdapter } from './nativeBridge';
+import { isNativeShell, nativeAxiosAdapter, saveNativeFile } from './nativeBridge';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';  // 默认使用相对路径，支持同源部署
 const OFFLINE_SESSION_KEY = 'neu_offline_mode';
@@ -440,7 +440,8 @@ export const getCourseOutlineSections = async (courseCode, group, config = {}) =
 };
 
 export const downloadCourseOutlineAttachment = async (token, filename) => {
-  const response = await api.post('/api/course-outlines/attachments/download', { token, filename }, { responseType: 'blob' });
+  const response = await api.post('/api/course-outlines/attachments/download', { token, filename }, { responseType: 'blob', nativeDownload: true });
+  if (saveNativeFile(filename, response.data.type, response.data)) return;
   const url = URL.createObjectURL(response.data);
   const link = document.createElement('a'); link.href = url; link.download = filename; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 0);
