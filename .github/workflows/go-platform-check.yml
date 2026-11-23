@@ -83,6 +83,27 @@ jobs:
             dist/go-release/go-release-manifest.json
             dist/go-release/SHA256SUMS
             dist/go-release/verification.json
+  debian-reboot:
+    needs: linux-archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-web-${{ github.sha }}
+          path: dist/go-release
+      - name: Verify service autostart and access after guest reboot
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+          image=debian-12-nocloud-amd64.qcow2
+          base=https://cloud.debian.org/images/cloud/bookworm/latest
+          curl -fsSL --retry 3 "$base/$image" -o "$RUNNER_TEMP/$image"
+          curl -fsSL --retry 3 "$base/SHA512SUMS" -o "$RUNNER_TEMP/debian-sums"
+          (cd "$RUNNER_TEMP" && grep "  $image$" debian-sums | sha512sum -c -)
+          sudo chmod 666 /dev/kvm
+          python3 tools/check_debian_service.py --kvm /usr/bin/qemu-system-x86_64 "$RUNNER_TEMP/$image" dist/go-release/*-linux-amd64-go.tar.gz
   windows-archive:
     needs: linux-archive
     runs-on: windows-latest

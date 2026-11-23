@@ -16,6 +16,7 @@ def main():
     for name in ('qemu', 'image', 'archive'):
         parser.add_argument(name, type=Path)
     parser.add_argument('--docker-engine', type=Path)
+    parser.add_argument('--kvm', action='store_true')
     parser.add_argument('--docker-bases', type=Path)
     parser.add_argument('--docker-source-tar', type=Path)
     args = parser.parse_args()
@@ -35,7 +36,7 @@ def main():
                 shutil.copyfile(args.docker_bases, Path(directory) / 'bases.tar')
             shutil.copyfile(args.docker_engine, Path(directory) / 'engine.tgz')
             shutil.copyfile(Path(__file__).with_name('check_docker_guest.sh'), Path(directory) / 'docker.sh')
-        launch = [str(args.qemu), '-accel', 'tcg', '-cpu', 'max', '-m', '3072' if args.docker_source_tar else '1024',
+        launch = [str(args.qemu), '-accel', 'kvm' if args.kvm else 'tcg', '-cpu', 'host' if args.kvm else 'max', '-m', '3072' if args.docker_source_tar else '1024',
                                     '-drive', f'file={args.image},format=qcow2,if=none,id=guestos,snapshot=on',
                                     '-device', 'virtio-blk-pci,drive=guestos,bootindex=1',
                                     '-drive', f'file=fat:ro:{directory},format=raw,if=none,id=bundle,readonly=on',
