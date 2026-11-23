@@ -2,9 +2,9 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const frontend = path.resolve(__dirname, '../frontend');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || require.resolve('playwright', { paths: [frontend] }));
 
-const origin = process.env.QA_ORIGIN || 'http://localhost:3010';
 const term = { code: '2026-2027-1', name: '2026-2027学年秋季学期', current: true };
 const weeks = [2, 3].map((number, index) => ({ number, name: `第${number}周`, current: number === 2,
   start_date: `2026-09-${13 + index * 7}`, end_date: `2026-09-${19 + index * 7}` }));
@@ -33,7 +33,14 @@ async function checkBounds(page) {
   const screenshots = path.resolve(__dirname, '../.artifacts/timetable-day-agenda');
   await fs.mkdir(screenshots, { recursive: true });
   const browser = await chromium.launch({ headless: true, channel: process.env.QA_BROWSER || 'msedge' });
+  let server;
   try {
+    let origin = process.env.QA_ORIGIN || 'http://localhost:3010';
+    if (process.argv[2]) {
+      const { preview } = require(require.resolve('vite', { paths: [frontend] }));
+      server = await preview({ configFile: false, root: frontend, build: { outDir: path.resolve(process.argv[2], 'frontend/build') }, preview: { host: '127.0.0.1', port: 0 } });
+      origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    }
     for (const [width, height] of [[320, 800], [375, 812], [430, 932], [768, 900], [1440, 900]]) {
       for (const compact of width < 992 ? [false, true] : [false]) {
         let document = { revision: 0, events: [], moves: [] };
@@ -184,5 +191,8 @@ async function checkBounds(page) {
       }
     }
     console.log(`Screenshots: ${screenshots}`);
-  } finally { await browser.close(); }
+  } finally {
+    await browser.close();
+    if (server) await server.close();
+  }
 })().catch(error => { console.error(error); process.exitCode = 1; });

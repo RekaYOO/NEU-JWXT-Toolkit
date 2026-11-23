@@ -20,6 +20,7 @@ on:
       - 'tools/*go_release.py'
       - 'tools/check_go_https.go'
       - 'tools/check_appearance.cjs'
+      - 'tools/check_timetable_day_agenda.cjs'
       - 'packaging/go/**'
       - '.github/workflows/go-platform-check.yml'
 permissions:
@@ -139,6 +140,11 @@ jobs:
           $destination = Join-Path $env:RUNNER_TEMP 'appearance-package'
           Expand-Archive -LiteralPath $archive.FullName -DestinationPath $destination
           node tools/check_appearance.cjs (Join-Path $destination $archive.BaseName)
+      - name: Verify timetable downloads in the packaged web client
+        shell: pwsh
+        run: |
+          $archive = Get-Item dist/go-release/*-windows-amd64-go.zip
+          node tools/check_timetable_day_agenda.cjs (Join-Path $env:RUNNER_TEMP "appearance-package/$($archive.BaseName)")
       - uses: actions/upload-artifact@v4
         with:
           name: windows-verification-${{ github.sha }}
