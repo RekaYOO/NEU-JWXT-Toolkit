@@ -172,6 +172,7 @@ func TestSelectionTaskUnknownSubmissionSurvivesRestartAndRoundEnd(t *testing.T) 
 		id = string(stored)
 	}
 	writesBeforeRecovery := client.writes
+	client.account = "student-a"
 	fresh, handler := testApplicationAt(t, "remote-multi", directory)
 	fresh.accounts.mutex.Lock()
 	fresh.accounts.automationTick = nil
