@@ -1,7 +1,11 @@
 import { saveNativeFile } from '../services/nativeBridge';
 
 export function downloadTimetable({ termCode, mode, view, week, days, schedule }) {
-  const fields = ['course_name', 'course_code', 'weekday', 'weeks', 'recurrence_unknown', 'start_section', 'end_section', 'location', 'teachers', 'details', 'agenda_date', 'start_time', 'end_time'];
+  const fields = [
+    'course_name', 'course_code', 'weekday', 'weeks', 'recurrence_unknown', 'start_section', 'end_section',
+    'start_time', 'end_time', 'location', 'campus', 'teachers', 'details', 'cell_details',
+    'agenda_source', 'agenda_date', 'agenda_kind', 'agenda_selection_mode',
+  ];
   const project = course => Object.fromEntries(fields.filter(field => course[field] != null).map(field => [field, course[field]]));
   const data = {
     term_code: termCode, mode, view, week: view === 'week' ? week : null,

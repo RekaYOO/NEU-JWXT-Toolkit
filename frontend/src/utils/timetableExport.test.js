@@ -5,7 +5,7 @@ jest.mock('../services/nativeBridge', () => ({ saveNativeFile: jest.fn() }));
 
 const fixture = {
   termCode: '2026-1', mode: 'personal', view: 'week', week: 3,
-  days: { 4: [{ course_name: '实验', weekday: 4, internal: 'omit' }] },
+  days: { 4: [{ course_name: '实验', weekday: 4, agenda_source: '2026-04-06', campus: '南校区', cell_details: ['双周实验'], internal: 'omit' }] },
   schedule: { practices: [{ course_name: '实习' }] },
 };
 
@@ -18,7 +18,7 @@ test('mobile save receives visible arrangements and other course groups', async 
   const reader = new FileReader();
   const text = new Promise(resolve => { reader.onload = () => resolve(reader.result); });
   reader.readAsText(blob);
-  expect(JSON.parse(await text)).toMatchObject({ week: 3, courses: [{ course_name: '实验', weekday: 4 }], practices: fixture.schedule.practices, unscheduled: [] });
+  expect(JSON.parse(await text)).toMatchObject({ week: 3, courses: [{ course_name: '实验', weekday: 4, agenda_source: '2026-04-06', campus: '南校区', cell_details: ['双周实验'] }], practices: fixture.schedule.practices, unscheduled: [] });
   expect(JSON.parse(reader.result).courses[0]).not.toHaveProperty('internal');
 });
 
