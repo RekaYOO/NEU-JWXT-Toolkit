@@ -83,6 +83,29 @@ jobs:
             dist/go-release/go-release-manifest.json
             dist/go-release/SHA256SUMS
             dist/go-release/verification.json
+  windows-archive:
+    needs: linux-archive
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-web-${{ github.sha }}
+          path: dist/go-release
+      - run: python tools/check_go_release.py dist/go-release --smoke --report dist/windows-verification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-verification-${{ github.sha }}
+          path: dist/windows-verification.json
+          retention-days: 7
+          if-no-files-found: error
   docker-runtime:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

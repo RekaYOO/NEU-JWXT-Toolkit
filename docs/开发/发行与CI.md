@@ -220,6 +220,8 @@ SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Acti
 
 `refactor/go-web-toolbox` 分支每次推送后，平台检查会构建 Windows 和 Linux 运行包。Linux 服务验收通过后，在该次 Actions 运行的 Artifacts 区下载 `go-web-<提交哈希>`，保留 7 天。解压后可用 `sha256sum -c SHA256SUMS` 核对两个运行包，`verification.json` 记录该次检查结果。
 
+Windows 主机会从同一次构建下载上述运行包，验证启动、迁移、备份恢复和从压缩包升级。完整结果位于 `windows-verification-<提交哈希>`。
+
 候选构建先递增 `VERSION` 和 `ANDROID_VERSION_CODE`，再手动运行 `Release` 工作流。
 全部成功后，`android-release` artifact 包含两个固定签名、正式包名的 APK；
 Windows/Linux 成品分别位于对应的 release artifact。候选 artifact 默认保留 7 天，
