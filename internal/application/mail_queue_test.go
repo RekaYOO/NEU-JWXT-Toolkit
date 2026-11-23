@@ -86,3 +86,73 @@ func TestMailSenderLogoutCancelsInflightAndKeepsOtherSourcesSeparate(t *testing.
 		t.Fatal(due, err)
 	}
 }
+
+func TestStoppingOneAccountDuringConcurrentMailDelivery(t *testing.T) {
+	api, handler := testApplication(t, "remote-multi")
+	ctx := context.Background()
+	api.accounts.mutex.Lock()
+	api.accounts.mailTick = nil
+	api.accounts.mutex.Unlock()
+	for _, account := range []string{"student-a", "student-b"} {
+		api.database.AddAccount(ctx, account)
+		cookie := loginCookie(t, handler, account)
+		config := `{"smtp_host":"smtp.example.invalid","smtp_port":465,"smtp_security":"ssl","from_email":"sender@example.invalid","to_email":"` + account + `@example.invalid"}`
+		if response := apiRequest(handler, "PUT", "/api/system-settings/mail", config, cookie); response.Code != 200 {
+			t.Fatal(response)
+		}
+		generation, err := api.database.Generation(ctx, account)
+		if err != nil {
+			t.Fatal(err)
+		}
+		queued, err := api.queueMail(ctx, store.Session{Account: account, Generation: generation}, "test", "shared-event", notifications.MailMessage{Subject: account, Body: "fixture"})
+		if err != nil || !queued {
+			t.Fatal(account, queued, err)
+		}
+	}
+	started := make(chan string, 2)
+	finished := make(chan string, 2)
+	release := make(chan struct{})
+	defer close(release)
+	api.sendMail = func(ctx context.Context, config notifications.MailConfig, message notifications.MailMessage) error {
+		if config.To != message.Subject+"@example.invalid" {
+			t.Errorf("recipient mismatch for %s", message.Subject)
+		}
+		started <- message.Subject
+		select {
+		case <-ctx.Done():
+			finished <- "canceled " + message.Subject
+			return ctx.Err()
+		case <-release:
+			finished <- "sent " + message.Subject
+			return nil
+		}
+	}
+	next := func(events <-chan string) string {
+		t.Helper()
+		select {
+		case event := <-events:
+			return event
+		case <-time.After(5 * time.Second):
+			t.Fatal("mail scheduler timed out")
+			return ""
+		}
+	}
+	api.scheduleMail()
+	if next(started) == next(started) {
+		t.Fatal("expected both accounts to enter delivery")
+	}
+	if err := api.accounts.Stop(ctx, "student-a", false); err != nil {
+		t.Fatal(err)
+	}
+	if event := next(finished); event != "canceled student-a" {
+		t.Fatal(event)
+	}
+	select {
+	case release <- struct{}{}:
+	case <-time.After(5 * time.Second):
+		t.Fatal("remaining sender unavailable")
+	}
+	if event := next(finished); event != "sent student-b" {
+		t.Fatal(event)
+	}
+}
