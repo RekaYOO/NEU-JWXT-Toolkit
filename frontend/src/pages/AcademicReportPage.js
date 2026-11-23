@@ -1188,7 +1188,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                     type="circle"
                     percent={creditSummary.completion_rate || 0}
                     size={80}
-                    strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
+                    strokeColor="var(--color-brand)"
                     format={(percent) => (
                       <div className="progress-text">
                         <div className="percent">{percent}%</div>
@@ -1212,7 +1212,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                       title="已修学分"
                       value={creditSummary.total_passed || 0}
                       suffix="学分"
-                      valueStyle={{ color: '#52c41a', fontSize: '16px' }}
+                      valueStyle={{ color: 'var(--color-success)', fontSize: '16px' }}
                       prefix={<CheckCircleOutlined />}
                     />
                   </Col>
@@ -1221,7 +1221,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                       title="已选学分"
                       value={creditSummary.total_selected || 0}
                       suffix="学分"
-                      valueStyle={{ color: '#1890ff', fontSize: '16px' }}
+                      valueStyle={{ color: 'var(--color-brand)', fontSize: '16px' }}
                       prefix={<ClockCircleOutlined />}
                     />
                   </Col>
@@ -1230,7 +1230,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                       title="还差学分"
                       value={creditSummary.total_remaining || 0}
                       suffix="学分"
-                      valueStyle={{ color: creditSummary.total_remaining > 0 ? '#faad14' : '#52c41a', fontSize: '16px' }}
+                      valueStyle={{ color: creditSummary.total_remaining > 0 ? 'var(--color-warning)' : 'var(--color-success)', fontSize: '16px' }}
                       prefix={<ExclamationCircleOutlined />}
                     />
                   </Col>
@@ -1238,7 +1238,7 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                 <div className="credit-progress-bar" style={{ marginTop: 8 }}>
                   <Progress
                     percent={creditSummary.completion_rate || 0}
-                    strokeColor="#52c41a"
+                    strokeColor="var(--color-brand)"
                     showInfo={false}
                     size="small"
                   />
