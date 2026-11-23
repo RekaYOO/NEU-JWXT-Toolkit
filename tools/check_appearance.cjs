@@ -28,6 +28,28 @@ async function focusContrast(page, button) {
   }));
 }
 
+async function textContrast(locator) {
+  const bounds = await locator.evaluate(element => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  });
+  const image = PNG.sync.read(await locator.page().screenshot({ clip: bounds }));
+  let lightest = 0;
+  let darkest = 1;
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    const channels = Array.from(image.data.subarray(offset, offset + 3), byte => {
+      const value = byte / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    });
+    const luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+    lightest = Math.max(lightest, luminance);
+    darkest = Math.min(darkest, luminance);
+  }
+  return (lightest + 0.05) / (darkest + 0.05);
+}
+
 (async () => {
   const bundle = process.argv[2] && await fs.realpath(process.argv[2]);
   const build = bundle ? path.join(bundle, 'frontend/build') : path.resolve(__dirname, '../frontend/build');
@@ -153,6 +175,15 @@ async function focusContrast(page, button) {
           await page.goto(`${origin}${surface === 'admin' ? '/admin' : '/'}`);
           await page.locator(surface === 'access' ? '.access-login-page' : surface === 'school' ? '.login-page' : '.admin-login').waitFor();
           await page.waitForFunction(color => getComputedStyle(document.documentElement).getPropertyValue('--color-brand').trim() === color, primaryColor);
+          if (surface === 'access') {
+            await page.locator('button[type=submit]').click();
+            const validation = page.getByText('请输入访问密码', { exact: true });
+            await validation.waitFor();
+            for (const text of [page.locator('.access-login-card h2'), page.locator('.access-login-card .ant-typography-secondary'), validation]) {
+              const ratio = await textContrast(text);
+              assert.ok(ratio >= 4.5, `${theme} ${width}px ${await text.innerText()}: ${ratio.toFixed(2)}:1`);
+            }
+          }
           assert.equal(privateReads, 0);
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
           assert.deepEqual(errors, []);

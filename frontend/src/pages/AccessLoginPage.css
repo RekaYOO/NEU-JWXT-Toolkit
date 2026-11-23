@@ -49,6 +49,14 @@
   margin-top: 28px;
 }
 
+.access-login-card .ant-typography-secondary {
+  color: var(--color-ink-soft);
+}
+
+.access-login-card .ant-form-item-explain-error {
+  color: var(--color-danger, #b91c1c);
+}
+
 .access-login-alert {
   margin: 20px 0;
 }
