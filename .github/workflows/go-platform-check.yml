@@ -3,6 +3,10 @@ on:
   workflow_call:
   push:
     branches: [refactor/go-web-toolbox]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/开发/**'
+      - 'docs/功能/**'
   workflow_dispatch:
   pull_request:
     paths:
@@ -23,6 +27,9 @@ on:
       - 'tools/check_appearance.cjs'
       - 'tools/check_timetable_day_agenda.cjs'
       - 'packaging/go/**'
+      - 'docs/部署/Go运行包.md'
+      - 'docs/部署/Go备份与恢复.md'
+      - 'docs/部署/旧版资料导入.md'
       - '.github/workflows/go-platform-check.yml'
 permissions:
   contents: read
