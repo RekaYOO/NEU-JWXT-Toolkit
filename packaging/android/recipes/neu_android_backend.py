@@ -58,6 +58,7 @@ def _configure() -> None:
             "ZLIB_VERSION": "1.3.2",
         })
         libraries = importlib.import_module("buildlibxml")
+        libraries.ZLIB_LOCATION = "https://zlib.net/fossils/"
         importlib.import_module("setupinfo").run_command = _host_config_command
         original = libraries.cmmi
         if not getattr(original, "_neu_cross", False):

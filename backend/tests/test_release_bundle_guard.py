@@ -313,7 +313,7 @@ def test_branding_assets_cover_web_and_windows_consumers():
         "c11f01b8bd18c6586bd5c53fb40ff87a6ed243ef95b3e7c7cdb898700d1406d6"
     )
 
-    html = (public / "index.html").read_text(encoding="utf-8")
+    html = (public.parent / "index.html").read_text(encoding="utf-8")
     assert "favicon.ico" in html
     assert "manifest.webmanifest" in html
     assert "apple-touch-icon.png" in html

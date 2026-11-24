@@ -87,8 +87,9 @@ SHA-256 digests before extraction into a fresh temporary directory.
 - `pydantic-core`: target Rust triplet, NDK linker and Android CPython library
   directory are passed to PyO3/maturin inside the cross environment.
 - `lxml`: static libxml2 2.15.2, libxslt 1.1.45, libiconv 1.19 and zlib 1.3.2;
-  archive hashes are provided by the locked lxml source. Autoconf receives explicit
-  host/build triplets; zlib uses its own static build configuration.
+  archive hashes are provided by the locked lxml source. The pinned zlib archive
+  comes from the official fossils directory. Autoconf receives explicit host/build
+  triplets, and zlib uses its own static build configuration.
 - `pycryptodome`: its upstream compile/link feature probes use the NDK compiler
   and target sysconfig, without executing Android binaries on the build host.
 - Pure dependencies are downloaded with `--platform any` so host-native wheels

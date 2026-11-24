@@ -105,6 +105,16 @@ class TrackingTestFixture:
         else:
             setattr(self.tracker, name, value)
 
+    def __delattr__(self, name):
+        if name in {"mail_service", "recovery_service", "tracker"}:
+            object.__delattr__(self, name)
+        elif name == "_flush_outbox":
+            del self.mail_service.flush_once
+        elif name in {"_send_email", "_save_outbox"}:
+            delattr(self.mail_service, name)
+        else:
+            delattr(self.tracker, name)
+
     @property
     def _outbox(self):
         return self.mail_service._outbox
