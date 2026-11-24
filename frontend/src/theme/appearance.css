@@ -15,4 +15,5 @@
 .ant-empty .ant-empty-description { color: var(--color-text-secondary); }
 .ant-typography.ant-typography-secondary,
 .ant-statistic .ant-statistic-title { color: var(--color-text-secondary); }
+.course-selection-page .ant-btn.ant-btn-loading { opacity: 1; }
 .ant-segmented .ant-segmented-item:not(.ant-segmented-item-selected):not(.ant-segmented-item-disabled) { color: var(--color-text); }
