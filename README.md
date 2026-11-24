@@ -5,9 +5,7 @@
 # NEU 教务系统工具箱
 
 当前重构分支正在迁移至Go＋SQLite后端和Vite前端，尚未完成整版交付。
-多用户部署请下载提交 `71fb92f` 的 Windows 或 Linux 服务端。该版本在发送考试数据、ICS 日历和大纲附件前再次检查用户会话。登录 GitHub 即可下载，附件有效期至北京时间 2026 年 12 月 1 日 08:39。[服务端下载](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45298676704/artifacts/14877342842) · [验收记录](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45298676704)
-
-三平台验收包使用同一提交 `1525a63`（2.2.4）。本地合集位于 `dist/delivery-1525a63.zip`。登录 GitHub 后可分别下载 [Windows 与 Linux 包](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45242758434/artifacts/14850869677)和 [Android ARM64 调试客户端](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45242758484/artifacts/14853310142)。这两个云端附件均在北京时间 2026 年 12 月 1 日凌晨到期。启动方式、合集校验和与待验项目见[交付说明](docs/部署/RC35交付说明.md)。
+三平台验收包使用同一提交 `47707d1`（2.2.4），本地合集位于 `dist/delivery-47707d1.zip`。本版在发送考试数据、ICS 日历和大纲附件前再次检查用户会话，离开证明页后会关闭待确认的申请。登录 GitHub 后可下载平台包，两个附件均于北京时间 2026 年 12 月 1 日上午到期。[Windows 与 Linux](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45300678607/artifacts/14878776720) · [Android ARM64 调试客户端](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45300678597/artifacts/14878004063) · [交付说明](docs/部署/RC35交付说明.md)
 已接入的Go直连登录、账号会话及GPA方案版本保护与验证入口见
 [Go迁移说明](docs/开发/Go迁移.md)。下方原版安装与Python运行说明仍用于旧版和迁移对照。
 
