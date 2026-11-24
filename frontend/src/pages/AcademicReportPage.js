@@ -164,7 +164,7 @@ const StatusTag = ({ status, isPassed, isSelected, isPlanned }) => {
 };
 
 // 类别颜色
-const CATEGORY_COLORS = ['#1890ff', '#52c41a', '#faad14', '#f5222d', '#722ed1', '#13c2c2'];
+const CATEGORY_COLORS = ['var(--color-primary)', 'var(--color-text)', 'var(--color-muted)'];
 
 // 转换学期代码为中文学期
 const formatTermCode = (termCode) => {
@@ -1550,8 +1550,8 @@ const AcademicReportPage = ({ offlineMode = false }) => {
                     <Text strong style={{ color: '#52c41a' }}> {stats.passed}</Text> 门
                   </span>
                   <span>
-                    <ClockCircleOutlined style={{ color: '#1890ff' }} /> 已选课:
-                    <Text strong style={{ color: '#1890ff' }}> {stats.selected}</Text> 门
+                    <ClockCircleOutlined style={{ color: 'var(--color-primary)' }} /> 已选课:
+                    <Text strong style={{ color: 'var(--color-primary)' }}> {stats.selected}</Text> 门
                   </span>
                   <span>
                     <BookOutlined style={{ color: '#8c8c8c' }} /> 未修读:

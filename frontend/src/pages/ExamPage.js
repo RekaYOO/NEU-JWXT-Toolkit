@@ -228,7 +228,7 @@ const ExamPage = () => {
             <Statistic
               title="待考"
               value={stats.upcoming}
-              valueStyle={{ color: '#1890ff' }}
+              valueStyle={{ color: 'var(--color-primary)' }}
               prefix={<HourglassOutlined />}
             />
           </Card>

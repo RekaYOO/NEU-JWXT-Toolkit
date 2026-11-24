@@ -41,7 +41,7 @@
 }
 
 .stat-upcoming .ant-statistic-title {
-  color: #1890ff;
+  color: var(--color-primary);
 }
 
 .stat-ongoing .ant-statistic-title {
@@ -97,7 +97,7 @@
 }
 
 .exam-status-0 {
-  border-left: 4px solid #1890ff;
+  border-left: 4px solid var(--color-primary);
 }
 
 .exam-status-1 {

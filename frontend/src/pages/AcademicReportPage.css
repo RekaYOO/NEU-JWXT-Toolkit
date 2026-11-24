@@ -272,11 +272,11 @@
 }
 
 .academic-tree .ant-tree-node-content-wrapper:hover {
-  background: #e6f7ff;
+  background: var(--color-canvas);
 }
 
 .academic-tree .ant-tree-node-selected .ant-tree-node-content-wrapper {
-  background: #1890ff;
+  background: var(--color-primary);
 }
 
 .academic-tree .ant-tree-node-selected .ant-tree-node-content-wrapper .node-name,
@@ -849,11 +849,11 @@
 }
 
 .category-tree-card .ant-tree-node-content-wrapper:hover {
-  background: #e6f7ff;
+  background: var(--color-canvas);
 }
 
 .category-tree-card .ant-tree-node-selected .ant-tree-node-content-wrapper {
-  background: #1890ff;
+  background: var(--color-primary);
   color: #fff;
 }
 
@@ -863,7 +863,7 @@
 
 .category-tree-card .ant-tree-node-selected .ant-tree-node-content-wrapper .ant-badge-count {
   background: #fff !important;
-  color: #1890ff !important;
+  color: var(--color-primary) !important;
 }
 
 /* 分页样式 */
