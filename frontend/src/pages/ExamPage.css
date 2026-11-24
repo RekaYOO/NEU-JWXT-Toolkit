@@ -58,6 +58,10 @@
   gap: 24px;
 }
 
+.exam-timeline[aria-busy="true"] {
+  min-height: 120px;
+}
+
 .exam-group {
   padding: 20px 0 0;
   background: transparent;

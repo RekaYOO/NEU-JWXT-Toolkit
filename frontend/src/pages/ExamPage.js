@@ -272,7 +272,7 @@ const ExamPage = () => {
         {visibleExams.length === 0 && !loading && !error ? (
           <Empty description={mobileView === 'upcoming' ? '当前没有待考或进行中的考试' : '该学期暂无考试安排'} />
         ) : (
-          <div className="exam-timeline">
+          <div className="exam-timeline" aria-busy={loading}>
             {/* 待考 */}
             {groupedExams[0] && groupedExams[0].length > 0 && (
               <div className="exam-group">
