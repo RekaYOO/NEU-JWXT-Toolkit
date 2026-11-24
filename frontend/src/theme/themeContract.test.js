@@ -1,7 +1,21 @@
 import { TextEncoder } from 'util';
-import { builtinThemes, parseTemplate, themeTokens, themeVariables, validateTemplate } from './themeContract';
+import { builtinThemes, contrast, parseTemplate, themeTokens, themeVariables, validateTemplate } from './themeContract';
 
 global.TextEncoder = TextEncoder;
+
+test('timetable captions use a validated surface while the default keeps course fills', () => {
+  const original = builtinThemes.find(template => template.id === 'blue');
+  expect(themeVariables(original)['--course-theme-surface']).toBeUndefined();
+  const dark = validateTemplate({ ...original, id: 'custom-night', colors: {
+    primary: '#757575', canvas: '#000000', surface: '#000000', text: '#ffffff', muted: '#cccccc', border: '#aaaaaa',
+  } });
+  for (const template of [builtinThemes[0], builtinThemes[2], dark]) {
+    const variables = themeVariables(template);
+    for (const role of ['--color-feature-caption', '--color-feature-label']) {
+      expect(contrast(variables[role], variables['--course-theme-surface'])).toBeGreaterThanOrEqual(4.5);
+    }
+  }
+});
 
 test('all builtins satisfy text and primary contrast requirements', () => {
   builtinThemes.forEach(template => expect(validateTemplate(template, { builtin: true })).toBe(template));

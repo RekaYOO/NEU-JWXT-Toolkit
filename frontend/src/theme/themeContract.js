@@ -76,6 +76,7 @@ export function themeVariables(template) {
       '--color-feature-tint': colors.canvas, '--color-feature-edge': colors.border,
       '--color-feature-label': colors.text, '--color-feature-caption': colors.muted,
       '--color-feature-accent': colors.primary,
+      '--course-theme-surface': colors.surface,
     }),
     '--color-primary': colors.primary, '--color-accent': colors.primary, '--color-border': colors.border,
     '--color-text': colors.text, '--color-text-secondary': colors.muted, '--color-text-tertiary': colors.muted,

@@ -745,7 +745,7 @@
   overflow: hidden;
   padding: 5px 6px;
   color: var(--color-ink);
-  background: color-mix(in srgb, var(--course-color, var(--color-brand)) 38%, var(--color-surface));
+  background: var(--course-theme-surface, color-mix(in srgb, var(--course-color, var(--color-brand)) 38%, var(--color-surface)));
   border: 1px solid color-mix(in srgb, var(--course-color, var(--color-brand)) 68%, var(--color-line));
   border-radius: var(--radius-md);
   box-shadow: 0 2px 6px rgb(15 23 42 / 12%);
@@ -1028,7 +1028,7 @@
 .course-location {
   display: block;
   flex: 0 0 auto;
-  color: #475569;
+  color: var(--color-feature-caption, #475569);
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -1073,7 +1073,7 @@
   padding: 4px 10px 4px 12px;
   pointer-events: none;
   color: var(--color-ink);
-  background: color-mix(in srgb, var(--course-color, var(--color-brand)) 44%, var(--color-surface));
+  background: var(--course-theme-surface, color-mix(in srgb, var(--course-color, var(--color-brand)) 44%, var(--color-surface)));
   border: 1px solid color-mix(in srgb, var(--course-color, var(--color-brand)) 68%, #475569);
   border-radius: 8px;
   font: inherit;
@@ -1104,7 +1104,7 @@
 
 .timetable-cluster-stack-summary {
   flex: 0 0 auto;
-  color: #475569;
+  color: var(--color-feature-caption, #475569);
   font-size: 12px;
   font-weight: 600;
   line-height: 1.2;
@@ -1126,7 +1126,7 @@
 
 .timetable-cluster-stack-detail {
   display: none;
-  color: #334155;
+  color: var(--color-feature-label, #334155);
   font-size: 12px;
   line-height: 1.35;
 }
@@ -1136,7 +1136,7 @@
   justify-content: flex-start;
   gap: 4px;
   padding: 12px 13px calc(12px + var(--cluster-lower-reserve, 0px)) 15px;
-  background: color-mix(in srgb, var(--course-color, var(--color-brand)) 50%, var(--color-surface));
+  background: var(--course-theme-surface, color-mix(in srgb, var(--course-color, var(--color-brand)) 50%, var(--color-surface)));
   box-shadow: 0 8px 18px rgb(15 23 42 / 22%);
 }
 
@@ -1545,8 +1545,8 @@
 
   .timetable-mobile-summary.expanded .timetable-mobile-summary-trigger {
     color: var(--color-brand);
-    background: #eff6ff;
-    border-color: #bfdbfe;
+    background: var(--color-feature-tint, #eff6ff);
+    border-color: var(--color-feature-edge, #bfdbfe);
   }
 
   .timetable-mobile-summary.expanded .timetable-mobile-summary-controls {
@@ -2075,7 +2075,7 @@
   }
 
   .timetable-grid.is-mobile-compact .timetable-course-block {
-    background: color-mix(in srgb, var(--course-color, var(--color-brand)) 24%, var(--color-surface));
+    background: var(--course-theme-surface, color-mix(in srgb, var(--course-color, var(--color-brand)) 24%, var(--color-surface)));
     border-color: color-mix(in srgb, var(--course-color, var(--color-brand)) 58%, var(--color-line));
   }
 
@@ -2102,7 +2102,7 @@
   .timetable-grid.is-mobile-compact .timetable-cluster-stack-detail {
     display: block;
     overflow: visible;
-    color: #475569;
+    color: var(--color-feature-caption, #475569);
     font-size: 8px;
     line-height: 1.2;
     overflow-wrap: anywhere;
@@ -2169,7 +2169,7 @@
   }
   .timetable-mobile-card {
     position: relative;
-    background: color-mix(in srgb, var(--course-color, var(--color-brand)) 28%, var(--color-surface));
+    background: var(--course-theme-surface, color-mix(in srgb, var(--course-color, var(--color-brand)) 28%, var(--color-surface)));
     border-color: color-mix(in srgb, var(--course-color, var(--color-brand)) 58%, var(--color-line));
     cursor: pointer;
   }
@@ -2216,7 +2216,7 @@
   }
 
   .mobile-course-location {
-    color: #475569;
+    color: var(--color-feature-caption, #475569);
     font-size: 13px;
   }
 
@@ -2224,7 +2224,7 @@
   .mobile-course-classes {
     display: -webkit-box;
     overflow: hidden;
-    color: #475569;
+    color: var(--color-feature-caption, #475569);
     font-size: 12px;
     line-height: 1.35;
     overflow-wrap: anywhere;
