@@ -5,7 +5,7 @@
 # NEU 教务系统工具箱
 
 当前重构分支正在迁移至Go＋SQLite后端和Vite前端，尚未完成整版交付。
-三平台试用包使用同一提交 `a75490e`（2.2.4）。Windows 解压后双击 `启动工具箱.exe`。在「系统设置 → 外观与主题」可以预览或应用主题，默认晴蓝沿用原版配色。远程多用户管理员从 `/admin` 管理准入。登录 GitHub 后下载对应平台包。[Windows 与 Linux](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45317751894/artifacts/14885727036) · [Android ARM64 调试客户端](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45317751939/artifacts/14885747059) · [启动与核验说明](docs/部署/三平台试用说明.md)
+三平台运行包使用同一提交 `b4cb195`（2.2.4）。Windows 解压后双击 `启动工具箱.exe`。在「系统设置 → 外观与主题」可以预览或应用主题，默认晴蓝沿用原版配色。远程多用户管理员从 `/admin` 管理准入。登录 GitHub 后下载对应平台包。[Windows 与 Linux](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45322067409/artifacts/14887458328) · [Android ARM64 调试客户端](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45322067386/artifacts/14888486504) · [启动与核验说明](docs/部署/三平台试用说明.md)
 已接入的Go直连登录、账号会话及GPA方案版本保护与验证入口见
 [Go迁移说明](docs/开发/Go迁移.md)。下方原版安装与Python运行说明仍用于旧版和迁移对照。
 
