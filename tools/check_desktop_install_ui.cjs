@@ -34,7 +34,7 @@ async function main() {
     const start = async (...prefix) => {
     const launcher = prefix[0] === 'launch';
     const args = ['--listen=127.0.0.1:0', '--tray=false', '--open-browser=false'];
-    child = spawn(launcher ? process.env.ComSpec : exe, launcher ? ['/d', '/c', '启动工具箱.cmd', ...args] : args, { cwd: app, env, windowsHide: true, stdio: 'ignore' });
+    child = spawn(launcher ? path.join(app, '启动工具箱.exe') : exe, args, { cwd: app, env, windowsHide: true, stdio: 'ignore' });
     exited = once(child, 'exit');
     let origin;
     for (let attempt = 0; attempt < 100 && !origin; attempt++) {

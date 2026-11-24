@@ -101,6 +101,6 @@ export default function ApplicationTheme({ identity = '', publicTheme, children 
   return <AppearanceContext.Provider value={{ ...value, identity, all, applied, loaded, saving, error, reload, persist,
     preview: candidate => { if (identityRef.current !== identity) return; validateTemplate(candidate, { builtin: builtinThemes.some(item => item.id === candidate.id) }); setPreview({ owner: identity, template: candidate }); },
     cancelPreview: () => setPreview(current => current?.owner === identity ? null : current), previewing: preview?.owner === identity }}>
-    <ConfigProvider theme={template.id === 'blue' ? { token: { motion: !reduced } } : themeTokens(template, reduced)}>{children}</ConfigProvider>
+    <ConfigProvider theme={template.id === 'blue' ? { token: { motion: !reduced, colorTextDisabled: template.colors.muted, colorTextPlaceholder: template.colors.muted } } : themeTokens(template, reduced)}>{children}</ConfigProvider>
   </AppearanceContext.Provider>;
 }
