@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Button, Card, Checkbox, Col, Form, Input, InputNumber, Modal, Row, Select, Space, Spin, Switch, Tabs, Typography, message } from 'antd';
 import { FileTextOutlined, MailOutlined, SaveOutlined, SettingOutlined } from '@ant-design/icons';
 import LogsPage from './LogsPage';
+import PluginSettings from './PluginSettings';
 import {
   getAuthRecoverySettings,
   getSystemCacheSettings,
@@ -139,7 +140,7 @@ const NativeServerSettings = () => shellInfo?.kind === 'client' ? (
 
 export default function SystemSettingsPage() {
   const [params, setParams] = useSearchParams();
-  const activeKey = ['logs', 'appearance'].includes(params.get('tab')) ? params.get('tab') : 'config';
+  const activeKey = ['plugins', 'logs', 'appearance'].includes(params.get('tab')) ? params.get('tab') : 'config';
   const mobileLocal = shellInfo?.kind === 'local';
-  return <main className="system-settings-page"><div className="system-settings-heading"><SettingOutlined /><div><Title level={2}>系统设置</Title><Text type="secondary">统一管理外观、日志、缓存和系统通知配置</Text></div></div><Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={[{ key: 'config', label: <span><SettingOutlined /> 配置项</span>, children: <div className="system-settings-sections"><VersionUpdateCard /><NativeServerSettings /><CacheSettings /><BrowserTimetableCacheCard />{!mobileLocal && <><Card title="系统邮件" className="system-settings-card"><SystemMailForm /></Card><Card title="远程登录恢复" className="system-settings-card"><AuthRecoverySettings /></Card></>}</div> }, { key: 'appearance', label: '外观与主题', children: <AppearanceSettings active={activeKey === 'appearance'} /> }, { key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded /> }]} /></main>;
+  return <main className="system-settings-page"><div className="system-settings-heading"><SettingOutlined /><div><Title level={2}>系统设置</Title><Text type="secondary">统一管理插件、外观、日志、缓存和系统通知配置</Text></div></div><Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={[{ key: 'config', label: <span><SettingOutlined /> 配置项</span>, children: <div className="system-settings-sections"><VersionUpdateCard /><NativeServerSettings /><CacheSettings /><BrowserTimetableCacheCard />{!mobileLocal && <><Card title="系统邮件" className="system-settings-card"><SystemMailForm /></Card><Card title="远程登录恢复" className="system-settings-card"><AuthRecoverySettings /></Card></>}</div> }, { key: 'appearance', label: '外观与主题', children: <AppearanceSettings active={activeKey === 'appearance'} /> }, { key: 'plugins', label: '插件', children: <PluginSettings /> }, { key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded /> }]} /></main>;
 }

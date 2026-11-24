@@ -182,3 +182,5 @@ npm run build
 本项目仅供学习和个人教务辅助使用，与东北大学及其教务系统开发、运营单位无隶属或授权
 关系。使用者应遵守学校规定并自行承担操作结果；课程容量、资格、成绩、考试安排和选课结果
 均以官方系统为准。
+重构分支的插件入口在「系统设置 → 插件」。[插件包说明](docs/功能/插件.md) · [多用户配置](docs/功能/账号与远程管理.md) · [本分支最新 Windows/Linux 构建](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/go-platform-check.yml?query=branch%3Arefactor%2Fgo-web-toolbox) · [Android 构建](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/android-client-check.yml?query=branch%3Arefactor%2Fgo-web-toolbox)
+

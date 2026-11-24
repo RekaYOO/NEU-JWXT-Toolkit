@@ -683,6 +683,15 @@ export const checkGradesNow = async () => {
 
 export const getSystemCacheSettings = async () => (await api.get('/api/system-settings/cache')).data;
 export const getAppearance = async () => (await api.get('/api/appearance')).data;
+const pluginRegistry = '/api/documents/settings/plugins-v1';
+export const getPlugins = async () => {
+  try { return (await api.get(pluginRegistry)).data; }
+  catch (error) {
+    if (error.response?.status === 404) return { revision: 0, data: [] };
+    throw error;
+  }
+};
+export const savePlugins = async (revision, data) => (await api.put(pluginRegistry, { revision, data })).data;
 export const saveAppearance = async payload => (await api.put('/api/appearance', payload)).data;
 export const getSiteAppearance = async () => (await api.get('/api/admin/appearance')).data;
 export const saveSiteAppearance = async payload => (await api.put('/api/admin/appearance', payload)).data;
