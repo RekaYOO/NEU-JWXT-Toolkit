@@ -47,40 +47,69 @@ jobs:
           node-version: 22
       - run: npm ci --prefix frontend
       - run: go test ./internal/... ./cmd/...
+      - run: python3 packaging/go/test_install_server.py
       - run: python3 tools/build_go_release.py
       - run: python3 tools/check_go_release.py dist/go-release --smoke
-      - name: Start the packaged systemd service on a clean host
+      - name: Install and migrate alongside the legacy systemd service
         shell: bash
         run: |
           set -euo pipefail
           version=$(cat VERSION)
           bundle="NEU-JWXT-Toolkit-${version}-linux-amd64-go"
-          sudo install -d -m 0755 /opt/neu-toolbox
-          sudo tar -xzf "dist/go-release/$bundle.tar.gz" --strip-components=1 --no-same-owner -C /opt/neu-toolbox
-          go run tools/check_go_https.go /opt/neu-toolbox/toolbox
-          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin neu-toolbox
-          sudo install -m 0644 /opt/neu-toolbox/neu-toolbox.service /etc/systemd/system/neu-toolbox.service
-          sudo install -m 0600 /dev/null /etc/neu-toolbox.env
-          export TEST_ACCESS_PASSWORD="$(openssl rand -hex 24)"
-          export TEST_ADMIN_PASSWORD="$(openssl rand -hex 24)"
-          printf 'NEU_JWXT_PUBLIC_ORIGIN=https://toolbox.example.invalid\nNEU_JWXT_ACCESS_PASSWORD=%s\nNEU_JWXT_ADMIN_PASSWORD=%s\n' "$TEST_ACCESS_PASSWORD" "$TEST_ADMIN_PASSWORD" | sudo tee /etc/neu-toolbox.env >/dev/null
+          archive="dist/go-release/$bundle.tar.gz"
+          manifest=dist/go-release/go-release-manifest.json
+          origin=https://toolbox.example.invalid
+          installer=$(mktemp)
+          tar -xOzf "$archive" "$bundle/install.sh" > "$installer"
+          bash -n "$installer"
+          bash "$installer" --help >/dev/null
+          printf '[Service]\nExecStart=/usr/bin/sleep infinity\n' | sudo tee /etc/systemd/system/neu-jwxt-toolkit.service >/dev/null
           sudo systemctl daemon-reload
-          trap 'sudo systemctl stop neu-toolbox' EXIT
-          sudo systemctl start neu-toolbox
-          curl -fsS --retry 20 --retry-delay 1 --retry-connrefused http://127.0.0.1:8000/api/health | jq -e --arg version "$version" '.backend == "go" and .version == $version'
+          sudo systemctl start neu-jwxt-toolkit
+          cookies=$(mktemp)
+          invalid=$(mktemp)
+          trap 'rm -f "$installer" "$cookies" "$invalid"; sudo systemctl stop neu-toolbox neu-jwxt-toolkit || true' EXIT
+          jq '.assets["linux-amd64"].sha256 = ("0" * 64)' "$manifest" > "$invalid"
+          if bash "$installer" --origin "$origin" --archive "$archive" --manifest "$invalid"; then
+            exit 1
+          fi
+          test ! -e /opt/neu-toolbox
+          bash "$installer" --origin "$origin" --version "v$version" --archive "$archive" --manifest "$manifest"
+          go run tools/check_go_https.go /opt/neu-toolbox/toolbox
+          sudo systemctl is-active --quiet neu-jwxt-toolkit
+          test "$(sudo systemctl is-enabled neu-toolbox || true)" = disabled
+          test "$(stat -c '%a %U %G' /etc/neu-toolbox.env)" = '600 root root'
+          base=http://localhost:18000/api
+          curl -4fsS "$base/health" | jq -e --arg version "$version" '.backend == "go" and .version == $version'
           test "$(stat -c '%a %U %G' /var/lib/neu-toolbox)" = '700 neu-toolbox neu-toolbox'
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/status)" = 401
+          test "$(curl -4s -o /dev/null -w '%{http_code}' "$base/status")" = 401
+          export TEST_ACCESS_PASSWORD="$(sudo sed -n 's/^NEU_JWXT_ACCESS_PASSWORD=//p' /etc/neu-toolbox.env)"
+          export TEST_ADMIN_PASSWORD="$(sudo sed -n 's/^NEU_JWXT_ADMIN_PASSWORD=//p' /etc/neu-toolbox.env)"
           printf 'NEU_JWXT_PUBLIC_ORIGIN=https://toolbox.example.invalid\n' | sudo tee /etc/neu-toolbox.env >/dev/null
           sudo systemctl restart neu-toolbox
-          curl -fsS --retry 20 --retry-delay 1 --retry-connrefused http://127.0.0.1:8000/api/health | jq -e --arg version "$version" '.backend == "go" and .version == $version'
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/status)" = 401
-          cookies=$(mktemp)
-          trap 'rm -f "$cookies"; sudo systemctl stop neu-toolbox' EXIT
-          base=http://localhost:8000/api
+          curl -4fsS --retry 20 --retry-delay 1 --retry-connrefused "$base/health" | jq -e --arg version "$version" '.backend == "go" and .version == $version'
           jq -nc '{password:env.TEST_ACCESS_PASSWORD}' | curl -4fsS -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/access/login" | jq -e '.success == true'
           test "$(curl -4s -b "$cookies" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
           jq -nc '{password:env.TEST_ADMIN_PASSWORD}' | curl -4fsS -b "$cookies" -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" | jq -e '.success == true'
-          curl -4fsS -b "$cookies" "$base/admin/accounts" >/dev/null
+          curl -4fsS -b "$cookies" -H 'Content-Type: application/json' -d '{"account":"20990001"}' "$base/admin/accounts" >/dev/null
+          if bash "$installer" --origin "$origin" --archive "$archive" --manifest "$manifest"; then
+            exit 1
+          fi
+          sudo install -d -m 0700 /var/lib/neu-jwxt-toolkit/成绩
+          printf '{"courses":[],"export_info":{"exported_by":"20990001"}}\n' | sudo tee /var/lib/neu-jwxt-toolkit/成绩/example.json >/dev/null
+          old_checksum=$(sudo sha256sum /var/lib/neu-jwxt-toolkit/成绩/example.json)
+          if sudo python3 /opt/neu-toolbox/migrate-legacy.py --account 20990001; then
+            exit 1
+          fi
+          sudo systemctl stop neu-toolbox
+          preview=$(sudo python3 /opt/neu-toolbox/migrate-legacy.py --account 20990001)
+          digest=$(jq -er 'select(.applied == 0 and (.items | length) == 1) | .digest' <<< "$preview")
+          sudo python3 /opt/neu-toolbox/migrate-legacy.py --account 20990001 --apply-digest "$digest" | jq -e '.applied == 1'
+          sudo python3 /opt/neu-toolbox/migrate-legacy.py --account 20990001 | jq -e '.applied == 0 and (.items | length) == 1 and .items[0].status == "unchanged"'
+          test "$old_checksum" = "$(sudo sha256sum /var/lib/neu-jwxt-toolkit/成绩/example.json)"
+          sudo systemctl is-active --quiet neu-jwxt-toolkit
+          sudo systemctl start neu-toolbox
+          bash packaging/go/check-maintenance.sh "$installer" "$archive" "$manifest"
       - name: Upload verified Windows and Linux bundles
         uses: actions/upload-artifact@v4
         with:
@@ -93,6 +122,45 @@ jobs:
             dist/go-release/go-release-manifest.json
             dist/go-release/SHA256SUMS
             dist/go-release/verification.json
+  linux-fresh-install:
+    needs: linux-archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-web-${{ github.sha }}
+          path: dist/go-release
+      - name: Install from a clean host and restart with saved credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest=dist/go-release/go-release-manifest.json
+          version=$(jq -er '.version' "$manifest")
+          archive="dist/go-release/$(jq -er '.assets["linux-amd64"].name' "$manifest")"
+          installer=$(mktemp)
+          cookies=$(mktemp)
+          trap 'rm -f "$installer" "$cookies"; sudo systemctl stop neu-toolbox || true' EXIT
+          tar -xOzf "$archive" "NEU-JWXT-Toolkit-${version}-linux-amd64-go/install.sh" > "$installer"
+          test "$(systemctl show --property=LoadState --value neu-jwxt-toolkit)" = not-found
+          test "$(systemctl show --property=LoadState --value neu-toolbox)" = not-found
+          bash "$installer" install --origin https://toolbox.example.invalid --mode remote-single --archive "$archive" --manifest "$manifest"
+          systemctl is-enabled --quiet neu-toolbox
+          systemctl is-active --quiet neu-toolbox
+          test "$(stat -c '%a %U %G' /etc/neu-toolbox.env)" = '600 root root'
+          test "$(stat -c '%a %U %G' /var/lib/neu-toolbox)" = '700 neu-toolbox neu-toolbox'
+          base=http://localhost:8000/api
+          curl -4fsS "$base/health" | jq -e --arg version "$version" '.backend == "go" and .version == $version and .deployment_mode == "remote-single"'
+          test "$(curl -4s -o /dev/null -w '%{http_code}' "$base/status")" = 401
+          export TEST_ACCESS_PASSWORD="$(sudo sed -n 's/^NEU_JWXT_ACCESS_PASSWORD=//p' /etc/neu-toolbox.env)"
+          export TEST_ADMIN_PASSWORD="$(sudo sed -n 's/^NEU_JWXT_ADMIN_PASSWORD=//p' /etc/neu-toolbox.env)"
+          sudo sed -i '/^NEU_JWXT_.*_PASSWORD=/d' /etc/neu-toolbox.env
+          sudo systemctl restart neu-toolbox
+          curl -4fsS --retry 20 --retry-delay 1 --retry-connrefused "$base/health" | jq -e --arg version "$version" '.version == $version'
+          jq -nc '{password:env.TEST_ACCESS_PASSWORD}' | curl -4fsS -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/access/login" | jq -e '.success == true'
+          test "$(curl -4s -b "$cookies" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
+          jq -nc '{password:env.TEST_ADMIN_PASSWORD}' | curl -4fsS -b "$cookies" -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" | jq -e '.success == true'
+          curl -4fsS -b "$cookies" "$base/admin/accounts" | jq -e '.accounts == [] and .deployment_mode == "remote-single"'
   debian-reboot:
     needs: linux-archive
     runs-on: ubuntu-latest

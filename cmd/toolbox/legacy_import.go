@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/application"
+	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/processlock"
 	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/store"
 )
 
@@ -38,6 +39,11 @@ func runLegacyImport(ctx context.Context, args []string, output io.Writer) error
 			return errors.New("legacy import requires an existing Go data directory")
 		}
 	}
+	lock, err := processlock.Acquire(*data)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	database, err := store.Open(*data)
 	if err != nil {
 		return err

@@ -29,6 +29,10 @@ var errUpgradeRestored = errors.New("升级启动失败，已恢复升级前数�
 const upgradeRestoredExit = 78
 
 func run() (result error) {
+	if len(os.Args) == 2 && os.Args[1] == "linux-upgrade-protocol" && runtime.GOOS == "linux" {
+		fmt.Println("1")
+		return nil
+	}
 	if len(os.Args) > 1 && os.Args[1] == "check-upgrade" {
 		if len(os.Args) != 3 || os.Args[2] == "" {
 			return errors.New("check-upgrade requires an existing data directory")
@@ -88,6 +92,15 @@ func run() (result error) {
 	}
 	if override := os.Getenv("NEU_JWXT_DATA_DIR"); override != "" {
 		*data = override
+	}
+	linuxGate := ""
+	if runtime.GOOS == "linux" && paths.Bundled && *mode != "local-single" && !*initialize && *reset == "" {
+		marker := filepath.Join(filepath.Dir(executable), ".upgrade-pending")
+		if _, err := os.Lstat(marker); err == nil {
+			linuxGate = marker
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	if err := validateDeployment(*listen, *mode, *origin, *container); err != nil {
 		return err
@@ -192,13 +205,19 @@ func run() (result error) {
 		if err := accounts.ResumeSaved(); err != nil {
 			return err
 		}
-		api.StartBackgroundWork()
+		if linuxGate == "" {
+			api.StartBackgroundWork()
+		}
 	}
 	router := http.NewServeMux()
 	api.Register(router)
 	router.Handle("/", static)
-	server := &http.Server{Addr: *listen, Handler: api.Boundary(router), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 1 << 20}
 	var ready atomic.Bool
+	var handler http.Handler = router
+	if linuxGate != "" {
+		handler = linuxStartupGate(router, &ready)
+	}
+	server := &http.Server{Addr: *listen, Handler: api.Boundary(handler), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 1 << 20}
 	if upgrading {
 		server.Handler = upgradeStartupGate(server.Handler, &ready)
 	}
@@ -228,6 +247,16 @@ func run() (result error) {
 		}
 		api.StartBackgroundWork()
 		ready.Store(true)
+	}
+	if linuxGate != "" {
+		activated, err := waitForLinuxActivation(ctx, finished, linuxGate)
+		if err != nil {
+			return errors.Join(err, server.Close())
+		}
+		if activated {
+			api.StartBackgroundWork()
+			ready.Store(true)
+		}
 	}
 	log.Printf("Toolbox Go migration runtime: http://%s", listener.Addr().String())
 	waitErr := waitDesktop(ctx, finished, stop, "http://"+listener.Addr().String(), paths.Icon, *tray, *openBrowser)

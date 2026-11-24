@@ -102,19 +102,33 @@ python start_all.py --port 8080
 
 详细环境、手动启动和验证命令见[快速开始](docs/快速开始.md)。
 
-### 更新方案
+### 安装、迁移与更新
 
-- **Windows 便携版**：先退出程序，再下载新版本完整 ZIP 并解压到新的目录后启动。不要只替换
-  单个 EXE；用户数据独立保存在 `%LOCALAPPDATA%\\NEU-JWXT-Toolkit\\data`，更新不会覆盖登录、
-  缓存、方案组或通知配置。下载后用同一 Release 的 `SHA256SUMS.txt` 校验。
-- **Linux 服务**：下载新 tarball，解压后在新目录执行 `sudo ./install.sh --upgrade`。安装脚本
-  会保留 `/var/lib/neu-jwxt-toolkit` 的数据和配置，并重启 systemd 服务；升级后先查看服务状态
-  和健康检查，异常时可回退到上一份发行目录。详见[Linux 轻量服务](docs/部署/Linux轻量服务.md)。
-- **Android**：下载与已安装版本相同包名的新 APK 并覆盖安装。客户端版和本地版互不替代；
-  固定签名和递增 `ANDROID_VERSION_CODE` 用于保留应用内部数据。
+- **首次切换到 Go 版（Windows / Linux）**：保留原程序和数据，在独立目录安装 Go 版，预览并导入支持的旧资料，确认可用后切换。旧版自动更新入口只用于旧版。完整步骤见 [Go 运行包](docs/部署/Go运行包.md#从原版迁移)。
+- **Windows Go 版更新**支持在系统设置检查、下载和校验更新。用户确认后，从原启动器重启以切换版本。本地单用户模式在新版首次启动确认健康前失败时，可按升级快照的恢复结果自动回退。[Windows 更新与回退](docs/部署/Go运行包.md#windows-更新与回退)
+- **旧 Python 同系列版本**：Windows 退出后解压完整 ZIP 到新目录，继续使用原 `%LOCALAPPDATA%\NEU-JWXT-Toolkit\data`。Linux 使用旧版发行包的 `install.sh --upgrade`。 [Linux 轻量服务](docs/部署/Linux轻量服务.md)
+- **Android**：同系列覆盖须匹配包名和签名，新包的 `versionCode` 须达到 Android 的安装要求。客户端版和本地版各自核对，跨运行时切换还要核对本地资料接续。 [Android 安装](docs/部署/Android安装.md)
 - **源码运行**：在仓库目录执行 `git pull`，然后按锁文件重新安装前端依赖并重建：
   `cd frontend && npm ci && cd .. && python start_all.py --build`。不要为“更新代码”删除 `data/`
   或 `.venv`；只有明确要重置本地环境时才清理它们。
+
+#### Linux Go 版一键维护
+
+标准 Linux amd64 / systemd 部署可用同一脚本完成首次安装、升级和回退。在线入口随本仓库首个包含 Go 版的正式 Release 生效。候选包可使用归档里的 `install.sh` 和配套 Go 发行清单离线操作。
+
+```bash
+# 首次安装
+curl -fL --retry 3 --proto '=https' -o go-install.sh https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest/download/install.sh && bash ./go-install.sh install
+
+# 升级已有 Go 服务
+curl -fL --retry 3 --proto '=https' -o go-install.sh https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest/download/install.sh && bash ./go-install.sh update
+
+bash ./go-install.sh status                  # 查看版本、服务及检查点
+bash ./go-install.sh recover                 # 恢复中断的维护操作
+bash ./go-install.sh rollback --restore-data # 恢复上一版本的数据，另存当前数据
+```
+
+升级先校验官方安装包并用数据库副本检查兼容性，随后保留原程序和数据，切换服务并验证。新版在对外开放前检查失败时会恢复上一版。手动回退后需重新登录，并按需恢复暂停的任务。自定义布局、离线命令和 Python 版迁移见 [Go 运行包](docs/部署/Go运行包.md#linux-服务)。
 
 发行维护者的版本号、标签、GitHub Actions 和 Release 触发规则见[发行与 CI/CD](docs/开发/发行与CI.md)。
 

@@ -74,7 +74,19 @@ def package_guides(bundle):
         text = (ROOT / "docs/部署" / source).read_text(encoding="utf-8")
         for original, packaged in guides.items():
             text = text.replace(f"]({original})", f"]({packaged})")
+            text = text.replace(f"]({original}#", f"]({packaged}#")
         (bundle / target).write_text(text, encoding="utf-8")
+
+
+def package_linux_installer(bundle):
+    source_dir = ROOT / "packaging/go"
+    template = (source_dir / "install.sh.in").read_text(encoding="utf-8")
+    implementation = (source_dir / "install-server.py").read_text(encoding="utf-8")
+    if template.count("@INSTALLER_SOURCE@") != 1 or "NEU_TOOLBOX_INSTALLER_PYTHON" in implementation.splitlines():
+        raise ValueError("Invalid Linux installer template or payload")
+    installer = template.replace("@INSTALLER_SOURCE@", implementation.rstrip("\n"))
+    (bundle / "install.sh").write_bytes(installer.encode("utf-8"))
+    shutil.copyfile(source_dir / "migrate-legacy.py", bundle / "migrate-legacy.py")
 
 
 def main():
@@ -126,6 +138,7 @@ def main():
         else:
             unit = (ROOT / "packaging/go/neu-toolbox.service").read_text(encoding="utf-8")
             (bundle / "neu-toolbox.service").write_bytes(unit.encode("utf-8"))
+            package_linux_installer(bundle)
         archive = output / f"{name}.{archive_suffix}"
         if platform == "windows":
             with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as stream:

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/application"
+	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/processlock"
 	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/store"
 )
 
@@ -35,6 +37,17 @@ func TestLegacyCommandPreviewAndApply(t *testing.T) {
 	}
 	output := &bytes.Buffer{}
 	args := []string{"--data", data, "--source", source, "--account", "student"}
+	lock, err := processlock.Acquire(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importErr := runLegacyImport(ctx, args, output)
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(importErr, processlock.ErrInUse) || output.Len() != 0 {
+		t.Fatalf("import against a running instance: %v, %s", importErr, output)
+	}
 	if err := runLegacyImport(ctx, args, output); err != nil {
 		t.Fatal(err)
 	}

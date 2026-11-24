@@ -507,6 +507,10 @@ jobs:
           cd verified-go
           sha256sum --check SHA256SUMS
           cp "NEU-JWXT-Toolkit-$RELEASE_VERSION-windows-amd64-go.zip" "NEU-JWXT-Toolkit-$RELEASE_VERSION-linux-amd64-go.tar.gz" go-release-manifest.json ../release/
+          bundle="NEU-JWXT-Toolkit-$RELEASE_VERSION-linux-amd64-go"
+          for script in install.sh migrate-legacy.py; do
+            tar -xOzf "$bundle.tar.gz" "$bundle/$script" > "../release/$script"
+          done
       - name: Generate checksums
         working-directory: release
         shell: bash

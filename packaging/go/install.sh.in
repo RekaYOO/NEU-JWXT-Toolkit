@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v python3 >/dev/null || ! python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+  printf '%s\n' '请先安装 Python 3.11 或更高版本。' >&2
+  exit 1
+fi
+
+umask 077
+workdir=$(mktemp -d "${TMPDIR:-/tmp}/neu-toolbox-installer.XXXXXXXX")
+trap 'rm -f -- "$workdir/install-server.py"; rmdir -- "$workdir"' EXIT
+cat > "$workdir/install-server.py" <<'NEU_TOOLBOX_INSTALLER_PYTHON'
+@INSTALLER_SOURCE@
+NEU_TOOLBOX_INSTALLER_PYTHON
+
+if [[ $EUID -eq 0 || ${1:-} == --help || ${1:-} == -h || ${2:-} == --help || ${2:-} == -h ]]; then
+  python3 -I "$workdir/install-server.py" "$@"
+else
+  if ! command -v sudo >/dev/null; then
+    printf '%s\n' '请安装 sudo 或以 root 身份运行安装脚本。' >&2
+    exit 1
+  fi
+  sudo -- python3 -I "$workdir/install-server.py" "$@"
+fi

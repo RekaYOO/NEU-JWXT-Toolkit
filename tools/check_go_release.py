@@ -82,7 +82,10 @@ def inspect_archive(path, version, platform):
     if platform == "windows":
         required.extend(["app.ico", "启动工具箱.cmd", "启动工具箱.exe"])
     else:
-        required.append("neu-toolbox.service")
+        required.extend(["neu-toolbox.service", "install.sh", "migrate-legacy.py"])
+        experimental_installers = {"install-server.sh", "update-server.sh", "neu-toolboxctl"}
+        if any(PurePosixPath(name).name in experimental_installers for name in contents):
+            raise ValueError("Experimental Linux installer found in the release bundle")
     for theme in ("sakura", "blue", "garden"):
         filename = f"themes/{theme}.json"
         expected = Path(__file__).resolve().parents[1] / "frontend/src/theme/templates" / f"{theme}.json"
@@ -91,6 +94,10 @@ def inspect_archive(path, version, platform):
     for name in required:
         if not contents.get(f"{prefix}/{name}"):
             raise ValueError(f"Missing required bundle file: {name}")
+    if platform == "linux":
+        installer = contents[f"{prefix}/install.sh"]
+        if b"\r" in installer or b"@INSTALLER_SOURCE@" in installer or not installer.startswith(b"#!/usr/bin/env bash\n"):
+            raise ValueError("Invalid Linux installer entry point")
     if contents[f"{prefix}/VERSION"] != (version + "\n").encode("ascii"):
         raise ValueError("Version mismatch")
     if platform == "linux" and b"\r" in contents[f"{prefix}/neu-toolbox.service"]:

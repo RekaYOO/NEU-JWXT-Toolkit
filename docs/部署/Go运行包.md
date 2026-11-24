@@ -1,6 +1,16 @@
 # Go + Web 运行包
 
-首次从旧版迁移，请先阅读[备份与恢复](Go备份与恢复.md)，再按[旧版资料导入](旧版资料导入.md)核对数据归属。更新已有安装前也应先制作可恢复的备份。
+## 从原版迁移
+
+从 Python 原版切到 Go 版，请保留原程序、数据和配置，在独立目录试运行新版，再按[旧版资料导入](旧版资料导入.md)逐账号预览并导入。旧版登录状态、凭据和运行中的任务需要按导入说明重新处理。更新已有 Go 安装前，请按[备份与恢复](Go备份与恢复.md)制作可恢复的备份。
+
+| 原有环境 | 切换方式 |
+| --- | --- |
+| Windows 原版 | 退出旧版后将 Go ZIP 解压到新目录，再运行新版启动器。默认数据目录为 `%LOCALAPPDATA%\NEU-JWXT-Toolkit\data-go`，旧资料通过 `import-legacy` 导入。两版共用默认本机端口，回退时先退出新版，再启动旧版。已有自定义 `NEU_JWXT_DATA_DIR` 时，先确认新版使用独立目录。 |
+| Linux 原版 | 保留旧 `neu-jwxt-toolkit` 服务、更新监听、目录和反代配置，按下文的并行试运行步骤切换。旧服务的安装脚本和自动更新只用于旧 Python 包。 |
+| Android 原版 | 覆盖安装需要相同包名和签名，版本码不得降低。正式包、调试包及本地资料迁移需要分别核验，换包前先保留原版。 |
+
+导入前核对支持的资料和未迁移项。远程服务首次启动需要初始化网站访问密码和管理员密码。学校会话需通过新版登录重新建立，共享邮件、追踪和恢复设置需要显式指定归属。回退切换后，两边新增的本地资料不会自动合并。见[旧版资料导入](旧版资料导入.md)。
 
 ### Windows 更新与回退
 
@@ -13,7 +23,7 @@
 **仅切回根程序：** 退出工具箱后在原安装目录执行 `toolbox.exe rollback-update`。它只改变启动选择，不恢复数据库，也不删除并列安装。若新版已迁移数据库，先核对旧版能否打开当前数据，或使用升级前的兼容备份。
 
 运行包包含同一根目录 `VERSION` 对应的 Go 程序和生产网页。无需 Python、Node 或 Go 开发环境。
-当前构建针对 Windows amd64 与 Linux amd64；自动安装及完整发行验收仍在接通中，
+当前构建针对 Windows amd64 与 Linux amd64。Linux 一键安装使用系统自带或预装的 Python 3.11+。
 这些包用于重构验收，不代表全产品正式发布。Docker 需要单独完成实际镜像运行验证。
 
 开发版（候选包 6 之后）可用 `toolbox.exe stage-update -archive <Windows发行ZIP> -sha256 <官方清单中的摘要> -parent <现有目录>` 校验并准备一份独立程序目录。命令输出新目录的位置，不停止当前程序、不切换版本、不迁移数据库。摘要必须取自可信发行清单，而不是临时计算待检查文件的摘要。
@@ -44,6 +54,42 @@
 
 ## Linux 服务
 
+### 从 GitHub 一键安装
+
+在 Linux amd64 的 systemd 主机上准备 Bash、`curl`、Python 3.11+ 和 `sudo`。安装时按提示输入公开 HTTPS 地址。安装入口从项目 [GitHub Releases](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases) 首次发布 `install.sh` 附件起生效。
+
+```bash
+curl -fL --retry 3 --proto '=https' -o install.sh https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest/download/install.sh && bash ./install.sh
+```
+
+脚本读取该仓库最新正式 Release 的 Go 清单，再从清单对应标签下载 Linux 安装包。核验大小与 SHA-256 后安装 systemd 服务，检查版本和匿名访问保护。默认监听 `127.0.0.1:8000`。检测到旧 Python 服务时默认使用 `127.0.0.1:18000` 试运行，保留旧服务和原有反代，验证后按迁移步骤切换。可以用 `bash ./install.sh --help` 查看参数。无人值守安装传入 `--origin`，可配合 `--port`、`--mode remote-single` 和 `--version v<版本号>`。离线安装传入 `--archive <归档> --manifest <同版本官方清单>`。
+
+初始网站密码和管理员密码保存在仅 root 可读的 `/etc/neu-toolbox.env`。按下文配置 HTTPS 反向代理，并验证站点及管理员登录。安装程序遇到已有的 Go 安装或数据目录会退出。若首次启动失败，查看 `journalctl -u neu-toolbox`，修正配置后可使用 `systemctl start neu-toolbox` 复验，再按需启用开机启动。
+
+### 已有 Go 服务一键升级与回退
+
+使用与一键安装相同的脚本。升级默认获取正式 Release，也可选定标签或使用已下载的官方归档和清单。
+
+```bash
+curl -fL --retry 3 --proto '=https' -o go-install.sh https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest/download/install.sh && bash ./go-install.sh update
+
+bash ./go-install.sh update --version v2.3.0
+bash ./go-install.sh update --archive ./Linux安装包.tar.gz --manifest ./go-release-manifest.json
+bash ./go-install.sh status
+bash ./go-install.sh recover
+bash ./go-install.sh rollback --restore-data
+```
+
+`update` 只升级到更高版本，当前版本相同则直接退出。服务继续运行时，脚本先核验归档的大小、SHA-256 和候选程序，再用数据库副本检查兼容性。随后暂停服务，保存原程序、SQLite 数据库及密钥，然后启动新版。通过版本、首页和站点访问保护检查后，才开放业务并启动后台任务。检查失败时脚本恢复升级前的数据和原程序并重新启动。若维护意外中断，`status` 显示维护状态，`recover` 根据进度恢复旧版或完成已确认的切换。
+
+`rollback --restore-data` 将程序和数据库切换到最近的检查点，另存当前版本和数据。回退会撤销会话和恢复链接、暂停选课及成绩追踪，取消待发送邮件。请重新登录，核对升级以来的变化，再按需继续任务。检查点存放在仅 root 可读的 `/opt/.neu-toolbox-upgrades/`，包含未加密的数据库与密钥，应与[加密备份](Go备份与恢复.md)配合使用。更早的检查点保留在原目录。新版已开放业务后，通过显式回退选择是否恢复旧数据。
+
+自动维护支持标准的 `/opt/neu-toolbox`、`/var/lib/neu-toolbox`、`/etc/neu-toolbox.env` 和 `neu-toolbox.service` 布局，沿用原端口、部署模式、环境文件、开机启动状态和反代。扩展过服务单元、自定义数据目录或使用覆盖配置的实例，请参照手工流程。升级完成后可通过实际 HTTPS 地址核对登录。
+
+### 手工安装与自定义服务升级
+
+发行包附带 `neu-toolbox.service`。现有 Go 服务升级前，另存程序目录、systemd 单元、环境配置和一份可恢复的数据备份，再替换并验证新版。旧程序若无法读取迁移后的数据库，使用升级前的备份恢复到独立目录，详见[备份与恢复](Go备份与恢复.md#恢复与切换)。
+
 请勿部署候选包 12 的 Linux 归档：Windows 构建时未写入主程序执行权限。修正后的打包器明确写入目录及主程序 `0755`、其他文件 `0644`，验包器逐项核对。
 
 新版在下载更新包时按任务编号暂存文件。下载或校验期间退出，下次启动会把任务标为失败，只清理该任务的 `payload.partial` 普通文件；不会扫描清理旧版随机目录，也不会删除已经生成的正式压缩包。中断不会自动续传或触发安装，请重新检查版本并下载。
@@ -69,6 +115,19 @@ NEU_JWXT_ADMIN_PASSWORD=首次初始化的管理员密码
 在主机本地用 `systemctl is-active neu-toolbox` 确认服务已启动，然后用 `curl -fsS http://127.0.0.1:8000/api/health` 核对版本及 `backend: go`。未登录时访问 `/api/status` 应返回 HTTP 401。健康检查通过不等于网站密码、反向代理或学校登录已通过验收，还需通过公开 HTTPS 地址完成登录流程。
 
 首次确认网站访问密码和管理员密码均可登录后，可从 `/etc/neu-toolbox.env` 移除 `NEU_JWXT_ACCESS_PASSWORD` 和 `NEU_JWXT_ADMIN_PASSWORD` 两行。保留环境文件、`NEU_JWXT_PUBLIC_ORIGIN` 和原数据目录，不要删除 `vault.key`。运行 `systemctl restart neu-toolbox`，重复健康检查，并用未登录请求确认 `/api/status` 仍返回 401。最后在新的浏览器隐私窗口通过 HTTPS 用原密码登录，分别验证站点访问和管理员权限。若重启后提示需要初始化密码，先核对服务是否仍指向原数据目录，不要用一个新目录替代原库。
+
+### Linux 原版并行试运行与切换
+
+1. 确认旧服务的实际数据路径、监听端口、反代站点和单元启用状态。默认旧程序在 `/opt/neu-jwxt-toolkit`，数据在 `/var/lib/neu-jwxt-toolkit`，配置在 `/etc/neu-jwxt-toolkit/`。备份数据、配置、反代规则及旧单元，包括 `neu-jwxt-toolkit-updater.path` 和对应的更新服务。
+2. 使用一键命令创建 Go 安装。若手工安装，在首次启动前修改 `/etc/systemd/system/neu-toolbox.service` 中的 `ExecStart`，示例端口 `18000` 须空闲。修改后执行 `systemctl daemon-reload`。选定部署模式后沿用该模式。试运行使用 `systemctl start neu-toolbox`，并用实际端口替换健康检查和预演反代中的端口。
+
+   ```ini
+   ExecStart=/opt/neu-toolbox/toolbox --mode remote-multi --listen 127.0.0.1:18000 --data /var/lib/neu-toolbox
+   ```
+
+3. 用独立的 HTTPS 预演入口验证站点密码、管理员准入和账号登录。站点地址须与 `NEU_JWXT_PUBLIC_ORIGIN` 一致。使用独立的迁移脚本预览并导入，确认新版可读取导入结果。见[旧版资料导入](旧版资料导入.md#linux-独立迁移脚本)。
+4. 正式切换前暂停旧版自动任务。停用 `neu-jwxt-toolkit-updater.path` 并确认更新服务已退出，再停止 `neu-jwxt-toolkit.service`，按需同步最后变更的旧资料。保留旧服务的开机设置记录并停用它，避免重启后自动恢复运行。将新版的公开地址改为正式域名后重启新版，再将正式站点的反代上游改至 `127.0.0.1:18000` 并重新加载反代。核对健康、匿名 401、HTTPS 登录和导入资料后，再启用 `neu-toolbox.service` 开机启动。
+5. 回退时先停止并停用新版，恢复旧反代配置和旧服务原有的启用状态，启动旧服务并验证，再按原状态恢复更新监听。保留新版数据供核对，必要时另行接续切换后新增的资料。
 
 ## HTTPS 反向代理
 
@@ -109,7 +168,7 @@ docker compose -f packaging/go/compose.yaml up --build -d
 中断的下载不会自动续传，会显示失败并等待手动重试；已完成文件会重新校验，丢失或损坏时
 要求重新下载。加密数据备份不包含下载包，恢复数据后可重新下载。
 
-先停止服务并执行加密备份，再替换程序目录，保留原数据目录及其 `vault.key`。
+标准 Linux 服务按[一键维护流程](#已有-go-服务一键升级与回退)完成切换。手工升级时先停止服务并执行加密备份，再替换程序目录，保留原数据目录及其 `vault.key`。
 不得只复制数据库而丢失密钥；恢复到新目录后再切换数据路径。
 完整命令见附带 `BACKUP.md`、`IMPORT.md`。源代码文档对应
 `docs/部署/Go备份与恢复.md` 和 `docs/部署/旧版资料导入.md`。

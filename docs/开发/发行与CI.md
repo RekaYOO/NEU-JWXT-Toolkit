@@ -21,8 +21,7 @@ Go/Web 打包入口为 `tools/build_go_release.py`，生成同版本 Windows/Lin
 包含网页、许可证、依赖许可证清单、操作说明和 SHA-256。运行资源按可执行文件目录定位；
 本机发行默认使用用户目录下独立 `data-go` 数据路径，`--version` 无需初始化数据。
 Docker 配置在 `go.Dockerfile` 与 `packaging/go/compose.yaml`，以非 root 用户运行并挂载持久卷。
-使用说明见[Go运行包](../部署/Go运行包.md)。自动安装、Linux及Docker实际环境验收仍待完成，
-这些重构验收包不等于完整正式发行。旧自动更新清单保持独立，尚不指向这些包。
+Linux 归档包含 systemd 单元、`install.sh` 和 `migrate-legacy.py`。打包器将维护逻辑嵌入 Bash 入口，发行工作流从验收后的 Linux 归档提取两份脚本，作为该仓库 GitHub Release 的独立附件加入发行总摘要和来源证明。安装与升级使用同仓库的 Go 清单选择并校验对应标签的安装包。平台工作流从归档提取 `install.sh`，验证离线包校验、与旧服务并行安装、迁移预览与提交、重复预览以及 Debian 重启。`linux-fresh-install` 在干净 Ubuntu 主机上验证默认端口、开机启动、访问权限及重启后的账号准入。`packaging/go/check-maintenance.sh` 在 Ubuntu 的真实 systemd 上使用合成数据验证升级、摘要错误、启动失败自动回退、显式回退，以及原端口、开机状态、站点配置和账号保留。旧自动更新清单继续服务旧运行时。见[Go 运行包](../部署/Go运行包.md)。
 
 Windows 托盘使用 `fyne.io/systray v1.11.0`，只在 Windows 编译入口引用；Linux 构建无需 GUI 或 CGO。
 发行包默认开启托盘和浏览器，开发可执行文件默认关闭，两项可由参数显式控制。托盘退出与页面退出
