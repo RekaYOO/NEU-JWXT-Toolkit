@@ -144,7 +144,7 @@ describe('AuthRecoveryPage', () => {
       await Promise.resolve();
     });
 
-    expect(startAuthRecovery).toHaveBeenCalledWith('recovery-token');
+    expect(startAuthRecovery).toHaveBeenCalledWith('recovery-token', 'smart_neu');
     expect(container.textContent).toContain('完成短信二次认证');
     expect(container.querySelector('.ant-qrcode')).toBeNull();
     expect(container.querySelector('img[alt="图形验证码"]')).not.toBeNull();

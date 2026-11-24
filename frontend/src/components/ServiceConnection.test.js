@@ -134,7 +134,7 @@ describe('shared service WebVPN recovery', () => {
     api.getWebVPNQRStatus.mockResolvedValue({ success: true, status: 'authenticated', target_service: 'cxcy' });
     await render();
     await settle(() => login.current.open('qr'));
-    expect(api.startWebVPNQRLogin).toHaveBeenCalledWith('20250001', 'cxcy');
+    expect(api.startWebVPNQRLogin).toHaveBeenCalledWith('20250001', 'cxcy', 'smart_neu');
     expect(done).toHaveBeenCalledTimes(1);
   });
 

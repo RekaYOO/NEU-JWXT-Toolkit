@@ -18,6 +18,12 @@ import (
 )
 
 const vpnEntry = "https://webvpn.neu.edu.cn/login?cas_login=true"
+const appQREndpoint = "https://pass.neu.edu.cn/tpass/qrLogin"
+
+const (
+	QRWeChat   = "wechat"
+	QRSmartNEU = "smart_neu"
+)
 
 type vpnLoginFlow struct {
 	id, kind, uuid, page, action, captcha string
@@ -25,6 +31,7 @@ type vpnLoginFlow struct {
 	expires                               time.Time
 	verified                              bool
 	lastPoll                              time.Time
+	qrProvider                            string
 }
 
 func NewLoginClient(hint string) (*Client, error) {
@@ -100,6 +107,50 @@ func vpnAuthURL(target *url.URL) bool {
 	return target.Path == "/" || target.Path == "/login" || target.Path == "/login/cas" || target.Path == "/wengine-vpn/cookie" || target.Path == "/portal"
 }
 
+func vpnUnwrapGatewayURL(target *url.URL) *url.URL {
+	if target.Scheme != "https" || target.Hostname() != vpnHost || target.User != nil || (target.Port() != "" && target.Port() != "443") || target.EscapedPath() != target.Path {
+		return nil
+	}
+	if !strings.HasPrefix(target.Path, "/https/") && !strings.HasPrefix(target.Path, "/https-443/") {
+		return nil
+	}
+	restored, err := RestoreServiceURL(target.String(), "https://"+vpnHost)
+	if err != nil {
+		return nil
+	}
+	result, _ := url.Parse(restored)
+	return result
+}
+
+func vpnWrappedGatewayCallback(target *url.URL) bool {
+	callback := vpnUnwrapGatewayURL(target)
+	if callback == nil || callback.Path != "/login" {
+		return false
+	}
+	query, err := url.ParseQuery(callback.RawQuery)
+	return err == nil && len(query["cas_login"]) == 1 && query.Get("cas_login") == "true" && len(query["ticket"]) == 1 && query.Get("ticket") != ""
+}
+
+func vpnGatewayTokenRedirect(previous, next *url.URL) bool {
+	wrappedCallback := vpnWrappedGatewayCallback(previous)
+	if unwrapped := vpnUnwrapGatewayURL(previous); unwrapped != nil {
+		previous = unwrapped
+	}
+	if unwrapped := vpnUnwrapGatewayURL(next); unwrapped != nil {
+		next = unwrapped
+	}
+	if next.Scheme != "https" || next.Hostname() != vpnHost || next.User != nil || (next.Port() != "" && next.Port() != "443") {
+		return false
+	}
+	switch next.EscapedPath() {
+	case "/wengine-vpn-token-login":
+		return wrappedCallback
+	case "/token-login":
+		return previous.Hostname() == vpnHost && previous.EscapedPath() == "/wengine-vpn-token-login"
+	}
+	return false
+}
+
 func vpnFailure(code, message string) error { return &Error{Code: code, Message: message} }
 
 func (client *Client) vpnSend(ctx context.Context, method, raw string, form url.Values, referer string) ([]byte, *url.URL, error) {
@@ -117,16 +168,23 @@ func (client *Client) vpnSend(ctx context.Context, method, raw string, form url.
 	}
 	request.Header.Set("User-Agent", "Mozilla/5.0 NEU-JWXT-Toolkit")
 	request.Header.Set("Referer", referer)
-	request.Header.Set("X-Requested-With", "XMLHttpRequest")
+	if target.Path == "/wengine-vpn/cookie" || target.Path == "/tpass/qrLogin" || strings.HasSuffix(target.Path, "/tpass/checkQRCodeScan") ||
+		strings.HasSuffix(target.Path, "/tpass/secondAuthCode") || strings.HasSuffix(target.Path, "/currentUser.do") {
+		request.Header.Set("X-Requested-With", "XMLHttpRequest")
+	}
 	if form != nil {
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 	}
 	transport := *client.http
 	transport.CheckRedirect = func(next *http.Request, previous []*http.Request) error {
+		if len(previous) == 0 || len(previous) >= 10 || (next.Method != "GET" && next.Method != "HEAD") {
+			return vpnFailure("WEBVPN_UPSTREAM_REDIRECT", "认证跳转被拒绝；已发送表单不会重放")
+		}
+		last := previous[len(previous)-1].URL
 		if next.Method == "GET" && next.URL.Scheme == "http" && next.URL.Hostname() == "pass.neu.edu.cn" && (next.URL.Port() == "" || next.URL.Port() == "80") && next.URL.Path == "/tpass/login" {
 			next.URL.Scheme, next.URL.Host = "https", "pass.neu.edu.cn"
 		}
-		if len(previous) > 0 && previous[len(previous)-1].URL.Hostname() == vpnHost && next.URL.Hostname() != vpnHost && vpnAuthURL(next.URL) {
+		if last.Hostname() == vpnHost && next.URL.Hostname() != vpnHost && vpnAuthURL(next.URL) {
 			converted, err := WebVPNURL(next.URL.String())
 			if err != nil {
 				return vpnFailure("WEBVPN_UPSTREAM_REDIRECT", "认证跳转地址无效")
@@ -134,10 +192,10 @@ func (client *Client) vpnSend(ctx context.Context, method, raw string, form url.
 			next.URL, _ = url.Parse(converted)
 			next.Host = next.URL.Host
 		}
-		if len(previous) >= 10 || !vpnAuthURL(next.URL) || (next.Method != "GET" && next.Method != "HEAD") {
-			return vpnFailure("WEBVPN_UPSTREAM_REDIRECT", "认证跳转被拒绝；已发送表单不会重放")
+		if vpnAuthURL(next.URL) || (next.Method == "GET" && (vpnWrappedGatewayCallback(next.URL) || vpnGatewayTokenRedirect(last, next.URL))) {
+			return nil
 		}
-		return nil
+		return vpnFailure("WEBVPN_UPSTREAM_REDIRECT", "认证跳转被拒绝；已发送表单不会重放")
 	}
 	response, err := transport.Do(request)
 	if err != nil {
@@ -214,7 +272,13 @@ func authForm(payload []byte, page *url.URL, identifier string) (url.Values, str
 	return fields, action.String(), true
 }
 
-func (client *Client) StartVPNQR(ctx context.Context) (map[string]any, error) {
+func (client *Client) StartVPNQR(ctx context.Context, provider string) (map[string]any, error) {
+	if provider == "" {
+		provider = QRWeChat
+	}
+	if provider != QRWeChat && provider != QRSmartNEU {
+		return nil, vpnFailure("INVALID_REQUEST", "扫码方式无效")
+	}
 	client.mutex.Lock()
 	defer client.mutex.Unlock()
 	client.authFlow = nil
@@ -232,12 +296,41 @@ func (client *Client) StartVPNQR(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	uuid, err := loginID()
-	if err != nil {
-		return nil, err
+	var token, content string
+	lifetime, interval := 180, 3
+	if provider == QRSmartNEU {
+		params := url.Values{"action": {"create"}, "service": {vpnEntry}}
+		body, _, err := client.vpnSend(ctx, "GET", appQREndpoint+"?"+params.Encode(), nil, page.String())
+		if err != nil {
+			return nil, err
+		}
+		var result struct {
+			Status  string `json:"status"`
+			Token   string `json:"token"`
+			URL     string `json:"qrUrl"`
+			Expires int    `json:"expiresIn"`
+		}
+		if json.Unmarshal(body, &result) != nil || result.Status != "ok" || result.Token == "" || len(result.Token) > 512 || result.Expires <= 0 {
+			return nil, vpnFailure("WEBVPN_UNKNOWN_ERROR", "学校未提供可用的智慧东大二维码")
+		}
+		qr, err := url.Parse(result.URL)
+		if err != nil || !vpnAuthURL(qr) || qr.Hostname() != "pass.neu.edu.cn" || qr.EscapedPath() != "/tpass/qrAuth" || qr.Fragment != "" {
+			return nil, vpnFailure("WEBVPN_UPSTREAM_REDIRECT", "学校二维码地址不受信任")
+		}
+		query, err := url.ParseQuery(qr.RawQuery)
+		if err != nil || len(query) != 1 || len(query["t"]) != 1 || query.Get("t") != result.Token {
+			return nil, vpnFailure("WEBVPN_UNKNOWN_ERROR", "学校二维码与本次登录不匹配")
+		}
+		token, content, lifetime, interval = result.Token, qr.String(), min(result.Expires, 180), 2
+	} else {
+		token, err = loginID()
+		if err != nil {
+			return nil, err
+		}
+		content = "https://pass.neu.edu.cn/tpass/qyQrLogin?uuid=" + token + "&service=" + vpnEntry
 	}
-	client.authFlow = &vpnLoginFlow{id: identifier, kind: "qr", uuid: uuid, page: login, expires: time.Now().Add(180 * time.Second)}
-	return map[string]any{"status": "pending", "flow_id": identifier, "qr_content": "https://pass.neu.edu.cn/tpass/qyQrLogin?uuid=" + uuid + "&service=" + vpnEntry, "expires_in": 180, "poll_interval": 3}, nil
+	client.authFlow = &vpnLoginFlow{id: identifier, kind: "qr", uuid: token, page: page.String(), qrProvider: provider, expires: time.Now().Add(time.Duration(lifetime) * time.Second)}
+	return map[string]any{"status": "pending", "flow_id": identifier, "qr_provider": provider, "qr_content": content, "expires_in": lifetime, "poll_interval": interval}, nil
 }
 
 func (client *Client) vpnFlow(identifier, kind string) (*vpnLoginFlow, error) {
@@ -259,11 +352,18 @@ func (client *Client) PollVPNQR(ctx context.Context, identifier string) (map[str
 	if err != nil {
 		return nil, err
 	}
-	if time.Since(flow.lastPoll) < 3*time.Second {
+	interval := 3 * time.Second
+	if flow.qrProvider == QRSmartNEU {
+		interval = 2 * time.Second
+	}
+	if time.Since(flow.lastPoll) < interval {
 		return map[string]any{"status": "pending"}, nil
 	}
 	flow.lastPoll = time.Now()
 	endpoint := "https://pass.neu.edu.cn/tpass/checkQRCodeScan?" + url.Values{"uuid": {flow.uuid}, "random": {fmt.Sprint(time.Now().UnixNano())}}.Encode()
+	if flow.qrProvider == QRSmartNEU {
+		endpoint = appQREndpoint + "?" + url.Values{"action": {"check"}, "t": {flow.uuid}}.Encode()
+	}
 	payload, _, err := client.vpnSend(ctx, "GET", endpoint, nil, flow.page)
 	if err != nil {
 		return nil, err
@@ -276,6 +376,27 @@ func (client *Client) PollVPNQR(ctx context.Context, identifier string) (map[str
 		return nil, vpnFailure("WEBVPN_UPSTREAM_NON_JSON", "扫码状态响应无法识别")
 	}
 	redirect, _ := result["redirect_url"].(string)
+	if flow.qrProvider == QRSmartNEU {
+		switch result["status"] {
+		case "wait":
+			return map[string]any{"status": "pending"}, nil
+		case "scanned":
+			return map[string]any{"status": "scanned", "message": "已扫码，请在智慧东大 App 中确认登录"}, nil
+		case "cancel", "expired", "invalid":
+			client.authFlow = nil
+			status, message := "expired", "二维码已失效，请重新获取"
+			if result["status"] == "cancel" {
+				status, message = "cancelled", "已在手机上取消登录，请重新获取二维码"
+			}
+			return map[string]any{"status": status, "message": message}, nil
+		case "ok":
+			if redirect == "" {
+				return nil, vpnFailure("WEBVPN_UPSTREAM_NON_JSON", "学校未返回扫码登录回调")
+			}
+		default:
+			return nil, vpnFailure("WEBVPN_UPSTREAM_NON_JSON", "扫码状态响应无法识别")
+		}
+	}
 	if redirect == "" {
 		return map[string]any{"status": "pending"}, nil
 	}
@@ -284,6 +405,7 @@ func (client *Client) PollVPNQR(ctx context.Context, identifier string) (map[str
 	if err != nil || !vpnAuthURL(callback) || (callback.Hostname() != "pass.neu.edu.cn" && callback.Hostname() != vpnHost) {
 		return nil, vpnFailure("WEBVPN_UPSTREAM_REDIRECT", "扫码回调地址不受信任")
 	}
+	client.authFlow = nil
 	payload, page, err := client.vpnSend(ctx, "GET", callback.String(), nil, flow.page)
 	if err != nil {
 		return nil, err

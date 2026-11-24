@@ -134,7 +134,7 @@ func TestVPNQRIdentityAndUntrustedCallback(t *testing.T) {
 				}
 				return mockResponse(request, 200, "page"), nil
 			})
-			result, err := client.StartVPNQR(context.Background())
+			result, err := client.StartVPNQR(context.Background(), QRWeChat)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -181,6 +181,96 @@ func TestVPNFlowExpiryAndWriteRedirectDoNotReplay(t *testing.T) {
 	})
 	if _, _, err := client.vpnSend(context.Background(), "POST", casLogin, url.Values{"code": {"test"}}, ""); err == nil || calls != 1 {
 		t.Fatal("authentication write replayed", calls, err)
+	}
+}
+
+func TestVPNFollowsOnlyWrappedGatewayLoginCallbackAfterPassword(t *testing.T) {
+	wrapper := "https://" + vpnHost + "/https/" + vpnPrefix + encryptedHostname(vpnHost)
+	callbackQuery := "?cas_login=true&ticket=ST-test"
+	gatewayToken := wrapper + "/wengine-vpn-token-login?token=first"
+	loginToken := "https://" + vpnHost + "/token-login?token=second"
+	for _, scenario := range []struct {
+		name, location string
+		status         int
+		accepted       bool
+	}{
+		{"gateway callback", wrapper + "/login" + callbackQuery, 302, true},
+		{"no ticket", wrapper + "/login?cas_login=true", 302, false},
+		{"ambiguous ticket", wrapper + "/login" + callbackQuery + "&ticket=ST-other", 302, false},
+		{"wrong path", wrapper + "/logout" + callbackQuery, 302, false},
+		{"skipped callback", gatewayToken, 302, false},
+		{"encoded path", wrapper + "/%6cogin" + callbackQuery, 302, false},
+		{"foreign wrapped host", "https://" + vpnHost + "/https/" + vpnPrefix + encryptedHostname("example.net") + "/login" + callbackQuery, 302, false},
+		{"form replay", wrapper + "/login" + callbackQuery, 307, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			client, _ := NewLoginClient("20250001")
+			login, _ := WebVPNURL(casLogin)
+			primaryPage, _ := WebVPNURL(primaryService)
+			passwordPosts, callbackReads := 0, 0
+			var businessReady bool
+			client.http.Transport = transportFunc(func(request *http.Request) (*http.Response, error) {
+				switch {
+				case request.URL.String() == vpnEntry:
+					response := mockResponse(request, 302, "")
+					response.Header.Set("Location", login)
+					return response, nil
+				case request.URL.String() == login && request.Method == http.MethodGet:
+					return mockResponse(request, 200, `<form id="loginForm"><input name="execution" value="exec"></form>`), nil
+				case request.URL.String() == login && request.Method == http.MethodPost:
+					passwordPosts++
+					response := mockResponse(request, scenario.status, "")
+					response.Header.Set("Location", scenario.location)
+					return response, nil
+				case request.URL.String() == wrapper+"/login"+callbackQuery && request.Method == http.MethodGet:
+					callbackReads++
+					if request.Body != nil || request.Header.Get("X-Requested-With") != "" {
+						t.Fatal("callback must be a navigation without a replayed form")
+					}
+					response := mockResponse(request, 302, "")
+					response.Header.Set("Location", gatewayToken)
+					return response, nil
+				case request.URL.String() == gatewayToken && request.Method == http.MethodGet:
+					response := mockResponse(request, 302, "")
+					response.Header.Set("Location", loginToken)
+					return response, nil
+				case request.URL.String() == loginToken && request.Method == http.MethodGet:
+					response := mockResponse(request, 302, "")
+					response.Header.Set("Location", "https://"+vpnHost+"/")
+					return response, nil
+				case request.URL.Path == "/":
+					return mockResponse(request, 200, "gateway"), nil
+				case request.URL.String() == primaryPage && request.Method == http.MethodGet:
+					if request.Header.Get("X-Requested-With") != "" {
+						t.Fatal("school entry must be a page navigation")
+					}
+					businessReady = true
+					return mockResponse(request, 200, "school home"), nil
+				case strings.HasSuffix(request.URL.Path, "/currentUser.do"):
+					if !businessReady {
+						return mockResponse(request, 401, "session not established"), nil
+					}
+					return mockResponse(request, 200, `{"code":"0","datas":{"userId":"20250001"}}`), nil
+				default:
+					t.Fatalf("unexpected request %s %s", request.Method, request.URL)
+					return nil, nil
+				}
+			})
+			result, err := client.StartVPNPassword(context.Background(), "test-password")
+			if passwordPosts != 1 {
+				t.Fatalf("expected one form submission, got %d", passwordPosts)
+			}
+			if scenario.accepted {
+				if err != nil || result["status"] != "authenticated" || callbackReads != 1 {
+					t.Fatal(result, err, callbackReads)
+				}
+				return
+			}
+			var failure *Error
+			if !errors.As(err, &failure) || failure.Code != "WEBVPN_UPSTREAM_REDIRECT" || callbackReads != 0 {
+				t.Fatal(result, err, callbackReads)
+			}
+		})
 	}
 }
 
@@ -334,7 +424,7 @@ func TestVPNServiceQRCodeStillRequiresVerifiedAccount(t *testing.T) {
 		}
 		return mockResponse(request, 200, "page"), nil
 	})
-	result, err := client.StartVPNQR(context.Background())
+	result, err := client.StartVPNQR(context.Background(), QRWeChat)
 	if err != nil {
 		t.Fatal(err)
 	}

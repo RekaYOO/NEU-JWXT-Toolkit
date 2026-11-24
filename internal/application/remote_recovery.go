@@ -51,7 +51,7 @@ func (api *API) discardRemoteFlow(key string, flow *browserVPNFlow) {
 
 func recoveryFlowResult(flow *browserVPNFlow, recovery store.RecoveryContext) map[string]any {
 	result := map[string]any{"success": true, "target_service": recovery.Target, "link_expires_at": recovery.Expires}
-	for _, key := range []string{"status", "qr_content", "qr_url", "poll_interval", "captcha_image", "sms_verified", "message", "error_code", "expires_in"} {
+	for _, key := range []string{"status", "qr_content", "qr_url", "qr_provider", "poll_interval", "captcha_image", "sms_verified", "message", "error_code", "expires_in"} {
 		if value, ok := flow.state[key]; ok {
 			result[key] = value
 		}
@@ -79,6 +79,16 @@ func (api *API) remoteRecovery(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	action := strings.TrimPrefix(request.URL.Path, "/api/auth-recovery/"+token+"/")
+	var input struct {
+		Provider string `json:"qr_provider"`
+	}
+	if action == "start" && request.ContentLength != 0 && !decodeJSON(response, request, &input) {
+		return
+	}
+	if !validQRProvider(input.Provider) {
+		writeJSON(response, 422, map[string]string{"detail": "扫码方式无效"})
+		return
+	}
 	session := store.Session{Account: recovery.Account, Generation: recovery.Generation}
 	key := "recovery:" + recovery.ID
 	api.vpnMutex.Lock()
@@ -93,8 +103,9 @@ func (api *API) remoteRecovery(response http.ResponseWriter, request *http.Reque
 	if flow != nil {
 		flow.mutex.Lock()
 		expiry, _ := flow.state["expires_at"].(int64)
-		qrExpired := action == "start" && flow.state["status"] != "sms_required" && flow.state["status"] != "session_pending" && expiry > 0 && time.Now().Unix() >= expiry
-		if flow.context.Err() != nil || qrExpired || time.Since(flow.created) > 15*time.Minute || flow.original != nil && api.accounts.Runtime(session) != flow.original {
+		qrRestart := action == "start" && flow.state["status"] != "sms_required" && flow.state["status"] != "session_pending" &&
+			(expiry > 0 && time.Now().Unix() >= expiry || input.Provider != "" && input.Provider != flow.state["qr_provider"])
+		if flow.context.Err() != nil || qrRestart || time.Since(flow.created) > 15*time.Minute || flow.original != nil && api.accounts.Runtime(session) != flow.original {
 			api.discardRemoteFlow(key, flow)
 			flow.mutex.Unlock()
 			flow = nil
@@ -192,7 +203,7 @@ func (api *API) remoteRecovery(response http.ResponseWriter, request *http.Reque
 	var callError error
 	switch action {
 	case "start":
-		result, callError = flow.client.StartVPNQR(ctx)
+		result, callError = flow.client.StartVPNQR(ctx, input.Provider)
 	case "poll":
 		result, callError = flow.client.PollVPNQR(ctx, flow.identifier)
 	case "captcha/refresh":
@@ -247,7 +258,17 @@ func (api *API) remoteRecovery(response http.ResponseWriter, request *http.Reque
 		if errors.As(callError, &failure) {
 			code, message = failure.Code, failure.Message
 		}
+		if action == "poll" && (code == "WEBVPN_FLOW_EXPIRED" || code == "WEBVPN_FLOW_REPLACED") {
+			api.discardRemoteFlow(key, flow)
+			writeJSON(response, 200, map[string]any{"status": "expired", "message": message})
+			return
+		}
 		writeJSON(response, 502, map[string]string{"detail": message, "error_code": code})
+		return
+	}
+	if result["status"] == "expired" || result["status"] == "cancelled" {
+		api.discardRemoteFlow(key, flow)
+		writeJSON(response, 200, result)
 		return
 	}
 	if identifier, ok := result["flow_id"].(string); ok {
@@ -255,6 +276,11 @@ func (api *API) remoteRecovery(response http.ResponseWriter, request *http.Reque
 	}
 	for name, value := range result {
 		flow.state[name] = value
+	}
+	if result["status"] == "sms_required" || result["status"] == "session_pending" {
+		delete(flow.state, "qr_content")
+		delete(flow.state, "qr_url")
+		delete(flow.state, "message")
 	}
 	if seconds, ok := result["expires_in"].(int); ok {
 		flow.state["expires_at"] = time.Now().Add(time.Duration(seconds) * time.Second).Unix()

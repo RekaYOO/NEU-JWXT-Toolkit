@@ -94,7 +94,7 @@ describe('CourseSelectionPage mobile recovery notice', () => {
     expect(alert).not.toBeNull();
     expect(content?.textContent).toContain('WebVPN 登录已失效');
     expect(action?.textContent).toContain('账号密码恢复');
-    expect(action?.textContent).toContain('微信扫码恢复');
+    expect(action?.textContent).toContain('扫码恢复（智慧东大 / 微信）');
     expect(content.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 

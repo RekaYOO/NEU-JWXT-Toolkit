@@ -315,10 +315,11 @@ export const login = async (username, password, remember = false, networkMode = 
   return response.data;
 };
 
-export const startWebVPNQRLogin = async (username = '', targetService = 'primary') => {
+export const startWebVPNQRLogin = async (username = '', targetService = 'primary', provider) => {
   const response = await api.post('/api/webvpn/qr/start', {
     username: username || null,
     target_service: targetService,
+    ...(provider ? { qr_provider: provider } : {}),
   });
   return response.data;
 };
@@ -710,9 +711,9 @@ export const getAuthRecoveryStatus = async (token) => {
   return response.data;
 };
 
-export const startAuthRecovery = async (token) => {
+export const startAuthRecovery = async (token, provider) => {
   const response = await api.post(
-    `/api/auth-recovery/${encodeURIComponent(token)}/start`, null, { skipAuthRedirect: true }
+    `/api/auth-recovery/${encodeURIComponent(token)}/start`, provider ? { qr_provider: provider } : null, { skipAuthRedirect: true }
   );
   return response.data;
 };

@@ -24,7 +24,7 @@ func (client *testVPNClient) SetVPNTarget(target string) error { client.target =
 
 func (client *testVPNClient) Status() (bool, string)                   { return client.active.Load(), "webvpn" }
 func (client *testVPNClient) Snapshot() ([]campus.SavedCookie, string) { return nil, "webvpn" }
-func (client *testVPNClient) StartVPNQR(context.Context) (map[string]any, error) {
+func (client *testVPNClient) StartVPNQR(context.Context, string) (map[string]any, error) {
 	return map[string]any{"flow_id": "test-flow", "status": "pending", "qr_content": "test-only", "poll_interval": 3, "expires_in": 180}, nil
 }
 func (client *testVPNClient) PollVPNQR(context.Context, string) (map[string]any, error) {

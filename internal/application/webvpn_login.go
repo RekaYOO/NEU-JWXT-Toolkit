@@ -19,7 +19,7 @@ const vpnOwnerCookie = "neu_toolbox_login_flow"
 
 type VPNClient interface {
 	CampusClient
-	StartVPNQR(context.Context) (map[string]any, error)
+	StartVPNQR(context.Context, string) (map[string]any, error)
 	PollVPNQR(context.Context, string) (map[string]any, error)
 	StartVPNPassword(context.Context, string) (map[string]any, error)
 	RefreshVPNCaptcha(context.Context, string) (map[string]any, error)
@@ -145,6 +145,7 @@ func (api *API) vpnStart(response http.ResponseWriter, request *http.Request) {
 		Password string `json:"password"`
 		Remember bool   `json:"remember"`
 		Target   string `json:"target_service"`
+		Provider string `json:"qr_provider"`
 	}
 	if !decodeJSON(response, request, &input) {
 		return
@@ -157,6 +158,10 @@ func (api *API) vpnStart(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	passwordFlow := strings.Contains(request.URL.Path, "/password/")
+	if !passwordFlow && !validQRProvider(input.Provider) {
+		writeJSON(response, 422, map[string]string{"detail": "扫码方式无效"})
+		return
+	}
 	if passwordFlow || strings.TrimSpace(input.Username) != "" {
 		normalized, err := campus.NormalizeAccount(input.Username)
 		if err != nil {
@@ -279,9 +284,13 @@ func (api *API) vpnStart(response http.ResponseWriter, request *http.Request) {
 	if passwordFlow {
 		result, err = client.StartVPNPassword(callContext, input.Password)
 	} else {
-		result, err = client.StartVPNQR(callContext)
+		result, err = client.StartVPNQR(callContext, input.Provider)
 	}
 	api.finishVPNResponse(response, request, flow, result, err)
+}
+
+func validQRProvider(provider string) bool {
+	return provider == "" || provider == campus.QRWeChat || provider == campus.QRSmartNEU
 }
 
 func (api *API) vpnAction(response http.ResponseWriter, request *http.Request) {

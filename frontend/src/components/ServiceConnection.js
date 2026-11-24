@@ -53,7 +53,7 @@ export function ServiceAuthNotice({ status, busy, offline, onChange, onCheck, on
             <Button size="small" type="primary" icon={<LockOutlined />} onClick={() => onLogin?.('pending')}>继续验证码或短信验证</Button>
           </> : state === 'login_required' && webvpn && status.primary_authenticated ? <>
             <Button size="small" type="primary" icon={<LockOutlined />} onClick={() => onLogin?.('password')}>账号密码恢复</Button>
-            <Button size="small" icon={<QrcodeOutlined />} onClick={() => onLogin?.('qr')}>微信扫码恢复</Button>
+            <Button size="small" icon={<QrcodeOutlined />} onClick={() => onLogin?.('qr')}>扫码恢复（智慧东大 / 微信）</Button>
           </> : <>
             {!webvpn && ['network_unreachable', 'login_required'].includes(state)
               && <Button size="small" type="primary" onClick={() => onChange('webvpn')}>切换 WebVPN</Button>}
@@ -73,6 +73,8 @@ export const ServiceWebVPNLogin = forwardRef(function ServiceWebVPNLogin({
   const [password, setPassword] = useState('');
   const [remember, setRemember] = useState(false);
   const [qr, setQr] = useState(null);
+  const [qrProvider, setQrProvider] = useState('smart_neu');
+  const [qrScanned, setQrScanned] = useState(false);
   const [sms, setSms] = useState(null);
   const [captcha, setCaptcha] = useState('');
   const [code, setCode] = useState('');
@@ -143,7 +145,7 @@ export const ServiceWebVPNLogin = forwardRef(function ServiceWebVPNLogin({
     }
   }, [offline, service]);
 
-  const open = useCallback(async nextView => {
+  const open = useCallback(async (nextView, provider = 'smart_neu') => {
     if (offline) return;
     discard();
     const current = generation.current;
@@ -160,9 +162,11 @@ export const ServiceWebVPNLogin = forwardRef(function ServiceWebVPNLogin({
     if (current !== generation.current) return;
     setView(nextView);
     if (nextView !== 'qr') return;
+    setQrProvider(provider);
+    setQrScanned(false);
     setBusy(true);
     try {
-      const result = await startWebVPNQRLogin(username, service);
+      const result = await startWebVPNQRLogin(username, service, provider);
       if (current !== generation.current) {
         if (result.flow_id) await cancelWebVPNQRLogin(result.flow_id).catch(() => {});
         return;
@@ -209,8 +213,9 @@ export const ServiceWebVPNLogin = forwardRef(function ServiceWebVPNLogin({
         const result = await getWebVPNQRStatus(qr.flow_id);
         if (stopped || current !== generation.current) return;
         await applyResult(result);
-        if (['expired', 'missing', 'error'].includes(result.status)) {
-          setQr(null); setError(getWebVPNErrorMessage(result, '二维码已失效，请重新获取'));
+        if (result.status === 'scanned') setQrScanned(true);
+        if (['expired', 'cancelled', 'missing', 'error'].includes(result.status)) {
+          setQr(null); setError(result.message || getWebVPNErrorMessage(result, '二维码已失效，请重新获取'));
           return;
         }
       } catch (e) {
@@ -270,10 +275,12 @@ export const ServiceWebVPNLogin = forwardRef(function ServiceWebVPNLogin({
           <Checkbox checked={remember} onChange={e => setRemember(e.target.checked)}>记住密码（本地保存）</Checkbox>
           <Button type="primary" block loading={busy} disabled={!account.trim() || !password}
             onClick={() => perform(() => startWebVPNPasswordLogin(account.trim(), password, remember, service))}>恢复 WebVPN 登录</Button>
-          <Button type="link" icon={<QrcodeOutlined />} onClick={() => open('qr')}>改用微信扫码</Button>
+          <Button type="link" icon={<QrcodeOutlined />} disabled={busy} onClick={() => open('qr')}>改用扫码恢复</Button>
         </> : <>
           {qr?.qr_content && <QRCode value={qr.qr_content} size={210} />}
-          <Button icon={<QrcodeOutlined />} loading={busy} onClick={() => open('qr')}>重新获取二维码</Button>
+          {qr && <Typography.Text role="status">{qrScanned ? '请在智慧东大 App 中确认登录' : qr.qr_provider === 'smart_neu' ? '打开智慧东大 App 扫码' : '请使用微信扫码'}</Typography.Text>}
+          <Button icon={<QrcodeOutlined />} loading={busy} onClick={() => open('qr', qrProvider)}>重新获取二维码</Button>
+          <Button type="link" disabled={busy} onClick={() => open('qr', qrProvider === 'smart_neu' ? 'wechat' : 'smart_neu')}>{qrProvider === 'smart_neu' ? '改用微信扫码' : '改用智慧东大扫码'}</Button>
           <Button type="link" onClick={() => open('password')}>返回账号密码恢复</Button>
         </>}
       </div>

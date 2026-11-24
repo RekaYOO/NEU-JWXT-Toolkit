@@ -30,6 +30,9 @@ const formatCountdown = (value) => {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 };
 
+const qrInstructions = result => result?.message || (result?.qr_provider === 'smart_neu'
+  ? '打开智慧东大 App 扫码并确认登录' : '请使用微信扫码并确认登录');
+
 const AuthRecoveryPage = ({ token }) => {
   const [stage, setStage] = useState('starting');
   const [flow, setFlow] = useState(null);
@@ -41,6 +44,7 @@ const AuthRecoveryPage = ({ token }) => {
   const [actionLoading, setActionLoading] = useState(false);
   const [captchaLoading, setCaptchaLoading] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [qrProvider, setQrProvider] = useState('smart_neu');
   const pollTimer = useRef(null);
   const secondsLeftRef = useRef(300);
   const authenticatedRef = useRef(false);
@@ -105,10 +109,10 @@ const AuthRecoveryPage = ({ token }) => {
         finishAuthenticated();
       } else if (result.status === 'sms_required' || result.status === 'session_pending') {
         enterSMSStage(result);
-      } else if (result.status === 'expired') {
+      } else if (['expired', 'cancelled'].includes(result.status)) {
         stopPolling();
         setStage('expired');
-        setMessage('本次二维码已失效，请重新开始登录');
+        setMessage(result.message || '本次二维码已失效，请重新开始登录');
       } else if (result.status === 'error') {
         stopPolling();
         setStage('error');
@@ -134,17 +138,18 @@ const AuthRecoveryPage = ({ token }) => {
     );
   }, [poll, stopPolling]);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (provider = 'smart_neu') => {
     stopPolling();
+    setQrProvider(provider);
     setStage('starting');
-    setMessage('正在创建微信扫码二维码');
+    setMessage('正在获取登录二维码');
     setFlow(null);
     setAuthError('');
     setCaptchaCode('');
     setSmsCode('');
     setSmsSent(false);
     try {
-      const result = await startAuthRecovery(token);
+      const result = await startAuthRecovery(token, provider);
       if (authenticatedRef.current) return;
       if (result.status === 'authenticated') {
         finishAuthenticated();
@@ -156,7 +161,7 @@ const AuthRecoveryPage = ({ token }) => {
       setFlow(result);
       setCountdown(result.expires_in, 300);
       setStage('qr_pending');
-      setMessage('请使用微信扫码并确认登录');
+      setMessage(qrInstructions(result));
       beginPolling(result.poll_interval);
     } catch (error) {
       if (authenticatedRef.current) return;
@@ -165,17 +170,20 @@ const AuthRecoveryPage = ({ token }) => {
     }
   }, [beginPolling, enterSMSStage, finishAuthenticated, setCountdown, stopPolling, token]);
 
+  const restart = useCallback(() => { start(qrProvider); }, [qrProvider, start]);
+
   const restore = useCallback(async () => {
     try {
       const result = await getAuthRecoveryStatus(token);
       if (authenticatedRef.current) return;
       if (result.status === 'ready' || result.status === 'not_started') {
         await start();
-      } else if (['qr_pending', 'pending'].includes(result.status)) {
+      } else if (['qr_pending', 'pending', 'scanned'].includes(result.status) && result.expires_in !== 0) {
         setFlow(result);
+        setQrProvider(result.qr_provider || 'wechat');
         setCountdown(result.expires_in, 300);
         setStage('qr_pending');
-        setMessage('请使用微信扫码并确认登录');
+        setMessage(qrInstructions(result));
         beginPolling(result.poll_interval);
       } else if (result.status === 'sms_required' || result.status === 'session_pending') {
         enterSMSStage(result);
@@ -301,10 +309,6 @@ const AuthRecoveryPage = ({ token }) => {
     }
   };
 
-  const restart = async () => {
-    start();
-  };
-
   return (
     <main className="auth-recovery-page">
       <Card className="auth-recovery-card">
@@ -385,8 +389,11 @@ const AuthRecoveryPage = ({ token }) => {
         {['expired', 'error'].includes(stage) && (
           <div className="auth-recovery-result">
             <Alert type="warning" showIcon message={message} />
-            <Button type="primary" icon={<ReloadOutlined />} onClick={restart}>
+            <Button type="primary" icon={<ReloadOutlined />} onClick={() => start(qrProvider)}>
               重新开始登录
+            </Button>
+            <Button type="link" onClick={() => start(qrProvider === 'smart_neu' ? 'wechat' : 'smart_neu')}>
+              {qrProvider === 'smart_neu' ? '改用微信扫码' : '改用智慧东大扫码'}
             </Button>
           </div>
         )}
