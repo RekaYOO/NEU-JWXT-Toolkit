@@ -161,6 +161,9 @@ async function textContrast(locator) {
           let privateReads = 0;
           let finishSave;
           const savePending = new Promise(resolve => { finishSave = resolve; });
+          let finishExams;
+          const examsPending = new Promise(resolve => { finishExams = resolve; });
+          let examError = false;
           const auth = surface === 'credits' ? { is_logged_in: true, current_user: 'credit-fixture' } : { is_logged_in: false };
           await page.route('**/*', async route => {
             const url = new URL(route.request().url());
@@ -173,6 +176,12 @@ async function textContrast(locator) {
             else if (url.pathname === '/api/admin/status') data = { configured: true, authenticated: false, deployment_mode: 'remote-multi' };
             else if (url.pathname === '/api/offline/status') data = { available: false };
             else if (url.pathname.startsWith('/api/cache/refresh/')) data = { status: 'fresh' };
+            else if (url.pathname === '/api/exams/terms') data = { terms: [], current: 'exam-fixture' };
+            else if (url.pathname === '/api/exams') {
+              await examsPending;
+              if (examError) return route.fulfill({ status: 503, json: { detail: '模拟查询失败' } });
+              data = { exams: [] };
+            }
             else if (url.pathname === '/api/appearance') {
               privateReads += 1;
               if (route.request().method() === 'PUT') await savePending;
@@ -206,6 +215,21 @@ async function textContrast(locator) {
               const ratio = await textContrast(disabled.locator('span').last());
               assert.ok(ratio >= 4.5, `${theme} ${width}px disabled text: ${ratio.toFixed(2)}:1`);
             } finally { finishSave(); }
+            await page.goto(`${origin}/exams`, { waitUntil: 'domcontentloaded' });
+            const examPage = page.locator('.exam-page');
+            const checkExamText = async selector => {
+              const text = examPage.locator(selector);
+              await text.waitFor();
+              const ratio = await textContrast(text);
+              assert.ok(ratio >= 4.5, `${theme} ${width}px ${selector}: ${ratio.toFixed(2)}:1`);
+            };
+            try {
+              await checkExamText('.ant-spin-text');
+            } finally { finishExams(); }
+            await checkExamText('.ant-empty-description');
+            examError = true;
+            await page.reload();
+            await checkExamText('.ant-alert-message');
             assert.deepEqual(errors, []);
             await context.close();
             continue;
