@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import AcademicDocumentsPage from './AcademicDocumentsPage';
 import { generateAcademicDocument, getAcademicDocuments } from '../services/api';
-import { Modal } from 'antd';
+import { Modal, message } from 'antd';
 
 jest.mock('../services/api', () => ({
   generateAcademicDocument: jest.fn(),
@@ -129,6 +129,39 @@ describe('AcademicDocumentsPage', () => {
       confirm.mockRestore();
       open.mockRestore();
       URL.createObjectURL = originalCreate;
+    }
+  });
+
+  test.each(['success', 'failure'])('ignores late %s after leaving during generation', async outcome => {
+    getAcademicDocuments.mockResolvedValue({ groups: [{ name: '证明', documents: [{ id: 'enrolment', name: '学籍证明' }] }] });
+    let finish;
+    generateAcademicDocument.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      finish = () => outcome === 'success' ? resolve({ blob: new Blob(), format: 'html', filename: 'fixture.html' }) : reject(new Error('fixture'));
+    }));
+    const confirm = jest.spyOn(Modal, 'confirm').mockReturnValue({ destroy() {} });
+    const preview = { document: document.implementation.createHTMLDocument(), close: jest.fn(), closed: false };
+    const open = jest.spyOn(window, 'open').mockReturnValue(preview);
+    const errorMessage = jest.spyOn(message, 'error').mockImplementation(() => {});
+    const successMessage = jest.spyOn(message, 'success').mockImplementation(() => {});
+    try {
+      await act(async () => root.render(<MemoryRouter><AcademicDocumentsPage /></MemoryRouter>));
+      const button = [...container.querySelectorAll('button')].find(element => element.textContent.includes('生成证明'));
+      await act(async () => button.click());
+      let request;
+      await act(async () => { request = confirm.mock.calls[0][0].onOk(); });
+      await act(async () => root.render(null));
+      expect(preview.close).toHaveBeenCalledTimes(1);
+      finish();
+      await request;
+      expect(generateAcademicDocument).toHaveBeenCalledTimes(1);
+      expect(successMessage).not.toHaveBeenCalled();
+      expect(errorMessage).not.toHaveBeenCalled();
+      expect(preview.document.querySelector('iframe')).toBeNull();
+    } finally {
+      confirm.mockRestore();
+      open.mockRestore();
+      errorMessage.mockRestore();
+      successMessage.mockRestore();
     }
   });
 });

@@ -117,6 +117,7 @@ const AcademicDocumentsPage = () => {
           saveOrOpen(result, previewWindow);
           message.success(`${document.name}已生成`);
         } catch (error) {
+          if (confirmationRef.current !== pending) return;
           if (previewWindow && !previewWindow.closed) previewWindow.close();
           message.error(error.response?.data?.detail || error.message || '证明生成失败');
         } finally {
