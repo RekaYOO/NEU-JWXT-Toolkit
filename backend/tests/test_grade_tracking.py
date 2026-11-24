@@ -93,35 +93,9 @@ class TrackingTestFixture:
             return record.get("flow") if record else None
         return getattr(self.tracker, name)
 
-    def __setattr__(self, name, value):
-        if name in {"mail_service", "recovery_service", "tracker"}:
-            object.__setattr__(self, name, value)
-        elif name == "_send_email":
-            self.mail_service._send_email = value
-        elif name == "_flush_outbox":
-            self.mail_service.flush_once = value
-        elif name == "_save_outbox":
-            self.mail_service._save_outbox = value
-        else:
-            setattr(self.tracker, name, value)
-
-    def __delattr__(self, name):
-        if name in {"mail_service", "recovery_service", "tracker"}:
-            object.__delattr__(self, name)
-        elif name == "_flush_outbox":
-            del self.mail_service.flush_once
-        elif name in {"_send_email", "_save_outbox"}:
-            delattr(self.mail_service, name)
-        else:
-            delattr(self.tracker, name)
-
     @property
     def _outbox(self):
         return self.mail_service._outbox
-
-    @_outbox.setter
-    def _outbox(self, value):
-        self.mail_service._outbox = value
 
     @property
     def outbox_path(self):
@@ -238,7 +212,7 @@ def test_legacy_english_status_is_translated_without_remote_check(tmp_path):
 
 
 def deliver_pending_email(service):
-    service._send_email = lambda *_args, **_kwargs: None
+    service.mail_service._send_email = lambda *_args, **_kwargs: None
     service._flush_outbox()
 
 
@@ -323,7 +297,7 @@ def test_tracking_refreshes_shared_report_cache_only_when_scores_change(tmp_path
         logger=logging.getLogger("grade-tracking-report-sync-test"),
         score_refresher=score_refresher_for(academic),
     )
-    service._flush_outbox = lambda: None
+    service.mail_service.flush_once = lambda: None
 
     service.check_now()
     service.check_now()
@@ -351,7 +325,7 @@ def test_report_refresh_exception_does_not_break_score_sync(tmp_path):
         logger=logging.getLogger("grade-tracking-report-failure-test"),
         score_refresher=score_refresher_for(academic),
     )
-    service._flush_outbox = lambda: None
+    service.mail_service.flush_once = lambda: None
 
     result = service.check_now()
 
@@ -399,7 +373,7 @@ def test_config_write_failure_does_not_apply_enable_in_memory(
             raise OSError("disk unavailable")
         return original_write(path, value)
 
-    monkeypatch.setattr(service, "_write_json", fail_config_write)
+    monkeypatch.setattr(service.tracker, "_write_json", fail_config_write)
 
     with pytest.raises(OSError, match="disk unavailable"):
         service.set_enabled(True)
@@ -419,7 +393,7 @@ def test_each_enable_transition_queues_a_fresh_initial_email(
         "scores": [score_to_dict(make_score())],
         "overall_gpa": 3.8,
     })
-    monkeypatch.setattr(service, "_within_window", lambda _now: False)
+    monkeypatch.setattr(service.tracker, "_within_window", lambda _now: False)
 
     service.set_enabled(True)
     assert service._should_run() is True
@@ -491,7 +465,7 @@ def test_activation_retries_until_smtp_success(tmp_path):
         attempts.append("failed")
         raise OSError("smtp unavailable")
 
-    service._send_email = fail_once
+    service.mail_service._send_email = fail_once
     service._flush_outbox()
     assert service._config["_activation_id"] == activation_id
     assert service._outbox[0]["attempts"] == 1
@@ -530,9 +504,9 @@ def test_delivered_activation_is_not_resent_after_outbox_write_failure(
         }),
         reason="tracking",
     )
-    service._send_email = lambda *_args: None
+    service.mail_service._send_email = lambda *_args: None
     monkeypatch.setattr(
-        service,
+        service.mail_service,
         "_save_outbox",
         lambda: (_ for _ in ()).throw(OSError("outbox unavailable")),
     )
@@ -542,7 +516,7 @@ def test_delivered_activation_is_not_resent_after_outbox_write_failure(
 
     restarted, _, _ = build_service(tmp_path)
     sent = []
-    restarted._send_email = lambda *_args: sent.append(True)
+    restarted.mail_service._send_email = lambda *_args: sent.append(True)
     restarted._flush_outbox()
 
     assert sent == []
@@ -583,7 +557,7 @@ def test_disabling_during_snapshot_build_cancels_activation_commit(
         service.set_enabled(False)
         return snapshot
 
-    monkeypatch.setattr(service, "_build_snapshot", build_then_disable)
+    monkeypatch.setattr(service.tracker, "_build_snapshot", build_then_disable)
     service.handle_scores_revision(
         "20250001",
         "v1:baseline",
@@ -602,26 +576,25 @@ def test_disabling_during_snapshot_build_cancels_activation_commit(
 def test_partial_enable_write_is_recoverable(tmp_path, monkeypatch, failing_save):
     service, _, _ = build_service(tmp_path)
     service.update_config(mail_config())
-    original_save = getattr(service, f"_save_{failing_save}")
-    monkeypatch.setattr(
-        service,
-        f"_save_{failing_save}",
-        lambda: (_ for _ in ()).throw(OSError(f"{failing_save} unavailable")),
-    )
-
-    with pytest.raises(OSError, match="unavailable"):
-        service.set_enabled(True)
+    save_owner = service.mail_service if failing_save == "outbox" else service.tracker
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            save_owner,
+            f"_save_{failing_save}",
+            lambda: (_ for _ in ()).throw(OSError(f"{failing_save} unavailable")),
+        )
+        with pytest.raises(OSError, match="unavailable"):
+            service.set_enabled(True)
 
     persisted = json.loads(service.config_path.read_text(encoding="utf-8"))
     assert persisted["enabled"] is True
     assert persisted["_activation_id"] == service._config["_activation_id"]
 
     restarted, _, _ = build_service(tmp_path)
-    monkeypatch.setattr(restarted, "_within_window", lambda _now: False)
+    monkeypatch.setattr(restarted.tracker, "_within_window", lambda _now: False)
     assert restarted.get_status()["stage"] == "scheduled"
     assert restarted._should_run() is True
 
-    monkeypatch.setattr(service, f"_save_{failing_save}", original_save)
     service.set_enabled(True)
     assert service.get_status()["stage"] == "scheduled"
 
@@ -695,7 +668,7 @@ def test_manual_check_creates_snapshot_then_notifies_changes(tmp_path, monkeypat
     service.update_config(mail_config(enabled=True))
     sent = []
     monkeypatch.setattr(
-        service,
+        service.mail_service,
         "_send_email",
         lambda config, subject, body: sent.append((subject, body)),
     )
@@ -779,7 +752,7 @@ def test_login_required_does_not_fetch_scores(tmp_path, monkeypatch):
         logger=logging.getLogger("grade-tracking-login-test"),
     )
     service.update_config(mail_config())
-    monkeypatch.setattr(service, "_send_email", lambda config, subject, body: None)
+    monkeypatch.setattr(service.mail_service, "_send_email", lambda config, subject, body: None)
 
     status = service.check_now()
 
@@ -801,7 +774,7 @@ def test_missing_site_url_sends_manual_login_notice_once(tmp_path, monkeypatch):
     )
     service.update_config(mail_config(site_url=""))
     monkeypatch.setattr(
-        service,
+        service.mail_service,
         "_send_email",
         lambda config, subject, body: sent.append((subject, body)),
     )
@@ -838,7 +811,7 @@ def test_interactive_login_flow_is_not_replaced_and_user_is_notified(tmp_path, m
     )
     service.update_config(mail_config(site_url=""))
     monkeypatch.setattr(
-        service,
+        service.mail_service,
         "_send_email",
         lambda config, subject, body: sent.append((subject, body)),
     )
@@ -867,7 +840,7 @@ def test_test_email_is_a_general_system_mail_check(tmp_path, monkeypatch):
     service, _, _ = build_service(tmp_path)
     service.update_config(mail_config())
     sent = []
-    monkeypatch.setattr(service, "_send_email", lambda config, subject, body: sent.append((subject, body)))
+    monkeypatch.setattr(service.mail_service, "_send_email", lambda config, subject, body: sent.append((subject, body)))
     service.test_email()
     assert sent[0][0] == "[NEU 教务工具箱] 系统邮件配置测试"
     assert "SMTP" in sent[0][1]
@@ -880,7 +853,7 @@ def test_system_notification_outbox_delivers_plain_and_html_alternatives(tmp_pat
     service.update_config(mail_config())
     sent = []
     monkeypatch.setattr(
-        service, "_send_email",
+        service.mail_service, "_send_email",
         lambda config, subject, body, html_body="": sent.append((subject, body, html_body)),
     )
 
@@ -933,7 +906,7 @@ def test_configured_site_uses_one_time_page_before_starting_qr(tmp_path, monkeyp
         mail_config(site_url="https://grades.example.com")
     )
     monkeypatch.setattr(
-        service,
+        service.mail_service,
         "_send_email",
         lambda config, subject, body: sent.append((subject, body)),
     )
@@ -1038,7 +1011,7 @@ def test_recovery_qr_can_continue_through_sms_challenge(tmp_path, monkeypatch):
     )
     service.update_config(mail_config(site_url="https://grades.example.com"))
     monkeypatch.setattr(
-        service,
+        service.mail_service,
         "_send_email",
         lambda config, subject, body: sent.append((subject, body)),
     )
@@ -1095,7 +1068,7 @@ def test_saved_credentials_sms_challenge_is_reused_without_new_qr(tmp_path, monk
     )
     service.update_config(mail_config(site_url="https://grades.example.com"))
     monkeypatch.setattr(
-        service,
+        service.mail_service,
         "_send_email",
         lambda config, subject, body: sent.append((subject, body)),
     )
@@ -1165,7 +1138,7 @@ def test_task_recovery_link_targets_jwxk_and_uses_generic_recovery_flow(tmp_path
     assert message["dedupe_key"].startswith("auth-recovery:course_selection:")
     assert "/auth-recovery/" not in message["body"]
     sent = []
-    service._send_email = lambda _config, _subject, body, html_body="": sent.append((body, html_body))
+    service.mail_service._send_email = lambda _config, _subject, body, html_body="": sent.append((body, html_body))
     service._flush_outbox()
     token = re.search(
         r"/auth-recovery/([A-Za-z0-9_.-]+)", sent[0][0]
@@ -1276,7 +1249,7 @@ def test_recovery_sms_captcha_error_keeps_flow_for_retry(tmp_path, monkeypatch):
     )
     service.update_config(mail_config(site_url="https://grades.example.com"))
     monkeypatch.setattr(
-        service,
+        service.mail_service,
         "_send_email",
         lambda config, subject, body: sent.append((subject, body)),
     )
@@ -1314,7 +1287,7 @@ def test_recovery_api_bypasses_server_password_only_with_token_path():
 
 def build_detail_tracking_service(tmp_path, lookup):
     service, _, _ = build_service(tmp_path)
-    service.score_detail_lookup = lookup
+    service.tracker.score_detail_lookup = lookup
     service.update_config(mail_config(enabled=True, notify_initial=True))
     service.resume_after_login("20250001")
     return service

@@ -219,7 +219,7 @@ SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Acti
 
 `Go branch delivery` 在 `refactor/go-web-toolbox` 推送、指向该分支的 PR 或手动触发时运行。一次生产前端构建依次通过 TypeScript 类型检查和资源体积检查，再把同一份资源交给 Go 与 Android 打包。仅改 README、开发文档或功能说明书时跳过自动构建。
 
-Go 工作流验证 Linux 首装、旧版迁移、升级和回退、Debian 重启，以及 Windows 启动和发行包内的浏览器交互。Android 工作流执行 Python 和前端回归、两种 ABI 的单元测试与 Lint，并在 API 35 模拟器运行两款应用的仪器测试。ARM64 成品通过包名、版本、签名、敏感文件、嵌入运行时和 16 KiB 对齐检查。
+Go 工作流先以发行配置运行全量 Go 回归，再验证 Linux 首装、旧版迁移、升级和回退、Debian 重启，以及 Windows 启动和发行包内的浏览器交互。Android 工作流执行 Python 和前端回归、两种 ABI 的单元测试与 Lint，并在 API 35 模拟器运行两款应用的仪器测试。ARM64 成品通过包名、版本、签名、敏感文件、嵌入运行时和 16 KiB 对齐检查。
 
 两个平台检查都通过后，在该次运行的 Artifacts 下载 `toolbox-verified-<提交哈希>`，保留 14 天。里面有 Windows ZIP、Linux 归档、独立安装和迁移脚本、Android 客户端及本地版调试 APK、验证报告和 `SHA256SUMS`。解压后可执行 `sha256sum -c SHA256SUMS`。`COMMIT` 记录确切来源。管理员页面验收使用合成接口，完整链路无需学校账号或本地打包环境。
 

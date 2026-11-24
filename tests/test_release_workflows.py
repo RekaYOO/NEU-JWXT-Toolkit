@@ -49,10 +49,11 @@ def test_release_builds_web_once_without_repeating_source_tests():
 
 
 def test_release_dag_stays_small_and_explicit():
-    assert RELEASE.count("needs: [validate, web]") == 3
+    assert RELEASE.count("needs: [validate, web]") == 4
     assert "needs: [validate, web, android-tests]" in RELEASE
-    assert "needs: [validate, windows, linux, android]" in RELEASE
+    assert "needs: [validate, windows, linux, android, go-platforms]" in RELEASE
     assert "uses: ./.github/workflows/android.yml" in RELEASE
+    assert "uses: ./.github/workflows/go-platform-check.yml" in RELEASE
     assert "frontend_artifact: web-build" in RELEASE
     assert "ci_gate:" not in RELEASE
 
@@ -69,7 +70,8 @@ def test_android_release_gate_checks_actual_runtime_and_reuses_web_build():
     assert "-x :local-app:install" not in ANDROID
     assert "Collect emulator diagnostics" not in ANDROID
     assert "android-test-reports-" not in ANDROID
-    assert "android-debug-" not in ANDROID
+    assert "if: inputs.upload_debug_packages && matrix.abi == 'arm64_v8a'" in ANDROID
+    assert "name: android-arm64-debug-${{ github.sha }}" in ANDROID
     for secret in ("ANDROID_SIGNING_KEYSTORE_BASE64", "ANDROID_SIGNING_STORE_PASSWORD",
                    "ANDROID_SIGNING_KEY_ALIAS", "ANDROID_SIGNING_KEY_PASSWORD"):
         assert f"secrets.{secret}" in RELEASE

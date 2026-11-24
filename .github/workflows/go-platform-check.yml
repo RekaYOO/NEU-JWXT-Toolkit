@@ -43,6 +43,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Run Go regression tests
+        env:
+          CGO_ENABLED: '0'
+        run: go test ./...
       - uses: actions/setup-node@v4
         with:
           node-version: 22
