@@ -199,7 +199,7 @@
 }
 
 .page-context-label {
-  color: var(--color-subtle);
+  color: var(--color-text-secondary);
   font-size: 11px;
 }
 
