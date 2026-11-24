@@ -490,12 +490,15 @@ def recover_pending(state, layout):
                 move_directory(APP, transaction / 'failed-program')
             copy_database(transaction / 'data', DATA, service_user(), replace=True)
             move_directory(transaction / 'program', APP)
-    state['pending'] = None
-    write_state(state)
-    systemctl('reset-failed', UNIT.name)
+    try:
+        systemctl('reset-failed', UNIT.name)
+    except subprocess.CalledProcessError:
+        pass
     systemctl('start', UNIT.name)
     version = bundled_version(APP)
     installed_health(version, layout, gated=False)
+    state['pending'] = None
+    write_state(state)
     print(f'已恢复并验证 Go {version}。', flush=True)
 
 

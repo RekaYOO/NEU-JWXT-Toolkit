@@ -2,6 +2,7 @@ import importlib.util
 import json
 from contextlib import nullcontext
 from pathlib import Path
+from subprocess import CalledProcessError
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -37,6 +38,8 @@ class MaintenanceTest(unittest.TestCase):
                                          bundled_version=lambda path: (path / 'VERSION').read_text()))
 
     def systemctl(self, action, *arguments):
+        if action == 'reset-failed':
+            raise CalledProcessError(1, ['systemctl', action, *arguments])
         if action == 'start':
             self.start_count += 1
             if (self.app / installer.PENDING_MARKER).exists():
