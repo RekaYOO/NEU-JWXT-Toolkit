@@ -238,7 +238,7 @@ const ExamPage = () => {
             <Statistic
               title="进行中"
               value={stats.ongoing}
-              valueStyle={{ color: '#fa8c16' }}
+              valueStyle={{ color: 'var(--color-primary)' }}
               prefix={<ClockCircleOutlined />}
             />
           </Card>
@@ -248,7 +248,7 @@ const ExamPage = () => {
             <Statistic
               title="已结束"
               value={stats.finished}
-              valueStyle={{ color: '#8c8c8c' }}
+              valueStyle={{ color: 'var(--color-text-secondary)' }}
               prefix={<CheckCircleOutlined />}
             />
           </Card>

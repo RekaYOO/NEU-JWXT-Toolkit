@@ -13,3 +13,6 @@
 }
 @media (max-width: 600px) { .appearance-actions .ant-btn { flex: 1 1 120px; } }
 .ant-empty .ant-empty-description { color: var(--color-text-secondary); }
+.ant-typography.ant-typography-secondary,
+.ant-statistic .ant-statistic-title { color: var(--color-text-secondary); }
+.ant-segmented .ant-segmented-item:not(.ant-segmented-item-selected):not(.ant-segmented-item-disabled) { color: var(--color-text); }

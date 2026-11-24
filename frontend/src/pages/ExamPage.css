@@ -44,12 +44,12 @@
   color: var(--color-primary);
 }
 
-.stat-ongoing .ant-statistic-title {
-  color: #fa8c16;
+.stat-ongoing .ant-statistic .ant-statistic-title {
+  color: var(--color-text-secondary);
 }
 
-.stat-finished .ant-statistic-title {
-  color: #8c8c8c;
+.stat-finished .ant-statistic .ant-statistic-title {
+  color: var(--color-text-secondary);
 }
 
 .exam-timeline {
