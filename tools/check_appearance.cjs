@@ -172,6 +172,7 @@ async function textContrast(locator) {
             else if (url.pathname === '/api/status') data = auth;
             else if (url.pathname === '/api/admin/status') data = { configured: true, authenticated: false, deployment_mode: 'remote-multi' };
             else if (url.pathname === '/api/offline/status') data = { available: false };
+            else if (url.pathname.startsWith('/api/cache/refresh/')) data = { status: 'fresh' };
             else if (url.pathname === '/api/appearance') {
               privateReads += 1;
               if (route.request().method() === 'PUT') await savePending;
