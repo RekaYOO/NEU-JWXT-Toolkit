@@ -178,4 +178,16 @@ func TestSiteAppearanceRequiresAdminAndKeepsPersonalPreference(t *testing.T) {
 	if response.Code != 200 || public["site_default"] != "blue" {
 		t.Fatal("invalid appearance blocked login", response.Body.String())
 	}
+	response = apiRequest(handler, "GET", "/api/admin/appearance", "", admin)
+	if response.Code != 200 {
+		t.Fatal("admin could not read fallback", response.Body.String())
+	}
+	response = apiRequest(handler, "PUT", "/api/admin/appearance", `{"previous":"blue","site_default":"garden"}`, admin)
+	if response.Code != 200 {
+		t.Fatal("admin could not repair invalid theme", response.Body.String())
+	}
+	response = apiRequest(handler, "GET", "/api/appearance", "", cookie)
+	if err := json.Unmarshal(response.Body.Bytes(), &preference); err != nil || response.Code != 200 || preference["effective"] != "sakura" || preference["site_default"] != "garden" {
+		t.Fatal("repair lost personal preference", response.Body.String())
+	}
 }

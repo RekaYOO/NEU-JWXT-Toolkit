@@ -129,7 +129,7 @@ func (api *API) siteTheme(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if !builtinTheme(string(payload)) {
-		return "", errors.New("invalid site theme")
+		return "blue", nil
 	}
 	return string(payload), nil
 }
@@ -210,7 +210,18 @@ func (api *API) adminAppearance(response http.ResponseWriter, request *http.Requ
 			writeJSON(response, 422, map[string]string{"detail": "请选择内置站点模板"})
 			return
 		}
-		if err := api.database.SaveThemeDefault(request.Context(), input.Previous, input.Default); err != nil {
+		previous := input.Previous
+		if previous == "blue" {
+			stored, err := api.database.SiteSetting(request.Context(), "appearance-default")
+			if err != nil && !errors.Is(err, store.ErrMissing) {
+				api.documentError(response, err)
+				return
+			}
+			if err == nil && !builtinTheme(string(stored)) {
+				previous = string(stored)
+			}
+		}
+		if err := api.database.SaveThemeDefault(request.Context(), previous, input.Default); err != nil {
 			api.documentError(response, err)
 			return
 		}
