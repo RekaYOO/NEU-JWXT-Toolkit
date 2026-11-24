@@ -12,7 +12,7 @@
 
 .evaluation-page .ant-descriptions-item-label {
   font-weight: 500;
-  background-color: #fafafa;
+  background-color: var(--color-feature-tint, #fafafa);
 }
 
 .evaluation-page .ant-table-small .ant-table-thead > tr > th {
@@ -85,7 +85,7 @@
 }
 
 .mobile-task-card.is-selected {
-  background: #eff6ff;
+  background: var(--color-feature-tint, #eff6ff);
   border-color: var(--color-brand);
 }
 
@@ -137,7 +137,7 @@
 }
 
 .mobile-evaluation-course.is-selected {
-  background: #eff6ff;
+  background: var(--color-feature-tint, #eff6ff);
   border-color: var(--color-brand);
 }
 

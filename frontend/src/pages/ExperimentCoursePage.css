@@ -66,7 +66,7 @@
 
 .experiment-course-page .stat-label {
   font-size: 12px;
-  color: #8c8c8c;
+  color: var(--color-feature-caption, #8c8c8c);
   margin-top: 4px;
 }
 
@@ -82,7 +82,7 @@
 
 .course-no {
   font-size: 12px;
-  color: #8c8c8c;
+  color: var(--color-feature-caption, #8c8c8c);
   margin-top: 2px;
 }
 
@@ -243,7 +243,7 @@
   font-weight: 600;
   font-size: 14px;
   margin-bottom: 12px;
-  color: #262626;
+  color: var(--color-feature-label, #262626);
 }
 
 .projects-list {
@@ -287,7 +287,7 @@
 
 .project-code {
   font-size: 12px;
-  color: #8c8c8c;
+  color: var(--color-feature-caption, #8c8c8c);
 }
 
 .project-status {
@@ -305,7 +305,7 @@
 .project-info-header {
   margin-bottom: 16px;
   padding-bottom: 16px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--color-feature-edge, #f0f0f0);
 }
 
 .project-info-header .ant-typography {
@@ -348,7 +348,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #595959;
+  color: var(--color-feature-caption, #595959);
 }
 
 .round-action {
@@ -358,7 +358,7 @@
   margin-top: 12px;
   text-align: right;
   padding-top: 12px;
-  border-top: 1px dashed #f0f0f0;
+  border-top: 1px dashed var(--color-feature-edge, #f0f0f0);
 }
 
 .experiment-conflict-detail {

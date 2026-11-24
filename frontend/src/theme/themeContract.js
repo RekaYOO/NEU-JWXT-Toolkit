@@ -72,7 +72,11 @@ export function themeTokens(template, reducedMotion) {
 export function themeVariables(template) {
   const { colors, radius } = template;
   return { '--color-brand': colors.primary, '--color-brand-strong': colors.primary, '--color-brand-panel': colors.primary,
-    ...(template.id === 'blue' ? {} : { '--color-feature-tint': colors.canvas, '--color-feature-edge': colors.border }),
+    ...(template.id === 'blue' ? {} : {
+      '--color-feature-tint': colors.canvas, '--color-feature-edge': colors.border,
+      '--color-feature-label': colors.text, '--color-feature-caption': colors.muted,
+      '--color-feature-accent': colors.primary,
+    }),
     '--color-primary': colors.primary, '--color-accent': colors.primary, '--color-border': colors.border,
     '--color-text': colors.text, '--color-text-secondary': colors.muted, '--color-text-tertiary': colors.muted,
     '--color-ink-soft': colors.muted, '--color-surface-soft': colors.canvas,
