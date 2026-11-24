@@ -1,0 +1,114 @@
+name: Go branch delivery
+
+on:
+  push:
+    branches: [refactor/go-web-toolbox]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/开发/**'
+      - 'docs/功能/**'
+  pull_request:
+    branches: [refactor/go-web-toolbox]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/开发/**'
+      - 'docs/功能/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-branch-delivery-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Build shared production frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Type-check and build web assets
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+          npm run test:performance
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: branch-web-${{ github.sha }}
+          path: frontend/build
+          retention-days: 14
+          if-no-files-found: error
+
+  go-platforms:
+    name: Windows and Linux acceptance
+    needs: web
+    uses: ./.github/workflows/go-platform-check.yml
+    with:
+      frontend_artifact: branch-web-${{ github.sha }}
+
+  android:
+    name: Android client and standalone acceptance
+    needs: web
+    uses: ./.github/workflows/android.yml
+    with:
+      frontend_artifact: branch-web-${{ github.sha }}
+      upload_debug_packages: true
+
+  deliver:
+    name: Publish verified build artifacts
+    needs: [go-platforms, android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: go-web-${{ github.sha }}
+          path: verified-go
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: windows-verification-${{ github.sha }}
+          path: verified-windows
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: android-arm64-debug-${{ github.sha }}
+          path: verified-android
+      - name: Assemble downloads and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(jq -er '.version' verified-go/go-release-manifest.json)
+          windows="NEU-JWXT-Toolkit-$version-windows-amd64-go.zip"
+          linux="NEU-JWXT-Toolkit-$version-linux-amd64-go"
+          (cd verified-go && sha256sum --check SHA256SUMS)
+          (cd verified-android && sha256sum --check SHA256SUMS)
+          mkdir delivery
+          cp "verified-go/$windows" "verified-go/$linux.tar.gz" verified-go/go-release-manifest.json delivery/
+          cp verified-go/verification.json delivery/linux-verification.json
+          cp verified-windows/windows-verification.json delivery/
+          cp "verified-android/NEU-JWXT-Toolkit-$version-android-client-arm64-debug.apk" \
+             "verified-android/NEU-JWXT-Toolkit-$version-android-local-arm64-debug.apk" delivery/
+          for script in install.sh migrate-legacy.py; do
+            tar -xOzf "verified-go/$linux.tar.gz" "$linux/$script" > "delivery/$script"
+            test -s "delivery/$script"
+          done
+          printf '%s\n' "$GITHUB_SHA" > delivery/COMMIT
+          (cd delivery && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
+          printf '### Verified build %s\n\nDownload `toolbox-verified-%s` from Artifacts. The Android downloads are debug APKs.\n' \
+            "$version" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: toolbox-verified-${{ github.sha }}
+          path: delivery
+          retention-days: 14
+          if-no-files-found: error

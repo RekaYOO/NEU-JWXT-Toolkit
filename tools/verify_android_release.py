@@ -109,15 +109,15 @@ def _check_android_python_patch(archive: zipfile.ZipFile) -> None:
             raise SystemExit("Local APK contains Uvicorn without the Android compatibility patch")
 
 
-def verify(apk: Path, package: str, version: str, version_code: str, abi: str, local: bool) -> str:
+def verify(apk: Path, package: str, version: str, version_code: str, abi: str, local: bool, debug: bool = False) -> str:
     badging = _badging(apk)
     expected = f"package: name='{package}' versionCode='{version_code}' versionName='{version}'"
     if expected not in badging:
         raise SystemExit(f"Package metadata mismatch for {apk.name}: expected {expected}")
     if "sdkVersion:'24'" not in badging:
         raise SystemExit(f"Minimum SDK is not API 24 in {apk.name}")
-    if "application-debuggable" in badging:
-        raise SystemExit(f"Release APK is debuggable: {apk.name}")
+    if ("application-debuggable" in badging) != debug:
+        raise SystemExit(f"Unexpected debuggable flag in {apk.name}")
 
     with zipfile.ZipFile(apk) as archive:
         names = archive.namelist()
@@ -149,14 +149,16 @@ def main() -> None:
     parser.add_argument("--version", required=True)
     parser.add_argument("--version-code", required=True)
     parser.add_argument("--abi", default="arm64-v8a")
+    parser.add_argument("--debug", action="store_true", help="Check ARM64 debug packages and their .debug application IDs")
     args = parser.parse_args()
+    suffix = ".debug" if args.debug else ""
     client_cert = verify(
-        args.client, "io.github.rekayoo.neujwxt.client", args.version,
-        args.version_code, args.abi, False,
+        args.client, "io.github.rekayoo.neujwxt.client" + suffix, args.version,
+        args.version_code, args.abi, False, args.debug,
     )
     local_cert = verify(
-        args.local, "io.github.rekayoo.neujwxt.local", args.version,
-        args.version_code, args.abi, True,
+        args.local, "io.github.rekayoo.neujwxt.local" + suffix, args.version,
+        args.version_code, args.abi, True, args.debug,
     )
     if client_cert != local_cert:
         raise SystemExit("Client and local APKs are not signed with the same certificate")

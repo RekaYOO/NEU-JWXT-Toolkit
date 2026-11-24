@@ -2,15 +2,6 @@ name: Android remote client check
 
 on:
   workflow_dispatch:
-  push:
-    branches: [refactor/go-web-toolbox]
-    paths:
-      - 'frontend/**'
-      - 'packaging/android/**'
-      - 'VERSION'
-      - 'ANDROID_VERSION_CODE'
-      - 'tools/prepare_frontend_assets.mjs'
-      - '.github/workflows/android-client-check.yml'
 
 permissions:
   contents: read

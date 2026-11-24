@@ -1,5 +1,9 @@
 # Android 安装与运行
 
+重构分支的 [Go branch delivery](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/branch-delivery.yml?query=branch%3Arefactor%2Fgo-web-toolbox) 同时提供两款 ARM64 调试 APK。客户端连接已部署的 HTTPS 服务，可使用 Go 后端。本地版在手机内启动 Python/FastAPI，通过 Android WebView 使用同一套网页，无需部署服务。依赖 Go 后端的功能仍以服务端客户端为准。
+
+在最近一次成功运行的 Artifacts 下载 `toolbox-verified-<提交哈希>`。`android-client-arm64-debug.apk` 用于连接远端，`android-local-arm64-debug.apk` 用于独立使用。调试 APK 使用独立包名和调试签名，可与正式 APK 并存。正式签名版见 [v2.2.4 Release](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/tag/v2.2.4)。
+
 > Go 重构版 2.2.4（RC31）提供 ARM64 客户端调试 APK 和设备测试 APK。两份文件通过相同证书的签名验证。客户端版本码为 `2002004`，最低支持 Android 7.0（API 24）。交付目录内的 `SHA256SUMS` 可核对两个文件。见 [RC31 验收记录](Go候选包31验收记录.md)。
 >
 > 历史版本：v1.6.96 两个固定签名候选 APK 已完成混淆构建与成品检查，
@@ -40,7 +44,7 @@ adb -s $testDevice shell am instrument -w -r -e toolboxHttpsOrigin $testOrigin i
 
 ## 客户端版
 
-不在本机安装 Android 环境时，可在包含目标提交的分支手动运行 `Android remote client check`。它构建同一提交的网页，运行客户端单元测试和静态检查，并提供 ARM64 调试 APK 和设备测试 APK，不构建手机本地 Python 后端。产物名带提交号；此流程不会发布正式包，也不会自动运行设备上的 HTTPS 验收。工作区中尚未提交的代码不会进入远程构建。
+只验证远程客户端时，可以手动运行 `Android remote client check`。它构建当前提交的网页，运行客户端单元测试、静态检查和模拟器测试，并提供 ARM64 调试 APK 和设备测试 APK。连接实际 HTTPS 服务的真机验收见上文，两个 Android 运行版本的候选包由 `Go branch delivery` 提供。
 
 GitHub 手动运行的前提是默认分支已有此工作流，且选择的目标分支也包含它。构建成功后仍需将产物安装到隔离设备验证。
 

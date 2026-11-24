@@ -4,14 +4,19 @@ on:
   push:
     branches: ["main", "codex/android-*"]
   pull_request:
+    branches-ignore: [refactor/go-web-toolbox]
   workflow_dispatch:
   workflow_call:
     inputs:
       frontend_artifact:
-        description: Built frontend from the calling Release workflow
+        description: Production frontend from the calling workflow
         type: string
         required: false
         default: ""
+      upload_debug_packages:
+        description: Verify and upload ARM64 debug APKs for branch delivery
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -60,7 +65,7 @@ jobs:
         run: |
           npm run build
           npm run test:performance
-      - name: Reuse release frontend
+      - name: Reuse production frontend
         if: ${{ inputs.frontend_artifact }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -212,3 +217,34 @@ jobs:
             "$package.test/androidx.test.runner.AndroidJUnitRunner" \
             | tee "$RUNNER_TEMP/notification-permission-test.txt"
           grep -Eq '^OK \(1 test\)' "$RUNNER_TEMP/notification-permission-test.txt"
+      - name: Verify ARM64 client and standalone packages
+        if: inputs.upload_debug_packages && matrix.abi == 'arm64_v8a'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\r\n' < VERSION)
+          version_code=$(tr -d '\r\n' < ANDROID_VERSION_CODE)
+          mkdir android-debug
+          client="android-debug/NEU-JWXT-Toolkit-$version-android-client-arm64-debug.apk"
+          local="android-debug/NEU-JWXT-Toolkit-$version-android-local-arm64-debug.apk"
+          cp packaging/android/client-app/build/outputs/apk/arm64/debug/client-app-arm64-debug.apk "$client"
+          cp packaging/android/local-app/build/outputs/apk/arm64/debug/local-app-arm64-debug.apk "$local"
+          python tools/verify_android_release.py "$client" "$local" --version "$version" --version-code "$version_code" --debug
+          (cd android-debug && sha256sum -- *.apk > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: inputs.upload_debug_packages && matrix.abi == 'arm64_v8a'
+        with:
+          name: android-arm64-debug-${{ github.sha }}
+          path: android-debug/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always() && inputs.upload_debug_packages && matrix.abi == 'x86_64'
+        with:
+          name: android-device-results-${{ github.sha }}
+          path: |
+            packaging/android/client-app/build/outputs/androidTest-results/connected/**/*.xml
+            packaging/android/local-app/build/outputs/androidTest-results/connected/**/*.xml
+            ${{ runner.temp }}/notification-permission-test.txt
+          if-no-files-found: ignore
+          retention-days: 14

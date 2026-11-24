@@ -469,8 +469,10 @@ jobs:
           fi
 
   go-platforms:
-    needs: validate
+    needs: [validate, web]
     uses: ./.github/workflows/go-platform-check.yml
+    with:
+      frontend_artifact: web-build
     permissions:
       contents: read
 

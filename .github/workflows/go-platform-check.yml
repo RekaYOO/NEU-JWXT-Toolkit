@@ -1,14 +1,14 @@
 name: Go Linux and Docker acceptance
 on:
   workflow_call:
-  push:
-    branches: [refactor/go-web-toolbox]
-    paths-ignore:
-      - 'README.md'
-      - 'docs/开发/**'
-      - 'docs/功能/**'
+    inputs:
+      frontend_artifact:
+        description: Production frontend from the calling workflow
+        type: string
+        default: ''
   workflow_dispatch:
   pull_request:
+    branches-ignore: [refactor/go-web-toolbox]
     paths:
       - 'cmd/**'
       - 'internal/**'
@@ -25,6 +25,7 @@ on:
       - 'tools/*go_release.py'
       - 'tools/check_go_https.go'
       - 'tools/check_appearance.cjs'
+      - 'tools/check_admin.cjs'
       - 'tools/check_timetable_day_agenda.cjs'
       - 'packaging/go/**'
       - 'docs/部署/Go运行包.md'
@@ -45,10 +46,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - run: npm ci --prefix frontend
-      - run: go test ./internal/... ./cmd/...
       - run: python3 packaging/go/test_install_server.py
-      - run: python3 tools/build_go_release.py
+      - uses: actions/download-artifact@v4
+        if: inputs.frontend_artifact != ''
+        with:
+          name: ${{ inputs.frontend_artifact }}
+          path: frontend/build
+      - name: Build Go distributions
+        shell: bash
+        env:
+          FRONTEND_ARTIFACT: ${{ inputs.frontend_artifact }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$FRONTEND_ARTIFACT" ]]; then
+            python3 tools/build_go_release.py --use-built-frontend
+          else
+            python3 tools/build_go_release.py
+          fi
       - run: python3 tools/check_go_release.py dist/go-release --smoke
       - name: Install and migrate alongside the legacy systemd service
         shell: bash
@@ -221,6 +238,12 @@ jobs:
         run: |
           $archive = Get-Item dist/go-release/*-windows-amd64-go.zip
           node tools/check_timetable_day_agenda.cjs (Join-Path $env:RUNNER_TEMP "appearance-package/$($archive.BaseName)")
+      - name: Verify administrator workflows in the packaged web client
+        shell: pwsh
+        run: |
+          $archive = Get-Item dist/go-release/*-windows-amd64-go.zip
+          $env:QA_FRONTEND_BUILD = Join-Path $env:RUNNER_TEMP "appearance-package/$($archive.BaseName)/frontend/build"
+          node tools/check_admin.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: windows-verification-${{ github.sha }}

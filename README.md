@@ -4,8 +4,8 @@
 
 # NEU 教务系统工具箱
 
-当前重构分支提供可直接试用的 Go＋SQLite 后端和 Vite 前端运行包；学校业务由用户在实际窗口完成最终验收。
-三平台运行包使用同一提交 `b4cb195`（2.2.4）。Windows 解压后双击 `启动工具箱.exe`。在「系统设置 → 外观与主题」可以预览或应用主题，默认晴蓝沿用原版配色。远程多用户管理员从 `/admin` 管理准入。登录 GitHub 后下载对应平台包。[Windows 与 Linux](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45322067409/artifacts/14887458328) · [Android ARM64 调试客户端](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/runs/45322067386/artifacts/14888486504) · [启动与核验说明](docs/部署/三平台试用说明.md)
+重构分支使用 Go＋SQLite 后端和 React 18、Ant Design 5、Vite 6 前端。推送后，GitHub Actions 从同一提交构建并验收 Windows、Linux、Android 远程客户端和 Android 本地版。
+登录 GitHub 后打开最近一次成功运行，从 Artifacts 下载 `toolbox-verified-<提交哈希>`，其中包含四个运行包、Linux 安装和迁移脚本、SHA-256 清单。两款 Android 候选为 ARM64 调试 APK，本地版内置 Python/FastAPI，可以独立运行。[重构分支构建](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/branch-delivery.yml?query=branch%3Arefactor%2Fgo-web-toolbox) · [Android 安装说明](docs/部署/Android安装.md)
 已接入的Go直连登录、账号会话及GPA方案版本保护与验证入口见
 [Go迁移说明](docs/开发/Go迁移.md)。下方原版安装与Python运行说明仍用于旧版和迁移对照。
 

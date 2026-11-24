@@ -93,6 +93,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--go", default="go", help="Go executable path")
     parser.add_argument("--licenses-only", action="store_true", help="Collect dependency notices without compiling release bundles")
+    parser.add_argument("--use-built-frontend", action="store_true", help="Package the existing frontend/build after checking its production budget")
     parser.add_argument("--output", type=Path, default=ROOT / "dist/go-release")
     args = parser.parse_args()
     if args.licenses_only:
@@ -108,7 +109,8 @@ def main():
     npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
     if not npm:
         raise ValueError("npm is required")
-    run([npm, "run", "build"], cwd=ROOT / "frontend")
+    if not args.use_built_frontend:
+        run([npm, "run", "build"], cwd=ROOT / "frontend")
     run([npm, "run", "test:performance"], cwd=ROOT / "frontend")
     run([args.go, "test", "./internal/...", "./cmd/..."])
     run([args.go, "vet", "./internal/...", "./cmd/..."])

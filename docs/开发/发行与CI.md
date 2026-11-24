@@ -217,9 +217,13 @@ SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Acti
 存储。GitHub Secrets 无法作为可下载恢复的密钥备份。可通过 GitHub Secrets API 的
 公开密钥和标准 sealed-box 加密一次配置四项，无需修改工作流或为每次构建生成新密码。
 
-`refactor/go-web-toolbox` 分支每次推送后，平台检查会构建 Windows 和 Linux 运行包。Linux 服务验收通过后，在该次 Actions 运行的 Artifacts 区下载 `go-web-<提交哈希>`，保留 7 天。解压后可用 `sha256sum -c SHA256SUMS` 核对两个运行包，`verification.json` 记录该次检查结果。
+`Go branch delivery` 在 `refactor/go-web-toolbox` 推送、指向该分支的 PR 或手动触发时运行。一次生产前端构建依次通过 TypeScript 类型检查和资源体积检查，再把同一份资源交给 Go 与 Android 打包。仅改 README、开发文档或功能说明书时跳过自动构建。
 
-Windows 主机会从同一次构建下载上述运行包，验证启动、迁移、备份恢复和从压缩包升级。完整结果位于 `windows-verification-<提交哈希>`。
+Go 工作流验证 Linux 首装、旧版迁移、升级和回退、Debian 重启，以及 Windows 启动和发行包内的浏览器交互。Android 工作流执行 Python 和前端回归、两种 ABI 的单元测试与 Lint，并在 API 35 模拟器运行两款应用的仪器测试。ARM64 成品通过包名、版本、签名、敏感文件、嵌入运行时和 16 KiB 对齐检查。
+
+两个平台检查都通过后，在该次运行的 Artifacts 下载 `toolbox-verified-<提交哈希>`，保留 14 天。里面有 Windows ZIP、Linux 归档、独立安装和迁移脚本、Android 客户端及本地版调试 APK、验证报告和 `SHA256SUMS`。解压后可执行 `sha256sum -c SHA256SUMS`。`COMMIT` 记录确切来源。管理员页面验收使用合成接口，完整链路无需学校账号或本地打包环境。
+
+正式标签发布仍由 `Release` 工作流执行。Go 归档与 Android 包复用该次 Release 的生产网页。维护者可以手动运行 `Go branch delivery` 重建候选，也可以按下面的正式签名流程生成可覆盖安装的候选 APK。
 
 候选构建先递增 `VERSION` 和 `ANDROID_VERSION_CODE`，再手动运行 `Release` 工作流。
 全部成功后，`android-release` artifact 包含两个固定签名、正式包名的 APK；
