@@ -86,6 +86,24 @@ describe('AcademicDocumentsPage', () => {
     }
   });
 
+  test('leaving the page invalidates its pending confirmation', async () => {
+    getAcademicDocuments.mockResolvedValue({ groups: [{ name: '成绩单', documents: [{ id: 'zh', name: '中文成绩单' }] }] });
+    const destroy = jest.fn();
+    const confirm = jest.spyOn(Modal, 'confirm').mockReturnValue({ destroy });
+    try {
+      await act(async () => root.render(<MemoryRouter><AcademicDocumentsPage /></MemoryRouter>));
+      const button = [...container.querySelectorAll('button')].find(element => element.textContent.includes('生成证明'));
+      await act(async () => button.click());
+      const pending = confirm.mock.calls[0][0];
+      await act(async () => root.render(null));
+      expect(destroy).toHaveBeenCalledTimes(1);
+      await pending.onOk();
+      expect(generateAcademicDocument).not.toHaveBeenCalled();
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
   test('duplicate clicks share one confirmation and HTML preview has an isolated frame', async () => {
     getAcademicDocuments.mockResolvedValue({ groups: [{ name: '成绩单', documents: [{ id: 'zh', name: '中文成绩单', semester_limit: 50 }] }] });
     let confirmation;

@@ -52,7 +52,7 @@ const AcademicDocumentsPage = () => {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [generatingId, setGeneratingId] = useState('');
-  const confirmationRef = useRef(false);
+  const confirmationRef = useRef(null);
   const requestRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -68,7 +68,15 @@ const AcademicDocumentsPage = () => {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    return () => {
+      const pending = confirmationRef.current;
+      confirmationRef.current = null;
+      pending?.dialog?.destroy();
+      if (pending?.preview && !pending.preview.closed) pending.preview.close();
+    };
+  }, [load]);
 
   const documentCount = useMemo(() => groups.reduce(
     (total, group) => total + (group.documents?.length || 0), 0,
@@ -76,8 +84,9 @@ const AcademicDocumentsPage = () => {
 
   const generate = useCallback((document) => {
     if (confirmationRef.current) return;
-    confirmationRef.current = true;
-    Modal.confirm({
+    const pending = {};
+    confirmationRef.current = pending;
+    pending.dialog = Modal.confirm({
       title: `生成${document.name}`,
       icon: <FileDoneOutlined />,
       content: (
@@ -90,11 +99,12 @@ const AcademicDocumentsPage = () => {
       ),
       okText: '确认生成',
       cancelText: '取消',
-      onCancel() { confirmationRef.current = false; },
+      onCancel() { if (confirmationRef.current === pending) confirmationRef.current = null; },
       async onOk() {
-        if (requestRef.current) return;
+        if (confirmationRef.current !== pending || requestRef.current) return;
         requestRef.current = true;
         const previewWindow = isNativeShell() ? null : window.open('', '_blank');
+        pending.preview = previewWindow;
         if (previewWindow) {
           previewWindow.opener = null;
           previewWindow.document.title = `正在生成${document.name}`;
@@ -103,13 +113,14 @@ const AcademicDocumentsPage = () => {
         setGeneratingId(document.id);
         try {
           const result = await generateAcademicDocument(document.id);
+          if (confirmationRef.current !== pending) return;
           saveOrOpen(result, previewWindow);
           message.success(`${document.name}已生成`);
         } catch (error) {
           if (previewWindow && !previewWindow.closed) previewWindow.close();
           message.error(error.response?.data?.detail || error.message || '证明生成失败');
         } finally {
-          confirmationRef.current = false;
+          confirmationRef.current = null;
           requestRef.current = false;
           setGeneratingId('');
         }
