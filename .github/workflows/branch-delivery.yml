@@ -2,13 +2,13 @@ name: Go branch delivery
 
 on:
   push:
-    branches: [refactor/go-web-toolbox]
+    branches: [main]
     paths-ignore:
       - 'README.md'
       - 'docs/开发/**'
       - 'docs/功能/**'
   pull_request:
-    branches: [refactor/go-web-toolbox]
+    branches: [main]
     paths-ignore:
       - 'README.md'
       - 'docs/开发/**'

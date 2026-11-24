@@ -1,6 +1,6 @@
 # Android 安装与运行
 
-重构分支的 [Go branch delivery](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/branch-delivery.yml?query=branch%3Arefactor%2Fgo-web-toolbox) 同时提供两款 ARM64 调试 APK。客户端连接已部署的 HTTPS 服务，可使用 Go 后端。本地版在手机内启动 Python/FastAPI，通过 Android WebView 使用同一套网页，无需部署服务。依赖 Go 后端的功能仍以服务端客户端为准。
+主分支的 [Go branch delivery](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/branch-delivery.yml?query=branch%3Amain) 同时提供两款 ARM64 调试 APK。客户端连接已部署的 HTTPS 服务，可使用 Go 后端。本地版在手机内启动 Python/FastAPI，通过 Android WebView 使用同一套网页，无需部署服务。依赖 Go 后端的功能仍以服务端客户端为准。
 
 在最近一次成功运行的 Artifacts 下载 `toolbox-verified-<提交哈希>`。`android-client-arm64-debug.apk` 用于连接远端，`android-local-arm64-debug.apk` 用于独立使用。调试 APK 使用独立包名和调试签名，可与正式 APK 并存。正式签名版见 [v2.2.4 Release](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/tag/v2.2.4)。
 

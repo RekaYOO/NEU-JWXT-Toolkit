@@ -4,15 +4,44 @@
 
 # NEU 教务系统工具箱
 
-重构分支使用 Go＋SQLite 后端和 React 18、Ant Design 5、Vite 6 前端。推送后，GitHub Actions 从同一提交构建并验收 Windows、Linux、Android 远程客户端和 Android 本地版。
-登录 GitHub 后打开最近一次成功运行，从 Artifacts 下载 `toolbox-verified-<提交哈希>`，其中包含四个运行包、Linux 安装和迁移脚本、SHA-256 清单。两款 Android 候选为 ARM64 调试 APK，本地版内置 Python/FastAPI，可以独立运行。[重构分支构建](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/branch-delivery.yml?query=branch%3Arefactor%2Fgo-web-toolbox) · [Android 安装说明](docs/部署/Android安装.md)
-已接入的Go直连登录、账号会话及GPA方案版本保护与验证入口见
-[Go迁移说明](docs/开发/Go迁移.md)。下方原版安装与Python运行说明仍用于旧版和迁移对照。
+[![CI](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/ci.yml?query=branch%3Amain)
+[![主分支交付](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/branch-delivery.yml/badge.svg?branch=main)](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/branch-delivery.yml?query=branch%3Amain)
+[![最新 Release](https://img.shields.io/github/v/release/RekaYOO/NEU-JWXT-Toolkit?display_name=tag&sort=semver)](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest)
 
-面向东北大学教务场景的第三方工具箱。项目把成绩、培养计划、课表、考试、课程大纲、
-选课、评教、科研训练和资料导出集中到一个响应式 Web 界面，并通过本地缓存改善官方系统
-响应慢或暂时不可用时的使用体验。当前稳定版本及安装包见
-[GitHub Releases](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest)。
+面向东北大学教务场景的第三方工具箱。把成绩、GPA、培养计划、课表、考试、课程大纲、选课、
+评教、科研训练和资料导出集中到一个清晰的响应式界面；本地缓存、离线查看和安全的失败恢复，
+让学校系统变慢或短暂不可用时仍然有东西可用。
+
+当前默认分支已经切换为 Go＋SQLite 新版，前端采用 React 18、Ant Design 5、TypeScript 和 Vite 6。
+每次推送到 `main`，GitHub Actions 会从同一提交构建并验收 Windows、Linux、Android 远程客户端和
+Android 本地版。旧 Python 版保留在 [`legacy/python-toolbox`](https://github.com/RekaYOO/NEU-JWXT-Toolkit/tree/legacy/python-toolbox)，用于迁移和回溯。
+
+**快速入口：** [下载最新 Release](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest) ·
+[查看主分支交付](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/branch-delivery.yml?query=branch%3Amain) ·
+[安装与迁移](docs/部署/Go运行包.md) · [Android 安装](docs/部署/Android安装.md)
+
+## 你会得到什么
+
+- **一套数据工作台**：成绩、绩点策略、培养计划、课表、考试和教务资料在同一个入口完成。
+- **更快的重复使用**：按账号隔离的 SQLite 数据、共享缓存、离线只读和刷新诊断，减少反复等待。
+- **桌面、服务端、手机任选**：Windows 便携版、Linux systemd 服务、Android 远程客户端和 Android 本地完整版共用同一套前端。
+- **写操作有边界**：选课、退课、评教等提交前确认；响应不明确时不自动重放，登录恢复也不会悄悄重发请求。
+- **更新可回退**：安装、旧资料迁移、升级、检查点恢复和回退都由同一套发行脚本处理，包和清单可用 SHA-256 校验。
+
+## 界面预览
+
+下面截图来自 GitHub Actions 的模拟数据验收，不包含真实学号、成绩、Cookie 或学校响应。它们用于展示布局和交互密度，不代表任何账号的实际页面。
+
+| 统一登录入口 | 课表与日程 | 主题系统 |
+| --- | --- | --- |
+| ![模拟登录页](assets/demo/login.png) | ![模拟课表日程](assets/demo/timetable-agenda.png) | ![模拟主题设置](assets/demo/theme-settings.png) |
+
+管理页同样经过模拟接口验收，包含访问门、管理员登录、停用/恢复确认和退出流程：
+
+![模拟管理页](assets/demo/admin.png)
+
+完整能力仍以[功能索引](docs/README.md)和代码中的
+[`frontend/src/features/featureRegistry.js`](frontend/src/features/featureRegistry.js)为准。
 
 项目支持 Windows 本机应用、Linux 单用户轻量服务、Android 客户端/本地版和源码开发。它不是东北大学
 官方产品，也不会绕过学校的身份认证、选课资格或业务规则。
