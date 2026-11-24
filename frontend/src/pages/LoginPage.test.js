@@ -2,7 +2,12 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import LoginPage from './LoginPage';
-import { checkStatus, getOfflineStatus } from '../services/api';
+import {
+  checkStatus,
+  getOfflineStatus,
+  startWebVPNQRLogin,
+  cancelWebVPNQRLogin,
+} from '../services/api';
 import {
   MANUAL_LOGOUT_SESSION_KEY,
 } from '../utils/authSessionPolicy';
@@ -32,6 +37,9 @@ describe('LoginPage session recovery boundary', () => {
     sessionStorage.clear();
     checkStatus.mockReset();
     checkStatus.mockResolvedValue({ is_logged_in: false, current_user: null });
+    startWebVPNQRLogin.mockReset();
+    cancelWebVPNQRLogin.mockReset();
+    cancelWebVPNQRLogin.mockResolvedValue({ success: true });
     getOfflineStatus.mockReset();
     getOfflineStatus.mockResolvedValue({
       available: false,
@@ -104,6 +112,37 @@ describe('LoginPage session recovery boundary', () => {
 
     expect(username?.getAttribute('autocomplete')).toBe('section-neu-account username');
     expect(password?.getAttribute('autocomplete')).toBe('section-neu-account current-password');
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  test('扫码激活态切换方式会返回选择器并选中另一种扫码方式', async () => {
+    startWebVPNQRLogin.mockResolvedValue({
+      success: true,
+      flow_id: 'qr-flow',
+      qr_content: 'fixture-qr',
+      poll_interval: 60,
+      expires_in: 120,
+    });
+    const { container, root } = await renderLoginPage();
+    const providerCard = container.querySelector('.qr-method-card');
+
+    await act(async () => {
+      providerCard.click();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.login-shell')?.className).toContain('is-qr-active');
+    expect(container.querySelector('.qr-provider-pill')?.textContent).toContain('智慧东大');
+
+    await act(async () => {
+      [...container.querySelectorAll('button')]
+        .find(button => button.textContent.includes('切换方式'))
+        .click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector('.qr-provider-pill')?.textContent).toContain('微信');
+    expect(container.querySelector('.qr-method-card.is-selected strong')?.textContent).toBe('微信扫码');
 
     await act(async () => root.unmount());
     container.remove();

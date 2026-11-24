@@ -202,6 +202,14 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     }
   };
 
+  const switchQRProvider = async () => {
+    await cancelQRLogin();
+    setQrMessage('');
+    setQrScanned(false);
+    setQrProvider(previous => (previous === 'smart_neu' ? 'wechat' : 'smart_neu'));
+    setLoginView('qr');
+  };
+
   const showPasswordLogin = async () => {
     await cancelQRLogin();
     setQrMessage('');
@@ -554,10 +562,13 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
                   <Button type="text" size="small" icon={<ArrowLeftOutlined />} disabled={loading} onClick={showPasswordLogin}>
                     账号密码登录
                   </Button>
-                  <span className="qr-provider-pill">
-                    {React.createElement(qrProviders[qrProvider].icon)}
-                    {qrProviders[qrProvider].shortTitle}
-                  </span>
+                  <div className="qr-flow-toolbar-actions">
+                    <span className="qr-provider-pill">
+                      {React.createElement(qrProviders[qrProvider].icon)}
+                      {qrProviders[qrProvider].shortTitle}
+                    </span>
+                    <Button type="text" size="small" disabled={loading} onClick={switchQRProvider}>切换方式</Button>
+                  </div>
                 </div>
                 {qrFlow ? (
                   <div className="qr-active-layout">

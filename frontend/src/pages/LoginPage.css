@@ -26,6 +26,10 @@
   box-shadow: var(--shadow-md);
 }
 
+.login-shell.is-qr-active {
+  height: min(760px, calc(100dvh - 48px));
+}
+
 .login-brand {
   position: relative;
   display: flex;
@@ -245,6 +249,16 @@
 .qr-flow-toolbar .ant-btn {
   padding-inline: 0;
   color: var(--color-muted);
+}
+
+.qr-flow-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.qr-flow-toolbar-actions .ant-btn {
+  color: var(--color-brand);
 }
 
 .qr-provider-pill {
@@ -519,6 +533,11 @@
     border: 1px solid var(--color-line);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-md);
+  }
+
+  .login-shell.is-qr-active {
+    height: auto;
+    max-height: calc(100dvh - 32px);
   }
 
   .login-brand {
