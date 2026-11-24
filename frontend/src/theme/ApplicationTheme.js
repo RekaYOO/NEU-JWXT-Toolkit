@@ -64,6 +64,11 @@ export default function ApplicationTheme({ identity = '', publicTheme, children 
   useLayoutEffect(() => {
     const root = document.documentElement;
     const variables = themeVariables(template);
+    if (template.id === 'blue') {
+      for (const key of Object.keys(variables)) {
+        if (getComputedStyle(root).getPropertyValue(key).trim()) delete variables[key];
+      }
+    }
     const previous = Object.fromEntries(Object.keys(variables).map(key => [key, root.style.getPropertyValue(key)]));
     Object.entries(variables).forEach(([key, setting]) => root.style.setProperty(key, setting));
     root.dataset.themeMotion = reduced || template.motion === 'reduced' ? 'reduced' : 'full';
@@ -96,6 +101,6 @@ export default function ApplicationTheme({ identity = '', publicTheme, children 
   return <AppearanceContext.Provider value={{ ...value, identity, all, applied, loaded, saving, error, reload, persist,
     preview: candidate => { if (identityRef.current !== identity) return; validateTemplate(candidate, { builtin: builtinThemes.some(item => item.id === candidate.id) }); setPreview({ owner: identity, template: candidate }); },
     cancelPreview: () => setPreview(current => current?.owner === identity ? null : current), previewing: preview?.owner === identity }}>
-    <ConfigProvider theme={themeTokens(template, reduced)}>{children}</ConfigProvider>
+    <ConfigProvider theme={template.id === 'blue' ? { token: { motion: !reduced } } : themeTokens(template, reduced)}>{children}</ConfigProvider>
   </AppearanceContext.Provider>;
 }

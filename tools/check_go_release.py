@@ -80,7 +80,7 @@ def inspect_archive(path, version, platform):
     required = [executable, "VERSION", "LICENSE", "THIRD_PARTY_NOTICE.md", "README.md", "BACKUP.md", "IMPORT.md",
                 "frontend/build/index.html", "frontend/build/asset-manifest.json", "licenses/dependencies.json"]
     if platform == "windows":
-        required.extend(["app.ico", "启动工具箱.cmd"])
+        required.extend(["app.ico", "启动工具箱.cmd", "启动工具箱.exe"])
     else:
         required.append("neu-toolbox.service")
     for theme in ("sakura", "blue", "garden"):

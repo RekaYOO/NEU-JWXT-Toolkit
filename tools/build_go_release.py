@@ -120,6 +120,7 @@ def main():
         run([args.go, "build", "-trimpath", "-buildvcs=false", "-ldflags=-s -w", "-o", str(bundle / executable), "./cmd/toolbox"], env=environment)
         (bundle / executable).chmod(0o755)
         if platform == "windows":
+            run([args.go, "build", "-trimpath", "-buildvcs=false", "-ldflags=-s -w -H=windowsgui", "-o", str(bundle / "启动工具箱.exe"), "./cmd/desktop-launcher"], env=environment)
             shutil.copy2(ROOT / "packaging/windows/app.ico", bundle / "app.ico")
             (bundle / "启动工具箱.cmd").write_bytes(b'@echo off\r\n"%~dp0toolbox.exe" launch %*\r\nif errorlevel 1 pause\r\n')
         else:

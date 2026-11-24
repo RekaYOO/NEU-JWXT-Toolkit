@@ -207,7 +207,7 @@ export default function VersionUpdateCard() {
       <div className="version-update-panel__heading">{available ? <Tag color="blue">有新版本</Tag> : snapshot && !error ? <Tag color="green">已是最新</Tag> : <Tag>尚未检查</Tag>}</div>
        <div className="version-update-version"><span>当前版本：<b>{current}</b></span><span>最新版本：<b>{latest || '—'}</b></span></div>
       {renderStatus(job, status, error)}
-      {selectedJob && selectedJob === job?.job_id && <Text role="status">新版已选定。退出程序后，请从原目录的启动工具箱.cmd 重新打开。</Text>}
+      {selectedJob && selectedJob === job?.job_id && <Text role="status">新版已选定。退出程序后，请从原目录的「启动工具箱」重新打开。</Text>}
       <div className="version-update-actions">
         {snapshot?.can_install_on_restart && job?.state === 'downloaded' && job.job_id !== selectedJob && <Button loading={installing} onClick={() => Modal.confirm({
           title: '安装并在下次启动时使用新版？', content: '请先备份数据。确认后将重新校验更新包并试运行新版；当前程序不会退出。', okText: '确认安装', cancelText: '取消',
