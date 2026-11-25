@@ -8,4 +8,6 @@ npm --prefix frontend run build
 node tools/capture_readme_demo.cjs
 ```
 
+只刷新课表演示时，运行 `node tools/capture_readme_demo.cjs timetable timetable-agenda-mobile`。
+
 脚本在回环地址启动生产页面，拦截所有 API 和外部请求。课程、学号、学期、成绩、排名与活动均为虚构示例。请勿使用真实账号、导出的个人数据或学校响应更新这些图片。

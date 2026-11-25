@@ -4821,16 +4821,19 @@ export function TimetableGrid({
                         aria-label={`${content.name}，${sectionText}，${viewMode === 'term' ? formatWeekNumbers(course.weeks) : content.location}${course.hasActualConflict ? '，同周时间冲突' : ''}，${mobileTapToExpand ? (isExpanded ? '已展开，再次点击查看详情' : '已折叠，点击展开') : '悬停展开，点击查看详情'}`}
                       >
                         <strong>{content.name}</strong>
-                        {!dense && <span className={`timetable-cluster-stack-summary${viewMode === 'term' ? ' is-week-text' : ''}`}>{viewMode === 'term'
-                          ? formatWeekNumbers(course.weeks) || '周次待确认'
-                          : sectionText}</span>}
-                        {!dense && <span className="timetable-cluster-stack-detail">{sectionText}</span>}
+                        {!dense && <span className="timetable-cluster-stack-caption">
+                          <span className={`timetable-cluster-stack-summary${viewMode === 'term' ? ' is-week-text' : ''}`}>{viewMode === 'term'
+                            ? formatWeekNumbers(course.weeks) || '周次待确认'
+                            : sectionText}</span>
+                          {course.hasActualConflict && <small className="timetable-cluster-stack-conflict">冲突</small>}
+                        </span>}
+                        {!dense && viewMode === 'term' && <span className="timetable-cluster-stack-detail">{sectionText}</span>}
                         {!dense && <span className="timetable-cluster-stack-detail"><EnvironmentOutlined /> {content.location}</span>}
                         {!dense && contextText && <span className="timetable-cluster-stack-detail">{contextText}</span>}
                         {!dense && content.type && <span className="timetable-cluster-stack-detail">{content.type}</span>}
                         {mobileCompact && !selectionCompact && content.location && <span className="timetable-cluster-stack-detail">{content.location}</span>}
                         {selectionCompact && course.layer && <small className="selection-course-state">{selectionCourseStateLabel(course)}</small>}
-                        {!mobileCompact && course.hasActualConflict && <small>{isExpanded ? '同周时间冲突' : '冲突'}</small>}
+                        {selectionCompact && !mobileCompact && course.hasActualConflict && <small>{isExpanded ? '同周时间冲突' : '冲突'}</small>}
                       </button>
                       </PersonalConflictPopover>
                     );

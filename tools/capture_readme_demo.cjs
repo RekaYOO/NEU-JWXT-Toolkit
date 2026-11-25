@@ -6,6 +6,7 @@ const frontend = path.resolve(__dirname, '../frontend');
 const { chromium } = require(require.resolve('playwright', { paths: [frontend] }));
 const { preview } = require(require.resolve('vite', { paths: [frontend] }));
 const output = path.resolve(__dirname, '../assets/demo');
+const captures = new Set(process.argv.slice(2));
 const term = { code: '2026-2027-1', name: '2026–2027 学年秋季学期', current: true };
 const spring = { code: '2025-2026-2', name: '2025–2026 学年春季学期' };
 const autumn = { code: '2025-2026-1', name: '2025–2026 学年秋季学期' };
@@ -86,14 +87,31 @@ const activities = [
   start_time: `${date}T14:00:00`, activity_time: `${date} 14:00–16:00`,
   status: '已参与', description: `完成${name}的现场签到、实践任务与活动交流。`,
 }));
-const schedules = [[12, 1, 1], [13, 2, 3], [14, 3, 5], [12, 4, 1], [13, 5, 3], [15, 1, 7], [16, 4, 5], [17, 3, 3]];
+const scheduleColors = ['#557dcc', '#2b896e', '#8a67bd', '#cc7a41', '#348baf', '#b95674'];
+const schedules = [
+  [12, 1, 1, 2, '信息楼 A203'], [13, 1, 5, 6, '信息楼 B302'], [15, 1, 7, 8, '设计工坊 201'],
+  [13, 2, 3, 4, '信息楼 B302'], [14, 2, 7, 8, '软件实验室 305'],
+  [17, 3, 3, 4, '工程训练中心 106'], [15, 3, 3, 4, '设计工坊 202'], [16, 3, 3, 4, '信息楼 A301'],
+  [14, 3, 5, 6, '软件实验室 305'], [12, 4, 1, 2, '信息楼 A203'],
+  [16, 4, 5, 6, '信息楼 A301'], [13, 5, 3, 4, '网络实验室 208'], [17, 5, 7, 8, '工程训练中心 106'],
+];
+const isoWeekDate = (index, offset) => new Date(Date.UTC(2026, 7, 30 + index * 7 + offset)).toISOString().slice(0, 10);
+const agenda = {
+  revision: 1, moves: [], events: [
+    { id: 'demo-agenda-review', title: '学习小组 · 算法复盘', selection_mode: 'date', dates: ['2026-11-11'],
+      start_time: '16:00', end_time: '17:30', location: '图书馆研讨间 A3', note: '带上实验报告和错题笔记', important: '小组讨论' },
+    { id: 'demo-agenda-lab', title: '提交网络实验报告', selection_mode: 'date', dates: ['2026-11-13'],
+      start_time: '14:00', end_time: '15:30', location: '计算机实验中心', important: '截止提醒' },
+  ],
+};
 const personal = { term_code: term.code, campuses: [{ code: '00', name: '南湖校区' }],
-  weeks: [{ number: 11, name: '第11周', current: true, start_date: '2026-11-09', end_date: '2026-11-15' }],
+  weeks: Array.from({ length: 18 }, (_, index) => ({ number: index + 1, name: `第${index + 1}周`, current: index === 10,
+    start_date: isoWeekDate(index, 0), end_date: isoWeekDate(index, 6) })),
   sections: [], unscheduled: [], practices: [], is_fresh: true,
-  courses: schedules.map(([index, weekday, start_section], position) => ({
-    id: `demo-schedule-${position}`, color_key: courses[index].code,
+  courses: schedules.map(([index, weekday, start_section, end_section, location], position) => ({
+    id: `demo-schedule-${position}`, color: scheduleColors[index - 12],
     course_code: courses[index].code, course_name: courses[index].name,
-    weekday, start_section, end_section: start_section + 1, weeks: [11], location: `教学楼 ${210 + position * 11}`,
+    weekday, start_section, end_section, weeks: [11], location,
     campus: '南湖校区', course_nature: courses[index].elective ? '选修' : '必修',
   })),
 };
@@ -142,7 +160,7 @@ async function capture() {
         primary_authenticated: true, service_authenticated: true, service_auth_state: 'authenticated' },
       '/api/export/festival-activities': { available: true, source: 'remote', activities, total: activities.length, warnings: [] },
       '/api/timetable/terms': timetable, '/api/timetable/bootstrap': timetable, '/api/timetable/personal': personal,
-      '/api/timetable/agenda': { revision: 0, events: [], moves: [] }, '/api/timetable/sync': { jobs: [] },
+      '/api/timetable/agenda': agenda, '/api/timetable/sync': { jobs: [] },
     };
     await context.route('**/*', async route => {
       const request = route.request();
@@ -160,8 +178,10 @@ async function capture() {
       return route.fulfill({ json: data });
     });
 
-    const render = async (route, filename, prepare) => {
+    const render = async (route, filename, prepare, viewport) => {
+      if (captures.size && !captures.has(filename)) return;
       const page = await context.newPage();
+      if (viewport) await page.setViewportSize(viewport);
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
       page.setDefaultTimeout(12000);
@@ -199,7 +219,37 @@ async function capture() {
       }
       await page.locator('.ant-message-notice').last().waitFor({ state: 'hidden' });
     });
-    await render('/timetable?week=11', 'timetable', async page => page.getByText('操作系统', { exact: true }).first().waitFor());
+    await render('/timetable?week=11', 'timetable', async page => {
+      const stack = page.getByRole('group', { name: /星期三第3至4节，共3项安排/ });
+      const first = stack.getByRole('button', { name: /^数字制造入门/ });
+      const alternate = stack.getByRole('button', { name: /^人机交互设计/ });
+      await first.waitFor();
+      assert.equal(await stack.getByRole('button').count(), 3);
+      assert.equal(await alternate.getAttribute('aria-expanded'), 'false');
+      await alternate.focus();
+      assert.equal(await alternate.getAttribute('aria-expanded'), 'true');
+      await first.focus();
+      await first.blur();
+      assert.equal(await first.getByText('第3–4节', { exact: true }).count(), 1);
+      const title = await first.locator('strong').boundingBox();
+      const badge = await first.getByText('冲突', { exact: true }).boundingBox();
+      assert.ok(title && badge && title.y + title.height <= badge.y);
+      await page.getByRole('button', { name: /学习小组 · 算法复盘/ }).waitFor();
+    });
+    await render('/timetable?week=11', 'timetable-agenda-mobile', async page => {
+      const wednesday = page.locator('.timetable-mobile-day-selector .ant-segmented-item').filter({ hasText: '周三' });
+      await wednesday.waitFor();
+      if (!await wednesday.locator('input').isChecked()) await wednesday.click();
+      await wednesday.click();
+      const agendaDialog = page.locator('.timetable-day-agenda-modal .ant-modal-content');
+      await agendaDialog.getByText('学习小组 · 算法复盘', { exact: true }).waitFor();
+      await agendaDialog.getByText('软件工程实践', { exact: true }).waitFor();
+      await page.waitForFunction(() => {
+        const panel = document.querySelector('.timetable-day-agenda-modal .ant-modal-content');
+        const bounds = panel?.getBoundingClientRect();
+        return bounds && bounds.top < innerHeight / 2 && bounds.bottom <= innerHeight + 4;
+      });
+    }, { width: 430, height: 1000 });
     await render('/course-outlines', 'course-outline', async page => {
       await page.getByText('数据结构与算法', { exact: true }).click();
       await page.getByText('考核组成', { exact: true }).waitFor();

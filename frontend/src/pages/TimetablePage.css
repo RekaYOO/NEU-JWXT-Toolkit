@@ -1102,8 +1102,15 @@
   overflow-wrap: anywhere;
 }
 
-.timetable-cluster-stack-summary {
+.timetable-cluster-stack-caption {
+  display: flex;
   flex: 0 0 auto;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.timetable-cluster-stack-summary {
+  min-width: 0;
   color: var(--color-feature-caption, #475569);
   font-size: 12px;
   font-weight: 600;
@@ -1115,7 +1122,18 @@
   color: var(--color-brand-strong);
 }
 
-.timetable-cluster-stack-card small {
+.timetable-cluster-stack-conflict {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--color-warning) 22%, var(--color-surface));
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.timetable-cluster-stack-card > small {
   position: absolute;
   top: 6px;
   right: 7px;

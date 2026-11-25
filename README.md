@@ -20,12 +20,18 @@
 | [![成绩明细展示多学期筛选、绩点和专业排名](assets/demo/scores.png)](assets/demo/scores.png) | [![培养计划展示分类进度、已修课程与剩余学分](assets/demo/academic-plan.png)](assets/demo/academic-plan.png) |
 | 按学期和课程类型筛选，查看分项成绩、官方绩点和学校提供的专业排名。 | 按类别看已修、在修和待修课程，区分必修、选修学分缺口，点开课程查看大纲。 |
 
-### 比较选课方案，查看课程安排
+### 看周课表，整理个人日程
 
-| [GPA 模拟器](docs/功能/GPA模拟器.md) | [课表与日程](docs/功能/查询课表.md) |
+[![周三第 3–4 节叠放三门不同颜色的课程，每门标有冲突，个人日程与课程同屏](assets/demo/timetable.png)](assets/demo/timetable.png)
+
+周三第 3–4 节的三门课叠放在同一格，悬停或用键盘聚焦可切换展开项，点击查看详情。课程按科目分色，学习小组和实验报告提醒也排在课表上。[查询课表使用说明](docs/功能/查询课表.md) · [手机端当日日程预览](assets/demo/timetable-agenda-mobile.png)
+
+### 模拟绩点，准备选课
+
+| [GPA 模拟器](docs/功能/GPA模拟器.md) | [选课工作台](docs/功能/选课系统.md) |
 | --- | --- |
-| [![GPA 模拟器展示预估成绩与学分](assets/demo/gpa-simulator.png)](assets/demo/gpa-simulator.png) | [![课表展示一周的课程时间与教室](assets/demo/timetable.png)](assets/demo/timetable.png) |
-| 从已有成绩和培养计划导入课程，调整预估成绩，比较并保存方案。 | 看周课表和当日日程，查询班级、教师与教室课表，检查时间冲突。 |
+| [![GPA 模拟器展示预估成绩与学分](assets/demo/gpa-simulator.png)](assets/demo/gpa-simulator.png) | [![选课工作台展示课程列表和方案组](assets/demo/course-selection.png)](assets/demo/course-selection.png) |
+| 从已有成绩和培养计划导入课程，调整预估成绩，比较并保存方案。 | 按课程和班次查找，整理方案组、预览课表与检查冲突。抢选、空位换课和权重投放按学校轮次、账号资格与用户配置执行。 |
 
 ### 查考核方式，整理活动证明
 
@@ -33,12 +39,6 @@
 | --- | --- |
 | [![课程大纲展示教材、学时和课程简介](assets/demo/course-outline.png)](assets/demo/course-outline.png) | [![四节活动展示活动记录与证书打包入口](assets/demo/festival-certificates.png)](assets/demo/festival-certificates.png) |
 | 按课程名、开课单位、学分和学时查找，读教学内容与考核方式，下载 HTML 或学校提供的附件。 | 汇总创意节、科普节、科技节和创业节记录，查看参与详情，按日期打包已颁发的证书。 |
-
-### 选课工作台
-
-[![选课工作台展示课程列表和方案组](assets/demo/course-selection.png)](assets/demo/course-selection.png)
-
-按课程和班次查找，整理方案组、预览课表与检查冲突。抢选、空位换课和权重投放按学校轮次、账号资格与用户配置执行。详见[选课说明](docs/功能/选课系统.md)。
 
 还可使用[成绩变动邮件](docs/功能/成绩追踪.md)、[考试与 ICS 导出](docs/功能/我的考试.md)、[实验选课](docs/功能/实验选课.md)、[科研训练](docs/功能/科研训练.md)、[评教](docs/功能/自动评教.md)和[离线查看](docs/功能/离线使用.md)。
 

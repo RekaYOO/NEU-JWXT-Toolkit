@@ -51,7 +51,7 @@ export default defineConfig(({ mode }) => {
     optimizeDeps: { esbuildOptions: { loader: { '.js': 'jsx' } } },
     build: {
       outDir: process.env.BUILD_PATH || 'build',
-      sourcemap: false,
+      sourcemap: process.env.NEU_KEEP_SOURCE_MAPS === '1' ? 'hidden' : false,
       minify: 'terser',
       terserOptions: { compress: { passes: 3 }, format: { comments: /@license|@preserve/ } },
       rollupOptions: {
