@@ -14,6 +14,7 @@ function compatibleManifest(): Plugin {
         if (entry?.type === 'chunk') entry.imports.forEach(collect);
       };
       for (const [fileName, output] of Object.entries(bundle)) {
+        if (fileName.endsWith('.map')) continue;
         files[fileName] = `/${fileName}`;
         if (output.type === 'chunk' && output.isEntry) {
           files['main.js'] = `/${fileName}`;

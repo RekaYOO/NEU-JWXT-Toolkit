@@ -8,9 +8,8 @@ const build = path.resolve(process.argv[2] || path.join(root, 'frontend', 'build
 const manifest = JSON.parse(fs.readFileSync(path.join(build, 'asset-manifest.json'), 'utf8'));
 const limits = JSON.parse(fs.readFileSync(path.join(root, 'tools', 'frontend_performance_budget.json'), 'utf8'));
 const normalized = value => String(value || '').replace(/^\//, '');
-const javascriptFiles = [...new Set(Object.values(manifest.files || {})
-  .map(normalized)
-  .filter(name => /^static\/js\/.*\.js$/.test(name)))].sort();
+const manifestFiles = [...new Set(Object.values(manifest.files || {}).map(normalized))];
+const javascriptFiles = manifestFiles.filter(name => /^static\/js\/.*\.js$/.test(name)).sort();
 const initialFiles = [...new Set((manifest.entrypoints || [])
   .map(normalized)
   .filter(name => name.endsWith('.js')))];
@@ -22,6 +21,10 @@ const walk = directory => fs.readdirSync(directory, { withFileTypes: true }).fla
   return entry.isDirectory() ? walk(target) : [target];
 });
 const failures = [];
+for (const relative of manifestFiles) {
+  if (relative.endsWith('.map')) failures.push(`runtime manifest lists source map ${relative}`);
+  else if (!fs.existsSync(path.join(build, relative))) failures.push(`missing manifest asset ${relative}`);
+}
 const sizesFor = relative => {
   const source = path.join(build, relative);
   const required = [source, `${source}.gz`, `${source}.br`];

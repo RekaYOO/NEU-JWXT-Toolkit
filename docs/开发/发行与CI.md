@@ -184,8 +184,9 @@ SHA，避免浮动主版本标签在未审阅时改变执行内容。升级 Acti
 `.github/workflows/release.yml` 在推送 `v*` 标签时：
 
 1. 校验 `VERSION` 格式以及标签与版本的一致性；
-2. 构建一次 Release 专用 React 静态资源；source map 只上传为保留 30 天的私有 Actions
-   artifact，随后从运行目录删除，再将同一个 `web-build` 传给两个平台任务；Release 不重复
+2. 构建一次 Release 专用 React 静态资源。隐藏的 source map 单独上传为保留 30 天的 Actions
+   artifact，运行目录会移除映射文件，资源清单只登记实际随应用分发的文件。体积检查同时确认清单中的
+   文件存在，再将同一个 `web-build` 传给平台任务。Release 不重复
    执行普通 CI 已覆盖的后端测试、前端测试和源码编译检查；
 3. 分别构建 Windows x64、Linux amd64、Android 客户端 arm64 和 Android 本地版 arm64；
 4. 对两条最终产物路径分别验收：
