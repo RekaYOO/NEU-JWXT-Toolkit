@@ -3,6 +3,7 @@ package academic
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -65,6 +66,52 @@ func TestRoomScanLimitResumeAndNoRepeatedRoomFetch(t *testing.T) {
 	}
 	second, err := ScanAvailableRooms(context.Background(), requester, query)
 	if err != nil || second["total"] != 1 || second["complete"] != true || strings.Join(queried, ",") != "busy,free,free" {
+		t.Fatalf("second: %+v %v requests=%v", second, err, queried)
+	}
+}
+
+func TestRoomAvailabilityFiltersUnknownAndMismatchedCapacity(t *testing.T) {
+	filters := map[string]any{"floor": "4.0", "has_schedule": "yes", "min_capacity": 40, "max_capacity": 50}
+	for _, scenario := range []struct {
+		capacity string
+		match    bool
+	}{
+		{"", false}, {"未知", false}, {"NaN", false}, {"39", false}, {"51", false}, {"40", true}, {"50.0", true},
+	} {
+		room := timetableTarget("room", map[string]any{"LC": "4", "SFPK": "1", "RL": scenario.capacity})
+		if roomMatchesFilters(room, filters) != scenario.match {
+			t.Errorf("capacity %q, expected match %v", scenario.capacity, scenario.match)
+		}
+	}
+}
+
+func TestRoomScanFiltersKeepRawCatalogCursor(t *testing.T) {
+	queried := []string{}
+	requester := requestFunc(func(_ context.Context, _, target string, form url.Values) ([]byte, error) {
+		if strings.HasSuffix(target, "jslb.do") {
+			rows := []string{}
+			if form.Get("pageNumber") == "1" {
+				for index := 1; index <= 20; index++ {
+					rows = append(rows, fmt.Sprintf(`{"CODE":"unknown-%d"}`, index))
+				}
+				rows[0] = `{"CODE":"first","RL":50}`
+			} else {
+				rows = append(rows, `{"CODE":"last","RL":40}`)
+			}
+			return []byte(fmt.Sprintf(`{"datas":{"jslb":{"totalSize":21,"pageSize":20,"rows":[%s]}}}`, strings.Join(rows, ","))), nil
+		}
+		queried = append(queried, form.Get("CODE"))
+		return []byte(`{"datas":{"arrangedList":[]}}`), nil
+	})
+	query := RoomAvailabilityQuery{Term: "2026-1", Campus: "all", Limit: 1, Slots: []RoomSlot{{Week: integerPointer(2)}}, Filters: map[string]any{"min_capacity": 40}}
+	first, err := ScanAvailableRooms(context.Background(), requester, query)
+	if err != nil || first["cursor"] != 1 || first["complete"] != false {
+		t.Fatalf("first: %+v %v", first, err)
+	}
+	query.Cursor = first["cursor"].(int)
+	query.Seen = first["scanned_room_ids"].([]string)
+	second, err := ScanAvailableRooms(context.Background(), requester, query)
+	if err != nil || second["cursor"] != 21 || second["candidate_total"] != 21 || strings.Join(queried, ",") != "first,last" {
 		t.Fatalf("second: %+v %v requests=%v", second, err, queried)
 	}
 }

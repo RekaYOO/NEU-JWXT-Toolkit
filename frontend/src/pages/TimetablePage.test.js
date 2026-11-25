@@ -74,6 +74,7 @@ import {
   updateAvailabilityRangeStart,
   roomAvailabilityWeekChoices,
   roomAvailabilityDefaultWeek,
+  roomAvailabilityDateSlot,
   TIMETABLE_MODES,
   MobileTimetable,
   MobileCompactWeekTimetable,
@@ -783,6 +784,17 @@ describe('TimetablePage helpers', () => {
     expect(roomAvailabilityWeekChoices(
       personal, [], 'different-term',
     )).toHaveLength(31);
+  });
+
+  test('maps a calendar date to its confirmed teaching week and Sunday-first weekday', () => {
+    const weeks = [{ number: 13, start_date: '2026-11-22', end_date: '2026-11-28' }];
+    expect(roomAvailabilityDateSlot(weeks, '2026-11-25', 3, 4)).toEqual({
+      week: 13, weekday: 3, start_section: 3, end_section: 4, joiner: 'and',
+    });
+    expect(roomAvailabilityDateSlot(weeks, '2026-11-22', 3, 4).weekday).toBe(7);
+    expect(roomAvailabilityDateSlot(weeks, '2026-11-29', 3, 4)).toBeNull();
+    expect(roomAvailabilityDateSlot([...weeks, { ...weeks[0], number: 14 }], '2026-11-25', 3, 4)).toBeNull();
+    expect(roomAvailabilityDateSlot([{ ...weeks[0], end_date: '' }], '2026-11-25', 3, 4)).toBeNull();
   });
 
   test('groups same-slot courses vertically without widening the seven-day grid', () => {

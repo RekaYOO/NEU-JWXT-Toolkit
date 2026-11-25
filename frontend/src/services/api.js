@@ -1270,11 +1270,11 @@ export const getUserAvatarCache = async () => singleFlight('avatar-cache', async
   };
 });
 
-export const getTimetableContext = async (data) => {
+export const getTimetableContext = async (data, signal) => {
   const response = await api.post('/api/timetable/context', {
     ...data,
     term_code: assertTimetableTermCode(data?.term_code),
-  });
+  }, { signal });
   return response.data;
 };
 
@@ -1314,13 +1314,20 @@ export const saveTimetableAgenda = async (termCode, document) => (
   }, { params: { term_code: assertTimetableTermCode(termCode) } })
 ).data;
 
-export const getRoomAvailability = async (data) => {
+export const getOfficialRoomAvailability = async (data, signal) => (
+  await api.post('/api/timetable/rooms/official-availability', {
+    ...data,
+    term_code: assertTimetableTermCode(data?.term_code),
+  }, { timeout: 15000, signal })
+).data;
+
+export const getRoomAvailability = async (data, signal) => {
   // A scan request checks only one room; allow a slow official schedule
   // response without making the UI wait for a whole catalog.
   const response = await api.post('/api/timetable/rooms/availability', {
     ...data,
     term_code: assertTimetableTermCode(data?.term_code),
-  }, { timeout: 90000 });
+  }, { timeout: 90000, signal });
   return response.data;
 };
 

@@ -2,10 +2,65 @@ package academic
 
 import (
 	"context"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/campus"
 )
+
+func roomFilterNumber(value string) (float64, bool) {
+	number, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	return number, err == nil && !math.IsNaN(number) && !math.IsInf(number, 0)
+}
+
+func roomMatchesFilters(room map[string]any, filters map[string]any) bool {
+	values, _ := room["filter_values"].(map[string]string)
+	details, _ := room["details"].(map[string]string)
+	for key, value := range filters {
+		wanted := Text(value)
+		if wanted == "" {
+			continue
+		}
+		switch key {
+		case "min_capacity", "max_capacity":
+			capacity, known := roomFilterNumber(details["capacity"])
+			limit, valid := roomFilterNumber(wanted)
+			if !known || capacity < 0 || !valid || (key == "min_capacity" && capacity < limit) || (key == "max_capacity" && capacity > limit) {
+				return false
+			}
+		case "floor":
+			floor := values[key]
+			if floor == wanted {
+				continue
+			}
+			actual, known := roomFilterNumber(strings.TrimSuffix(floor, "层"))
+			expected, valid := roomFilterNumber(strings.TrimSuffix(wanted, "层"))
+			if !known || !valid || actual != expected {
+				return false
+			}
+		case "has_schedule":
+			status := values[key]
+			if status == "" {
+				status = Text(room[key])
+			}
+			switch strings.ToLower(status) {
+			case "1", "yes", "true", "是", "已排课", "已有排课":
+				status = "yes"
+			case "0", "no", "false", "否", "未排课", "尚无排课":
+				status = "no"
+			}
+			if status != wanted {
+				return false
+			}
+		default:
+			if values[key] != wanted {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 type RoomSlot struct {
 	WeekStart *int   `json:"week_start"`
@@ -184,7 +239,7 @@ func ScanAvailableRooms(ctx context.Context, requester Requester, query RoomAvai
 			for index := first; index < len(rooms); index++ {
 				room := rooms[index]
 				id := Text(room["id"])
-				if id == "" || seen[id] {
+				if id == "" || seen[id] || !roomMatchesFilters(room, query.Filters) {
 					continue
 				}
 				schedule, err := FetchTimetableSchedule(ctx, requester, TimetableSchedule{TimetableContext: TimetableContext{Mode: "room", Term: query.Term, Campus: query.Campus, Target: id}})

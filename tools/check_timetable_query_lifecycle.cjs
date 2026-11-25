@@ -61,6 +61,8 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
           const page = await browser.newPage({ viewport: { width, height }, serviceWorkers: 'block' });
           const errors = [];
           const scanRequests = [];
+          const officialRequests = [];
+          let officialReply = { source: 'official', items: [] };
           let releaseSchedule = null;
           let delayNextSchedule = false;
           let queryContext = context;
@@ -97,7 +99,8 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
                 delayNextContext = false;
                 await new Promise(resolve => { releaseContext = resolve; });
               }
-              data = queryContext;
+              data = process.env.QA_ROOM_SCAN === '1' && route.request().postDataJSON().mode === 'personal'
+                ? { ...context, weeks: [{ number: 2, start_date: '2026-09-06', end_date: '2026-09-12' }] } : queryContext;
             }
             else if (url.pathname === '/api/timetable/targets/search') data = {
               items: [{ id: 'query-fixture', name: '测试查询对象', details: { campus: '南湖校区' } }],
@@ -106,9 +109,17 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
             else if (url.pathname === '/api/timetable/rooms/availability') {
               const query = route.request().postDataJSON();
               scanRequests.push(query);
+              if (query.slots[0].weekday === 3) {
+                return route.fulfill({ json: { items: [{ id: 'fallback-room', name: '课表核对教室' }], scanned: 1,
+                  cursor: 1, candidate_total: 1, complete: true, scanned_room_ids: ['fallback-room'] } });
+              }
               if (scanRequests.length === 4) return route.fulfill({ status: 503, json: { detail: '教室课表暂时不可用' } });
               const next = query.cursor + 1;
               data = { items: [{ id: `room-${next}`, name: `可用教室 ${next}` }], scanned: 1, cursor: next, candidate_total: 4, complete: next === 4, scanned_room_ids: [`room-${next}`] };
+            }
+            else if (url.pathname === '/api/timetable/rooms/official-availability') {
+              officialRequests.push(route.request().postDataJSON());
+              data = officialReply;
             }
             else if (url.pathname === '/api/user/avatar') return route.fulfill({ status: 204 });
             else if (url.pathname === '/api/timetable/schedule') {
@@ -134,24 +145,52 @@ const auth = { is_logged_in: true, current_user: 'query-fixture' };
             }
             await page.locator('.timetable-target-result-card').first().click();
           };
+          if (process.env.QA_ROOM_SCAN === '1') await page.clock.setFixedTime(new Date(2026, 8, 9, 12));
           await page.goto(`${origin}/`);
           if (process.env.QA_ROOM_SCAN === '1') {
             await openQuery();
             await page.locator('.timetable-target-search-row button').last().click();
             const modal = page.locator('.timetable-target-filter-modal');
+            await modal.getByText('按周组合', { exact: true }).click();
             await modal.getByRole('button', { name: '开始扫描' }).click();
             await modal.getByText(/已找到 3 间/).first().waitFor();
             const resume = modal.getByRole('button', { name: '继续查找' });
             await resume.click();
             await modal.getByText('教室课表暂时不可用', { exact: false }).first().waitFor();
             assert.equal(await modal.locator('.timetable-target-result-card').count(), 3);
-            await resume.click();
-            await modal.getByText(/已完成：共检查 4 间教室/).first().waitFor();
+            await modal.getByRole('button', { name: /^重\s*试$/ }).click();
+            await modal.getByText('已核对 4 间，找到 4 间').waitFor();
             assert.deepEqual(scanRequests.map(query => query.cursor), [0, 1, 2, 3, 3]);
             assert.deepEqual(scanRequests[3], scanRequests[4]);
             assert.equal(await modal.locator('.timetable-target-result-card').count(), 4);
+            await modal.getByRole('button', { name: /^关\s*闭$/ }).click();
+            await page.getByRole('button', { name: '查空教室', exact: true }).click();
+            await modal.getByText('已核对 4 间，找到 4 间').waitFor();
+            await modal.getByText('按日期查询', { exact: true }).click();
+            const lookup = modal.getByRole('button', { name: '查询空教室', exact: true });
+            assert.equal(await modal.getByRole('textbox', { name: '空闲日期' }).inputValue(), '2026-09-09');
+            await lookup.click();
+            await modal.getByText('教务系统返回 0 间空教室').waitFor();
+            assert.equal(scanRequests.length, 5);
+            officialReply = { source: 'official', items: ['逸夫楼 302', '逸夫楼 410', '逸夫楼 501'].map((name, index) => ({
+              id: `official-room-${index + 1}`, name, details: { campus: '南湖校区', type: '普通教室' },
+              availability: { sections: '第一节-第二节', time: '08:00-09:40' },
+            })) };
+            await lookup.click();
+            await modal.getByText('教务系统返回 3 间空教室').waitFor();
+            assert.equal(await modal.getByText('第一节-第二节 · 08:00-09:40').count(), 3);
+            assert.equal(await modal.locator('.ant-modal-content').evaluate(element => element.scrollWidth > element.clientWidth + 1), false);
+            await page.screenshot({ path: path.join(screenshots, `${width}-${compact ? 'compact' : 'default'}-room-official.png`) });
+            assert.equal(scanRequests.length, 5);
+            officialReply = { source: 'schedule' };
+            await lookup.click();
+            await modal.getByText('官方查询暂不可用，已切换为按课程表核对').waitFor();
+            await modal.getByText('课表核对教室', { exact: true }).waitFor();
+            assert.equal(officialRequests.length, 3);
+            assert.equal(officialRequests[0].date, '2026-09-09');
+            assert.deepEqual(scanRequests.at(-1).slots, [{ week: 2, weekday: 3, start_section: 1, end_section: 2, joiner: 'and' }]);
             assert.deepEqual(errors, []);
-            console.log(`PASS room scan recovery ${width}x${height} compact=${compact}`);
+            console.log(`PASS room official lookup and scan recovery ${width}x${height} compact=${compact}`);
             await page.close();
             continue;
           }

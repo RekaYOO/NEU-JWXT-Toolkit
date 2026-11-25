@@ -4,6 +4,7 @@ import {
   Alert,
   Button,
   Card,
+  DatePicker,
   Descriptions,
   Empty,
   Grid,
@@ -31,6 +32,7 @@ import {
   SearchOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import dayjs from 'dayjs';
 
 import {
   AdaptiveModal,
@@ -47,6 +49,7 @@ import {
   getTimetableBootstrap,
   syncTimetable,
   searchTimetableTargets,
+  getOfficialRoomAvailability,
   getRoomAvailability,
 } from '../services/api';
 import {
@@ -71,6 +74,7 @@ import TimetableDayAgenda from '../components/TimetableDayAgenda';
 import MergedUpdateSummary from '../components/MergedUpdateSummary';
 import {
   agendaDateForDay,
+  agendaDayContext,
   agendaEventMatchesDate,
   injectTimetableAgenda,
   sortAgendaCourses,
@@ -167,6 +171,15 @@ export const roomAvailabilityDefaultWeek = (
     : null;
   const candidate = Number(personalCurrent || effectiveCurrentWeek || 1);
   return choices.some(item => item.value === candidate) ? candidate : 1;
+};
+
+export const roomAvailabilityDateSlot = (weeks, date, start, end) => {
+  const bounds = weeks.filter(week => week.start_date && week.end_date
+    && week.start_date <= date && date <= week.end_date);
+  if (bounds.length !== 1) return null;
+  const day = agendaDayContext(bounds, date);
+  if (!day || !Number.isInteger(day.week) || day.week < 1 || day.week > 30) return null;
+  return { week: day.week, weekday: day.day, start_section: start, end_section: end, joiner: 'and' };
 };
 const DETAIL_LABELS = {
   campus: '校区',
@@ -1539,6 +1552,7 @@ function TargetResultPanel({
               <strong>{item.name}</strong>
               <span>{item.id}</span>
               {targetOptionSummary(item) && <small>{targetOptionSummary(item)}</small>}
+              {item.availability && <small>{item.availability.sections} · {item.availability.time}</small>}
               <em>查看课表</em>
             </button>
           ))}
@@ -1755,9 +1769,26 @@ function TimetablePage({
   const [roomAvailabilitySlots, setRoomAvailabilitySlots] = useState([
     { week_start: null, week_end: null, weekday_start: 'any', weekday_end: 'any', start_section: 1, end_section: 2, joiner: 'and' },
   ]);
+  const [roomFilterView, setRoomFilterView] = useState('directory');
+  const [dateFiltersExpanded, setDateFiltersExpanded] = useState(false);
+  const [roomDate, setRoomDate] = useState(null);
+  const [roomDateSections, setRoomDateSections] = useState({ start_section: 1, end_section: 2 });
   const [roomAvailabilityResult, setRoomAvailabilityResult] = useState(null);
   const [roomAvailabilityLoading, setRoomAvailabilityLoading] = useState(false);
   const roomAvailabilityGeneration = useRef(0);
+  const roomAvailabilityRequest = useRef(null);
+  const cancelRoomAvailabilityRequest = useCallback(() => {
+    roomAvailabilityGeneration.current += 1;
+    roomAvailabilityRequest.current?.abort();
+    roomAvailabilityRequest.current = null;
+  }, []);
+  useEffect(() => {
+    setRoomAvailabilityResult(null);
+    setRoomAvailabilityLoading(false);
+    setTargetPreviewOptions([]);
+    setTargetPreviewTotal(0);
+    return cancelRoomAvailabilityRequest;
+  }, [cancelRoomAvailabilityRequest, resourceIdentity]);
   const [availabilityPersonalWeekContext, setAvailabilityPersonalWeekContext] = useState(
     () => restored?.personalPayload?.term_code ? {
       term_code: restored.personalPayload.term_code,
@@ -1765,13 +1796,13 @@ function TimetablePage({
     } : null,
   );
   const changeRoomAvailabilitySlots = useCallback(updater => {
-    roomAvailabilityGeneration.current += 1;
+    cancelRoomAvailabilityRequest();
     setRoomAvailabilityLoading(false);
     setRoomAvailabilityResult(null);
     setTargetPreviewOptions([]);
     setTargetPreviewTotal(0);
     setRoomAvailabilitySlots(updater);
-  }, []);
+  }, [cancelRoomAvailabilityRequest]);
   const filterDraftRef = useRef(filterDraft);
   filterDraftRef.current = filterDraft;
   const [mobileFocusPadding, setMobileFocusPadding] = useState(0);
@@ -2489,14 +2520,16 @@ function TimetablePage({
     }
   }, [mode, targetFilterOptionsLoading, termCode]);
 
-  const openTargetFilters = () => {
-    const savedScan = mode === 'room' ? roomAvailabilityResult : null;
-    setTargetFilterDraft(targetFilters);
-    setTargetPreviewKeyword(savedScan?.request?.keyword ?? targetKeyword);
+  const openTargetFilters = (view = mode === 'room' ? roomAvailabilityResult?.view || 'date' : 'directory') => {
+    const savedScan = mode === 'room' && roomAvailabilityResult?.view === view ? roomAvailabilityResult : null;
+    setRoomFilterView(view);
+    setDateFiltersExpanded(false);
+    setTargetFilterDraft(savedScan?.filters ?? targetFilters);
+    setTargetPreviewKeyword(savedScan?.keyword ?? targetKeyword);
     setTargetPreviewOptions(savedScan?.items || []);
     setTargetPreviewPage(0);
     setTargetPreviewTotal(savedScan?.items?.length || 0);
-    setTargetPreviewLoading(!savedScan);
+    setTargetPreviewLoading(view === 'directory');
     setTargetPreviewError('');
     setTargetFilterOpen(true);
     if (targetFilterOptionsLoadedFor.current !== `${mode}:${termCode}:all`) loadTargetFilterOptions();
@@ -2504,10 +2537,10 @@ function TimetablePage({
 
   const pauseRoomAvailabilityScan = () => {
     if (!roomAvailabilityLoading) return;
-    roomAvailabilityGeneration.current += 1;
+    cancelRoomAvailabilityRequest();
     setRoomAvailabilityLoading(false);
-    setRoomAvailabilityResult(previous => previous && !previous.complete
-      ? { ...previous, paused: true } : previous);
+    setRoomAvailabilityResult(previous => previous?.request && !previous.complete
+      ? { ...previous, paused: true } : null);
   };
 
   const closeTargetFilters = () => {
@@ -2615,7 +2648,7 @@ function TimetablePage({
     if (mode !== 'personal' && termCode && !targetOptions.length) searchTargets(targetKeyword);
   }, [mode, searchTargets, targetKeyword, targetOptions.length, termCode]);
 
-  const hasRoomAvailabilityPreview = mode === 'room' && Boolean(roomAvailabilityResult);
+  const hasRoomAvailabilityPreview = mode === 'room' && roomFilterView !== 'directory';
   useEffect(() => {
     if (!targetFilterOpen || mode === 'personal' || !termCode || hasRoomAvailabilityPreview) return undefined;
     clearTimeout(targetFilterTimer.current);
@@ -2906,7 +2939,7 @@ function TimetablePage({
     if (nextMode === mode) return;
     manuallyNavigated.current = true;
     openingWeekResolved.current = true;
-    roomAvailabilityGeneration.current += 1;
+    cancelRoomAvailabilityRequest();
     setRoomAvailabilityLoading(false);
     setRoomAvailabilityResult(null);
     clearTimeout(targetTimer.current);
@@ -2937,9 +2970,11 @@ function TimetablePage({
     if (nextTermCode === termCode) return;
     manuallyNavigated.current = true;
     openingWeekResolved.current = true;
-    roomAvailabilityGeneration.current += 1;
+    cancelRoomAvailabilityRequest();
     setRoomAvailabilityLoading(false);
     setRoomAvailabilityResult(null);
+    setTargetPreviewOptions([]);
+    setTargetPreviewTotal(0);
     mobileDayFollowsToday.current = true;
     clearTimeout(targetTimer.current);
     clearTimeout(targetFilterTimer.current);
@@ -3010,14 +3045,20 @@ function TimetablePage({
   const invalidateTargetPreview = () => {
     clearTimeout(targetFilterTimer.current);
     targetPreviewGeneration.current += 1;
-    roomAvailabilityGeneration.current += 1;
+    cancelRoomAvailabilityRequest();
     setRoomAvailabilityLoading(false);
     setRoomAvailabilityResult(null);
     setTargetPreviewOptions([]);
     setTargetPreviewPage(0);
     setTargetPreviewTotal(0);
-    setTargetPreviewLoading(true);
+    setTargetPreviewLoading(!hasRoomAvailabilityPreview);
     setTargetPreviewError('');
+  };
+
+  const changeRoomFilterView = value => {
+    invalidateTargetPreview();
+    setTargetPreviewLoading(value === 'directory');
+    setRoomFilterView(value);
   };
 
   const changeTargetFilter = (key, value) => {
@@ -3346,14 +3387,15 @@ function TimetablePage({
     { value: 'any', label: '不限' },
     ...Array.from({ length: Math.max(12, sections.length || 0) }, (_, i) => ({ value: i + 1, label: `第${i + 1}节` })),
   ], [sections.length]);
-  useEffect(() => {
-    if (roomAvailabilitySlots[0]?.week_start != null || roomAvailabilitySlots[0]?.week_end != null) return;
-    changeRoomAvailabilitySlots(previous => previous.map((slot, index) => (
-      index === 0 && slot.week_start == null && slot.week_end == null
-        ? { ...slot, week_start: availabilityWeekDefault, week_end: availabilityWeekDefault }
-        : slot
-    )));
-  }, [availabilityWeekDefault, changeRoomAvailabilitySlots, roomAvailabilitySlots]);
+  const visibleAvailabilitySlots = roomAvailabilitySlots.map(slot => ({
+    ...slot,
+    week_start: slot.week_start ?? availabilityWeekDefault,
+    week_end: slot.week_end ?? availabilityWeekDefault,
+  }));
+  const dateLookupSections = availabilitySectionOptions.filter(option => option.value !== 'any' && option.value <= 12);
+  const selectedRoomDate = roomDate ?? dayjs(localDate).format('YYYY-MM-DD');
+  const dateFilterCount = Object.values(targetFilterDraft).filter(value => value !== '' && value != null).length
+    + Number(Boolean(targetPreviewKeyword.trim()));
 
   // Keep the retained query's layout and overlays on its actual range until
   // the new response arrives; controls already show the requested range.
@@ -3718,7 +3760,7 @@ function TimetablePage({
   const targetTotal = targetSearchState.current.total || targetOptions.length;
   const targetHasMore = targetOptions.length < targetTotal;
   const targetSelector = mode !== 'personal' && (
-    <div className="timetable-target-search-row">
+    <div className={`timetable-target-search-row${mode === 'room' ? ' has-room-lookup' : ''}`}>
       <Select
         ref={targetSelectRef}
         className="timetable-target-select"
@@ -3747,10 +3789,11 @@ function TimetablePage({
         )}
         options={targetOptions.map(item => ({ value: item.id, label: item.name, target: item }))}
       />
+      {mode === 'room' && <Button type="primary" icon={<SearchOutlined aria-hidden="true" />} aria-label="查空教室" onClick={() => openTargetFilters()}>查空教室</Button>}
       <Button
         icon={<FilterOutlined />}
         className={targetFilterCount ? 'is-active' : ''}
-        onClick={openTargetFilters}
+        onClick={() => openTargetFilters('directory')}
       >筛选{targetFilterCount ? ` ${targetFilterCount}` : ''}</Button>
     </div>
   );
@@ -3772,39 +3815,90 @@ function TimetablePage({
   };
 
   const scanRoomAvailability = async ({ reset = false } = {}) => {
-    if (mode !== 'room' || !termCode || !roomAvailabilitySlots.length) return;
+    if (!hasRoomAvailabilityPreview || !termCode || capacityRangeInvalid(targetFilterDraft)) return;
     clearTimeout(targetFilterTimer.current);
     targetPreviewGeneration.current += 1;
     setTargetPreviewLoading(false);
     setTargetPreviewError('');
-    const generation = ++roomAvailabilityGeneration.current;
+    cancelRoomAvailabilityRequest();
+    const generation = roomAvailabilityGeneration.current;
     const isFresh = () => generation === roomAvailabilityGeneration.current;
-    const request = !reset && roomAvailabilityResult?.request ? roomAvailabilityResult.request : {
+    const controller = new AbortController();
+    roomAvailabilityRequest.current = controller;
+    const previous = reset ? null : roomAvailabilityResult;
+    const view = roomFilterView;
+    if (view === 'date' && !roomDate) setRoomDate(selectedRoomDate);
+    const filters = previous?.filters ?? Object.fromEntries(Object.entries(targetFilterDraft)
+      .filter(([, value]) => value !== '' && value != null));
+    const keyword = previous?.keyword ?? targetPreviewKeyword.trim();
+    const resultScope = { view, filters, keyword };
+    const base = {
       term_code: termCode,
-      campus_code: campusCode || 'all',
-      filters: Object.fromEntries(Object.entries(targetFilterDraft)
-        .filter(([, value]) => value !== '' && value != null)),
-      slots: roomAvailabilitySlots.map(slot => Object.fromEntries(Object.entries(slot)
-        .map(([key, value]) => [key, value === 'any' ? null : value]))),
-      keyword: targetPreviewKeyword.trim(),
+      filters,
+      keyword,
     };
-    let cursor = reset ? 0 : (roomAvailabilityResult?.cursor || 0);
-    let items = reset ? [] : (roomAvailabilityResult?.items || []);
-    let scanned = reset ? 0 : (roomAvailabilityResult?.scanned || 0);
-    let candidateTotal = reset ? 0 : (roomAvailabilityResult?.candidate_total || 0);
-    let seenRoomIds = reset ? [] : (roomAvailabilityResult?.seen_room_ids || []);
+    let request = previous?.request;
+    let source = view === 'date' && !request ? 'official' : 'schedule';
+    let cursor = previous?.cursor || 0;
+    let items = previous?.items || [];
+    let scanned = previous?.scanned || 0;
+    let candidateTotal = previous?.candidate_total || 0;
+    let seenRoomIds = previous?.seen_room_ids || [];
+    const showItems = nextItems => {
+      setTargetPreviewOptions(nextItems);
+      setTargetPreviewTotal(nextItems.length);
+    };
+    if (!previous) showItems([]);
+    setTargetPreviewPage(0);
     setRoomAvailabilityLoading(true);
-    setRoomAvailabilityResult(previous => ({ ...(previous || {}), request, items, scanned, cursor, candidate_total: candidateTotal, seen_room_ids: seenRoomIds, complete: false, paused: false, error: '' }));
+    setRoomAvailabilityResult({ ...resultScope, request, source, items, scanned, cursor,
+      candidate_total: candidateTotal, seen_room_ids: seenRoomIds });
     try {
+      if (!request) {
+        let slots = visibleAvailabilitySlots.map(slot => Object.fromEntries(Object.entries(slot)
+          .map(([key, value]) => [key, value === 'any' ? null : value])));
+        if (view === 'date') {
+          const result = await getOfficialRoomAvailability({ ...base, date: selectedRoomDate, ...roomDateSections }, controller.signal)
+            .catch(error => {
+              if ([404, 405, 502, 503, 504].includes(error.response?.status)
+                || ['ECONNABORTED', 'ETIMEDOUT'].includes(error.code)) return { source: 'schedule' };
+              throw error;
+            });
+          if (!isFresh()) return;
+          if (result.source === 'official' && Array.isArray(result.items)) {
+            showItems(result.items);
+            setRoomAvailabilityResult({ ...resultScope, source, items: result.items, complete: true });
+            return;
+          }
+          if (result.source !== 'schedule') throw new Error('空闲教室响应格式异常，请重试');
+          source = 'schedule';
+          setRoomAvailabilityResult({ ...resultScope, source, items, scanned });
+          const dateSlot = weeks => roomAvailabilityDateSlot(weeks || [], selectedRoomDate,
+            roomDateSections.start_section, roomDateSections.end_section);
+          let slot = availabilityPersonalWeekContext?.term_code === termCode
+            ? dateSlot(availabilityPersonalWeekContext.weeks) : null;
+          if (!slot) {
+            const calendar = await getTimetableContext({ mode: 'personal', term_code: termCode, target_id: '' }, controller.signal);
+            if (!isFresh()) return;
+            slot = dateSlot(calendar.weeks);
+          }
+          if (!slot) {
+            setDateFiltersExpanded(true);
+            throw new Error('所选日期不在当前所选学期的教学周内，请核对日期或切换学期');
+          }
+          slots = [slot];
+        }
+        request = { ...base, campus_code: filters.campus || 'all', slots };
+        setRoomAvailabilityResult({ ...resultScope, request, source, items, scanned });
+      }
       let foundThisRun = 0;
       while (isFresh() && foundThisRun < 3) {
-        const result = await getRoomAvailability({ ...request, cursor, scan_limit: 1, seen_room_ids: seenRoomIds });
+        const result = await getRoomAvailability({ ...request, cursor, scan_limit: 1, seen_room_ids: seenRoomIds }, controller.signal);
         if (!isFresh()) return;
         const nextItems = [...items, ...(result.items || []).filter(item => !items.some(existing => existing.id === item.id))];
         foundThisRun += nextItems.length - items.length;
         items = nextItems;
-        setTargetPreviewOptions(items);
-        setTargetPreviewTotal(items.length);
+        showItems(items);
         cursor = result.cursor ?? cursor;
         scanned += result.scanned || 0;
         seenRoomIds = [...new Set([
@@ -3812,14 +3906,17 @@ function TimetablePage({
           ...(result.scanned_room_ids || []),
         ])];
         candidateTotal = result.candidate_total ?? candidateTotal;
-        setRoomAvailabilityResult({ request, items, scanned, cursor, candidate_total: candidateTotal, seen_room_ids: seenRoomIds, complete: Boolean(result.complete), paused: false });
+        setRoomAvailabilityResult({ ...resultScope, request, source, items, scanned, cursor, candidate_total: candidateTotal, seen_room_ids: seenRoomIds, complete: Boolean(result.complete), paused: false });
         if (result.complete || !(result.scanned > 0)) break;
       }
       if (isFresh()) setRoomAvailabilityResult(previous => ({ ...previous, paused: !previous.complete && foundThisRun >= 3 }));
     } catch (scanError) {
-      if (isFresh()) setRoomAvailabilityResult(previous => ({ ...(previous || {}), error: scanError.message || '空教室扫描失败，请重试', paused: true }));
+      if (isFresh()) setRoomAvailabilityResult(current => ({ ...current, error: requestErrorText(scanError, scanError.message || '空教室查询失败，请重试'), paused: true }));
     } finally {
-      if (isFresh()) setRoomAvailabilityLoading(false);
+      if (isFresh()) {
+        roomAvailabilityRequest.current = null;
+        setRoomAvailabilityLoading(false);
+      }
     }
   };
   const refreshDisabled = refreshesTargetList ? !termCode : (!context || (!campusCode && !queryContextEmpty));
@@ -4227,21 +4324,60 @@ function TimetablePage({
         }}
         okText="应用筛选"
         cancelText="取消"
-        title={`${MODE_LABELS[mode] || ''}筛选`}
+        title={hasRoomAvailabilityPreview ? '查空教室' : `${MODE_LABELS[mode] || ''}筛选`}
         width={760}
         footer={(_, { OkBtn, CancelBtn }) => (
           <div className="timetable-target-filter-actions">
             <Button onClick={resetTargetFilters}>清空筛选</Button>
-            <CancelBtn /><OkBtn />
+            {hasRoomAvailabilityPreview ? <Button onClick={closeTargetFilters}>关闭</Button> : <><CancelBtn /><OkBtn /></>}
           </div>
         )}
       >
+        {mode === 'room' && <Segmented className="timetable-room-filter-views" block value={roomFilterView} onChange={changeRoomFilterView}
+          aria-label="教室查找方式" options={[
+            { value: 'directory', label: '教室目录' },
+            { value: 'date', label: '按日期查询' },
+            { value: 'advanced', label: '按周组合' },
+          ]} />}
+        {hasRoomAvailabilityPreview && roomFilterView === 'date' && (
+          <fieldset className="timetable-room-availability-filter timetable-room-date-filter">
+            <legend>空闲时段</legend>
+            <div className="timetable-room-date-fields">
+              <label className="timetable-filter-field"><span>日期</span><DatePicker
+                aria-label="空闲日期" value={dayjs(selectedRoomDate)} allowClear={false} format="YYYY-MM-DD"
+                onChange={value => { if (value) { invalidateTargetPreview(); setRoomDate(value.format('YYYY-MM-DD')); } }}
+              /></label>
+              <label className="timetable-filter-field"><span>开始节次</span><Select
+                aria-label="开始节次" value={roomDateSections.start_section} options={dateLookupSections}
+                onChange={value => { invalidateTargetPreview(); setRoomDateSections(previous => ({
+                  start_section: value, end_section: Math.max(value, previous.end_section),
+                })); }}
+              /></label>
+              <label className="timetable-filter-field"><span>结束节次</span><Select
+                aria-label="结束节次" value={roomDateSections.end_section}
+                options={dateLookupSections.filter(option => option.value >= roomDateSections.start_section)}
+                onChange={value => { invalidateTargetPreview(); setRoomDateSections(previous => ({ ...previous, end_section: value })); }}
+              /></label>
+            </div>
+            <div className="timetable-room-availability-actions">
+              <Button type="primary" icon={<SearchOutlined aria-hidden="true" />} aria-label="查询空教室" loading={roomAvailabilityLoading}
+                disabled={!termCode || capacityRangeInvalid(targetFilterDraft)} onClick={() => scanRoomAvailability({ reset: true })}>查询空教室</Button>
+              <Button icon={<FilterOutlined />} aria-expanded={dateFiltersExpanded} aria-controls="timetable-room-query-filters"
+                onClick={() => setDateFiltersExpanded(expanded => !expanded)}>
+                {dateFiltersExpanded ? '收起筛选' : '筛选教室'}{dateFilterCount ? ` ${dateFilterCount}` : ''}
+              </Button>
+              {roomAvailabilityLoading && <Button onClick={pauseRoomAvailabilityScan}>停止</Button>}
+              {roomAvailabilityResult?.paused && !roomAvailabilityResult.error && <Button onClick={() => scanRoomAvailability()}>继续查找</Button>}
+            </div>
+          </fieldset>
+        )}
+        <div id="timetable-room-query-filters" hidden={hasRoomAvailabilityPreview && roomFilterView === 'date' && !dateFiltersExpanded}>
         <p className="timetable-target-filter-help">
-          筛选会作用于教务系统完整名单；分类目录独立加载，不受当前滚动页限制。
+          {hasRoomAvailabilityPreview ? '可按教室、教学楼、楼层或容量缩小查询范围。' : '筛选会作用于教务系统完整名单；分类目录独立加载，不受当前滚动页限制。'}
           {targetFilterOptionsLoading && <span> 正在加载完整分类…</span>}
         </p>
         <label className="timetable-filter-field timetable-filter-term-field">
-          <span>学期</span>
+          <span>{hasRoomAvailabilityPreview && roomFilterView === 'date' ? '课表核对学期' : '学期'}</span>
           <Select
             value={termCode || undefined}
             onChange={switchTerm}
@@ -4270,8 +4406,7 @@ function TimetablePage({
           }}
           onSearch={value => {
             if (hasRoomAvailabilityPreview) {
-              invalidateTargetPreview();
-              setTargetPreviewKeyword(value);
+              if (!roomAvailabilityLoading) scanRoomAvailability({ reset: true });
               return;
             }
             searchTargetPreview(value, {
@@ -4336,6 +4471,7 @@ function TimetablePage({
                   aria-label="最高容量"
                 />
               </div>
+              {hasRoomAvailabilityPreview && <small>学校未提供容量的教室会从容量筛选结果中排除。</small>}
               {capacityRangeInvalid(targetFilterDraft) && <small>最低容量不能大于最高容量</small>}
             </fieldset>
           )}
@@ -4353,13 +4489,14 @@ function TimetablePage({
             />
           </label>
         </div>
-        {mode === 'room' && (
+        </div>
+        {hasRoomAvailabilityPreview && roomFilterView === 'advanced' && (
           <fieldset className="timetable-room-availability-filter">
             <legend>特殊空闲时间</legend>
             <p className="timetable-room-availability-help">先按上方普通筛选限定教室，再逐间检查这些时间是否无课。每行条件可选择“且/或”。</p>
             <div className="timetable-room-availability-table" role="table" aria-label="特殊空闲时间条件">
               <div className="timetable-room-availability-header" role="row"><span>周次</span><span>周内</span><span>节次</span><span aria-hidden="true" /></div>
-              {roomAvailabilitySlots.map((slot, index) => (
+              {visibleAvailabilitySlots.map((slot, index) => (
                 <React.Fragment key={`availability-${index}`}>
                   {index > 0 && <div className="timetable-room-availability-joiner"><Select size="small" value={slot.joiner || 'and'} onChange={value => changeRoomAvailabilitySlots(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, joiner: value } : item))} options={[{ value: 'and', label: '且' }, { value: 'or', label: '或' }]} aria-label={`第${index + 1}行与上一行的关系`} /></div>}
                   <div className="timetable-room-availability-row" role="row">
@@ -4369,7 +4506,7 @@ function TimetablePage({
                       ['start_section', 'end_section', availabilitySectionOptions],
                     ].map(([startKey, endKey, options]) => (
                       <div className="timetable-room-availability-range" key={startKey}>
-                        <Select value={slot[startKey]} onChange={value => changeRoomAvailabilitySlots(items => items.map((item, itemIndex) => itemIndex === index ? updateAvailabilityRangeStart(item, startKey, endKey, value, options) : item))} options={options} aria-label={startKey} />
+                        <Select value={slot[startKey]} onChange={value => changeRoomAvailabilitySlots(items => items.map((item, itemIndex) => itemIndex === index ? updateAvailabilityRangeStart({ ...item, [endKey]: slot[endKey] }, startKey, endKey, value, options) : item))} options={options} aria-label={startKey} />
                         <span>至</span>
                         <Select value={slot[endKey]} onChange={value => changeRoomAvailabilitySlots(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, [endKey]: value } : item))} options={availabilityRangeEndOptions(options, slot[startKey])} aria-label={endKey} />
                       </div>
@@ -4381,14 +4518,31 @@ function TimetablePage({
             </div>
             <div className="timetable-room-availability-actions">
               <Tooltip title="添加一行条件"><Button type="dashed" shape="circle" icon={<PlusOutlined />} onClick={() => changeRoomAvailabilitySlots(items => [...items, { week_start: 'any', week_end: 'any', weekday_start: 'any', weekday_end: 'any', start_section: 1, end_section: 2, joiner: 'and' }])} aria-label="添加空闲时间条件" /></Tooltip>
-              <Button type="primary" icon={<SearchOutlined />} loading={roomAvailabilityLoading} onClick={() => { setTargetPreviewOptions([]); setTargetPreviewTotal(0); scanRoomAvailability({ reset: true }); }}>开始扫描</Button>
+              <Button type="primary" icon={<SearchOutlined />} loading={roomAvailabilityLoading}
+                disabled={!termCode || capacityRangeInvalid(targetFilterDraft)} onClick={() => scanRoomAvailability({ reset: true })}>开始扫描</Button>
               {roomAvailabilityLoading && <Button onClick={pauseRoomAvailabilityScan}>停止</Button>}
-              {roomAvailabilityResult?.paused && !roomAvailabilityResult?.complete && <Button onClick={() => scanRoomAvailability()}>继续查找</Button>}
+              {roomAvailabilityResult?.paused && !roomAvailabilityResult.error && <Button onClick={() => scanRoomAvailability()}>继续查找</Button>}
             </div>
-            {roomAvailabilityLoading && <div className="timetable-room-availability-progress"><span className="timetable-inline-spinner" />正在逐间检查教室… 已检查 {roomAvailabilityResult?.scanned || 0} 间</div>}
-            {roomAvailabilityResult && !roomAvailabilityResult.error && <Alert type="info" showIcon message={roomAvailabilityResult.complete ? `已完成：共检查 ${roomAvailabilityResult.scanned} 间教室` : `已找到 ${roomAvailabilityResult.items?.length || 0} 间，已检查 ${roomAvailabilityResult.scanned} 间`} description={(roomAvailabilityResult.items || []).map(item => item.name).join('、') || '暂未找到符合条件的教室'} />}
-            {roomAvailabilityResult?.error && <Alert type="warning" showIcon message={roomAvailabilityResult.error} action={<Button size="small" onClick={() => scanRoomAvailability()}>重试</Button>} />}
           </fieldset>
+        )}
+        {hasRoomAvailabilityPreview && roomAvailabilityResult && (
+          <div className="timetable-room-availability-status" aria-live="polite">
+            {roomAvailabilityResult.source === 'schedule' && <Alert type="info" showIcon
+              message={roomFilterView === 'date' ? '官方查询暂不可用，已切换为按课程表核对' : '按课程表核对'}
+              description="结果仅反映排课情况，教室开放和其他占用请以现场为准。" />}
+            {roomAvailabilityLoading && <div className="timetable-room-availability-progress">
+              <span className="timetable-inline-spinner" />{roomAvailabilityResult.source === 'official' ? '正在查教务系统…'
+                : `已检查 ${roomAvailabilityResult.scanned} 间${roomAvailabilityResult.candidate_total ? `，共 ${roomAvailabilityResult.candidate_total} 间` : ''}`}
+            </div>}
+            {roomAvailabilityResult.paused && !roomAvailabilityResult.error && <Alert type="info" showIcon
+              message={`已找到 ${roomAvailabilityResult.items.length} 间，已检查 ${roomAvailabilityResult.scanned} 间`} />}
+            {roomAvailabilityResult.error ? <Alert type="warning" showIcon message={roomAvailabilityResult.error}
+              action={<Button size="small" onClick={() => scanRoomAvailability()}>重试</Button>} /> : (
+              roomAvailabilityResult.complete && <Alert type="success" showIcon message={roomAvailabilityResult.source === 'official'
+                ? `教务系统返回 ${roomAvailabilityResult.items.length} 间空教室`
+                : `已核对 ${roomAvailabilityResult.scanned} 间，找到 ${roomAvailabilityResult.items.length} 间`} />
+            )}
+          </div>
         )}
         {targetPreviewError && (
           <Alert
@@ -4402,7 +4556,8 @@ function TimetablePage({
             })}>重试</Button>}
           />
         )}
-        <TargetResultPanel
+        {(!hasRoomAvailabilityPreview || roomAvailabilityResult?.items?.length > 0
+          || roomAvailabilityResult?.complete) && <TargetResultPanel
           compact
           items={targetPreviewOptions}
           loading={targetPreviewLoading}
@@ -4424,7 +4579,7 @@ function TimetablePage({
             filters: Object.fromEntries(Object.entries(targetFilterDraft)
               .filter(([, value]) => value !== '' && value != null)),
           })}
-        />
+        />}
       </AdaptiveModal>
 
       <MobileFilterDrawer

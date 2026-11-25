@@ -162,6 +162,10 @@
   min-width: 0;
 }
 
+.timetable-target-search-row.has-room-lookup {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
 .timetable-target-search-row > .ant-btn {
   min-width: 40px;
   max-width: 100%;
@@ -282,6 +286,11 @@
 .timetable-room-availability-delete { display: flex; justify-content: center; }
 .timetable-room-availability-joiner { display: flex; justify-content: center; margin: -2px 0; }
 .timetable-room-availability-actions { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.timetable-room-filter-views { margin-bottom: var(--space-3); }
+.timetable-room-date-filter { min-width: 0; margin: 0 0 var(--space-4); }
+.timetable-room-date-fields { display: grid; grid-template-columns: minmax(0, 1.3fr) repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.timetable-room-date-fields .ant-picker { width: 100%; min-width: 0; }
+.timetable-room-availability-status { display: grid; gap: var(--space-2); margin-top: var(--space-3); }
 .timetable-room-availability-progress { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--color-muted); font-size: 12px; }
 .timetable-inline-spinner { width: 14px; height: 14px; border: 2px solid var(--color-line); border-top-color: var(--color-brand); border-radius: 50%; animation: timetable-spin .8s linear infinite; }
 @keyframes timetable-spin { to { transform: rotate(360deg); } }
@@ -2290,9 +2299,21 @@
   .timetable-target-search-row > .ant-btn {
     width: 100%;
   }
+
+  .timetable-target-search-row.has-room-lookup {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .timetable-target-search-row.has-room-lookup > .ant-select {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 575.98px) {
+  .timetable-room-date-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .timetable-room-date-fields > :first-child { grid-column: 1 / -1; }
+  .timetable-room-date-fields .ant-picker { min-height: 40px; }
+
   .timetable-room-availability-filter {
     display: grid;
     gap: 8px;

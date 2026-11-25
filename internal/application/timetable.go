@@ -1,14 +1,56 @@
 package application
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/academic"
+	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/campus"
 )
 
+func (api *API) officialRoomAvailability(response http.ResponseWriter, request *http.Request) {
+	runtime := api.outlineRuntime(response, request)
+	if runtime == nil {
+		return
+	}
+	var input academic.OfficialRoomQuery
+	if !decodeJSON(response, request, &input) {
+		return
+	}
+	if !input.Valid() {
+		writeJSON(response, 422, map[string]string{"detail": "请选择有效日期和第1至12节的起止节次"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
+	defer cancel()
+	items, err := academic.FetchOfficialAvailableRooms(ctx, runtime, input)
+	if request.Context().Err() != nil || !api.allowRuntimeResponse(response, request, runtime) {
+		return
+	}
+	if err == nil {
+		writeJSON(response, 200, map[string]any{"source": "official", "items": items})
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeJSON(response, 200, map[string]string{"source": "schedule"})
+		return
+	}
+	var failure *campus.Error
+	if errors.As(err, &failure) {
+		switch failure.Code {
+		case "UPSTREAM_UNAVAILABLE", "UPSTREAM_HTTP_ERROR", "UPSTREAM_RESPONSE_INVALID", "TIMETABLE_REJECTED":
+			writeJSON(response, 200, map[string]string{"source": "schedule"})
+			return
+		}
+	}
+	api.resourceError(response, err)
+}
+
 func (api *API) registerTimetable(router *http.ServeMux) {
+	router.HandleFunc("POST /api/timetable/rooms/official-availability", api.officialRoomAvailability)
 	router.HandleFunc("POST /api/timetable/rooms/availability", func(response http.ResponseWriter, request *http.Request) {
 		runtime := api.outlineRuntime(response, request)
 		if runtime == nil {

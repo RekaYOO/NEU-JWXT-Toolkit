@@ -583,16 +583,17 @@ describe('query timetable request lifecycle', () => {
       cursor: 1, candidate_total: 1, complete: true, scanned_room_ids: ['room-1'],
     });
     await mountQuery('教室课表');
-    await click([...container.querySelectorAll('button')].find(button => button.textContent === '筛选'));
+    await click(container.querySelector('button[aria-label="查空教室"]'));
     const modal = document.querySelector('.timetable-target-filter-modal');
     expect(modal).toBeTruthy();
+    await click([...modal.querySelectorAll('label')].find(label => label.textContent === '按周组合').querySelector('input'));
     await click([...modal.querySelectorAll('button')].find(button => button.textContent === '开始扫描'));
-    expect(modal.textContent).toContain('已完成：共检查 1 间教室');
+    expect(modal.textContent).toContain('已核对 1 间，找到 1 间');
     expect(modal.textContent).toContain('空教室');
     const requests = getRoomAvailability.mock.calls.length;
 
     await act(async () => jest.advanceTimersByTime(120_000));
-    expect(modal.textContent).toContain('已完成：共检查 1 间教室');
+    expect(modal.textContent).toContain('已核对 1 间，找到 1 间');
     expect(modal.textContent).toContain('空教室');
     expect(getRoomAvailability).toHaveBeenCalledTimes(requests);
   });
@@ -622,6 +623,7 @@ describe('query timetable request lifecycle', () => {
     });
     expect(searchInput.value).toBe('实验楼');
     await act(async () => jest.advanceTimersByTime(250));
+    await click([...modal.querySelectorAll('label')].find(label => label.textContent === '按周组合').querySelector('input'));
     await click([...modal.querySelectorAll('button')].find(button => button.textContent === '开始扫描'));
     expect(getRoomAvailability).toHaveBeenCalledTimes(3);
     expect(getRoomAvailability.mock.calls[0][0].keyword).toBe('实验楼');
@@ -636,7 +638,7 @@ describe('query timetable request lifecycle', () => {
     expect(container.textContent).toContain('空教室 1');
 
     const ordinaryRequests = searchTimetableTargets.mock.calls.length;
-    await click([...container.querySelectorAll('button')].find(button => button.textContent === '筛选'));
+    await click(container.querySelector('button[aria-label="查空教室"]'));
     await act(async () => jest.advanceTimersByTime(300));
     expect(searchTimetableTargets).toHaveBeenCalledTimes(ordinaryRequests);
     expect(modal.querySelectorAll('.timetable-target-result-card')).toHaveLength(3);
@@ -646,7 +648,7 @@ describe('query timetable request lifecycle', () => {
     await click([...modal.querySelectorAll('button')].find(button => button.textContent === '继续查找'));
     expect(modal.textContent).toContain('教室课表暂时不可用');
     expect(modal.querySelectorAll('.timetable-target-result-card')).toHaveLength(3);
-    await click([...modal.querySelectorAll('button')].find(button => button.textContent === '继续查找'));
+    await click(modal.querySelector('.timetable-room-availability-status .ant-alert-warning button'));
     expect(getRoomAvailability).toHaveBeenCalledTimes(5);
     expect(getRoomAvailability.mock.calls[4][0]).toEqual(getRoomAvailability.mock.calls[3][0]);
     expect(getRoomAvailability.mock.calls[3][0]).toEqual(expect.objectContaining({
@@ -655,10 +657,10 @@ describe('query timetable request lifecycle', () => {
       keyword: '实验楼',
     }));
     expect(modal.querySelectorAll('.timetable-target-result-card')).toHaveLength(4);
-    expect(modal.textContent).toContain('已完成：共检查 4 间教室');
+    expect(modal.textContent).toContain('已核对 4 间，找到 4 间');
     await click([...modal.querySelectorAll('.timetable-target-result-card')]
       .find(button => button.textContent.includes('空教室 4')));
-    await click([...container.querySelectorAll('button')].find(button => button.textContent === '筛选'));
+    await click(container.querySelector('button[aria-label="查空教室"]'));
     expect(modal.querySelectorAll('.timetable-target-result-card')).toHaveLength(4);
     expect(getRoomAvailability).toHaveBeenCalledTimes(5);
   });

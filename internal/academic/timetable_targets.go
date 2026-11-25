@@ -100,6 +100,7 @@ func timetableTarget(mode string, row map[string]any) map[string]any {
 			}
 		}
 		values["floor"] = firstText(row["LCDM"], row["LC"])
+		values["has_schedule"] = Text(row["SFPK"])
 		details["capacity"] = Text(row["RL"])
 	case "teacher":
 		name = firstText(row["JSMC"], row["XM"], row["MC"], identifier)
