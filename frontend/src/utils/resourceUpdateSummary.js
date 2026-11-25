@@ -119,6 +119,13 @@ export const summarizeScoreUpdate = (beforePayload, afterPayload) => {
     items.push(`总 GPA：${displayValue(beforeGpa)} → ${displayValue(afterGpa)}`);
   }
 
+  const beforeRank = beforePayload?.official_major_rank ?? null;
+  const afterRank = afterPayload?.official_major_rank ?? null;
+  if (beforeRank !== afterRank) {
+    const formatRank = rank => rank === null ? '暂无' : `第 ${rank} 名`;
+    items.push(`本专业绩点排名：${formatRank(beforeRank)} → ${formatRank(afterRank)}`);
+  }
+
   if (!items.length && beforeScores.length !== afterScores.length) {
     items.push(`课程总数：${beforeScores.length} → ${afterScores.length}`);
   }
@@ -148,6 +155,32 @@ const timetableValue = (value, field) => {
   return Array.isArray(value) ? value.join('、') : String(value ?? '');
 };
 
+const timetableFields = [
+  ['location', '地点'], ['weekday', '星期'], ['start_section', '开始节次'],
+  ['end_section', '结束节次'], ['weeks', '周次'],
+  ['start_time', '开始时间'], ['end_time', '结束时间'],
+  ['teachers', '教师'], ['course_name', '课程名称'],
+  ['classes', '上课班级'], ['campus', '校区'], ['course_code', '课程代码'],
+  ['teaching_class_id', '教学班'], ['course_nature', '课程性质'],
+  ['assessment_type', '考核方式'], ['grading_scheme', '成绩分制'],
+  ['preselected', '预选状态'], ['activity_type_label', '课程类型'], ['recurrence_unknown', '周次待确认'],
+];
+
+const optionalTimetableLabels = new Set(['course_nature', 'assessment_type', 'grading_scheme', 'activity_type_label']);
+const timetableDetails = (previous, course) => timetableFields.filter(([field]) => {
+  if (optionalTimetableLabels.has(field) && (
+    !String(previous[field] ?? '').trim() || !String(course[field] ?? '').trim()
+    || field === 'activity_type_label' && (previous.activity_type === 'other' || course.activity_type === 'other')
+  )) return false;
+
+  const normalize = value => {
+    if (field === 'preselected' || field === 'recurrence_unknown') return Boolean(value);
+    if (Array.isArray(value)) return value.length ? stableTimetableValue(value) : '';
+    return String(value ?? '').trim();
+  };
+  return JSON.stringify(normalize(previous[field])) !== JSON.stringify(normalize(course[field]));
+});
+
 export const summarizeTimetableUpdate = (beforePayload, afterPayload) => {
   const before = mapTimetableMeetings(beforePayload?.courses);
   const after = mapTimetableMeetings(afterPayload?.courses);
@@ -166,14 +199,24 @@ export const summarizeTimetableUpdate = (beforePayload, afterPayload) => {
       added.splice(next, 1);
     }
   }
-  const fallbackKey = course => String(course?.course_code || course?.course_name || '').trim();
+  const compatibleIdentity = (previous, course) => {
+    if (previous.teaching_class_id && course.teaching_class_id && previous.teaching_class_id !== course.teaching_class_id) return false;
+    const key = item => String(item.course_code || item.course_name || '').trim();
+    return Boolean(key(previous)) && key(previous) === key(course);
+  };
+  for (let index = removed.length - 1; index >= 0; index -= 1) {
+    const next = added.findIndex(course => compatibleIdentity(removed[index], course) && !timetableDetails(removed[index], course).length);
+    if (next >= 0) {
+      removed.splice(index, 1);
+      added.splice(next, 1);
+    }
+  }
   // Missing official class IDs can change when a section changes. Pair only
   // unambiguous one-to-one courses; multiple meetings retain add/remove labels.
   for (let index = removed.length - 1; index >= 0; index -= 1) {
-    const key = fallbackKey(removed[index]);
-    if (!key) continue;
-    const sameOld = removed.filter(course => fallbackKey(course) === key);
-    const sameNew = added.filter(course => fallbackKey(course) === key);
+    const sameNew = added.filter(course => compatibleIdentity(removed[index], course));
+    if (sameNew.length !== 1) continue;
+    const sameOld = removed.filter(course => compatibleIdentity(course, sameNew[0]));
     if (sameOld.length !== 1 || sameNew.length !== 1) continue;
     const next = added.indexOf(sameNew[0]);
     if (JSON.stringify(timetableCourseContent(removed[index]))
@@ -186,31 +229,15 @@ export const summarizeTimetableUpdate = (beforePayload, afterPayload) => {
   if (added.length) items.push(`新增课程：${listNames(added)}`);
   if (removed.length) items.push(`移除课程：${listNames(removed)}`);
 
-  const fields = [
-    ['location', '地点'], ['weekday', '星期'], ['start_section', '开始节次'],
-    ['end_section', '结束节次'], ['weeks', '周次'], ['week_text', '周次说明'],
-    ['start_time', '开始时间'], ['end_time', '结束时间'],
-    ['teachers', '教师'], ['course_name', '课程名称'],
-    ['classes', '上课班级'], ['campus', '校区'], ['course_code', '课程代码'],
-    ['teaching_class_id', '教学班'], ['course_nature', '课程性质'],
-    ['assessment_type', '考核方式'], ['grading_scheme', '成绩分制'],
-    ['preselected', '预选状态'], ['activity_type_label', '课程类型'],
-    ['activity_type', '课程类型代码'], ['recurrence_unknown', '周次待确认'],
-    ['cell_details', '课程详情'], ['title_details', '安排详情'], ['tags', '课程标签'],
-  ];
-  const changed = [...after].filter(([key, course]) => (
-    before.has(key)
-    && JSON.stringify(timetableCourseContent(before.get(key)))
-      !== JSON.stringify(timetableCourseContent(course))
-  )).map(([key, course]) => ({ previous: before.get(key), course })).concat(paired);
-  changed.slice(0, 3).forEach(({ previous, course }) => {
-    const details = fields.filter(([field]) => (
-      JSON.stringify(stableTimetableValue(previous[field]))
-        !== JSON.stringify(stableTimetableValue(course[field]))
-    )).slice(0, 3).map(([field, label]) => (
+  const changed = [...after].filter(([key]) => before.has(key))
+    .map(([key, course]) => ({ previous: before.get(key), course })).concat(paired)
+    .map(({ previous, course }) => ({ previous, course, fields: timetableDetails(previous, course) }))
+    .filter(({ fields }) => fields.length);
+  changed.slice(0, 3).forEach(({ previous, course, fields }) => {
+    const details = fields.slice(0, 3).map(([field, label]) => (
       `${label} ${displayValue(timetableValue(previous[field], field))} → ${displayValue(timetableValue(course[field], field))}`
     ));
-    items.push(`${name(course)}：${details.length ? details.join('，') : '课程安排信息有调整'}`);
+    items.push(`${name(course)}：${details.join('，')}`);
   });
   if (changed.length > 3) items.push(`另有 ${changed.length - 3} 条课程安排发生变化`);
 

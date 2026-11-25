@@ -43,8 +43,9 @@ type Score struct {
 }
 
 type Scores struct {
-	Scores     []Score  `json:"scores"`
-	OverallGPA *float64 `json:"overall_gpa"`
+	Scores            []Score  `json:"scores"`
+	OverallGPA        *float64 `json:"overall_gpa"`
+	OfficialMajorRank *int     `json:"official_major_rank,omitempty"`
 }
 
 func Text(value any) string {
@@ -199,6 +200,10 @@ func FetchScores(ctx context.Context, requester Requester) (Scores, error) {
 		}
 		result.OverallGPA = &number
 	}
+	if rank, err := strconv.ParseInt(strings.TrimSpace(Text(official["ZPJXFJDPM"])), 10, 32); err == nil && rank > 0 {
+		majorRank := int(rank)
+		result.OfficialMajorRank = &majorRank
+	}
 	sort.SliceStable(result.Scores, func(left, right int) bool {
 		first, second := result.Scores[left], result.Scores[right]
 		first.DetailRef, second.DetailRef = "", ""
@@ -210,7 +215,7 @@ func FetchScores(ctx context.Context, requester Requester) (Scores, error) {
 }
 
 func (scores Scores) Semantic() Scores {
-	result := Scores{OverallGPA: scores.OverallGPA, Scores: append([]Score{}, scores.Scores...)}
+	result := Scores{OverallGPA: scores.OverallGPA, OfficialMajorRank: scores.OfficialMajorRank, Scores: append([]Score{}, scores.Scores...)}
 	for index := range result.Scores {
 		result.Scores[index].DetailRef = ""
 	}

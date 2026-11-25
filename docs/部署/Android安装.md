@@ -1,34 +1,6 @@
 # Android 安装与运行
 
-主分支的 [Go branch delivery](https://github.com/RekaYOO/NEU-JWXT-Toolkit/actions/workflows/branch-delivery.yml?query=branch%3Amain) 同时提供两款 ARM64 调试 APK。客户端连接已部署的 HTTPS 服务，可使用 Go 后端。本地版在手机内启动 Python/FastAPI，通过 Android WebView 使用同一套网页，无需部署服务。依赖 Go 后端的功能仍以服务端客户端为准。
-
-在最近一次成功运行的 Artifacts 下载 `toolbox-verified-<提交哈希>`。`android-client-arm64-debug.apk` 用于连接远端，`android-local-arm64-debug.apk` 用于独立使用。调试 APK 使用独立包名和调试签名，可与正式 APK 并存。正式签名版见 [v2.2.4 Release](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/tag/v2.2.4)。
-
-> Go 重构版 2.2.4（RC31）提供 ARM64 客户端调试 APK 和设备测试 APK。两份文件通过相同证书的签名验证。客户端版本码为 `2002004`，最低支持 Android 7.0（API 24）。交付目录内的 `SHA256SUMS` 可核对两个文件。见 [RC31 验收记录](Go候选包31验收记录.md)。
->
-> 历史版本：v1.6.96 两个固定签名候选 APK 已完成混淆构建与成品检查，
-> 同源调试包已通过 API 35 模拟器功能门禁，仍待正式包真机验收。
-> 候选构建不等于已经公开发布 GitHub Release；调试包仅用于测试。
-
-## RC31 真机验收
-
-在 `dist/go-release-candidate-31` 中使用 Android 平台工具。选择一台用于测试的 ARM64 手机，打开 USB 调试。使用独立的测试用户空间，设备测试会修改调试客户端的服务器设置并打开系统文件选择器。以下为 PowerShell 命令。
-
-```powershell
-adb devices
-$testDevice = Read-Host '输入列表中状态为 device 的测试手机序列号'
-$testOrigin = Read-Host '输入手机信任且可访问的独立 Go 测试服务 HTTPS 根地址'
-adb -s $testDevice install -r NEU-JWXT-Toolkit-2.2.4-android-arm64-client-debug.apk
-adb -s $testDevice install -r android-arm64-device-tests.apk
-adb -s $testDevice shell am instrument -w -r -e toolboxHttpsOrigin $testOrigin io.github.rekayoo.neujwxt.client.debug.test/androidx.test.runner.AndroidJUnitRunner
-```
-
-保留运行器输出，检查 `TrustedServerTest` 实际执行成功。省略 `toolboxHttpsOrigin` 会跳过该用例。该用例会重开应用核对服务器地址，结束时恢复原设置。
-
-文件选择器用例假定初始保存位置是本机「下载」目录。它保存一个 2 MiB 加 31 字节的合成文件，逐字节核对内容，测试取消保存，再清理测试文件。要验收用户实际操作，请在客户端连接提供合成数据的测试服务，从选课历史页导出一轮归档。记下系统选择器中的目录和文件名，断网后从文件管理器重新打开 JSON，核对轮次和教学班数量。
-
-目标是在同一个 GitHub Release 提供两个 Android 7.0（API 24）及以上可安装包，正式包仅支持
-`arm64-v8a`：
+在 [GitHub Releases](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest) 下载正式签名 APK。两个 APK 均要求 Android 7.0（API 24）及以上的 `arm64-v8a` 设备。
 
 | 安装包 | 包名 | 用途 |
 |---|---|---|

@@ -26,10 +26,14 @@ Session，已登录工具箱的同账号页面可继续，后台不发短信；�
 
 | 模式 | 适用网络 | 认证方式 | 说明 |
 | --- | --- | --- | --- |
-| `direct` | 校园网 | 学号和密码 | 直接访问教务系统。主动登录失败时给出线路提示；静默恢复确认直连不可达后自动尝试 WebVPN。 |
+| `direct` | 校园网 | 学号和密码、智慧东大 App 扫码或微信扫码 | 直接访问教务系统。密码提交前确认线路不可达时自动尝试 WebVPN。 |
 | `webvpn` | 校外网络 | 智慧东大 App 扫码（推荐）、微信扫码或账号密码 | 所有目标为 `*.neu.edu.cn` 的业务请求会自动转为 WebVPN 地址。 |
 
-登录页仍由用户明确选择校内直连或 WebVPN，不根据模糊网络特征猜测环境。进程内静默恢复只对可验证的失败自动切线：直连连接失败、超时或被导向 WebVPN 时尝试 WebVPN；WebVPN 明确返回校园网拒绝时尝试直连。密码错误不会换线重复提交，普通业务错误也不会触发切线。
+登录页顶部选择访问线路，默认显示密码表单。点击底部的智慧东大或微信按钮，密码区收起并按所选线路生成二维码。再次点击同一按钮可关闭，点击另一种扫码方式会取消旧码并生成新码。切换线路会结束当前扫码并返回密码表单。设备已有缓存时，可以通过单独的“离线查看”入口进入。
+
+密码提交前若服务端确认直连不可达、连接超时或服务明确要求 WebVPN，页面会自动切换线路并继续一次。学校要求短信二次认证时，页面直接打开图形验证码和短信验证弹窗。密码错误、密码已发送后的超时、浏览器连接超时都不会自动换线重发。WebVPN 明确拒绝校内网络时，页面提示原因并选回直连，等待手动继续。
+
+等待密码登录时，原按钮变为“取消登录”，下方显示当前连接状态。点击后工具箱停止等待，保留表单内容和当前线路，可以立即重新提交或改用扫码登录。已送达学校的请求仍可能由学校处理。短信验证弹窗打开后，可用弹窗内的取消操作结束验证。
 
 ## 模块组成
 
@@ -58,7 +62,7 @@ URL；同类 `Referer` 也会改写，`Origin` 会改为 WebVPN 源站。受控�
 1. 前端调用 `POST /api/webvpn/qr/start`，后端创建一个仅在内存中保存的扫码流程。
 2. 后端返回 CAS 官方二维码内容、`flow_id`、轮询间隔和过期时间。
 3. 前端每隔 `poll_interval` 秒调用 `POST /api/webvpn/qr/status`。
-4. 扫码成功后，后端完成 CAS 回调并同步 WebVPN 所需的认证 Cookie。普通登录通过教务系统
+4. 扫码成功后，后端按所选线路完成 CAS 回调。WebVPN 线路同步网关所需的认证 Cookie。普通登录通过教务系统
    当前用户接口校验；服务页传入 `target_service=jwxk|cxcy` 时改为核验对应服务入口。
 5. 校验成功后将 Cookie 保存到本地 `data/session.json`。
 
@@ -182,8 +186,8 @@ WebVPN 专用接口在保留 `message` 和 `status` 的同时返回稳定的 `er
 
 | 方法和路径 | 请求字段 | 成功响应/状态 |
 | --- | --- | --- |
-| `POST /api/webvpn/qr/start` | `username`（可选）、`target_service=primary|jwxk|cxcy`（默认 `primary`） | `success`、`flow_id`、`qr_content`、`expires_in`、`poll_interval` |
-| `POST /api/webvpn/qr/status` | `flow_id` | `pending`、`sms_required`、`authenticated`、`expired` 或 `error` |
+| `POST /api/webvpn/qr/start` | `username`（可选）、`qr_provider`、`network_mode`（省略时为 `webvpn`）、`target_service`（默认 `primary`） | `success`、`flow_id`、`qr_content`、`expires_in`、`poll_interval`、`network_mode` |
+| `POST /api/webvpn/qr/status` | `flow_id` | `pending`、`scanned`、`sms_required`、`authenticated`、`expired`、`cancelled` 或 `error` |
 | `POST /api/webvpn/qr/cancel` | `flow_id` | `success` |
 
 当状态为 `authenticated` 时，响应可带 `username`。状态为 `error` 时会额外给出 `diagnostics`；其中只包含跳转主机、路径、查询参数名、响应状态和 Cookie 名称等脱敏诊断信息，不含 Cookie 值、票据或二维码 UUID。

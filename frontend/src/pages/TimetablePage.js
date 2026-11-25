@@ -2030,8 +2030,8 @@ function TimetablePage({
     const displayedView = timetableViewState.current;
     const visibleCurrent = personalPayloadForDisplayedView(current, displayedView);
     const visibleNext = personalPayloadForDisplayedView(payload, displayedView);
-    if (visibleCurrent?.term_code === visibleNext?.term_code
-      && timetableContentSignature(visibleCurrent) === timetableContentSignature(visibleNext)) {
+    const changes = summarizeTimetableUpdate(visibleCurrent, visibleNext);
+    if (visibleCurrent?.term_code === visibleNext?.term_code && changes.length === 0) {
       applyPersonalPayloadForView(payload);
       setCacheTier(source);
       setCacheStatusPayload(payload);
@@ -2044,7 +2044,7 @@ function TimetablePage({
     timetableMessageModal.current = null;
     pendingPersonalPayloadRef.current = payload;
     pendingPersonalSignatureRef.current = signature;
-    pendingPersonalChangesRef.current = summarizeTimetableUpdate(visibleCurrent, visibleNext);
+    pendingPersonalChangesRef.current = changes;
     personalUpdateModal.current = Modal.confirm({
       title: '课表有更新',
       content: <MergedUpdateSummary

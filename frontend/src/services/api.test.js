@@ -43,6 +43,17 @@ test('outline attachments hand the downloaded file token to the Android picker',
   }
 });
 
+test('primary password requests forward cancellation and skip automatic session recovery', async () => {
+  const { client, apiModule } = loadApiWithAxios();
+  const { signal } = new AbortController();
+  client.post.mockResolvedValue({ data: { success: true } });
+  await apiModule.login('fixture-student', 'fixture-password', true, 'direct', signal);
+  await apiModule.startWebVPNPasswordLogin('fixture-student', 'fixture-password', true, 'primary', signal);
+
+  expect(client.post).toHaveBeenNthCalledWith(1, '/api/login', expect.any(Object), { signal, skipAuthRedirect: true });
+  expect(client.post).toHaveBeenNthCalledWith(2, '/api/webvpn/password/start', expect.any(Object), { signal, skipAuthRedirect: true });
+});
+
 describe('JWXK automation settings API', () => {
   test('experiment writes and verification never replay through auth recovery', async () => {
     const { client, apiModule } = loadApiWithAxios();
@@ -163,7 +174,7 @@ describe('JWXK automation settings API', () => {
     });
     expect(client.post).toHaveBeenNthCalledWith(2, '/api/webvpn/password/start', {
       username: '20250001', password: 'secret', remember: true, target_service: 'jwxk',
-    });
+    }, { signal: undefined, skipAuthRedirect: false });
   });
 
   test('saves the JWXK route locally before starting a separate probe', async () => {

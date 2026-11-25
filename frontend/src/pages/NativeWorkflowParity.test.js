@@ -134,7 +134,7 @@ describe.each(['local', 'client'])('%s native workflow parity', kind => {
     await advance(11000);
     expect(container.querySelector('input[value="webvpn"]').checked).toBe(true);
     expect(requests.find(request => request.path === '/api/login').timeout_ms).toBe(30000);
-    await submit();
+    expect(requests.filter(request => request.path === '/api/webvpn/password/start')).toHaveLength(1);
     await input('input[aria-label="图形验证码"]', 'test');
     await click('获取验证码');
     await input('input[aria-label="短信验证码"]', '123456');
@@ -158,6 +158,9 @@ describe.each(['local', 'client'])('%s native workflow parity', kind => {
         error_code: 'DIRECT_ACCESS_FAILED',
         suggestion: '校外网络请选择 WebVPN。',
       };
+      if (path === '/api/webvpn/password/start') return {
+        success: true, status: 'sms_required', flow_id: 'synthetic-sms', expires_in: 300,
+      };
       return initialHandler(path);
     };
 
@@ -167,7 +170,30 @@ describe.each(['local', 'client'])('%s native workflow parity', kind => {
     await submit();
 
     expect(container.querySelector('input[value="webvpn"]').checked).toBe(true);
-    expect(document.body.textContent).toContain('校外网络请选择 WebVPN。');
+    expect(requests.filter(request => request.path === '/api/webvpn/password/start')).toHaveLength(1);
+    expect(document.body.textContent).toContain('短信二次认证');
+  });
+
+  test('cancels a native password request before it can switch routes', async () => {
+    const initialHandler = handler;
+    handler = path => {
+      if (path === '/api/login') return new Promise(resolve => setTimeout(() => resolve({
+        success: false, error_code: 'DIRECT_ACCESS_FAILED',
+      }), 10000));
+      return initialHandler(path);
+    };
+
+    await render(<LoginPage onLoginSuccess={jest.fn()} onOfflineSuccess={jest.fn()} />);
+    await input('input[placeholder="学号"]', '20250001');
+    await input('input[placeholder="密码"]', 'synthetic-password');
+    await submit();
+    await click('取消登录');
+    await advance(10000);
+
+    expect(window.NeuNative.cancel).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('input[value="direct"]').checked).toBe(true);
+    expect(container.querySelector('input[placeholder="密码"]').disabled).toBe(false);
+    expect(requests.some(request => request.path === '/api/webvpn/password/start')).toBe(false);
   });
 
   test('entering outlines automatically loads the first page without storing full outlines', async () => {

@@ -266,6 +266,11 @@ const ScoresPage = ({ offlineMode = false }) => {
   const gpaCalculatorRef = useRef(null);
   const dismissedRevisionRef = useRef('');
   const scoreResource = useCachedResource('scores');
+  const officialScores = scoreResource.data;
+  const officialGpa = officialScores?.overall_gpa;
+  const majorRank = officialScores?.official_major_rank;
+  const hasOfficialGpa = Number.isFinite(officialGpa);
+  const hasMajorRank = Number.isSafeInteger(majorRank) && majorRank > 0;
   const gpaSettings = useGpaPolicy(offlineMode);
   const gpaPolicy = gpaSettings.policy || scoreResource.data?.gpa_policy;
   const [gpaPolicyOpen, setGpaPolicyOpen] = useState(false);
@@ -1092,16 +1097,23 @@ const ScoresPage = ({ offlineMode = false }) => {
           />
         )}
       {/* 统计卡片 */}
-      {!isSimulating && <Row gutter={16} className="stats-row">
-          <Col xs={12} sm={12} md={6}>
-          <Card>
-            <Statistic title="课程总数" value={stats.totalCourses} prefix={<BookOutlined />} />
-          </Card>
-        </Col>
+      {!isSimulating && <Row className={`stats-row${hasOfficialGpa || hasMajorRank ? ' has-official-result' : ''}`}>
+        {(hasOfficialGpa || hasMajorRank) && (
+          <Col className="official-score-summary">
+            <Card>
+              <div className="ant-statistic-title">教务绩点 / 本专业排名</div>
+              <div className="ant-statistic-content official-score-pair">
+                <span>{hasOfficialGpa ? officialGpa.toLocaleString('zh-CN', { minimumFractionDigits: 1, maximumFractionDigits: 4 }) : '暂无'}</span>
+                <span className="official-score-divider" aria-hidden="true">/</span>
+                <span>{hasMajorRank ? `第 ${majorRank} 名` : '暂无'}</span>
+              </div>
+            </Card>
+          </Col>
+        )}
           <Col xs={12} sm={12} md={6}>
           <Card>
             <Statistic
-              title="平均绩点"
+              title={hasActiveFilters ? '筛选课程平均绩点' : '本地平均绩点'}
               value={filteredGpaSummary.average ?? '--'}
               precision={filteredGpaSummary.average === null ? undefined : 4}
               prefix={<TrophyOutlined />}
@@ -1148,6 +1160,11 @@ const ScoresPage = ({ offlineMode = false }) => {
               )}
               valueStyle={{ color: 'var(--color-brand)' }}
             />
+          </Card>
+        </Col>
+        <Col xs={12} sm={12} md={6}>
+          <Card>
+            <Statistic title="课程总数" value={stats.totalCourses} prefix={<BookOutlined />} />
           </Card>
         </Col>
           <Col xs={12} sm={12} md={6}>

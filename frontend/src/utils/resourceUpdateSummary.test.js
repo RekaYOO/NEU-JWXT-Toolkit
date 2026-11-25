@@ -49,6 +49,12 @@ test('timetable update reports changed meetings and non-meeting arrangements', (
   ]);
 });
 
+test('timetable update ignores an optional field disappearing from the official response', () => {
+  const before = { courses: [{ id: 'a', course_code: 'A1', course_name: '课程甲', course_nature: '选修', location: 'A101' }] };
+  const after = { courses: [{ id: 'a', course_code: 'A1', course_name: '课程甲', course_nature: '', location: 'A101' }] };
+  expect(summarizeTimetableUpdate(before, after)).toEqual([]);
+});
+
 test('timetable update does not pretend a changed calendar or section definition is a new course', () => {
   expect(summarizeTimetableUpdate(
     { courses: [], weeks: [{ number: 1 }] },
@@ -83,6 +89,13 @@ test('score update summary includes course and GPA changes', () => {
     '课程甲：成绩 80 → 85，绩点 3 → 3.5',
     '总 GPA：3.5 → 3.8',
   ]);
+});
+
+test('score update summary identifies an official rank change without any course changes', () => {
+  expect(summarizeScoreUpdate({ official_major_rank: 42 }, { official_major_rank: 37 }))
+    .toEqual(['本专业绩点排名：第 42 名 → 第 37 名']);
+  expect(summarizeScoreUpdate({}, { official_major_rank: 37 }))
+    .toEqual(['本专业绩点排名：暂无 → 第 37 名']);
 });
 
 test('score update summary preserves legacy and duplicate course rows', () => {

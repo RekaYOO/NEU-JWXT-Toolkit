@@ -56,7 +56,7 @@ func TestOfflineReadsAfterLogoutNeverRefreshOrWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range []store.CacheEntry{{Resource: "scores", Variant: "default", SchemaVersion: 1, Revision: "scores-1", Payload: json.RawMessage(`{"scores":[],"overall_gpa":null}`)}, {Resource: "academic-report", Variant: "default", SchemaVersion: 1, Revision: "report-1", Payload: json.RawMessage(`{"student_id":"20250001","categories":[],"credit_summary":{}}`)}} {
+	for _, entry := range []store.CacheEntry{{Resource: "scores", Variant: "default", SchemaVersion: 1, Revision: "scores-1", Payload: json.RawMessage(`{"scores":[],"overall_gpa":null,"official_major_rank":42}`)}, {Resource: "academic-report", Variant: "default", SchemaVersion: 1, Revision: "report-1", Payload: json.RawMessage(`{"student_id":"20250001","categories":[],"credit_summary":{}}`)}} {
 		if _, err := api.database.CommitCache(context.Background(), session, entry, "test", nil); err != nil {
 			t.Fatal(err)
 		}
@@ -68,6 +68,9 @@ func TestOfflineReadsAfterLogoutNeverRefreshOrWrite(t *testing.T) {
 		response := apiRequest(handler, "GET", path, "", nil)
 		if response.Code != 200 || !strings.Contains(response.Body.String(), `"source":"offline"`) || !strings.Contains(response.Body.String(), `"is_fresh":false`) {
 			t.Fatalf("offline read %s: %d %s", path, response.Code, response.Body.String())
+		}
+		if path == "/api/offline/scores" && !strings.Contains(response.Body.String(), `"official_major_rank":42`) {
+			t.Fatal("offline score response lost the cached rank")
 		}
 	}
 	response := apiRequest(handler, "GET", "/api/offline/status", "", nil)

@@ -31,12 +31,18 @@ func TestScoresPaginationAndPrivateReference(t *testing.T) {
 			}
 			return []byte(`{"code":"0","datas":{"cxwdcj":{"totalSize":2,"rows":[{"KCM":"英语","KCH":"ENG","XSZCJ":"59","JD":0,"XF":2,"SFJG_DISPLAY":"否"}]}}}`), nil
 		default:
-			return []byte(`{"code":"0","datas":{"queryPjxfjd":{"ZPJXFJD":" 2.6667 "}}}`), nil
+			if method != http.MethodGet || !strings.HasSuffix(target, "queryPjxfjd.do") {
+				t.Fatalf("unexpected request: %s %s", method, target)
+			}
+			return []byte(`{"code":"0","datas":{"queryPjxfjd":{"ZPJXFJD":" 2.6667 ","ZPJXFJDPM":" 42 "}}}`), nil
 		}
 	})
 	scores, err := FetchScores(context.Background(), requester)
 	if err != nil || pages != 2 || len(scores.Scores) != 2 || scores.OverallGPA == nil || *scores.OverallGPA != 2.6667 {
 		t.Fatalf("scores: %+v pages=%d error=%v", scores, pages, err)
+	}
+	if scores.OfficialMajorRank == nil || *scores.OfficialMajorRank != 42 || scores.Semantic().OfficialMajorRank == nil {
+		t.Fatal("official rank must be preserved in the semantic cache")
 	}
 	encoded, _ := json.Marshal(scores.Semantic())
 	if strings.Contains(string(encoded), "private-reference") || strings.Contains(string(encoded), "detail_ref") {
@@ -45,6 +51,21 @@ func TestScoresPaginationAndPrivateReference(t *testing.T) {
 	for _, score := range scores.Scores {
 		if score.Code == "MATH" && (score.DetailRef == "" || !score.Passed || score.ScoreValue != 90 || score.Credit != 4 || score.GPA != 4) {
 			t.Fatalf("wrong score: %+v", score)
+		}
+	}
+}
+
+func TestScoresIgnoreUnavailableOfficialRank(t *testing.T) {
+	for _, value := range []string{`null`, `" "`, `"0"`, `"-1"`, `"12.5%"`, `"2147483648"`} {
+		requester := requestFunc(func(_ context.Context, _, target string, _ url.Values) ([]byte, error) {
+			if strings.HasSuffix(target, "cxwdcjxnxq.do") {
+				return []byte(`{"code":"0","datas":{"cxwdcjxnxq":{"rows":[]}}}`), nil
+			}
+			return []byte(`{"code":"0","datas":{"queryPjxfjd":{"ZPJXFJD":"3.0000","ZPJXFJDPM":` + value + `}}}`), nil
+		})
+		result, err := FetchScores(context.Background(), requester)
+		if err != nil || result.OfficialMajorRank != nil || result.OverallGPA == nil || *result.OverallGPA != 3 {
+			t.Fatalf("unavailable rank %s affected scores: %+v %v", value, result, err)
 		}
 	}
 }

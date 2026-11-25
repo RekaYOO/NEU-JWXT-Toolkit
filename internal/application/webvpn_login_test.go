@@ -52,6 +52,45 @@ func (client *testVPNClient) VerifyVPNSMS(context.Context, string, string) (map[
 	return map[string]any{"status": "authenticated", "username": client.account}, nil
 }
 
+type cancelledPasswordClient struct {
+	testVPNClient
+	cancelRequest  context.CancelFunc
+	observedCancel bool
+}
+
+func (client *cancelledPasswordClient) StartVPNPassword(ctx context.Context, password string) (map[string]any, error) {
+	client.cancelRequest()
+	select {
+	case <-ctx.Done():
+		client.observedCancel = true
+	case <-time.After(time.Second):
+	}
+	return client.testVPNClient.StartVPNPassword(ctx, password)
+}
+
+func TestCancelledVPNPasswordStartDiscardsCandidate(t *testing.T) {
+	api, handler := testApplication(t, "remote-multi")
+	if err := api.database.AddAccount(context.Background(), "student"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &cancelledPasswordClient{cancelRequest: cancel}
+	client.active.Store(true)
+	api.vpnFactory = func(string) (VPNClient, error) { return client, nil }
+	request := httptest.NewRequest(http.MethodPost, "/api/webvpn/password/start", strings.NewReader(`{"username":"student","password":"fixture"}`)).WithContext(ctx)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if !client.observedCancel {
+		t.Fatal("school request did not observe cancellation")
+	}
+	if len(api.vpnFlows) != 0 || client.active.Load() || response.Body.Len() != 0 {
+		t.Fatal("cancelled request published or retained its VPN candidate")
+	}
+}
+
 func responseCookie(t *testing.T, response *http.Response, name string) *http.Cookie {
 	t.Helper()
 	for _, cookie := range response.Cookies() {
@@ -97,6 +136,51 @@ func TestVPNBrowserFlowOwnershipAndAuthenticatedSession(t *testing.T) {
 	}
 	response = apiRequest(handler, "POST", "/api/webvpn/qr/status", `{"flow_id":"test-flow"}`, owner)
 	if !strings.Contains(response.Body.String(), "WEBVPN_FLOW_MISSING") {
+		t.Fatal(response)
+	}
+}
+
+type directQRTestClient struct {
+	testVPNClient
+	mode, provider string
+}
+
+func (client *directQRTestClient) StartQR(ctx context.Context, provider, mode string) (map[string]any, error) {
+	client.provider, client.mode = provider, mode
+	return client.StartVPNQR(ctx, provider)
+}
+
+func (client *directQRTestClient) Status() (bool, string) {
+	return client.active.Load(), client.mode
+}
+
+func (client *directQRTestClient) Snapshot() ([]campus.SavedCookie, string) {
+	return nil, client.mode
+}
+
+func TestDirectQRBrowserLoginPublishesDirectSession(t *testing.T) {
+	api, handler := testApplication(t, "remote-multi")
+	if err := api.database.AddAccount(context.Background(), "student"); err != nil {
+		t.Fatal(err)
+	}
+	client := &directQRTestClient{testVPNClient: testVPNClient{testCampusClient: testCampusClient{account: "student"}}}
+	api.vpnFactory = func(string) (VPNClient, error) { return client, nil }
+
+	for _, invalid := range []string{`{"network_mode":"offline"}`, `{"network_mode":"direct","target_service":"jwxk"}`} {
+		response := apiRequest(handler, "POST", "/api/webvpn/qr/start", invalid, nil)
+		if response.Code != 422 || client.mode != "" {
+			t.Fatal(response.Code, client.mode)
+		}
+	}
+	response := apiRequest(handler, "POST", "/api/webvpn/qr/start", `{"network_mode":"direct","qr_provider":"smart_neu"}`, nil)
+	if response.Code != 200 || client.mode != "direct" || client.provider != "smart_neu" {
+		t.Fatal(response.Code, client.mode, client.provider)
+	}
+	owner := responseCookie(t, response.Result(), vpnOwnerCookie)
+	response = apiRequest(handler, "POST", "/api/webvpn/qr/status", `{"flow_id":"test-flow"}`, owner)
+	cookie := responseCookie(t, response.Result(), sessionCookie)
+	response = apiRequest(handler, "GET", "/api/status", "", cookie)
+	if !strings.Contains(response.Body.String(), `"is_logged_in":true`) || !strings.Contains(response.Body.String(), `"network_mode":"direct"`) {
 		t.Fatal(response)
 	}
 }

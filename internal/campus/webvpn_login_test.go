@@ -104,6 +104,80 @@ func TestVPNPasswordSMSUsesOneSessionAndDoesNotResubmitVerifiedCode(t *testing.T
 	}
 }
 
+func TestDirectQRUsesPrimaryServiceAndChecksIdentity(t *testing.T) {
+	for _, provider := range []string{QRSmartNEU, QRWeChat} {
+		for _, scenario := range []string{"success", "mismatch", "gateway"} {
+			t.Run(provider+"/"+scenario, func(t *testing.T) {
+				client, err := NewLoginClient(map[string]string{"mismatch": "another-student"}[scenario])
+				if err != nil {
+					t.Fatal(err)
+				}
+				verified := false
+				client.http.Transport = transportFunc(func(request *http.Request) (*http.Response, error) {
+					if request.URL.Hostname() == vpnHost {
+						t.Fatal("direct login attempted to enter WebVPN")
+					}
+					switch request.URL.Path {
+					case "/tpass/login":
+						if request.URL.Query().Get("service") != primaryService {
+							t.Fatal("incorrect service")
+						}
+					case "/tpass/qrLogin":
+						if request.URL.Query().Get("action") == "create" {
+							if request.URL.Query().Get("service") != primaryService {
+								t.Fatal("incorrect app QR service")
+							}
+							return mockResponse(request, 200, `{"status":"ok","token":"fixture","qrUrl":"https://pass.neu.edu.cn/tpass/qrAuth?t=fixture","expiresIn":120}`), nil
+						}
+						fallthrough
+					case "/tpass/checkQRCodeScan":
+						return mockResponse(request, 200, `{"status":"ok","redirect_url":"/tpass/fixture-callback"}`), nil
+					case "/tpass/fixture-callback":
+						response := mockResponse(request, 302, "")
+						location := primaryService + "?ticket=fixture"
+						if scenario == "gateway" {
+							location = vpnEntry
+						}
+						response.Header.Set("Location", location)
+						return response, nil
+					case "/jwapp/sys/homeapp/index.do":
+						response := mockResponse(request, 200, "school home")
+						response.Header.Set("Set-Cookie", "SESSION=fixture; Path=/; Secure; HttpOnly")
+						return response, nil
+					case "/jwapp/sys/homeapp/api/home/currentUser.do":
+						if cookie, err := request.Cookie("SESSION"); err != nil || cookie.Value != "fixture" {
+							t.Fatal("missing school session cookie")
+						}
+						verified = true
+						return mockResponse(request, 200, `{"code":"0","datas":{"userId":"student"}}`), nil
+					default:
+						t.Fatalf("unexpected path %s", request.URL.Path)
+					}
+					return mockResponse(request, 200, "CAS login"), nil
+				})
+				result, err := client.StartQR(context.Background(), provider, "direct")
+				if err != nil || result["network_mode"] != "direct" {
+					t.Fatal(result, err)
+				}
+				if provider == QRWeChat && !strings.Contains(result["qr_content"].(string), "&service="+primaryService) {
+					t.Fatal("incorrect WeChat QR service")
+				}
+				result, err = client.PollVPNQR(context.Background(), result["flow_id"].(string))
+				active, mode := client.Status()
+				if scenario == "success" {
+					if err != nil || !verified || !active || mode != "direct" || result["username"] != "student" {
+						t.Fatal(result, err, active, mode)
+					}
+					return
+				}
+				if err == nil || active || verified != (scenario == "mismatch") {
+					t.Fatal(result, err, active, verified)
+				}
+			})
+		}
+	}
+}
+
 func TestVPNQRIdentityAndUntrustedCallback(t *testing.T) {
 	for _, scenario := range []string{"success", "mismatch", "foreign", "proxy-foreign"} {
 		t.Run(scenario, func(t *testing.T) {

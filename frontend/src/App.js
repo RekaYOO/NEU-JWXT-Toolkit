@@ -843,7 +843,7 @@ function App() {
     return (
       <PublicTheme publicTheme={accessState.site_default || 'blue'}>
         <React.Suspense fallback={<div className="loading" role="status">正在加载管理页面</div>}>
-          <AdminPage siteAccessRequired={accessState.required} />
+          <AdminPage siteAccessRequired={accessState.required} onThemeSaved={siteDefault => setAccessState(previous => ({ ...previous, site_default: siteDefault }))} />
         </React.Suspense>
       </PublicTheme>
     );

@@ -166,6 +166,10 @@ func (client *Client) send(ctx context.Context, method, raw string, form url.Val
 	}
 	response, err := client.http.Do(request)
 	if err != nil {
+		var failure *Error
+		if errors.As(err, &failure) {
+			return nil, nil, failure
+		}
 		return nil, nil, &Error{Code: "UPSTREAM_UNAVAILABLE", Message: "学校请求失败或超时，请检查网络；已发送操作不会自动重试"}
 	}
 	defer response.Body.Close()
@@ -278,10 +282,34 @@ func (client *Client) LoginDirect(ctx context.Context, password string) error {
 	client.mutex.Lock()
 	defer client.mutex.Unlock()
 	client.setStatus(false, "direct")
+	if err := client.checkDirectLoginRoute(ctx); err != nil {
+		return err
+	}
 	if err := client.loginDirectTarget(ctx, password, primaryService, "jwxt.neu.edu.cn"); err != nil {
 		return err
 	}
 	client.setStatus(true, "direct")
+	return nil
+}
+
+func (client *Client) checkDirectLoginRoute(ctx context.Context) error {
+	probe := *client.http
+	probe.Timeout = 6 * time.Second
+	probe.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, primaryService, nil)
+	if err != nil {
+		return err
+	}
+	response, err := probe.Do(request)
+	if err != nil {
+		return &Error{Code: "DIRECT_ACCESS_FAILED", Message: "校内直连不可达，请检查校园网络或使用WebVPN"}
+	}
+	response.Body.Close()
+	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		if location, err := response.Location(); err == nil && trustedURL(location) && location.Hostname() == vpnHost {
+			return &Error{Code: "WEBVPN_REQUIRED", Message: "校外访问请切换WebVPN登录"}
+		}
+	}
 	return nil
 }
 
@@ -291,7 +319,9 @@ func directCASResource(final *url.URL, expected string) bool {
 
 func (client *Client) loginDirectTarget(ctx context.Context, password, serviceURL, host string) error {
 	loginURL := casLogin + "?" + url.Values{"service": {serviceURL}}.Encode()
-	page, final, err := client.send(ctx, http.MethodGet, loginURL, nil)
+	loadContext, cancel := context.WithTimeout(ctx, 12*time.Second)
+	page, final, err := client.send(loadContext, http.MethodGet, loginURL, nil)
+	cancel()
 	if err != nil {
 		var failure *Error
 		if errors.As(err, &failure) && failure.Code == "UPSTREAM_UNAVAILABLE" {
@@ -322,7 +352,7 @@ func (client *Client) loginDirectTarget(ctx context.Context, password, serviceUR
 			return err
 		}
 		if final.Hostname() == vpnHost {
-			return &Error{Code: "WEBVPN_REQUIRED", Message: "学校要求通过WebVPN登录"}
+			return &Error{Code: "WEBVPN_REQUIRED_AFTER_SUBMIT", Message: "学校要求通过WebVPN登录，请手动切换线路后重新登录"}
 		}
 		if final.Hostname() == host {
 			return nil

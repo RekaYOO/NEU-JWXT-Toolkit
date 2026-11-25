@@ -63,7 +63,7 @@ func (api *API) scorePayload(ctx context.Context, session store.Session, entry s
 	}
 	policy := api.gpaPolicy(ctx, session, scores.Scores)
 	average, _, _ := gpaSummary(scores.Scores, policy)
-	return map[string]any{"scores": scores.Semantic().Scores, "total_courses": len(scores.Scores), "overall_gpa": scores.OverallGPA, "calculated_gpa": average, "gpa_policy": policy,
+	return map[string]any{"scores": scores.Semantic().Scores, "total_courses": len(scores.Scores), "overall_gpa": scores.OverallGPA, "official_major_rank": scores.OfficialMajorRank, "calculated_gpa": average, "gpa_policy": policy,
 		"source": "local", "is_fresh": !entry.Stale(scoresTTL), "last_update": entry.SavedAt, "cache": entry.Metadata(scoresTTL)}, nil
 }
 

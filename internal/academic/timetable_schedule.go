@@ -42,6 +42,7 @@ var namesSeparator = regexp.MustCompile(`[,，、;/]`)
 var teacherBracket = regexp.MustCompile(`\[[^\]]+\]`)
 var safeCourseColor = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 var gradingPattern = regexp.MustCompile(`(?:考试|考查)\s*[/／·|]\s*([^\s/／·|]+)`)
+var timetableNaturePattern = regexp.MustCompile(`(?:^|[\s/／·|，,；;：:（(])((?:专业|公共|通识|限选|任选)?(?:必修|选修))(?:$|[\s/／·|，,；;）)])`)
 var campusLocationPattern = regexp.MustCompile(`([^\s，,]*校区)\s+(.+)$`)
 var roomLocationPattern = regexp.MustCompile(`(?:楼|馆|教室|实验室|实验中心|体育场|建筑|信息|\d+号)[^\s，,]*$`)
 
@@ -90,13 +91,28 @@ func timetableCourse(row map[string]any, query TimetableSchedule) map[string]any
 	identifier := firstText(class, hex.EncodeToString(digest[:])[:20])
 	lines := append(append(append([]string{}, title...), cell...), tags...)
 	text := strings.Join(lines, " ")
-	nature, assessment, grading := "", "", ""
-	for _, label := range []string{"必修", "选修"} {
-		if strings.Contains(text, label) {
-			nature = label
-			break
+	nature := firstText(row["courseNatureName"], row["KCXZDM_DISPLAY"], row["KCXZ_DISPLAY"])
+	if nature == "" {
+		for _, value := range []any{row["courseNature"], row["KCXZ"]} {
+			label := strings.TrimSpace(Text(value))
+			if strings.Contains(label, "必修") || strings.Contains(label, "选修") {
+				nature = label
+				break
+			}
 		}
 	}
+	if nature == "" {
+		for _, line := range lines {
+			if line == name {
+				continue
+			}
+			if match := timetableNaturePattern.FindStringSubmatch(line); len(match) > 1 {
+				nature = match[1]
+				break
+			}
+		}
+	}
+	assessment, grading := "", ""
 	for _, label := range []string{"考试", "考查"} {
 		if strings.Contains(text, label) {
 			assessment = label

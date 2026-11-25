@@ -305,27 +305,28 @@ export const getPendingAuthChallenge = async () => {
 };
 
 // 登录
-export const login = async (username, password, remember = false, networkMode = 'direct') => {
+export const login = async (username, password, remember = false, networkMode = 'direct', signal) => {
   const response = await api.post('/api/login', {
     username,
     password,
     remember,
     network_mode: networkMode,
-  });
+  }, { signal, skipAuthRedirect: true });
   return response.data;
 };
 
-export const startWebVPNQRLogin = async (username = '', targetService = 'primary', provider) => {
+export const startWebVPNQRLogin = async (username = '', targetService = 'primary', provider, networkMode) => {
   const response = await api.post('/api/webvpn/qr/start', {
     username: username || null,
     target_service: targetService,
     ...(provider ? { qr_provider: provider } : {}),
+    ...(networkMode ? { network_mode: networkMode } : {}),
   });
   return response.data;
 };
 
-export const getWebVPNQRStatus = async (flowId) => {
-  const response = await api.post('/api/webvpn/qr/status', { flow_id: flowId });
+export const getWebVPNQRStatus = async (flowId, signal) => {
+  const response = await api.post('/api/webvpn/qr/status', { flow_id: flowId }, { signal, skipAuthRedirect: true });
   return response.data;
 };
 
@@ -334,10 +335,10 @@ export const cancelWebVPNQRLogin = async (flowId) => {
   return response.data;
 };
 
-export const startWebVPNPasswordLogin = async (username, password, remember = false, targetService = 'primary') => {
+export const startWebVPNPasswordLogin = async (username, password, remember = false, targetService = 'primary', signal) => {
   const response = await api.post('/api/webvpn/password/start', {
     username, password, remember, target_service: targetService,
-  });
+  }, { signal, skipAuthRedirect: targetService === 'primary' });
   return response.data;
 };
 

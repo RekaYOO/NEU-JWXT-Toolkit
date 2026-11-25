@@ -14,8 +14,17 @@ func TestScoresDiffIgnoresReferenceAndRetainsCourseChanges(t *testing.T) {
 		t.Fatalf("diff: %+v", diff)
 	}
 	same := ScoresDiff(before, json.RawMessage(`{"scores":[{"code":"B","term":"T","score":"80"},{"code":"A","term":"T","score":"70","detail_ref":"rotated"}],"overall_gpa":3}`))
-	if same["counts"].(map[string]int)["changed"] != 0 || same["overall_gpa_changed"] != false {
+	if same["counts"].(map[string]int)["changed"] != 0 || same["overall_gpa_changed"] != false || same["official_major_rank_changed"] != false {
 		t.Fatalf("reference triggered change: %+v", same)
+	}
+}
+
+func TestScoresDiffDetectsOfficialMajorRankChange(t *testing.T) {
+	before := json.RawMessage(`{"scores":[],"official_major_rank":15}`)
+	after := json.RawMessage(`{"scores":[],"official_major_rank":16}`)
+	diff := ScoresDiff(before, after)
+	if diff["official_major_rank_changed"] != true {
+		t.Fatalf("rank change was not detected: %+v", diff)
 	}
 }
 

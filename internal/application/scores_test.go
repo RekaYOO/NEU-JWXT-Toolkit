@@ -103,6 +103,8 @@ func TestScoresPolicyAndCachedReportHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	scores := academic.Scores{Scores: []academic.Score{{Name: "必修", Code: "REQ", Credit: 4, GPA: 4, Term: "2025-1", DetailRef: "secret-reference"}, {Name: "选修", Code: "GEN", Credit: 2, GPA: 5, Term: "2025-1"}, {Name: "两级", Code: "PASS", Credit: 1, GPA: 4, Term: "2025-1", GradingScale: "两级制"}, {Name: "挂科", Code: "FAIL", Credit: 2, GPA: 0, Term: "2025-1"}}}
+	rank := 42
+	scores.OfficialMajorRank = &rank
 	payload, _ := json.Marshal(scores)
 	report := json.RawMessage(`{"student_id":"20250001","categories":[{"name":"通识类","children":[{"name":"通识选修类","courses":[{"course_code":"GEN"}],"children":[]}]}],"credit_summary":{"total_required":9}}`)
 	for _, entry := range []store.CacheEntry{{Resource: "scores", Variant: "default", Payload: payload, Revision: "scores-1", SchemaVersion: 1}, {Resource: "academic-report", Variant: "default", Payload: report, Revision: "report-1", SchemaVersion: 1}} {
@@ -115,7 +117,7 @@ func TestScoresPolicyAndCachedReportHTTP(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != 200 {
 		t.Fatalf("cache response: %s %v", response.Body.String(), err)
 	}
-	if result["calculated_gpa"] != float64(16.0/6.0) || strings.Contains(response.Body.String(), "secret-reference") {
+	if result["calculated_gpa"] != float64(16.0/6.0) || result["official_major_rank"] != float64(rank) || strings.Contains(response.Body.String(), "secret-reference") {
 		t.Fatalf("policy/privacy: %s", response.Body.String())
 	}
 	response = apiRequest(handler, "PUT", "/api/gpa-policy", `{"mode":"through_2024"}`, cookie)

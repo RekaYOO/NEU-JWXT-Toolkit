@@ -35,6 +35,7 @@ type browserVPNFlow struct {
 	cancel                       context.CancelFunc
 	created                      time.Time
 	identifier, password, target string
+	mode                         string
 	remember                     bool
 	adopted                      bool
 	original                     *Runtime
@@ -146,6 +147,7 @@ func (api *API) vpnStart(response http.ResponseWriter, request *http.Request) {
 		Remember bool   `json:"remember"`
 		Target   string `json:"target_service"`
 		Provider string `json:"qr_provider"`
+		Mode     string `json:"network_mode"`
 	}
 	if !decodeJSON(response, request, &input) {
 		return
@@ -158,6 +160,13 @@ func (api *API) vpnStart(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	passwordFlow := strings.Contains(request.URL.Path, "/password/")
+	if input.Mode == "" {
+		input.Mode = "webvpn"
+	}
+	if input.Mode != "webvpn" && (input.Mode != "direct" || passwordFlow || input.Target != "primary") {
+		writeJSON(response, 422, map[string]string{"detail": "访问线路不适用于此认证入口"})
+		return
+	}
 	if !passwordFlow && !validQRProvider(input.Provider) {
 		writeJSON(response, 422, map[string]string{"detail": "扫码方式无效"})
 		return
@@ -236,12 +245,18 @@ func (api *API) vpnStart(response http.ResponseWriter, request *http.Request) {
 		owner = hex.EncodeToString(identifier)
 	}
 	ctx, cancel := context.WithCancel(api.accounts.context)
-	flow := &browserVPNFlow{client: client, context: ctx, cancel: cancel, created: time.Now(), password: input.Password, remember: input.Remember, bound: bound, target: input.Target}
+	flow := &browserVPNFlow{client: client, context: ctx, cancel: cancel, created: time.Now(), password: input.Password, remember: input.Remember, bound: bound, target: input.Target, mode: input.Mode}
 	if !passwordFlow {
 		flow.remember = true
 	}
+	discardFlow := false
 	flow.mutex.Lock()
-	defer flow.mutex.Unlock()
+	defer func() {
+		flow.mutex.Unlock()
+		if discardFlow {
+			api.cancelVPNFlow(flow)
+		}
+	}()
 	api.vpnMutex.Lock()
 	if pending := api.pendingVPN[bound.Account]; pending != nil && pending.context.Err() == nil && time.Since(pending.created) < 15*time.Minute {
 		api.vpnMutex.Unlock()
@@ -283,6 +298,19 @@ func (api *API) vpnStart(response http.ResponseWriter, request *http.Request) {
 	var result map[string]any
 	if passwordFlow {
 		result, err = client.StartVPNPassword(callContext, input.Password)
+		if request.Context().Err() != nil {
+			flow.cancel()
+			discardFlow = true
+			return
+		}
+	} else if input.Mode == "direct" {
+		if direct, ok := client.(interface {
+			StartQR(context.Context, string, string) (map[string]any, error)
+		}); ok {
+			result, err = direct.StartQR(callContext, input.Provider, input.Mode)
+		} else {
+			err = &campus.Error{Code: "INVALID_REQUEST", Message: "当前服务不支持校内扫码"}
+		}
 	} else {
 		result, err = client.StartVPNQR(callContext, input.Provider)
 	}
@@ -540,7 +568,11 @@ func (api *API) scopedVPNPendingSnapshot(request *http.Request, session store.Se
 	if expires, ok := flow.state["expires_at"].(int64); ok && time.Now().Unix() > expires+60 {
 		return map[string]any{"required": false}
 	}
-	result := map[string]any{"required": true, "network_mode": "webvpn", "target_service": flow.target}
+	mode := flow.mode
+	if mode == "" {
+		mode = "webvpn"
+	}
+	result := map[string]any{"required": true, "network_mode": mode, "target_service": flow.target}
 	for key, value := range flow.state {
 		result[key] = value
 	}

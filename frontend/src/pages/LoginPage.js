@@ -1,9 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Form, Input, Button, Checkbox, message, Spin, Radio, QRCode, Alert } from 'antd';
 import {
   UserOutlined, LockOutlined, QrcodeOutlined, WechatOutlined,
-  MobileOutlined, SafetyCertificateOutlined, CheckCircleFilled,
-  ArrowLeftOutlined, DatabaseOutlined
+  MobileOutlined, DownOutlined, DatabaseOutlined
 } from '@ant-design/icons';
 import {
   login, checkStatus, startWebVPNQRLogin, getWebVPNQRStatus, cancelWebVPNQRLogin,
@@ -15,20 +14,18 @@ import { isManualLogoutActive } from '../utils/authSessionPolicy';
 import WebVPNAuthModal from '../components/WebVPNAuthModal';
 import NativeServerSettingsButton from '../components/NativeServerSettingsButton';
 
+const directFallbackCodes = new Set(['DIRECT_ACCESS_FAILED', 'WEBVPN_REQUIRED']);
+
 const qrProviders = {
   smart_neu: {
     title: '智慧东大扫码',
-    shortTitle: '智慧东大',
-    description: '使用智慧东大 App 扫码确认',
+    description: '打开智慧东大 App 扫一扫，并在手机上确认登录。',
     icon: MobileOutlined,
-    steps: ['打开智慧东大 App', '扫一扫当前二维码', '在 App 内确认登录'],
   },
   wechat: {
     title: '微信扫码',
-    shortTitle: '微信',
-    description: '使用东北大学企业微信扫码',
+    description: '打开微信扫一扫，并在手机上确认登录。',
     icon: WechatOutlined,
-    steps: ['打开微信扫一扫', '扫描当前二维码', '在微信内确认登录'],
   },
 };
 
@@ -37,11 +34,14 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   const [checking, setChecking] = useState(true);
   const [networkMode, setNetworkMode] = useState('direct');
   const [qrFlow, setQrFlow] = useState(null);
-  const [qrProvider, setQrProvider] = useState('smart_neu');
+  const [qrProvider, setQrProvider] = useState(null);
   const [qrScanned, setQrScanned] = useState(false);
-  const [loginView, setLoginView] = useState('password');
   const [qrMessage, setQrMessage] = useState('');
-  const [qrSize, setQrSize] = useState(196);
+  const [qrLoading, setQrLoading] = useState(false);
+  const qrCurrent = useRef(null);
+  const qrPoll = useRef(null);
+  const changingAuth = useRef(false);
+  const passwordAttempt = useRef(null);
   const [smsFlow, setSmsFlow] = useState(null);
   const [captchaCode, setCaptchaCode] = useState('');
   const [captchaLoading, setCaptchaLoading] = useState(false);
@@ -51,6 +51,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
   const [offlineStatus, setOfflineStatus] = useState(null);
   const [offlineLoading, setOfflineLoading] = useState(false);
   const [networkNotice, setNetworkNotice] = useState('');
+  const [switchingToWebVPN, setSwitchingToWebVPN] = useState(false);
   const [form] = Form.useForm();
   const normalizedCredentials = values => ({
     ...values,
@@ -61,12 +62,14 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     const blocked = typeof isWebVPNCampusNetworkBlocked === 'function'
       && isWebVPNCampusNetworkBlocked(value);
     if (!blocked) return false;
+    qrCurrent.current = null;
     setQrFlow(null);
+    setQrProvider(null);
+    setQrMessage('');
     setSmsFlow(null);
     setCaptchaCode('');
     setSmsCode('');
     setSmsSent(false);
-    setLoginView('password');
     setNetworkMode('direct');
     setNetworkNotice(getWebVPNErrorMessage(
       value,
@@ -75,16 +78,11 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     return true;
   }, []);
 
-  const handleDirectWebVPNRequired = useCallback((value) => {
-    const payload = value?.response?.data || value;
-    if (!payload?.requires_webvpn) return false;
-    setNetworkMode('webvpn');
-    message.warning(
-      payload.suggestion
-      || payload.message
-      || '当前网络无法直连教务系统，请切换到 WebVPN 后继续登录。',
-    );
-    return true;
+  const showSMSChallenge = useCallback(result => {
+    setSmsFlow(result);
+    setCaptchaCode('');
+    setSmsCode('');
+    setSmsSent(false);
   }, []);
 
   // 自然会话失效时允许再次静默恢复；用户明确退出后则只读取离线能力，
@@ -120,48 +118,38 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     loadLoginState();
   }, [handleCampusNetworkBlock, onLoginSuccess]);
 
-  useEffect(() => {
-    const updateQRSize = () => setQrSize(Math.max(144, Math.min(196, window.innerWidth - 96)));
-    updateQRSize();
-    window.addEventListener('resize', updateQRSize);
-    return () => window.removeEventListener('resize', updateQRSize);
-  }, []);
+  useEffect(() => () => passwordAttempt.current?.abort(), []);
 
   useEffect(() => {
     if (!qrFlow) return undefined;
+    const controller = new AbortController();
+    qrPoll.current = controller;
     let stopped = false;
     let timer;
     const poll = async () => {
       try {
-        const result = await getWebVPNQRStatus(qrFlow.flow_id);
-        if (stopped) return;
+        const result = await getWebVPNQRStatus(qrFlow.flow_id, controller.signal);
+        if (stopped || qrCurrent.current !== qrFlow) return;
         if (handleCampusNetworkBlock(result)) return;
-        if (!result.success) {
+        if (result.status === 'sms_required' && result.flow_id) {
+          qrCurrent.current = null;
+          setQrFlow(null);
+          setQrProvider(null);
+          showSMSChallenge(result);
+        } else if (!result.success || ['expired', 'cancelled'].includes(result.status)) {
           setQrMessage(getWebVPNErrorMessage(result, '二维码登录失败'));
           setQrFlow(null);
-          return;
-        }
-        if (result.status === 'authenticated') {
+        } else if (result.status === 'authenticated') {
+          qrCurrent.current = null;
           setQrFlow(null);
-          onLoginSuccess(result.username || form.getFieldValue('username'));
-        } else if (result.status === 'sms_required') {
-          // QR login and password login share the official second-auth form.
-          // Keep the candidate Session alive and hand the same flow to the
-          // shared CAPTCHA/SMS modal instead of treating it as a QR failure.
-          setQrFlow(null);
-          setSmsFlow(result);
-          setCaptchaCode('');
-          setSmsCode('');
-          setSmsSent(false);
-        } else if (['expired', 'cancelled'].includes(result.status)) {
-          setQrMessage(result.message || '二维码已失效，请重新获取');
-          setQrFlow(null);
+          setQrProvider(null);
+          onLoginSuccess(result.username);
         } else {
           if (result.status === 'scanned') setQrScanned(true);
           timer = window.setTimeout(poll, (qrFlow.poll_interval || 3) * 1000);
         }
       } catch (error) {
-        if (stopped) return;
+        if (stopped || qrCurrent.current !== qrFlow) return;
         if (handleCampusNetworkBlock(error)) return;
         setQrMessage(getWebVPNErrorMessage(error, '二维码状态检查失败，请重新获取'));
         setQrFlow(null);
@@ -169,81 +157,72 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     };
 
     timer = window.setTimeout(poll, (qrFlow.poll_interval || 3) * 1000);
-    return () => { stopped = true; window.clearTimeout(timer); };
-  }, [form, handleCampusNetworkBlock, onLoginSuccess, qrFlow]);
+    return () => {
+      stopped = true;
+      controller.abort();
+      window.clearTimeout(timer);
+      if (qrPoll.current === controller) qrPoll.current = null;
+    };
+  }, [handleCampusNetworkBlock, onLoginSuccess, qrFlow, showSMSChallenge]);
 
-  const beginWebVPNQRLogin = async (provider) => {
-    setLoginView('qr');
-    setQrProvider(provider);
+  const cancelQRLogin = async () => {
+    const flow = qrCurrent.current;
+    qrCurrent.current = null;
+    qrPoll.current?.abort();
+    setQrFlow(null);
     setQrScanned(false);
-    setLoading(true);
+    if (flow) await cancelWebVPNQRLogin(flow.flow_id).catch(() => {});
+  };
+
+  const changeQR = async provider => {
+    if (changingAuth.current || smsFlow) return;
+    changingAuth.current = true;
+    setQrLoading(true);
+    setQrProvider(provider);
     setQrMessage('');
     try {
-      const result = await startWebVPNQRLogin(form.getFieldValue('username') || '', 'primary', provider);
+      await cancelQRLogin();
+      if (!provider) return;
+      const result = await startWebVPNQRLogin(form.getFieldValue('username') || '', 'primary', provider, networkMode);
       if (handleCampusNetworkBlock(result)) return;
-      if (!result.success) {
+      if (!result.success || !result.qr_content || !result.flow_id) {
         setQrMessage(result.message || '无法启动二维码登录');
         return;
       }
-      setNetworkMode('webvpn');
+      qrCurrent.current = result;
       setQrFlow(result);
     } catch (error) {
       if (handleCampusNetworkBlock(error)) return;
-      setQrMessage('无法连接后端服务');
+      setQrMessage(getWebVPNErrorMessage(error, '无法获取二维码，请稍后重试'));
     } finally {
-      setLoading(false);
+      changingAuth.current = false;
+      setQrLoading(false);
     }
   };
 
-  const cancelQRLogin = async () => {
-    setQrFlow(null);
-    if (qrFlow) {
-      await cancelWebVPNQRLogin(qrFlow.flow_id).catch(() => {});
-    }
+  const changeNetwork = nextMode => {
+    if (changingAuth.current || smsFlow || nextMode === networkMode) return;
+    setNetworkMode(nextMode);
+    setNetworkNotice('');
+    if (qrProvider) changeQR(null);
   };
 
-  const switchQRProvider = async () => {
-    await cancelQRLogin();
-    setQrMessage('');
-    setQrScanned(false);
-    setQrProvider(previous => (previous === 'smart_neu' ? 'wechat' : 'smart_neu'));
-    setLoginView('qr');
-  };
-
-  const showPasswordLogin = async () => {
-    await cancelQRLogin();
-    setQrMessage('');
-    setLoginView('password');
-  };
-
-  const beginWebVPNPasswordLogin = async (values) => {
-    const slowRequestKey = 'webvpn-password-slow';
-    const slowTimer = setTimeout(() => {
-      message.warning({
-        key: slowRequestKey,
-        duration: 0,
-        content: 'WebVPN 正在响应，可改用扫码登录。',
-      });
-    }, 5000);
+  const beginWebVPNPasswordLogin = async (values, signal) => {
     try {
-      const result = await startWebVPNPasswordLogin(values.username, values.password, values.remember);
+      const result = await startWebVPNPasswordLogin(values.username, values.password, values.remember, 'primary', signal);
+      if (signal.aborted) return;
       if (handleCampusNetworkBlock(result)) return;
-      if (!result.success) {
+      if (result.status === 'sms_required' && result.flow_id) {
+        showSMSChallenge(result);
+      } else if (!result.success) {
         message.error(getWebVPNErrorMessage(result, 'WebVPN 登录失败'));
-      } else if (result.status === 'sms_required') {
-        setSmsFlow(result);
-        setCaptchaCode('');
-        setSmsCode('');
-        setSmsSent(false);
       } else if (result.status === 'authenticated') {
         onLoginSuccess(result.username || values.username);
       }
     } catch (error) {
+      if (signal.aborted) return;
       if (handleCampusNetworkBlock(error)) return;
       message.error(getWebVPNErrorMessage(error, 'WebVPN 登录请求失败，请检查网络或使用扫码登录'));
-    } finally {
-      clearTimeout(slowTimer);
-      message.destroy(slowRequestKey);
     }
   };
 
@@ -352,67 +331,81 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     setSmsCode('');
   };
 
-  const onFinish = async (values) => {
-    const credentials = normalizedCredentials(values);
-    if (networkMode === 'offline') {
-      await beginOfflineMode();
-      return;
-    }
+  const finishPasswordAttempt = () => {
+    passwordAttempt.current = null;
+    changingAuth.current = false;
+    setLoading(false);
+    setSwitchingToWebVPN(false);
+  };
 
+  const cancelPasswordLogin = () => {
+    if (!passwordAttempt.current) return;
+    passwordAttempt.current.abort();
+    finishPasswordAttempt();
+  };
+
+  const onFinish = async (values) => {
+    if (changingAuth.current || qrProvider || smsFlow) return;
+    const credentials = normalizedCredentials(values);
+    const controller = new AbortController();
+    const { signal } = controller;
+    passwordAttempt.current = controller;
+    changingAuth.current = true;
+    setNetworkNotice('');
     setLoading(true);
-    const slowRequestKey = 'direct-login-slow';
-    const slowTimer = networkMode === 'direct' ? setTimeout(() => {
-      message.warning({
-        key: slowRequestKey,
-        duration: 0,
-        content: '直连响应较慢，请检查校园网络；校外可切换 WebVPN。',
-      });
-    }, 5000) : null;
     try {
       if (networkMode === 'webvpn') {
-        await beginWebVPNPasswordLogin(credentials);
+        await beginWebVPNPasswordLogin(credentials, signal);
         return;
       }
       const result = await login(
         credentials.username,
         credentials.password,
         credentials.remember,
-        networkMode,
-      );
-      
+        'direct',
+        signal,
+      ).catch(error => {
+        const result = error.response?.data;
+        if (directFallbackCodes.has(result?.error_code)) return result;
+        throw error;
+      });
+      if (signal.aborted) return;
       if (result.success) {
         onLoginSuccess(result.username);
-      } else if (handleDirectWebVPNRequired(result)) {
-        return;
+      } else if (directFallbackCodes.has(result.error_code)) {
+        setNetworkMode('webvpn');
+        setSwitchingToWebVPN(true);
+        await beginWebVPNPasswordLogin(credentials, signal);
       } else {
         message.error(result.message || result.suggestion || '登录失败');
       }
     } catch (error) {
-      if (!handleDirectWebVPNRequired(error)) {
+      if (!signal.aborted) {
         message.error(getWebVPNErrorMessage(error, '登录请求失败，请检查服务端连接。'));
       }
     } finally {
-      if (slowTimer) clearTimeout(slowTimer);
-      message.destroy(slowRequestKey);
-      setLoading(false);
+      if (!signal.aborted && passwordAttempt.current === controller) finishPasswordAttempt();
     }
   };
 
   const beginOfflineMode = async () => {
+    if (changingAuth.current || smsFlow) return;
+    changingAuth.current = true;
     setOfflineLoading(true);
     try {
+      await cancelQRLogin();
+      setQrProvider(null);
       const status = await getOfflineStatus();
       setOfflineStatus(status);
       if (!status.available) {
-        setNetworkMode('direct');
         message.warning('本地还没有可离线查看的数据，请先在线登录并完成一次数据同步');
         return;
       }
       onOfflineSuccess(status);
     } catch (error) {
-      setNetworkMode('direct');
       message.error('无法读取本地离线数据');
     } finally {
+      changingAuth.current = false;
       setOfflineLoading(false);
     }
   };
@@ -429,9 +422,13 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
     );
   }
 
+  const busy = loading || qrLoading || offlineLoading || Boolean(smsFlow);
+  const qrOption = qrProviders[qrProvider];
+  const connectionStatus = switchingToWebVPN ? '直连不可用，正在通过 WebVPN 登录…'
+    : networkMode === 'webvpn' ? '正在连接 WebVPN…' : '正在连接教务系统…';
   return (
     <div className="login-page">
-      <main className={`login-shell${loginView === 'qr' ? ' is-qr-active' : ''}`}>
+      <main className="login-shell">
         <section className="login-brand" aria-label="东北大学教务系统工具箱">
           <div className="brand-mark">NEU</div>
           <div className="brand-rule" />
@@ -443,15 +440,25 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
 
         <section className="login-panel" aria-labelledby="login-title">
           <header className="login-panel-header">
-            <p className="panel-kicker">账户认证</p>
             <h2 id="login-title">登录教务服务</h2>
-            <p>
-              {networkMode === 'offline'
-                ? '使用当前设备已保存的数据，不连接教务系统。'
-                : '校外网络可通过 WebVPN 安全访问。'}
-            </p>
             <NativeServerSettingsButton />
           </header>
+
+          <fieldset className="login-network">
+            <legend>访问线路</legend>
+            <Radio.Group
+              aria-label="访问线路"
+              className="access-mode-group"
+              value={networkMode}
+              onChange={event => changeNetwork(event.target.value)}
+              optionType="button"
+              buttonStyle="solid"
+              disabled={busy}
+            >
+              <Radio.Button value="direct">校内直连</Radio.Button>
+              <Radio.Button value="webvpn">WebVPN</Radio.Button>
+            </Radio.Group>
+          </fieldset>
 
           {networkNotice && (
             <Alert
@@ -465,196 +472,116 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
             />
           )}
 
-        <div className="login-credentials-wrap" aria-hidden={loginView === 'qr'}>
-          <Form
-            form={form}
-            name="neu-account-login"
-            initialValues={{ remember: true }}
-            onFinish={onFinish}
-            autoComplete="on"
-          >
-          <Form.Item label="访问方式">
-            <Radio.Group
-              className="access-mode-group"
-              value={networkMode}
-              onChange={(event) => {
-                setNetworkMode(event.target.value);
-                setNetworkNotice('');
-              }}
-              optionType="button"
-              buttonStyle="solid"
-              size="small"
-            >
-              <Radio.Button value="direct">校内直连</Radio.Button>
-              <Radio.Button value="webvpn">WebVPN</Radio.Button>
-              {offlineStatus?.available && (
-                <Radio.Button value="offline">离线查看</Radio.Button>
-              )}
-            </Radio.Group>
-          </Form.Item>
-
-          {networkMode === 'offline' ? (
-            <div className="offline-mode-note">
-              <DatabaseOutlined />
-              <span>只读查看当前设备已有缓存的功能页</span>
-            </div>
-          ) : (
-            <>
-              <Form.Item
-                name="username"
-                rules={[{ required: true, message: '请输入学号' }]}
+          <div className={`login-fold${qrOption ? '' : ' is-open'}`} aria-hidden={Boolean(qrOption)}>
+            <div className="login-fold-content">
+              <Form
+                form={form}
+                name="neu-account-login"
+                layout="vertical"
+                initialValues={{ remember: true }}
+                onFinish={onFinish}
+                autoComplete="on"
+                disabled={busy || Boolean(qrOption)}
               >
-                <Input
-                  prefix={<UserOutlined />}
-                  placeholder="学号"
-                  size="large"
-                  inputMode="numeric"
-                  autoComplete="section-neu-account username"
-                  enterKeyHint="next"
-                />
-              </Form.Item>
+                <Form.Item
+                  name="username"
+                  label="学号"
+                  rules={[{ required: true, message: '请输入学号' }]}
+                >
+                  <Input
+                    prefix={<UserOutlined />}
+                    placeholder="学号"
+                    size="large"
+                    inputMode="numeric"
+                    autoComplete="section-neu-account username"
+                    enterKeyHint="next"
+                  />
+                </Form.Item>
 
-              <Form.Item
-                name="password"
-                rules={[{ required: true, message: '请输入密码' }]}
-              >
-                <Input.Password
-                  prefix={<LockOutlined />}
-                  placeholder="密码"
-                  size="large"
-                  autoComplete="section-neu-account current-password"
-                />
-              </Form.Item>
+                <Form.Item
+                  name="password"
+                  label="密码"
+                  rules={[{ required: true, message: '请输入密码' }]}
+                >
+                  <Input.Password
+                    prefix={<LockOutlined />}
+                    placeholder="密码"
+                    size="large"
+                    autoComplete="section-neu-account current-password"
+                  />
+                </Form.Item>
 
-              <Form.Item name="remember" valuePropName="checked">
-                <Checkbox>记住密码（本地保存）</Checkbox>
-              </Form.Item>
-            </>
-          )}
-
-          <Form.Item>
-            <Button
-              type="primary"
-              htmlType="submit"
-              loading={networkMode === 'offline' ? offlineLoading : loading}
-              size="large"
-              block
-            >
-              {networkMode === 'offline' ? '进入离线模式' : '登录'}
-            </Button>
-          </Form.Item>
-          </Form>
-        </div>
-
-          {networkMode !== 'offline' && (
-          <section className="webvpn-section" aria-labelledby="webvpn-title">
-            <div className="webvpn-section-heading">
-              <div>
-                <p className="panel-kicker">校外访问</p>
-                <h3 id="webvpn-title">WebVPN 校外访问</h3>
-              </div>
-              {loginView === 'password' && <QrcodeOutlined className="webvpn-icon" />}
-            </div>
-            {qrMessage && <Alert type="warning" showIcon message={qrMessage} style={{ marginBottom: 16 }} />}
-            {loginView === 'qr' ? (
-              <div className="webvpn-qr-login">
-                <div className="qr-flow-toolbar">
-                  <Button type="text" size="small" icon={<ArrowLeftOutlined />} disabled={loading} onClick={showPasswordLogin}>
-                    账号密码登录
+                <Form.Item name="remember" valuePropName="checked">
+                  <Checkbox>记住密码（本地保存）</Checkbox>
+                </Form.Item>
+                <Form.Item>
+                  <Button
+                    className="login-password-action"
+                    type={loading ? 'default' : 'primary'}
+                    htmlType={loading ? 'button' : 'submit'}
+                    disabled={(busy && !loading) || Boolean(qrOption)}
+                    onClick={loading ? cancelPasswordLogin : undefined}
+                    size="large"
+                    block
+                  >
+                    {loading ? '取消登录' : '登录'}
                   </Button>
-                  <div className="qr-flow-toolbar-actions">
-                    <span className="qr-provider-pill">
-                      {React.createElement(qrProviders[qrProvider].icon)}
-                      {qrProviders[qrProvider].shortTitle}
-                    </span>
-                    <Button type="text" size="small" disabled={loading} onClick={switchQRProvider}>切换方式</Button>
-                  </div>
-                </div>
-                {qrFlow ? (
-                  <div className="qr-active-layout">
-                    <div className="qr-code-frame">
-                      <QRCode value={qrFlow.qr_content} size={qrSize} status="active" />
-                      <span className="qr-code-corner qr-code-corner-tl" aria-hidden="true" />
-                      <span className="qr-code-corner qr-code-corner-tr" aria-hidden="true" />
-                      <span className="qr-code-corner qr-code-corner-bl" aria-hidden="true" />
-                      <span className="qr-code-corner qr-code-corner-br" aria-hidden="true" />
-                    </div>
-                    <div className="qr-flow-copy">
-                      <div className={`qr-status-chip${qrScanned ? ' is-scanned' : ''}`} role="status" aria-live="polite">
-                        <span className="qr-status-dot" aria-hidden="true" />
-                        {qrScanned ? '已扫码，等待确认' : '等待扫码'}
-                      </div>
-                      <h4>{qrProviders[qrProvider].title}</h4>
-                      <p className="qr-caption">{qrScanned ? '请在手机上确认本次登录，页面会自动继续。' : qrProviders[qrProvider].description}</p>
-                      <ol className="qr-step-list">
-                        {qrProviders[qrProvider].steps.map((step, index) => (
-                          <li key={step} className={qrScanned && index < 2 ? 'is-done' : ''}>
-                            <span>{qrScanned && index < 2 ? <CheckCircleFilled /> : index + 1}</span>
-                            {step}
-                          </li>
-                        ))}
-                      </ol>
-                      <Button type="link" className="qr-cancel-button" onClick={cancelQRLogin}>取消本次认证</Button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="qr-method-picker">
-                    <p className="qr-picker-intro">选择你手机上方便使用的扫码方式</p>
-                    <div className="qr-method-grid" role="list" aria-label="扫码方式">
-                      {Object.entries(qrProviders).map(([provider, option]) => {
-                        const Icon = option.icon;
-                        const selected = qrProvider === provider;
-                        return (
-                          <button
-                            type="button"
-                            key={provider}
-                            className={`qr-method-card${selected ? ' is-selected' : ''}`}
-                            aria-pressed={selected}
-                            onClick={() => setQrProvider(provider)}
-                          >
-                            <span className="qr-method-icon"><Icon /></span>
-                            <span className="qr-method-card-copy">
-                              <strong>{option.title}</strong>
-                              <small>{option.description}</small>
-                            </span>
-                            <span className="qr-method-check" aria-hidden="true">{selected ? <CheckCircleFilled /> : ''}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <Button className="qr-start-button" type="primary" icon={<QrcodeOutlined />} loading={loading} block onClick={() => beginWebVPNQRLogin(qrProvider)}>
-                      获取二维码
-                    </Button>
-                    <p className="qr-security-note"><SafetyCertificateOutlined /> 二维码一次有效，登录确认由学校认证系统完成</p>
+                  <div className="login-connection-status" role="status">{loading ? connectionStatus : ''}</div>
+                </Form.Item>
+              </Form>
+            </div>
+          </div>
+
+          <section className="login-scan" aria-label="扫码登录">
+            <div className="qr-method-grid">
+              {Object.entries(qrProviders).map(([provider, { icon: Icon, title }]) => (
+                <button
+                  type="button"
+                  key={provider}
+                  className="qr-method-card"
+                  aria-expanded={qrProvider === provider}
+                  aria-controls="login-scan-panel"
+                  disabled={busy}
+                  onClick={() => changeQR(qrProvider === provider ? null : provider)}
+                >
+                  <Icon className="qr-method-icon" aria-hidden="true" />
+                  <span>{title}</span>
+                  <DownOutlined className="qr-method-arrow" aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+            <div id="login-scan-panel" className={`login-fold${qrOption ? ' is-open' : ''}`} aria-hidden={!qrOption}>
+              <div className="login-fold-content">
+                {qrOption && (
+                  <div className="qr-panel">
+                    {qrLoading ? (
+                      <div className="qr-loading" role="status"><Spin size="small" /> 正在获取二维码</div>
+                    ) : qrFlow ? (
+                      <>
+                        <div className="qr-code-frame">
+                          <QRCode type="svg" value={qrFlow.qr_content} size={176} color="#131b28" bgColor="#fff" aria-label={`${qrOption.title}二维码`} />
+                        </div>
+                        <div className={`qr-status${qrScanned ? ' is-scanned' : ''}`} role="status">
+                          {qrScanned ? '已扫码，请在手机上确认' : '等待扫码'}
+                        </div>
+                        <p>{qrOption.description}</p>
+                      </>
+                    ) : (
+                      <>
+                        <Alert type="warning" showIcon message={qrMessage || '二维码已失效'} />
+                        <Button icon={<QrcodeOutlined />} onClick={() => changeQR(qrProvider)}>重新获取</Button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
-            ) : (
-              <div className="webvpn-qr-login">
-                <div className="qr-method-grid" role="list" aria-label="扫码方式">
-                  {Object.entries(qrProviders).map(([provider, option]) => {
-                    const Icon = option.icon;
-                    return (
-                      <button
-                        type="button"
-                        key={provider}
-                        className="qr-method-card"
-                        onClick={() => { setQrProvider(provider); beginWebVPNQRLogin(provider); }}
-                      >
-                        <span className="qr-method-icon"><Icon /></span>
-                        <span className="qr-method-card-copy">
-                          <strong>{option.title}</strong>
-                          <small>{option.description}</small>
-                        </span>
-                        <QrcodeOutlined className="qr-method-arrow" aria-hidden="true" />
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="qr-security-note"><SafetyCertificateOutlined /> 仅通过学校认证系统建立会话，不保存扫码内容</p>
-              </div>
-            )}
+            </div>
           </section>
+          {offlineStatus?.available && (
+            <Button type="text" className="login-offline" icon={<DatabaseOutlined />} loading={offlineLoading}
+              disabled={loading || qrLoading || Boolean(smsFlow)} onClick={beginOfflineMode}>
+              离线查看
+            </Button>
           )}
         </section>
       </main>

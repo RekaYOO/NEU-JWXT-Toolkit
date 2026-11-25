@@ -97,6 +97,9 @@ func TestDirectLoginDoesNotReplayLostResponseOrWrongPassword(t *testing.T) {
 		client, _ := NewClient("student")
 		posts, requests := 0, 0
 		client.http.Transport = transportFunc(func(request *http.Request) (*http.Response, error) {
+			if request.URL.String() == primaryService {
+				return mockResponse(request, 200, "school home"), nil
+			}
 			requests++
 			if request.Method == "GET" {
 				return mockResponse(request, 200, `<input type="hidden" name="lt" value="token">`), nil

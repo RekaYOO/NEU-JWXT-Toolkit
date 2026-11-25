@@ -9,7 +9,7 @@ import (
 )
 
 func ScoresDiff(previous, current json.RawMessage) map[string]any {
-	indexed := func(payload json.RawMessage) (map[string]Score, *float64) {
+	indexed := func(payload json.RawMessage) (map[string]Score, *float64, *int) {
 		var scores Scores
 		json.Unmarshal(payload, &scores)
 		result := map[string]Score{}
@@ -22,10 +22,10 @@ func ScoresDiff(previous, current json.RawMessage) map[string]any {
 			}
 			result[key] = score
 		}
-		return result, scores.OverallGPA
+		return result, scores.OverallGPA, scores.OfficialMajorRank
 	}
-	before, oldGPA := indexed(previous)
-	after, newGPA := indexed(current)
+	before, oldGPA, oldRank := indexed(previous)
+	after, newGPA, newRank := indexed(current)
 	keys, seen := []string{}, map[string]bool{}
 	for key := range before {
 		keys = append(keys, key)
@@ -49,7 +49,7 @@ func ScoresDiff(previous, current json.RawMessage) map[string]any {
 			changed = append(changed, map[string]Score{"before": old, "after": newScore})
 		}
 	}
-	return map[string]any{"added": added, "removed": removed, "changed": changed, "overall_gpa_changed": !reflect.DeepEqual(oldGPA, newGPA), "counts": map[string]int{"added": len(added), "removed": len(removed), "changed": len(changed)}}
+	return map[string]any{"added": added, "removed": removed, "changed": changed, "overall_gpa_changed": !reflect.DeepEqual(oldGPA, newGPA), "official_major_rank_changed": !reflect.DeepEqual(oldRank, newRank), "counts": map[string]int{"added": len(added), "removed": len(removed), "changed": len(changed)}}
 }
 
 func ReportDiff(previous, current json.RawMessage) map[string]any {

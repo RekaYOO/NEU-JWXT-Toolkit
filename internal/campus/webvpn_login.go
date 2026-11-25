@@ -154,8 +154,21 @@ func vpnGatewayTokenRedirect(previous, next *url.URL) bool {
 func vpnFailure(code, message string) error { return &Error{Code: code, Message: message} }
 
 func (client *Client) vpnSend(ctx context.Context, method, raw string, form url.Values, referer string) ([]byte, *url.URL, error) {
+	return client.sendAuth(ctx, method, raw, form, referer, "webvpn")
+}
+
+func directAuthURL(target *url.URL) bool {
+	return vpnAuthURL(target) && (target.Hostname() == "pass.neu.edu.cn" && strings.HasPrefix(target.EscapedPath(), "/tpass/") ||
+		target.Hostname() == "jwxt.neu.edu.cn" && strings.HasPrefix(target.EscapedPath(), "/jwapp/"))
+}
+
+func (client *Client) sendAuth(ctx context.Context, method, raw string, form url.Values, referer, mode string) ([]byte, *url.URL, error) {
 	target, err := url.Parse(raw)
-	if err != nil || !vpnAuthURL(target) {
+	allowed := vpnAuthURL
+	if mode == "direct" {
+		allowed = directAuthURL
+	}
+	if err != nil || !allowed(target) {
 		return nil, nil, vpnFailure("WEBVPN_UPSTREAM_REDIRECT", "认证地址不受信任，请重新登录")
 	}
 	var body io.Reader
@@ -183,6 +196,12 @@ func (client *Client) vpnSend(ctx context.Context, method, raw string, form url.
 		last := previous[len(previous)-1].URL
 		if next.Method == "GET" && next.URL.Scheme == "http" && next.URL.Hostname() == "pass.neu.edu.cn" && (next.URL.Port() == "" || next.URL.Port() == "80") && next.URL.Path == "/tpass/login" {
 			next.URL.Scheme, next.URL.Host = "https", "pass.neu.edu.cn"
+		}
+		if mode == "direct" {
+			if allowed(next.URL) {
+				return nil
+			}
+			return vpnFailure("WEBVPN_UPSTREAM_REDIRECT", "校内认证跳转被拒绝，请检查所选网络线路")
 		}
 		if last.Hostname() == vpnHost && next.URL.Hostname() != vpnHost && vpnAuthURL(next.URL) {
 			converted, err := WebVPNURL(next.URL.String())
@@ -273,6 +292,10 @@ func authForm(payload []byte, page *url.URL, identifier string) (url.Values, str
 }
 
 func (client *Client) StartVPNQR(ctx context.Context, provider string) (map[string]any, error) {
+	return client.StartQR(ctx, provider, "webvpn")
+}
+
+func (client *Client) StartQR(ctx context.Context, provider, mode string) (map[string]any, error) {
 	if provider == "" {
 		provider = QRWeChat
 	}
@@ -281,11 +304,22 @@ func (client *Client) StartVPNQR(ctx context.Context, provider string) (map[stri
 	}
 	client.mutex.Lock()
 	defer client.mutex.Unlock()
+	service := vpnEntry
+	switch mode {
+	case "direct":
+		if client.vpnTarget != "" && client.vpnTarget != "primary" {
+			return nil, vpnFailure("INVALID_REQUEST", "校内扫码仅用于主账号登录")
+		}
+		service = primaryService
+	case "webvpn":
+	default:
+		return nil, vpnFailure("INVALID_REQUEST", "访问线路无效")
+	}
 	client.authFlow = nil
 	client.vpnSource, client.vpnServiceState, client.vpnGatewayVerified = "qr", "", false
-	client.setStatus(false, "webvpn")
-	login := casLogin + "?" + url.Values{"service": {vpnEntry}}.Encode()
-	_, page, err := client.vpnSend(ctx, "GET", login, nil, "")
+	client.setStatus(false, mode)
+	login := casLogin + "?" + url.Values{"service": {service}}.Encode()
+	_, page, err := client.sendAuth(ctx, "GET", login, nil, "", mode)
 	if err != nil {
 		return nil, err
 	}
@@ -299,8 +333,8 @@ func (client *Client) StartVPNQR(ctx context.Context, provider string) (map[stri
 	var token, content string
 	lifetime, interval := 180, 3
 	if provider == QRSmartNEU {
-		params := url.Values{"action": {"create"}, "service": {vpnEntry}}
-		body, _, err := client.vpnSend(ctx, "GET", appQREndpoint+"?"+params.Encode(), nil, page.String())
+		params := url.Values{"action": {"create"}, "service": {service}}
+		body, _, err := client.sendAuth(ctx, "GET", appQREndpoint+"?"+params.Encode(), nil, page.String(), mode)
 		if err != nil {
 			return nil, err
 		}
@@ -327,10 +361,10 @@ func (client *Client) StartVPNQR(ctx context.Context, provider string) (map[stri
 		if err != nil {
 			return nil, err
 		}
-		content = "https://pass.neu.edu.cn/tpass/qyQrLogin?uuid=" + token + "&service=" + vpnEntry
+		content = "https://pass.neu.edu.cn/tpass/qyQrLogin?uuid=" + token + "&service=" + service
 	}
 	client.authFlow = &vpnLoginFlow{id: identifier, kind: "qr", uuid: token, page: page.String(), qrProvider: provider, expires: time.Now().Add(time.Duration(lifetime) * time.Second)}
-	return map[string]any{"status": "pending", "flow_id": identifier, "qr_provider": provider, "qr_content": content, "expires_in": lifetime, "poll_interval": interval}, nil
+	return map[string]any{"status": "pending", "flow_id": identifier, "qr_provider": provider, "qr_content": content, "expires_in": lifetime, "poll_interval": interval, "network_mode": mode}, nil
 }
 
 func (client *Client) vpnFlow(identifier, kind string) (*vpnLoginFlow, error) {
@@ -364,7 +398,7 @@ func (client *Client) PollVPNQR(ctx context.Context, identifier string) (map[str
 	if flow.qrProvider == QRSmartNEU {
 		endpoint = appQREndpoint + "?" + url.Values{"action": {"check"}, "t": {flow.uuid}}.Encode()
 	}
-	payload, _, err := client.vpnSend(ctx, "GET", endpoint, nil, flow.page)
+	payload, _, err := client.sendAuth(ctx, "GET", endpoint, nil, flow.page, client.mode)
 	if err != nil {
 		return nil, err
 	}
@@ -402,22 +436,44 @@ func (client *Client) PollVPNQR(ctx context.Context, identifier string) (map[str
 	}
 	base, _ := url.Parse(flow.page)
 	callback, err := base.Parse(redirect)
-	if err != nil || !vpnAuthURL(callback) || (callback.Hostname() != "pass.neu.edu.cn" && callback.Hostname() != vpnHost) {
+	if err != nil || (client.mode == "direct" && !directAuthURL(callback)) ||
+		(client.mode == "webvpn" && (!vpnAuthURL(callback) || (callback.Hostname() != "pass.neu.edu.cn" && callback.Hostname() != vpnHost))) {
 		return nil, vpnFailure("WEBVPN_UPSTREAM_REDIRECT", "扫码回调地址不受信任")
 	}
 	client.authFlow = nil
-	payload, page, err := client.vpnSend(ctx, "GET", callback.String(), nil, flow.page)
+	payload, page, err := client.sendAuth(ctx, "GET", callback.String(), nil, flow.page, client.mode)
 	if err != nil {
 		return nil, err
 	}
 	if fields, action, ok := authForm(payload, page, "second_auth_form"); ok {
 		return client.beginVPNSMS(ctx, flow.id, page, action, fields)
 	}
-	if err := client.completeVPN(ctx); err != nil {
+	if err := client.completeQRSession(ctx); err != nil {
 		return nil, err
 	}
 	client.authFlow = nil
 	return client.vpnAuthenticated(), nil
+}
+
+func (client *Client) completeQRSession(ctx context.Context) error {
+	if client.mode != "direct" {
+		return client.completeVPN(ctx)
+	}
+	const currentUser = "https://jwxt.neu.edu.cn/jwapp/sys/homeapp/api/home/currentUser.do"
+	payload, page, err := client.sendAuth(ctx, "POST", currentUser, url.Values{}, primaryService, "direct")
+	if err != nil {
+		return err
+	}
+	account, err := campusIdentity(payload)
+	if !directCASResource(page, currentUser) || err != nil {
+		return vpnFailure("WEBVPN_SESSION_ESTABLISH_FAILED", "校内教务身份尚未核验，请检查校园网络后重试")
+	}
+	if client.account != "" && client.account != account {
+		return vpnFailure("WEBVPN_ACCOUNT_MISMATCH", "扫码账号与当前账号不一致，请重新登录")
+	}
+	client.account = account
+	client.setStatus(true, "direct")
+	return nil
 }
 
 func (client *Client) StartVPNPassword(ctx context.Context, password string) (map[string]any, error) {
@@ -478,8 +534,16 @@ func (client *Client) StartVPNPassword(ctx context.Context, password string) (ma
 }
 
 func (client *Client) beginVPNSMS(ctx context.Context, identifier string, page *url.URL, action string, fields url.Values) (map[string]any, error) {
-	resolved, resolveError := RestoreServiceURL(action, "https://pass.neu.edu.cn")
-	if page.Hostname() != vpnHost || !strings.Contains(page.Path, "/tpass/") || resolveError != nil || !strings.HasPrefix(resolved, "https://pass.neu.edu.cn/tpass/") {
+	valid := false
+	if client.mode == "direct" {
+		endpoint, err := url.Parse(action)
+		valid = err == nil && directAuthURL(endpoint) && endpoint.Hostname() == "pass.neu.edu.cn" &&
+			directAuthURL(page) && page.Hostname() == "pass.neu.edu.cn"
+	} else {
+		resolved, err := RestoreServiceURL(action, "https://pass.neu.edu.cn")
+		valid = page.Hostname() == vpnHost && strings.Contains(page.Path, "/tpass/") && err == nil && strings.HasPrefix(resolved, "https://pass.neu.edu.cn/tpass/")
+	}
+	if !valid {
 		return nil, vpnFailure("WEBVPN_UPSTREAM_REDIRECT", "二次认证地址不受信任")
 	}
 	client.authFlow = &vpnLoginFlow{id: identifier, kind: "sms", page: page.String(), action: action, fields: fields, expires: time.Now().Add(6 * time.Minute)}
@@ -494,12 +558,16 @@ func (client *Client) beginVPNSMS(ctx context.Context, identifier string, page *
 func (client *Client) vpnCaptcha(ctx context.Context, flow *vpnLoginFlow) (map[string]any, error) {
 	flow.captcha = ""
 	page, _ := url.Parse(flow.page)
-	endpoint := page.ResolveReference(&url.URL{Path: "code", RawQuery: "vpn-1&" + fmt.Sprint(time.Now().UnixNano())})
-	payload, final, err := client.vpnSend(ctx, "GET", endpoint.String(), nil, flow.page)
+	query := fmt.Sprint(time.Now().UnixNano())
+	if client.mode == "webvpn" {
+		query = "vpn-1&" + query
+	}
+	endpoint := page.ResolveReference(&url.URL{Path: "code", RawQuery: query})
+	payload, final, err := client.sendAuth(ctx, "GET", endpoint.String(), nil, flow.page, client.mode)
 	if err != nil {
 		return nil, err
 	}
-	if final.Hostname() != vpnHost || !strings.HasSuffix(final.Path, "/tpass/code") {
+	if final.Host != endpoint.Host || final.EscapedPath() != endpoint.EscapedPath() {
 		return nil, vpnFailure("WEBVPN_UPSTREAM_REDIRECT", "验证码请求被重定向，请重新登录")
 	}
 	media := ""
@@ -555,8 +623,11 @@ func (client *Client) SendVPNSMS(ctx context.Context, identifier, captcha string
 	}
 	flow.captcha = captcha
 	page, _ := url.Parse(flow.page)
-	endpoint := page.ResolveReference(&url.URL{Path: "secondAuthCode", RawQuery: "vpn-12-o2-pass.neu.edu.cn"})
-	payload, _, err := client.vpnSend(ctx, "POST", endpoint.String(), url.Values{"code": {captcha}, "method": {"mobile"}}, flow.page)
+	endpoint := page.ResolveReference(&url.URL{Path: "secondAuthCode"})
+	if client.mode == "webvpn" {
+		endpoint.RawQuery = "vpn-12-o2-pass.neu.edu.cn"
+	}
+	payload, _, err := client.sendAuth(ctx, "POST", endpoint.String(), url.Values{"code": {captcha}, "method": {"mobile"}}, flow.page, client.mode)
 	if err != nil {
 		return nil, err
 	}
@@ -646,7 +717,7 @@ func (client *Client) VerifyVPNSMS(ctx context.Context, identifier, code string)
 		if form.Get("_eventId") == "" {
 			form.Set("_eventId", "submit")
 		}
-		payload, page, err := client.vpnSend(ctx, "POST", flow.action, form, flow.page)
+		payload, page, err := client.sendAuth(ctx, "POST", flow.action, form, flow.page, client.mode)
 		if err != nil {
 			return nil, err
 		}
@@ -666,7 +737,7 @@ func (client *Client) VerifyVPNSMS(ctx context.Context, identifier, code string)
 		flow.fields = nil
 		flow.captcha = ""
 	}
-	if err := client.completeVPN(ctx); err != nil {
+	if err := client.completeQRSession(ctx); err != nil {
 		if failure, ok := err.(*Error); ok && (failure.Code == "WEBVPN_ACCOUNT_MISMATCH" || failure.Code == "WEBVPN_ACCOUNT_UNVERIFIED" || failure.Code == "WEBVPN_CAMPUS_NETWORK") {
 			client.authFlow = nil
 			return nil, err
@@ -689,7 +760,7 @@ func (client *Client) vpnAuthenticated() map[string]any {
 	if state == "" {
 		state = "authenticated"
 	}
-	return map[string]any{"status": "authenticated", "username": client.account, "network_mode": "webvpn", "target_service": target, "service_auth_state": state}
+	return map[string]any{"status": "authenticated", "username": client.account, "network_mode": client.mode, "target_service": target, "service_auth_state": state}
 }
 
 func (client *Client) completeVPNService(ctx context.Context) error {
@@ -714,6 +785,19 @@ func (client *Client) completeVPNService(ctx context.Context) error {
 	}
 	client.setStatus(true, "webvpn")
 	return nil
+}
+
+func campusIdentity(payload []byte) (string, error) {
+	var result struct {
+		Code json.RawMessage `json:"code"`
+		Data struct {
+			Account string `json:"userId"`
+		} `json:"datas"`
+	}
+	if json.Unmarshal(payload, &result) != nil || (string(result.Code) != "0" && string(result.Code) != `"0"`) {
+		return "", vpnFailure("WEBVPN_SESSION_ESTABLISH_FAILED", "学校身份尚未核验")
+	}
+	return NormalizeAccount(result.Data.Account)
 }
 
 func (client *Client) completeVPN(ctx context.Context) error {
@@ -748,16 +832,7 @@ func (client *Client) completeVPN(ctx context.Context) error {
 			continue
 		}
 		hadResponse = true
-		var result struct {
-			Code json.RawMessage `json:"code"`
-			Data struct {
-				Account string `json:"userId"`
-			} `json:"datas"`
-		}
-		if json.Unmarshal(payload, &result) != nil || (string(result.Code) != "0" && string(result.Code) != `"0"`) {
-			continue
-		}
-		account, err := NormalizeAccount(result.Data.Account)
+		account, err := campusIdentity(payload)
 		if err != nil {
 			continue
 		}

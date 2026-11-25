@@ -93,6 +93,7 @@ const scales = { CORE: '百分制', FAIL: '百分制', GE: '五级制', BIN: '�
           data = policy();
         } else if (url.pathname === '/api/scores/cache') {
           data = { scores, total_courses: 4, source: 'local', calculated_gpa: 2.4,
+            overall_gpa: 3.75, official_major_rank: width === 375 ? null : 42,
             gpa_policy: policy(), cache: { revision: 'scores', is_stale: false } };
         } else if (url.pathname === '/api/academic-report/cache') data = report;
         else if (url.pathname === '/api/course-outlines/metadata/read') {
@@ -132,9 +133,14 @@ const scales = { CORE: '百分制', FAIL: '百分制', GE: '五级制', BIN: '�
       });
       await page.waitForFunction(() => document.querySelector('.stats-row')?.textContent.includes('2.400'));
       assert((await average.textContent()).includes('2.400'));
+      const officialSummary = page.locator('.official-score-summary');
+      await officialSummary.getByText('3.75', { exact: true }).waitFor();
+      const rankText = width === 375 ? '暂无' : '第 42 名';
+      await officialSummary.getByText(rankText, { exact: true }).waitFor();
       await page.getByRole('button', { name: /绩点计算$/ }).click();
       await page.getByText('2024级及以前', { exact: true }).click();
       await page.waitForFunction(() => document.querySelector('.stats-row')?.textContent.includes('3.375'));
+      assert(await officialSummary.getByText(rankText, { exact: true }).isVisible());
       await page.getByRole('button', { name: /恢复年级默认$/ }).click();
       await page.waitForFunction(() => document.querySelector('.stats-row')?.textContent.includes('2.400'));
       failSave = true;
