@@ -253,14 +253,19 @@ public class LocalLaunchTest {
                 LocalBackendService.finishMutation();
             }, error -> fail(error.getMessage())));
             android.app.Notification delivered = null;
+            boolean foregroundVisible = false;
             for (int attempt = 0; attempt < 100; attempt++) {
+                foregroundVisible = false;
                 for (android.service.notification.StatusBarNotification item : manager.getActiveNotifications()) {
+                    if ((item.getNotification().flags & android.app.Notification.FLAG_FOREGROUND_SERVICE) != 0) {
+                        foregroundVisible = true;
+                    }
                     if ("工具箱任务通知".contentEquals(
                         item.getNotification().extras.getCharSequence(android.app.Notification.EXTRA_TITLE, ""))) {
                         delivered = item.getNotification();
                     }
                 }
-                if (delivered != null && notifications.callAttr("pending_count").toInt() == 0) break;
+                if (foregroundVisible && delivered != null && notifications.callAttr("pending_count").toInt() == 0) break;
                 Thread.sleep(200);
             }
             assertNotNull("Durable outbox was never displayed", delivered);
@@ -271,8 +276,7 @@ public class LocalLaunchTest {
                 delivered.publicVersion.extras.getCharSequence(android.app.Notification.EXTRA_TITLE).toString());
             if (android.os.Build.VERSION.SDK_INT >= 26) assertEquals("task_errors", delivered.getChannelId());
             assertTrue(LocalBackendService.isRunning());
-            assertTrue(java.util.Arrays.stream(manager.getActiveNotifications())
-                .anyMatch(item -> (item.getNotification().flags & android.app.Notification.FLAG_FOREGROUND_SERVICE) != 0));
+            assertTrue("Running tasks must display a foreground service notification", foregroundVisible);
             // The page already starts at /login. Move its URL first so a
             // dropped notification cannot accidentally satisfy the assertion.
             assertEquals("\"/notification-test-before\"", evaluate(scenario,

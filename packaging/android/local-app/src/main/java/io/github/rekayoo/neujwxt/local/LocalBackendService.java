@@ -388,6 +388,7 @@ public final class LocalBackendService extends Service {
             .setContentIntent(pending)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .build();
         startForeground(FOREGROUND_ID, notification);
