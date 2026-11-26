@@ -91,8 +91,6 @@ describe('JWXK automation settings API', () => {
     client.post.mockResolvedValue({ data: {} });
     await apiModule.getAdminStatus();
     await apiModule.getAdminAccounts();
-    await apiModule.loginAdmin('synthetic-admin-password');
-    await apiModule.logoutAdmin();
     await apiModule.addAdminAccount('20990001');
     await apiModule.changeAdminAccount('20990001', 'stop');
     for (const [, options] of client.get.mock.calls) expect(options.skipAuthRedirect).toBe(true);

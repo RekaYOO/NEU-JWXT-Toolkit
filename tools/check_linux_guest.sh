@@ -20,7 +20,7 @@ start_service() {
 }
 export NEU_JWXT_PUBLIC_ORIGIN=https://toolbox.example.invalid
 export NEU_JWXT_ACCESS_PASSWORD="$(cat /proc/sys/kernel/random/uuid)"
-export NEU_JWXT_ADMIN_PASSWORD="$(cat /proc/sys/kernel/random/uuid)"
+export NEU_JWXT_ADMIN_ACCOUNT=20990001
 start_service
 for attempt in $(seq 1 90); do
     wget -qO /tmp/health http://127.0.0.1:8000/api/health && break
@@ -41,8 +41,7 @@ grep -F '401 Unauthorized' /tmp/status
 kill -TERM "$pid"
 wait "$pid"
 access=$NEU_JWXT_ACCESS_PASSWORD
-admin=$NEU_JWXT_ADMIN_PASSWORD
-unset NEU_JWXT_ACCESS_PASSWORD NEU_JWXT_ADMIN_PASSWORD
+unset NEU_JWXT_ACCESS_PASSWORD
 start_service
 base=http://127.0.0.1:8000/api
 for attempt in $(seq 1 90); do
@@ -60,10 +59,8 @@ cookie=$(sed -n 's/.*Set-Cookie: \(neu_jwxt_access=[^;]*\);.*/\1/p' /tmp/login-h
 [ -n "$cookie" ]
 wget -SO /dev/null --header "Cookie: $cookie" "$base/admin/accounts" 2>/tmp/status && exit 1
 grep -q '401 Unauthorized' /tmp/status
-login admin "$admin" "$cookie"
-admin_cookie=$(sed -n 's/.*Set-Cookie: \(neu_toolbox_admin=[^;]*\);.*/\1/p' /tmp/login-headers)
-[ -n "$admin_cookie" ]
-wget -qO /dev/null --header "Cookie: $cookie; $admin_cookie" "$base/admin/accounts"
+wget -SO /dev/null "${base%/api}/admin" 2>/tmp/status && exit 1
+grep -q '404 Not Found' /tmp/status
 kill -TERM "$pid"
 wait "$pid"
 echo TOOLBOX_LINUX_GUEST_PASSED

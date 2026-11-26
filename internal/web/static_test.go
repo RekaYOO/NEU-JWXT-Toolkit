@@ -27,7 +27,7 @@ func TestStaticBoundaryAndEncoding(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer handler.Close()
-	for _, route := range []string{"/private.json", "/api/scores", "/static/../private.json", "/static/%2e%2e/private.json", "/static/%252e%252e/private.json", "/static/missing.js"} {
+	for _, route := range []string{"/admin", "/admin/", "/ADMIN/accounts", "/private.json", "/api/scores", "/static/../private.json", "/static/%2e%2e/private.json", "/static/%252e%252e/private.json", "/static/missing.js"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest("GET", route, nil))
 		if response.Code != 404 {

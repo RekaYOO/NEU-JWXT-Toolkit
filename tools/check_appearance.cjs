@@ -164,16 +164,17 @@ async function textContrast(locator) {
           let finishExams;
           const examsPending = new Promise(resolve => { finishExams = resolve; });
           let examError = false;
-          const auth = surface === 'credits' ? { is_logged_in: true, current_user: 'credit-fixture' } : { is_logged_in: false };
+          const auth = ['credits', 'admin'].includes(surface) ? { is_logged_in: true, current_user: 'appearance-fixture' } : { is_logged_in: false };
           await page.route('**/*', async route => {
             const url = new URL(route.request().url());
             if (url.origin !== origin) return route.abort();
             if (!url.pathname.startsWith('/api/')) return route.continue();
             let data = {};
-            if (url.pathname === '/api/access/status') data = { required: surface === 'access', configured: true, authenticated: surface !== 'access', site_default: theme };
+            if (url.pathname === '/api/access/status') data = { required: ['access', 'admin'].includes(surface), configured: true, authenticated: surface !== 'access', site_default: theme };
             else if (url.pathname === '/api/client/bootstrap') data = { runtime: { profile: 'development' }, auth };
             else if (url.pathname === '/api/status') data = auth;
-            else if (url.pathname === '/api/admin/status') data = { configured: true, authenticated: false, deployment_mode: 'remote-multi' };
+            else if (url.pathname === '/api/admin/status') data = { eligible: surface === 'admin' };
+            else if (url.pathname === '/api/admin/accounts') data = { accounts: [], deployment_mode: 'remote-multi' };
             else if (url.pathname === '/api/offline/status') data = { available: false };
             else if (url.pathname.startsWith('/api/cache/refresh/')) data = { status: 'fresh' };
             else if (url.pathname === '/api/exams/terms') data = { terms: [], current: 'exam-fixture' };
@@ -234,8 +235,8 @@ async function textContrast(locator) {
             await context.close();
             continue;
           }
-          await page.goto(`${origin}${surface === 'admin' ? '/admin' : '/'}`);
-          await page.locator(surface === 'access' ? '.access-login-page' : surface === 'school' ? '.login-page' : '.admin-login').waitFor();
+          await page.goto(`${origin}${surface === 'admin' ? '/system-settings?tab=admin' : '/'}`);
+          await page.locator(surface === 'access' ? '.access-login-page' : surface === 'school' ? '.login-page' : '.admin-content').waitFor();
           await page.waitForFunction(color => getComputedStyle(document.documentElement).getPropertyValue('--color-brand').trim() === color, primaryColor);
           if (surface === 'access') {
             await page.locator('button[type=submit]').click();
@@ -246,7 +247,7 @@ async function textContrast(locator) {
               assert.ok(ratio >= 4.5, `${theme} ${width}px ${await text.innerText()}: ${ratio.toFixed(2)}:1`);
             }
           }
-          assert.equal(privateReads, 0);
+          if (surface !== 'admin') assert.equal(privateReads, 0);
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
           assert.deepEqual(errors, []);
           await page.screenshot({ path: path.join(screenshots, `${surface}-${theme}-${width}.png`), fullPage: true });

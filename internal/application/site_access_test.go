@@ -29,22 +29,25 @@ func requestWithSiteCookies(handler http.Handler, method, path, body string, coo
 	return response
 }
 
-func TestInitialSitePasswordsAreAtomic(t *testing.T) {
+func TestInitialSitePasswordOnlyRequiresAccessCredential(t *testing.T) {
 	api, _ := testApplication(t, "remote-multi")
 	ctx := context.Background()
-	if err := api.ConfigureRemoteAccess(ctx, "unused-first-password", "short"); err == nil {
-		t.Fatal("invalid administrator password accepted")
+	if err := api.ConfigureRemoteAccess(ctx, "short"); err == nil {
+		t.Fatal("invalid access password accepted")
 	}
 	for _, purpose := range []string{"access", "admin"} {
 		if configured, err := api.database.SitePasswordConfigured(ctx, purpose); err != nil || configured {
 			t.Fatalf("partial %s credential: %v", purpose, err)
 		}
 	}
-	if err := api.ConfigureRemoteAccess(ctx, "corrected-access-password", "corrected-admin-password"); err != nil {
+	if err := api.ConfigureRemoteAccess(ctx, "corrected-access-password"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := api.database.CreateSiteSession(ctx, "access", "corrected-access-password", time.Hour); err != nil {
 		t.Fatal(err)
+	}
+	if configured, err := api.database.SitePasswordConfigured(ctx, "admin"); err != nil || configured {
+		t.Fatal("unexpected administrator credential", err)
 	}
 }
 
@@ -55,22 +58,25 @@ func setupSiteAdmin(t *testing.T, mode string) (*API, http.Handler, *http.Cookie
 	api.accounts.mutex.Lock()
 	api.accounts.mailTick, api.accounts.automationTick = nil, nil
 	api.accounts.mutex.Unlock()
-	if err := api.ConfigureRemoteAccess(context.Background(), "test-access-password", "test-admin-password"); err != nil {
+	if err := api.ConfigureRemoteAccess(context.Background(), "test-access-password"); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.ConfigureDefaultAdministrator(context.Background(), "20990001"); err != nil {
 		t.Fatal(err)
 	}
 	response := requestWithSiteCookies(handler, "POST", "/api/access/login", `{"password":"test-access-password"}`)
 	if response.Code != 200 {
 		t.Fatal(response)
 	}
-	access := responseCookie(t, response.Result(), siteCookie("access"))
+	access := responseCookie(t, response.Result(), accessCookie)
 	if !access.Secure || !access.HttpOnly {
 		t.Fatal("unsafe access cookie")
 	}
-	response = requestWithSiteCookies(handler, "POST", "/api/admin/login", `{"password":"test-admin-password"}`, access)
+	response = requestWithSiteCookies(handler, "POST", "/api/login", `{"username":"20990001","password":"test-only"}`, access)
 	if response.Code != 200 {
 		t.Fatal(response)
 	}
-	admin := responseCookie(t, response.Result(), siteCookie("admin"))
+	admin := responseCookie(t, response.Result(), sessionCookie)
 	return api, handler, access, admin
 }
 
@@ -89,16 +95,18 @@ func TestRemoteGatewayFailsClosedAndSeparatesAdministrator(t *testing.T) {
 	if !strings.Contains(response.Body.String(), `"configured":false`) || !strings.Contains(response.Body.String(), `"authenticated":false`) {
 		t.Fatal(response)
 	}
-	if err := api.ConfigureRemoteAccess(context.Background(), "test-access-password", "test-admin-password"); err != nil {
+	if err := api.ConfigureRemoteAccess(context.Background(), "test-access-password"); err != nil {
 		t.Fatal(err)
 	}
 	response = requestWithSiteCookies(handler, "POST", "/api/access/login", `{"password":"test-access-password"}`)
-	access := responseCookie(t, response.Result(), siteCookie("access"))
+	access := responseCookie(t, response.Result(), accessCookie)
 	if response := requestWithSiteCookies(handler, "GET", "/api/admin/accounts", "", access); response.Code != 401 || !strings.Contains(response.Body.String(), "ADMIN_REQUIRED") {
 		t.Fatal(response)
 	}
-	if response := requestWithSiteCookies(handler, "POST", "/api/admin/login", `{"password":"test-access-password"}`, access); response.Code != 401 {
-		t.Fatal("site password granted administration", response)
+	for _, path := range []string{"/api/admin/login", "/api/admin/logout"} {
+		if response := requestWithSiteCookies(handler, "POST", path, `{"password":"test-access-password"}`, access); response.Code != 404 {
+			t.Fatal("legacy administrator endpoint still exists", response)
+		}
 	}
 	if response := requestWithSiteCookies(handler, "POST", "/api/access/logout", `{}`, access); response.Code != 200 {
 		t.Fatal(response)
@@ -108,12 +116,9 @@ func TestRemoteGatewayFailsClosedAndSeparatesAdministrator(t *testing.T) {
 	}
 }
 
-func TestDefaultAdministratorRequiresBoundSchoolSession(t *testing.T) {
-	api, handler, access, legacyAdmin := setupSiteAdmin(t, "remote-multi")
+func TestDefaultAdministratorUsesOnlyCurrentSchoolSession(t *testing.T) {
+	api, handler, access, owner := setupSiteAdmin(t, "remote-multi")
 	ctx := context.Background()
-	if err := api.ConfigureDefaultAdministrator(ctx, "20990001"); err != nil {
-		t.Fatal(err)
-	}
 	if err := api.database.AdmitAccount(ctx, "20990002", false); err != nil {
 		t.Fatal(err)
 	}
@@ -124,50 +129,47 @@ func TestDefaultAdministratorRequiresBoundSchoolSession(t *testing.T) {
 		}
 		return &http.Cookie{Name: sessionCookie, Value: token}
 	}
-	owner, other := schoolCookie("20990001"), schoolCookie("20990002")
-	if response := requestWithSiteCookies(handler, "GET", "/api/access/status", ""); !strings.Contains(response.Body.String(), `"admin_in_settings":true`) || strings.Contains(response.Body.String(), "20990001") {
+	other := schoolCookie("20990002")
+	if response := requestWithSiteCookies(handler, "GET", "/api/access/status", ""); strings.Contains(response.Body.String(), "20990001") {
 		t.Fatal(response)
 	}
+	if err := api.database.SetSitePassword(ctx, "admin", "legacy-password", false); err != nil {
+		t.Fatal(err)
+	}
+	token, err := api.database.CreateSiteSession(ctx, "admin", "legacy-password", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := &http.Cookie{Name: "neu_toolbox_admin", Value: token}
 	for _, school := range []*http.Cookie{nil, other} {
-		if response := requestWithSiteCookies(handler, "GET", "/api/admin/status", "", access, school); !strings.Contains(response.Body.String(), `"eligible":false`) {
-			t.Fatal(response)
-		}
-		if response := requestWithSiteCookies(handler, "POST", "/api/admin/login", `{"password":"test-admin-password"}`, access, school); response.Code != 403 {
+		if response := requestWithSiteCookies(handler, "GET", "/api/admin/status", "", access, school, legacy); !strings.Contains(response.Body.String(), `"eligible":false`) {
 			t.Fatal(response)
 		}
 	}
-	if response := requestWithSiteCookies(handler, "GET", "/api/admin/status", "", access, owner, legacyAdmin); !strings.Contains(response.Body.String(), `"eligible":true`) || !strings.Contains(response.Body.String(), `"authenticated":false`) {
+	if response := requestWithSiteCookies(handler, "GET", "/api/admin/status", "", access, owner); !strings.Contains(response.Body.String(), `"eligible":true`) {
 		t.Fatal(response)
 	}
-	login := requestWithSiteCookies(handler, "POST", "/api/admin/login", `{"password":"test-admin-password"}`, access, owner)
-	if login.Code != 200 {
-		t.Fatal(login)
-	}
-	admin := responseCookie(t, login.Result(), siteCookie("admin"))
 	for _, path := range []string{"/api/admin/accounts", "/api/admin/appearance"} {
-		if response := requestWithSiteCookies(handler, "GET", path, "", access, owner, admin); response.Code != 200 {
+		if response := requestWithSiteCookies(handler, "GET", path, "", access, owner); response.Code != 200 {
 			t.Fatal(response)
 		}
-		for _, school := range []*http.Cookie{nil, other, schoolCookie("20990001")} {
-			if response := requestWithSiteCookies(handler, "GET", path, "", access, school, admin); response.Code != 401 {
+		for _, school := range []*http.Cookie{nil, other} {
+			if response := requestWithSiteCookies(handler, "GET", path, "", access, school, legacy); response.Code != 401 {
 				t.Fatal(response)
 			}
 		}
 	}
-	if response := requestWithSiteCookies(handler, "POST", "/api/runtime/update/download", "", access, other, admin); response.Code != 403 {
+	if response := requestWithSiteCookies(handler, "POST", "/api/runtime/update/download", "", access, other, legacy); response.Code != 403 {
 		t.Fatal(response)
 	}
-	if response := requestWithSiteCookies(handler, "POST", "/api/admin/accounts/20990001/disable", "", access, owner, admin); response.Code != 409 {
+	if response := requestWithSiteCookies(handler, "POST", "/api/admin/accounts/20990001/disable", "", access, owner); response.Code != 409 {
 		t.Fatal(response)
 	}
-	if response := requestWithSiteCookies(handler, "POST", "/api/admin/logout", "", access, owner, admin); response.Code != 200 {
+	if response := requestWithSiteCookies(handler, "POST", "/api/logout", "", access, owner); response.Code != 200 {
 		t.Fatal(response)
 	}
-	if response := requestWithSiteCookies(handler, "GET", "/api/admin/accounts", "", access, owner, admin); response.Code != 401 {
+	if response := requestWithSiteCookies(handler, "GET", "/api/admin/accounts", "", access, owner, legacy); response.Code != 401 {
 		t.Fatal(response)
-	}
-	if _, err := api.database.Session(ctx, owner.Value); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -276,12 +278,13 @@ func TestRemoteSiteCookiesOverTLS(t *testing.T) {
 	}
 	call("POST", secure.URL+"/api/access/login", `{"password":"test-access-password"}`, 200)
 	call("GET", secure.URL+"/api/admin/accounts", "", 401)
-	call("POST", secure.URL+"/api/admin/login", `{"password":"test-admin-password"}`, 200)
+	call("POST", secure.URL+"/api/login", `{"username":"20990001","password":"test-only"}`, 200)
 	call("GET", secure.URL+"/api/admin/accounts", "", 200)
 	call("GET", plain.URL+"/api/admin/accounts", "", 204)
 	call("POST", secure.URL+"/api/access/logout", `{}`, 200)
 	call("GET", secure.URL+"/api/admin/accounts", "", 401)
 	call("POST", secure.URL+"/api/access/login", `{"password":"test-access-password"}`, 200)
+	call("POST", secure.URL+"/api/logout", `{}`, 200)
 	call("GET", secure.URL+"/api/admin/accounts", "", 401)
 }
 
@@ -307,7 +310,7 @@ func TestAdminTwoAccountLifecycleKeepsDataAndStopsTasks(t *testing.T) {
 	if response.Code != 200 || strings.Contains(response.Body.String(), "password") || strings.Contains(response.Body.String(), "private-") {
 		t.Fatal("admin list leaked user data", response)
 	}
-	if response := requestWithSiteCookies(handler, "GET", "/api/documents/gpa/plan", "", access, admin); response.Code != 401 {
+	if response := requestWithSiteCookies(handler, "GET", "/api/documents/gpa/plan", "", access, admin); response.Code != 404 {
 		t.Fatal("admin bypassed user identity", response)
 	}
 	if response := requestWithSiteCookies(handler, "GET", "/api/admin/accounts", "", access, users["student-a"]); response.Code != 401 {
@@ -386,17 +389,14 @@ func mustRestorable(t *testing.T, database *store.Store) []store.Session {
 }
 
 func TestRemoteSingleAllowsOnlyOneEnabledAccount(t *testing.T) {
-	_, handler, access, admin := setupSiteAdmin(t, "remote-single")
-	if response := requestWithSiteCookies(handler, "POST", "/api/admin/accounts", `{"account":"first"}`, access, admin); response.Code != 200 {
-		t.Fatal(response)
+	api, handler, access, admin := setupSiteAdmin(t, "remote-single")
+	if err := api.database.AdmitAccount(context.Background(), "first", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.database.SetAdmission(context.Background(), "first", false, false); err != nil {
+		t.Fatal(err)
 	}
 	if response := requestWithSiteCookies(handler, "POST", "/api/admin/accounts", `{"account":"second"}`, access, admin); response.Code != 409 {
-		t.Fatal(response)
-	}
-	if response := requestWithSiteCookies(handler, "POST", "/api/admin/accounts/first/remove", `{}`, access, admin); response.Code != 200 {
-		t.Fatal(response)
-	}
-	if response := requestWithSiteCookies(handler, "POST", "/api/admin/accounts", `{"account":"second"}`, access, admin); response.Code != 200 {
 		t.Fatal(response)
 	}
 	if response := requestWithSiteCookies(handler, "POST", "/api/admin/accounts/first/enable", `{}`, access, admin); response.Code != 409 {
@@ -439,11 +439,11 @@ func TestUnboundMultiAccountDirectoryRejectsSingleUserModes(t *testing.T) {
 func TestSitePasswordFailureRateLimit(t *testing.T) {
 	_, handler, access, _ := setupSiteAdmin(t, "remote-multi")
 	for attempt := 0; attempt < 5; attempt++ {
-		if response := requestWithSiteCookies(handler, "POST", "/api/admin/login", `{"password":"wrong"}`, access); response.Code != 401 {
+		if response := requestWithSiteCookies(handler, "POST", "/api/access/login", `{"password":"wrong"}`, access); response.Code != 401 {
 			t.Fatal(response)
 		}
 	}
-	if response := requestWithSiteCookies(handler, "POST", "/api/admin/login", `{"password":"test-admin-password"}`, access); response.Code != 429 {
+	if response := requestWithSiteCookies(handler, "POST", "/api/access/login", `{"password":"test-access-password"}`, access); response.Code != 429 {
 		t.Fatal("missing password rate limit", response)
 	}
 }

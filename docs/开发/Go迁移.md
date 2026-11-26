@@ -28,7 +28,7 @@
 | 培养计划读取 | internal/academic/report.go、internal/application/report.go | 新旧字段、类别树、父子学分约束、账号核验、缓存及摘要；消息合并、大纲和导出链路仍待迁移 |
 | 共享刷新与离线 | internal/store/cache.go、internal/application/cache.go、offline.go | 账号隔离、去重、语义revision、依赖失效、失败保留、任务取消、只读离线、持久化变化摘要；追踪通知仍待接通 |
 | 凭据与会话 | internal/store/secrets.go、sessions.go | AES-GCM账号绑定密文、随机会话令牌哈希、generation撤销；原资料导入待接通 |
-| 远程准入与管理 | internal/application/site_access.go、admin.go；frontend/src/pages/AdminPage.js | 三模式绑定数据目录、独立访问门与管理员认证、准入/停用/恢复/停止、撤权事务暂停任务、可信代理与限流；HTTPS部署和发行集成待完成 |
+| 远程准入与管理 | internal/application/site_access.go、admin.go、frontend/src/pages/SiteManagementPanel.js | 三模式绑定数据目录。网站访问门、管理员学号鉴权、账号准入、撤权暂停任务、可信代理与限流。 |
 | 远程恢复上下文 | internal/application/remote_recovery.go、remote_recovery_mail.go、auth_recovery_settings.go、service_only.go；internal/store/auth_recovery.go | 设置隔离、配置撤销、固定有效期、跨重启签名、单次消费、邮件链接组装、token专用扫码/短信及主Runtime缺失时JWXK独立任务候选已接通；真实端到端验收待完成 |
 | WebVPN认证 | internal/campus/webvpn.go、webvpn_login.go；internal/application/webvpn_login.go、auth_recovery.go | 扫码、密码、短信、会话续接、浏览器流程隔离、子服务网关合并与业务资格区分；主会话共享恢复、保守切线、5–120秒退避、前台续接挑战和90秒保活已接通；子服务独立恢复及真实学校验收待完成 |
 | 大纲最小元数据 | internal/academic/outline.go、internal/application/outline_metadata.go | cache-only读取、计划课程读取、单账号同步批次、任务复用、取消、Schema 2及7天负缓存；完整大纲搜索/正文/附件仍待迁移 |

@@ -188,8 +188,6 @@ export const logoutAccessGateway = async () => {
 };
 
 export const getAdminStatus = async () => (await api.get('/api/admin/status', { skipAuthRedirect: true })).data;
-export const loginAdmin = async password => (await api.post('/api/admin/login', { password }, { skipAuthRedirect: true })).data;
-export const logoutAdmin = async () => (await api.post('/api/admin/logout', null, { skipAuthRedirect: true })).data;
 export const getAdminAccounts = async () => (await api.get('/api/admin/accounts', { skipAuthRedirect: true })).data;
 export const addAdminAccount = async account => (await api.post('/api/admin/accounts', { account }, { skipAuthRedirect: true })).data;
 export const changeAdminAccount = async (account, action) => (await api.post(`/api/admin/accounts/${encodeURIComponent(account)}/${encodeURIComponent(action)}`, null, { skipAuthRedirect: true })).data;

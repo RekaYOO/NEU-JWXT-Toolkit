@@ -92,7 +92,8 @@ def main():
                 'useradd --system --user-group --no-create-home neu-toolbox',
                 'cp /opt/neu-toolbox/neu-toolbox.service /etc/systemd/system/',
                 'umask 077', 'echo NEU_JWXT_PUBLIC_ORIGIN=https://toolbox.example.invalid >/etc/neu-toolbox.env',
-                'for role in ACCESS ADMIN; do echo NEU_JWXT_${role}_PASSWORD=$(cat /proc/sys/kernel/random/uuid) >>/etc/neu-toolbox.env; done',
+                'echo NEU_JWXT_ACCESS_PASSWORD=$(cat /proc/sys/kernel/random/uuid) >>/etc/neu-toolbox.env',
+                'echo NEU_JWXT_ADMIN_ACCOUNT=20990001 >>/etc/neu-toolbox.env',
                 'cp /etc/neu-toolbox.env /root/test-login.env',
                 'cat /proc/sys/kernel/random/boot_id >/root/previous-boot',
                 'cp /mnt/bundle/reboot.sh /root/reboot-check.sh',
@@ -108,6 +109,7 @@ def main():
             fixture_command = 'TOOLBOX_TEST_REBOOT_DIR=/root/selection-fixture /root/selection.test -test.run=^TestSelectionTaskUnknownSubmissionSurvivesRestartAndRoundEnd$ -test.v'
             if args.selection_test:
                 commands[-1:-1] = ['install -m 0700 /mnt/bundle/selection.test /root/selection.test',
+                                    'install -o neu-toolbox -m 0500 /mnt/bundle/selection.test /tmp/toolbox-session.test',
                                     'TOOLBOX_TEST_REBOOT_PHASE=prepare ' + fixture_command]
             Path(directory, 'verify.sh').write_bytes(('\n'.join(commands) + '\n').encode())
             reboot_check = r'''set -eu
@@ -132,12 +134,13 @@ login() {
 }
 login access "$NEU_JWXT_ACCESS_PASSWORD"
 test "$(curl -4s -b "$jar" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
-login admin "$NEU_JWXT_ADMIN_PASSWORD"
-curl -4fsS -b "$jar" "$base/admin/accounts" >/dev/null
+test "$(curl -4s -o /dev/null -w '%{http_code}' http://localhost:8000/admin)" = 404
 echo TOOLBOX_REBOOT_OK
 '''
             if args.selection_test:
-                reboot_check = reboot_check.replace('echo TOOLBOX_REBOOT_OK', 'TOOLBOX_TEST_REBOOT_PHASE=recover ' + fixture_command + '\necho TOOLBOX_REBOOT_OK')
+                reboot_check = reboot_check.replace('echo TOOLBOX_REBOOT_OK', r'''runuser -u neu-toolbox -- env NEU_TOOLBOX_QA_MAINTENANCE=1 /tmp/toolbox-session.test -test.run '^TestLinuxMaintenanceFixtureSession$' | awk -F '\t' '$6 == "neu_toolbox_session" { print }' >> "$jar"
+curl -4fsS -b "$jar" "$base/admin/accounts" | grep -q '"default_administrator":"20990001"'
+''' + 'TOOLBOX_TEST_REBOOT_PHASE=recover ' + fixture_command + '\necho TOOLBOX_REBOOT_OK')
             Path(directory, 'reboot.sh').write_bytes(reboot_check.encode())
             process = subprocess.Popen(launch, stdin=subprocess.DEVNULL)
             console, _ = listener.accept()

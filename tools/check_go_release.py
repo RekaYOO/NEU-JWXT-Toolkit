@@ -1,6 +1,7 @@
 """Verify Go bundle contents and optionally smoke-test the native executable."""
 
 import argparse
+from contextlib import closing
 import hashlib
 from http.cookies import SimpleCookie
 import json
@@ -136,17 +137,16 @@ def smoke_remote(executable, temporary, options, mode):
             raise ValueError(f'Unexpected scope or lifetime for {name}')
         return f'{name}={cookie.coded_value}'
 
-    access, admin = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+    access = secrets.token_urlsafe(24)
     environment = {**os.environ, 'NEU_JWXT_DATA_DIR': str(temporary / mode),
                    'NEU_JWXT_PUBLIC_ORIGIN': 'https://toolbox.example.invalid',
-                   'NEU_JWXT_ACCESS_PASSWORD': access, 'NEU_JWXT_ADMIN_PASSWORD': admin}
+                   'NEU_JWXT_ACCESS_PASSWORD': access, 'NEU_JWXT_ADMIN_ACCOUNT': ''}
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     invalid = subprocess.run([str(executable), '--mode', mode, '--init-only'], cwd=temporary,
-                             env={**environment, 'NEU_JWXT_ACCESS_PASSWORD': secrets.token_urlsafe(24),
-                                  'NEU_JWXT_ADMIN_PASSWORD': 'short'}, capture_output=True, timeout=30, **options)
+                             env={**environment, 'NEU_JWXT_ACCESS_PASSWORD': 'short'}, capture_output=True, timeout=30, **options)
     if invalid.returncode == 0 or b'8 to 256' not in invalid.stderr:
-        raise ValueError('First initialization did not reject the invalid administrator password')
-    with sqlite3.connect(temporary / mode / 'toolbox.db') as database:
+        raise ValueError('First initialization did not reject the invalid site access password')
+    with closing(sqlite3.connect(temporary / mode / 'toolbox.db')) as database:
         if database.execute("SELECT count(*) FROM site_settings WHERE setting_key IN ('credential-access','credential-admin')").fetchone()[0]:
             raise ValueError('Failed initialization persisted partial site credentials')
     school_token = secrets.token_urlsafe(32)
@@ -165,7 +165,8 @@ def smoke_remote(executable, temporary, options, mode):
             with response:
                 if response.status != expected:
                     raise ValueError(f'{path}: expected {expected}, received {response.status}')
-                return json.load(response), response.headers
+                payload = json.load(response) if response.headers.get_content_type() == 'application/json' else None
+                return payload, response.headers
 
         with (temporary / f'{mode}.log').open('ab') as log:
             process = subprocess.Popen([str(executable), '--mode', mode, '--listen', f'127.0.0.1:{port}'],
@@ -190,42 +191,30 @@ def smoke_remote(executable, temporary, options, mode):
                 access_cookie = session_cookie(headers, 'neu_jwxt_access', 7 * 24 * 3600)
                 if call('/api/admin/accounts', cookies=access_cookie, expected=401)[0].get('error_code') != 'ADMIN_REQUIRED':
                     raise ValueError('Access cookie grants administrative access')
-                state, _ = call('/api/access/status', cookies=access_cookie)
-                if state.get('admin_in_settings') is not (iteration == 1):
-                    raise ValueError('Unexpected default administrator selection')
-                login_cookies = access_cookie
+                call('/admin', expected=404)
+                call('/api/admin/login', {'password': 'retired'}, access_cookie, expected=404)
+                if call('/api/admin/status', cookies=access_cookie)[0].get('eligible') is not False:
+                    raise ValueError('Site access alone unexpectedly granted administration')
                 if iteration == 1:
-                    call('/api/admin/login', {'password': admin}, access_cookie, expected=403)
-                    login_cookies += '; neu_toolbox_session=' + school_token
-                _, headers = call('/api/admin/login', {'password': admin}, login_cookies)
-                admin_cookie = session_cookie(headers, 'neu_toolbox_admin', 8 * 3600)
-                if call('/api/admin/accounts', cookies=admin_cookie, expected=401)[0].get('error_code') != 'ACCESS_REQUIRED':
-                    raise ValueError('Administrator cookie unexpectedly granted site access')
-                cookies = login_cookies + '; ' + admin_cookie
-                if iteration == 0:
-                    call('/api/admin/accounts', {'account': '20990001'}, cookies)
+                    school_cookie = 'neu_toolbox_session=' + school_token
+                    call('/api/admin/accounts', cookies=school_cookie, expected=401)
+                    cookies = access_cookie + '; ' + school_cookie
+                    if call('/api/admin/status', cookies=cookies)[0].get('eligible') is not True:
+                        raise ValueError('The first enabled school account was not granted administration')
                     if mode == 'remote-single':
-                        call('/api/admin/accounts', {'account': '20990002'}, cookies, expected=409)
-                    else:
-                        call('/api/admin/accounts', {'account': '20990002'}, cookies)
-                    call('/api/admin/accounts/20990001/disable', cookies=cookies, method='POST')
-                    if mode == 'remote-single':
-                        call('/api/admin/accounts', {'account': '20990002'}, cookies)
-                if mode == 'remote-single':
-                    call('/api/admin/accounts/20990001/enable', cookies=cookies, method='POST', expected=409)
-                listing, _ = call('/api/admin/accounts', cookies=cookies)
-                statuses = {row['account']: row['enabled'] for row in listing['accounts']}
-                if listing['deployment_mode'] != mode or statuses != {'20990001': False, '20990002': True}:
-                    raise ValueError('Admission state mismatch')
-                if iteration == 1 and listing.get('default_administrator') != '20990002':
-                    raise ValueError('The first enabled school account was not granted administration')
-                call('/api/admin/logout', cookies=cookies, method='POST')
-                call('/api/admin/accounts', cookies=cookies, expected=401)
+                        call('/api/admin/accounts/20990001/enable', cookies=cookies, method='POST', expected=409)
+                    listing, _ = call('/api/admin/accounts', cookies=cookies)
+                    statuses = {row['account']: row['enabled'] for row in listing['accounts']}
+                    if listing['deployment_mode'] != mode or statuses != {'20990001': False, '20990002': True} or listing.get('default_administrator') != '20990002':
+                        raise ValueError('Admission state or default administrator mismatch')
+                    call('/api/logout', cookies=cookies, method='POST')
+                    call('/api/admin/accounts', cookies=cookies, expected=401)
             finally:
                 process.terminate()
                 process.wait(timeout=15)
         if iteration == 0:
-            with sqlite3.connect(temporary / mode / 'toolbox.db') as database:
+            with closing(sqlite3.connect(temporary / mode / 'toolbox.db')) as database, database:
+                database.execute("INSERT INTO accounts(id, created_at, enabled) VALUES ('20990001', '2000-01-01T00:00:00Z', 0), ('20990002', '2000-01-02T00:00:00Z', 1)")
                 database.execute('''INSERT INTO sessions(token_hash, account_id, generation, expires_at)
                     SELECT ?, id, generation, ? FROM accounts WHERE id='20990002' AND enabled=1''',
                     (hashlib.sha256(school_token.encode()).hexdigest(), int(time.time()) + 600))

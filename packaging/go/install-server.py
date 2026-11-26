@@ -242,10 +242,8 @@ def install(args):
             try:
                 with CONFIG.open('x', encoding='ascii') as config:
                     config.write(f'NEU_JWXT_PUBLIC_ORIGIN={args.origin}\n')
-                    for role in ('ACCESS', 'ADMIN'):
-                        config.write(f'NEU_JWXT_{role}_PASSWORD={secrets.token_urlsafe(24)}\n')
-                    if args.admin_account:
-                        config.write(f'NEU_JWXT_ADMIN_ACCOUNT={args.admin_account}\n')
+                    config.write(f'NEU_JWXT_ACCESS_PASSWORD={secrets.token_urlsafe(24)}\n')
+                    config.write(f'NEU_JWXT_ADMIN_ACCOUNT={args.admin_account}\n')
                 with UNIT.open('x', encoding='utf-8') as unit:
                     unit_created = True
                     unit.write(unit_text)
@@ -610,8 +608,6 @@ def validate_release_options(parser, args):
 def install_options(parser, args):
     if args.port is not None and not 1 <= args.port <= 65535:
         parser.error('--port 必须为 1–65535。')
-    if args.admin_account is not None and not re.fullmatch(r'[0-9]{1,64}', args.admin_account):
-        parser.error('--admin-account 必须是数字学号。')
     if args.origin is None:
         if not sys.stdin.isatty():
             parser.error('非交互安装需要指定 --origin。')
@@ -626,6 +622,15 @@ def install_options(parser, args):
             raise ValueError()
     except ValueError:
         parser.error('--origin 必须是没有路径的 HTTPS 地址。')
+    if args.admin_account is None:
+        if not sys.stdin.isatty():
+            parser.error('非交互安装需要指定 --admin-account。')
+        try:
+            args.admin_account = input('请输入默认管理员的学号\n> ').strip()
+        except (EOFError, KeyboardInterrupt):
+            parser.exit(130, '安装已中止。\n')
+    if not re.fullmatch(r'[0-9]{1,64}', args.admin_account):
+        parser.error('--admin-account 必须是数字学号。')
 
 
 def main():
@@ -635,7 +640,7 @@ def main():
     install_parser.add_argument('--origin', help='工具箱的公开 HTTPS 地址。交互终端可按提示填写。')
     install_parser.add_argument('--mode', choices=('remote-single', 'remote-multi'), default='remote-multi')
     install_parser.add_argument('--port', type=int)
-    install_parser.add_argument('--admin-account', help='指定默认管理员的学号并自动准入该账号。')
+    install_parser.add_argument('--admin-account', help='指定默认管理员的学号并自动准入该账号。交互终端可按提示填写。')
     add_release_options(install_parser)
     update_parser = commands.add_parser('update', help='校验并升级现有 Go 服务。')
     add_release_options(update_parser)

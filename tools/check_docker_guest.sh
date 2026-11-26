@@ -52,14 +52,13 @@ tar xzf /mnt/bundle/bundle.tgz --strip-components=1 -C /tmp/image/app
 tar -C /tmp/image -cf - . | docker import - toolbox-candidate:test
 docker volume create toolbox-test
 access=$(cat /proc/sys/kernel/random/uuid)
-admin=$(cat /proc/sys/kernel/random/uuid)
 for pass in 1 2; do
     if [ "$pass" = 1 ]; then
-        set -- -e "NEU_JWXT_ACCESS_PASSWORD=$access" -e "NEU_JWXT_ADMIN_PASSWORD=$admin"
+        set -- -e "NEU_JWXT_ACCESS_PASSWORD=$access"
     else
         set --
     fi
-    docker run -d --name toolbox-test --user 10001:10001 --network host -v toolbox-test:/data -w /app -e NEU_JWXT_PUBLIC_ORIGIN=https://toolbox.example.invalid "$@" toolbox-candidate:test /app/toolbox --mode remote-multi --listen 127.0.0.1:8000 --data /data
+    docker run -d --name toolbox-test --user 10001:10001 --network host -v toolbox-test:/data -w /app -e NEU_JWXT_ADMIN_ACCOUNT=20990001 -e NEU_JWXT_PUBLIC_ORIGIN=https://toolbox.example.invalid "$@" toolbox-candidate:test /app/toolbox --mode remote-multi --listen 127.0.0.1:8000 --data /data
     base=http://localhost:8000/api
     curl -4fsS --retry 30 --retry-connrefused --retry-delay 1 "$base/health" | grep -q '"backend":"go"'
     jar=$(mktemp)
@@ -68,8 +67,7 @@ for pass in 1 2; do
     }
     login access "$access"
     test "$(curl -4s -b "$jar" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
-    login admin "$admin"
-    curl -4fsS -b "$jar" "$base/admin/accounts" >/dev/null
+    test "$(curl -4s -o /dev/null -w '%{http_code}' "${base%/api}/admin")" = 404
     rm -f "$jar"
     docker stop toolbox-test
     docker rm toolbox-test

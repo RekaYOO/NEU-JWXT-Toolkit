@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Button, Card, Checkbox, Col, Form, Input, InputNumber, Modal, Row, Select, Space, Spin, Switch, Tabs, Typography, message } from 'antd';
 import { FileTextOutlined, MailOutlined, SaveOutlined, SettingOutlined } from '@ant-design/icons';
@@ -20,7 +20,7 @@ import VersionUpdateCard from '../components/VersionUpdateCard';
 import AndroidCompanionSettings from '../components/AndroidCompanionSettings';
 import SystemMessagesPanel from '../components/SystemMessagesPanel';
 import AppearanceSettings from '../theme/AppearanceSettings';
-import AdminPage from './AdminPage';
+import SiteManagementPanel from './SiteManagementPanel';
 import './SystemSettingsPage.css';
 
 const { Title, Text } = Typography;
@@ -144,8 +144,6 @@ const NativeServerSettings = () => shellInfo?.kind === 'client' ? (
 export default function SystemSettingsPage({ adminIdentity = '', onSiteThemeSaved } = {}) {
   const [params, setParams] = useSearchParams();
   const [adminCheck, setAdminCheck] = useState(null);
-  const [adminRevision, setAdminRevision] = useState(0);
-  const resetVersions = useCallback(() => setAdminRevision(value => value + 1), []);
   useEffect(() => {
     if (!adminIdentity) return undefined;
     let current = true;
@@ -163,7 +161,7 @@ export default function SystemSettingsPage({ adminIdentity = '', onSiteThemeSave
   const tabs = [{
     key: 'config', label: <span><SettingOutlined /> 配置项</span>,
     children: <div className="system-settings-sections">
-      <VersionUpdateCard key={`${adminIdentity}:${adminRevision}`} managementInSettings={adminAvailable} />
+      <VersionUpdateCard key={adminIdentity} />
       <NativeServerSettings />
       <AndroidCompanionSettings />
       <CacheSettings />
@@ -181,7 +179,7 @@ export default function SystemSettingsPage({ adminIdentity = '', onSiteThemeSave
     key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded />,
   }];
   if (adminAvailable) tabs.push({
-    key: 'admin', label: '站点管理', children: <AdminPage key={adminIdentity} embedded onThemeSaved={onSiteThemeSaved} onPermissionChanged={resetVersions} />,
+    key: 'admin', label: '站点管理', children: <SiteManagementPanel key={adminIdentity} onThemeSaved={onSiteThemeSaved} />,
   });
   return <main className="system-settings-page">
     <div className="system-settings-heading"><SettingOutlined /><div>

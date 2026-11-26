@@ -109,14 +109,16 @@ describe('recovery link lifetime settings', () => {
     const page = identity => <MemoryRouter initialEntries={['/system-settings?tab=admin']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <SystemSettingsPage adminIdentity={identity} />
     </MemoryRouter>;
-    getAdminStatus.mockResolvedValue({ eligible: false, configured: true, authenticated: false });
+    getAdminStatus.mockResolvedValue({ eligible: false });
     await act(async () => root.render(page('ordinary')));
     expect(container.textContent).not.toContain('站点管理');
     expect(getAdminAccounts).not.toHaveBeenCalled();
-    getAdminStatus.mockResolvedValue({ eligible: true, configured: true, authenticated: false });
+    getAdminStatus.mockResolvedValue({ eligible: true });
+    getAdminAccounts.mockResolvedValue({ accounts: [{ account: '20990001', enabled: true }] });
     await act(async () => root.render(page('owner')));
-    expect(container.textContent).toContain('解锁站点管理');
-    expect(getAdminAccounts).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('20990001');
+    expect(getAdminAccounts).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.admin-content input[type="password"]')).toBeNull();
     await act(async () => root.render(page('')));
     expect(container.textContent).not.toContain('站点管理');
   });

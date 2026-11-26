@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/store"
 )
 
 func check(err error) {
@@ -52,10 +55,10 @@ func main() {
 		proxy.ServeHTTP(writer, request)
 	}))
 	defer server.Close()
-	access, admin := password(), password()
+	access := password()
 	command := exec.Command(executable, "--mode", "remote-multi", "--listen", address)
 	command.Dir = directory
-	command.Env = append(os.Environ(), "NEU_JWXT_DATA_DIR="+directory, "NEU_JWXT_PUBLIC_ORIGIN="+server.URL, "NEU_JWXT_ACCESS_PASSWORD="+access, "NEU_JWXT_ADMIN_PASSWORD="+admin)
+	command.Env = append(os.Environ(), "NEU_JWXT_DATA_DIR="+directory, "NEU_JWXT_PUBLIC_ORIGIN="+server.URL, "NEU_JWXT_ACCESS_PASSWORD="+access, "NEU_JWXT_ADMIN_ACCOUNT=20990001")
 	check(command.Start())
 	defer func() { command.Process.Kill(); command.Wait() }()
 	client := server.Client()
@@ -111,7 +114,20 @@ func main() {
 	if call("/api/admin/accounts", "", 401)["error_code"] != "ADMIN_REQUIRED" {
 		panic("admin boundary")
 	}
-	call("/api/admin/login", admin, 200)
+	database, err := store.Open(directory)
+	check(err)
+	defer database.Close()
+	token, err := database.CreateSession(context.Background(), "20990001", time.Minute)
+	check(err)
+	origin, err := url.Parse(server.URL)
+	check(err)
+	client.Jar.SetCookies(origin, []*http.Cookie{{Name: "neu_toolbox_session", Value: token, Path: "/", Secure: true}})
 	call("/api/admin/accounts", "", 200)
-	fmt.Println("HTTPS: mobile health, anonymous denial, access login, admin denial and admin login passed")
+	response, err := client.Get(server.URL + "/admin")
+	check(err)
+	response.Body.Close()
+	if response.StatusCode != 404 {
+		panic("retired administrator page is still available")
+	}
+	fmt.Println("HTTPS: mobile health, site access, account-based administrator authorization and retired route passed")
 }

@@ -63,6 +63,8 @@
 curl -fL --retry 3 --proto '=https' -o install.sh https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest/download/install.sh && bash ./install.sh install
 ```
 
+首次安装按提示填写公开 HTTPS 地址和默认管理员学号。该账号登录后，在「系统设置 → 站点管理」维护准入名单。
+
 已有服务时，使用同一个脚本执行 `bash ./install.sh update`。也可用 `status` 查看服务状态、`recover` 恢复中断的维护、`rollback --restore-data` 切回上一个检查点。Windows 更新、Linux 安装参数、备份与旧资料迁移见[安装与维护](docs/部署/Go运行包.md)。
 
 ## 登录与使用

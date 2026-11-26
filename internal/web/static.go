@@ -63,12 +63,22 @@ func encodingQuality(header, encoding string) float64 {
 func (handler *Static) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	response.Header().Set("X-Content-Type-Options", "nosniff")
 	response.Header().Set("Referrer-Policy", "same-origin")
+	name := strings.TrimPrefix(request.URL.Path, "/")
+	firstSegment, _, _ := strings.Cut(name, "/")
+	if strings.EqualFold(firstSegment, "admin") {
+		response.Header().Set("Cache-Control", "no-store")
+		http.NotFound(response, request)
+		return
+	}
+	if firstSegment == "api" {
+		http.NotFound(response, request)
+		return
+	}
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		response.Header().Set("Allow", "GET, HEAD")
 		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	name := strings.TrimPrefix(request.URL.Path, "/")
 	isRecovery := recoveryPage.MatchString(name)
 	if isRecovery {
 		response.Header().Set("Referrer-Policy", "no-referrer")
@@ -83,10 +93,6 @@ func (handler *Static) ServeHTTP(response http.ResponseWriter, request *http.Req
 			http.NotFound(response, request)
 			return
 		}
-	}
-	if name == "api" || strings.HasPrefix(name, "api/") {
-		http.NotFound(response, request)
-		return
 	}
 	allowed := strings.HasPrefix(name, "static/")
 	for _, filename := range []string{"index.html", "asset-manifest.json", "manifest.webmanifest", "favicon.ico", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "robots.txt"} {

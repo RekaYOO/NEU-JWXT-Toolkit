@@ -35,8 +35,8 @@ async function main() {
       req.pipe(upstream);
     });
     const origin = `https://127.0.0.1:${await listen(proxy)}`;
-    const access = randomBytes(24).toString('hex'), admin = randomBytes(24).toString('hex');
-    child = spawn(executable, ['--listen', `127.0.0.1:${port}`, '--mode', 'remote-multi', '--public-origin', origin], { cwd: temp, windowsHide: true, stdio: 'ignore', env: { ...process.env, NEU_JWXT_DATA_DIR: path.join(temp, 'data'), NEU_JWXT_ACCESS_PASSWORD: access, NEU_JWXT_ADMIN_PASSWORD: admin } });
+    const access = randomBytes(24).toString('hex');
+    child = spawn(executable, ['--listen', `127.0.0.1:${port}`, '--mode', 'remote-multi', '--public-origin', origin], { cwd: temp, windowsHide: true, stdio: 'ignore', env: { ...process.env, NEU_JWXT_DATA_DIR: path.join(temp, 'data'), NEU_JWXT_ACCESS_PASSWORD: access, NEU_JWXT_ADMIN_ACCOUNT: '20990001' } });
     stopped = once(child, 'exit');
     browser = await chromium.launch({ channel: 'chrome', args: [`--ignore-certificate-errors-spki-list=${pin}`] });
     const page = await browser.newPage();
@@ -57,37 +57,11 @@ async function main() {
     await submit.click();
     await page.getByPlaceholder('学号', { exact: true }).waitFor();
     assert.equal(await call('/api/admin/accounts'), 401);
-    await page.goto(`${origin}/admin`);
-    await page.getByLabel('管理员密码').fill(admin);
-    await page.getByRole('button', { name: '进入管理' }).click();
-    const account = '20990001';
-    const unaffected = '20990002';
-    for (const identity of [account, unaffected]) {
-      await page.getByLabel('准入学号').fill(identity);
-      await page.getByRole('button', { name: '添加账号' }).click();
-      await page.getByRole('listitem').filter({ hasText: identity }).getByText('准入已启用', { exact: true }).waitFor();
-    }
-    const row = page.getByRole('listitem').filter({ hasText: account });
-    const verifyEnabled = async enabled => {
-      await row.getByText(enabled ? '准入已启用' : '准入已停用', { exact: true }).waitFor();
-      const accounts = await page.evaluate(async () => (await (await fetch('/api/admin/accounts')).json()).accounts);
-      assert.equal(accounts.find(item => item.account === account)?.enabled, enabled);
-      assert.equal(accounts.find(item => item.account === unaffected)?.enabled, true);
-      await page.getByRole('listitem').filter({ hasText: unaffected }).getByText('准入已启用', { exact: true }).waitFor();
-    };
-    await verifyEnabled(true);
-    for (const [action, enabled] of [['停用账号', false], ['恢复准入', true], ['移出准入名单', false], ['恢复准入', true]]) {
-      await row.getByRole('button', { name: action }).click();
-      await page.getByRole('dialog').getByRole('button', { name: /^确\s*认$/ }).click();
-      await verifyEnabled(enabled);
-    }
-    assert.equal(await call('/api/admin/accounts'), 200);
-    for (const name of ['neu_jwxt_access', 'neu_toolbox_admin']) {
-      const cookie = (await page.context().cookies(origin)).find(item => item.name === name);
-      assert(cookie?.httpOnly && cookie.secure && cookie.sameSite === 'Lax');
-    }
-    await page.getByRole('button', { name: '退出站点', exact: true }).click();
-    await password.waitFor();
+    const cookie = (await page.context().cookies(origin)).find(item => item.name === 'neu_jwxt_access');
+    assert(cookie?.httpOnly && cookie.secure && cookie.sameSite === 'Lax');
+    assert.equal(await call('/api/admin/login', { password: 'retired' }), 404);
+    assert.equal(await call('/admin'), 404);
+    assert.equal(await call('/api/access/logout', {}), 200);
     assert.equal(await call('/api/admin/accounts'), 401);
     await page.reload();
     await password.waitFor();
@@ -95,9 +69,7 @@ async function main() {
     await submit.click();
     await page.getByPlaceholder('学号', { exact: true }).waitFor();
     assert.equal(await call('/api/admin/accounts'), 401);
-    await page.goto(`${origin}/admin`);
-    await page.getByLabel('管理员密码').waitFor();
-    console.log('PASS Chrome HTTPS: gateway retry, admin admission/disable/enable, secure cookies, site logout button, no admin access after gateway re-login');
+    console.log('PASS Chrome HTTPS: gateway retry, secure cookie, site logout and retired administrator routes');
   } finally {
     await browser?.close();
     if (child && child.exitCode === null) child.kill();

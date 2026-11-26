@@ -200,7 +200,7 @@ func (api *API) Boundary(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if api.gatewayRequired && strings.HasPrefix(request.URL.Path, "/api/") && !publicSitePath(request.URL.Path) && !api.siteAuthenticated(request, "access") {
+		if api.gatewayRequired && strings.HasPrefix(request.URL.Path, "/api/") && !publicSitePath(request.URL.Path) && !api.siteAuthenticated(request) {
 			writeJSON(response, 401, map[string]string{"detail": "需要先验证服务器访问密码", "code": "ACCESS_REQUIRED", "error_code": "ACCESS_REQUIRED"})
 			return
 		}

@@ -26,9 +26,7 @@ const { chromium } = require(require.resolve('playwright', { paths: [path.resolv
     for (const width of [320, 375, 430, 768, 1024, 1440]) {
       const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block', reducedMotion: 'reduce' });
       let access = false;
-      let admin = false;
-      let adminInSettings = false;
-      let schoolAccount = '';
+      let schoolAccount = '20990001';
       let enabled = true;
       const writes = [];
       const unexpected = [];
@@ -39,24 +37,21 @@ const { chromium } = require(require.resolve('playwright', { paths: [path.resolv
         if (url.origin !== origin) return route.abort();
         if (!url.pathname.startsWith('/api/')) return route.continue();
         let data = {};
-        if (url.pathname === '/api/access/status') data = { required: true, configured: true, authenticated: access, admin_in_settings: adminInSettings };
+        if (url.pathname === '/api/access/status') data = { required: true, configured: true, authenticated: access };
         else if (url.pathname === '/api/access/login') { access = true; data = { success: true }; }
-        else if (url.pathname === '/api/client/bootstrap' && adminInSettings) data = { runtime: { profile: 'server' }, auth: { is_logged_in: true, current_user: schoolAccount } };
-        else if (url.pathname === '/api/admin/status') data = { configured: true, authenticated: admin, eligible: adminInSettings && schoolAccount === '20990001', deployment_mode: 'remote-multi' };
-        else if (url.pathname === '/api/admin/login') { admin = true; data = { success: true }; }
-        else if (url.pathname === '/api/admin/logout') { admin = false; data = { success: true }; }
-        else if (url.pathname === '/api/admin/appearance' && route.request().method() === 'GET' && admin) data = { site_default: 'sakura' };
+        else if (url.pathname === '/api/client/bootstrap') data = { runtime: { profile: 'server' }, auth: { is_logged_in: true, current_user: schoolAccount } };
+        else if (url.pathname === '/api/admin/status') data = { eligible: schoolAccount === '20990001' };
+        else if (url.pathname === '/api/admin/appearance' && route.request().method() === 'GET' && schoolAccount === '20990001') data = { site_default: 'sakura' };
         else if (url.pathname === '/api/admin/accounts') {
-          data = adminInSettings
-            ? { default_administrator: '20990001', accounts: [{ account: '20990001', enabled: true }, { account: '20990002', enabled: true }] }
-            : { accounts: [{ account: '20990001', enabled }] };
+          assert.equal(schoolAccount, '20990001');
+          data = { deployment_mode: 'remote-multi', default_administrator: '20990001', accounts: [{ account: '20990001', enabled: true }, { account: '20990002', enabled }] };
         }
-        else if (adminInSettings && ['/api/system-settings/cache', '/api/system-settings/mail', '/api/system-settings/auth-recovery', '/api/status', '/api/appearance', '/api/avatar', '/api/cache/settings', '/api/runtime', '/api/health'].includes(url.pathname)) data = {};
-        else if (adminInSettings && url.pathname === '/api/client/updates') data = { updates: [] };
-        else if (adminInSettings && url.pathname === '/api/cache/events') data = { events: [] };
-        else if (adminInSettings && url.pathname === '/api/auth/pending') data = { pending_auth: null };
-        else if (adminInSettings && ['/api/user/avatar/cache', '/api/cache/refresh/avatar'].includes(url.pathname)) data = {};
-        else if (/^\/api\/admin\/accounts\/20990001\/(stop|disable|remove|enable)$/.test(url.pathname)) {
+        else if (['/api/system-settings/cache', '/api/system-settings/mail', '/api/system-settings/auth-recovery', '/api/status', '/api/appearance', '/api/avatar', '/api/cache/settings', '/api/runtime', '/api/health'].includes(url.pathname)) data = {};
+        else if (url.pathname === '/api/client/updates') data = { updates: [] };
+        else if (url.pathname === '/api/cache/events') data = { events: [] };
+        else if (url.pathname === '/api/auth/pending') data = { pending_auth: null };
+        else if (['/api/user/avatar/cache', '/api/cache/refresh/avatar'].includes(url.pathname)) data = {};
+        else if (/^\/api\/admin\/accounts\/20990002\/(stop|disable|remove|enable)$/.test(url.pathname)) {
           assert.equal(route.request().method(), 'POST');
           writes.push(url.pathname.split('/').pop());
           if (writes.at(-1) === 'disable') enabled = false;
@@ -65,14 +60,17 @@ const { chromium } = require(require.resolve('playwright', { paths: [path.resolv
         } else { unexpected.push(url.pathname); return route.fulfill({ status: 404, json: {} }); }
         return route.fulfill({ json: data });
       });
-      await page.goto(`${origin}/admin`);
+      await page.goto(`${origin}/system-settings?tab=admin`);
       await page.getByLabel('访问密码').fill('synthetic-access-password');
       await page.getByRole('button', { name: '进入工具箱' }).click();
-      await page.getByLabel('管理员密码').fill('synthetic-admin-password');
-      await page.getByRole('button', { name: '进入管理' }).click();
-      await page.getByText('20990001', { exact: true }).waitFor();
+      await page.getByRole('heading', { name: '准入名单' }).waitFor();
+      assert.equal(await page.locator('.admin-content input[type=password]').count(), 0);
+      const ownerRow = page.getByRole('listitem').filter({ hasText: '20990001' });
+      const memberRow = page.getByRole('listitem').filter({ hasText: '20990002' });
+      await ownerRow.getByText('默认管理员', { exact: true }).waitFor();
+      assert.equal(await ownerRow.getByRole('button', { name: '停用账号', exact: true }).count(), 0);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
-      await page.getByRole('button', { name: '停止运行', exact: true }).click();
+      await memberRow.getByRole('button', { name: '停止运行', exact: true }).click();
       assert.deepEqual(writes, []);
       await page.getByRole('button', { name: /取\s*消/ }).click();
       assert.deepEqual(writes, []);
@@ -82,28 +80,10 @@ const { chromium } = require(require.resolve('playwright', { paths: [path.resolv
       assert.deepEqual(writes, ['disable']);
       await page.getByRole('button', { name: '恢复准入', exact: true }).click();
       await page.getByRole('button', { name: /确\s*认/ }).click();
-      await page.getByText('准入已启用', { exact: true }).waitFor();
+      await memberRow.getByText('准入已启用', { exact: true }).waitFor();
       assert.deepEqual(writes, ['disable', 'enable']);
       await page.getByRole('dialog').waitFor({ state: 'hidden' });
-      await page.screenshot({ path: path.join(screenshots, `admin-${width}.png`), fullPage: true });
-      await page.getByRole('button', { name: '退出管理', exact: true }).click();
-      await page.getByLabel('管理员密码').waitFor();
-      assert.equal(await page.getByText('20990001', { exact: true }).count(), 0);
-      adminInSettings = true;
-      schoolAccount = '20990001';
-      await page.goto(`${origin}/admin`);
-      await page.waitForURL('**/system-settings?tab=admin');
-      await page.getByRole('heading', { name: '解锁站点管理' }).waitFor();
-      await page.getByLabel('管理员密码').fill('synthetic-admin-password');
-      await page.getByRole('button', { name: '进入管理' }).click();
-      await page.getByRole('heading', { name: '准入名单' }).waitFor();
-      const ownerRow = page.getByRole('listitem').filter({ hasText: '20990001' });
-      await ownerRow.getByText('默认管理员', { exact: true }).waitFor();
-      assert.equal(await ownerRow.getByRole('button', { name: '停用账号', exact: true }).count(), 0);
-      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
       await page.screenshot({ path: path.join(screenshots, `admin-settings-${width}.png`), fullPage: true });
-      await page.getByRole('button', { name: '退出管理', exact: true }).click();
-      await page.getByRole('heading', { name: '解锁站点管理' }).waitFor();
       schoolAccount = '20990002';
       await page.goto(`${origin}/system-settings?tab=admin`);
       await page.getByText('应用版本', { exact: true }).waitFor();
@@ -112,7 +92,7 @@ const { chromium } = require(require.resolve('playwright', { paths: [path.resolv
       assert.deepEqual(errors, []);
       await page.close();
     }
-    console.log(`PASS legacy administration and account-bound settings across six viewports; screenshots: ${screenshots}`);
+    console.log(`PASS account-bound settings without administrator password across six viewports; screenshots: ${screenshots}`);
   } finally {
     await browser?.close();
     await new Promise(resolve => server.close(resolve));

@@ -80,7 +80,7 @@ func run() (result error) {
 	container := flag.Bool("container", false, "allow an unspecified listening IP inside a remote container")
 	proxies := flag.String("trusted-proxies", "127.0.0.1/32,::1/128", "comma-separated reverse proxy IP prefixes")
 	initialize := flag.Bool("init-only", false, "initialize deployment credentials without starting HTTP")
-	reset := flag.String("reset-site-password", "", "replace access or admin password from its environment variable")
+	reset := flag.String("reset-site-password", "", "replace access password from NEU_JWXT_ACCESS_PASSWORD")
 	flag.Parse()
 	if *showVersion {
 		payload, err := os.ReadFile(paths.Version)
@@ -150,16 +150,10 @@ func run() (result error) {
 	}
 	defer accounts.Close()
 	if *reset != "" {
-		password := ""
-		switch *reset {
-		case "access":
-			password = os.Getenv("NEU_JWXT_ACCESS_PASSWORD")
-		case "admin":
-			password = os.Getenv("NEU_JWXT_ADMIN_PASSWORD")
-		default:
-			return fmt.Errorf("reset-site-password must be access or admin")
+		if *reset != "access" {
+			return fmt.Errorf("reset-site-password must be access")
 		}
-		return database.SetSitePassword(context.Background(), *reset, password, true)
+		return database.SetSitePassword(context.Background(), "access", os.Getenv("NEU_JWXT_ACCESS_PASSWORD"), true)
 	}
 	version := "initializing"
 	if !*initialize {
@@ -189,7 +183,7 @@ func run() (result error) {
 		return err
 	}
 	api.SecureCookies = *mode != "local-single"
-	if err := api.ConfigureRemoteAccess(context.Background(), os.Getenv("NEU_JWXT_ACCESS_PASSWORD"), os.Getenv("NEU_JWXT_ADMIN_PASSWORD")); err != nil {
+	if err := api.ConfigureRemoteAccess(context.Background(), os.Getenv("NEU_JWXT_ACCESS_PASSWORD")); err != nil {
 		return err
 	}
 	if err := api.ConfigureDefaultAdministrator(context.Background(), os.Getenv("NEU_JWXT_ADMIN_ACCOUNT")); err != nil {

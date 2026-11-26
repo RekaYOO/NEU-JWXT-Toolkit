@@ -35,23 +35,18 @@ health() {
   test "$(curl -4s -o /dev/null -w '%{http_code}' "$base/status")" = 401
 }
 
-admin_login() {
+admin_session() {
   local cookies=$1
   jq -nc '{password:env.TEST_ACCESS_PASSWORD}' | curl -4fsS -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/access/login" | jq -e '.success == true'
-  local eligibility
-  eligibility=$(curl -4fsS -b "$cookies" "$base/access/status" | jq -r '.admin_in_settings')
-  if [[ $eligibility == true ]]; then
-    sudo -u neu-toolbox env NEU_TOOLBOX_QA_MAINTENANCE=1 "$workdir/maintenance.test" -test.run '^TestLinuxMaintenanceFixtureSession$' |
-      awk -F '\t' '$6 == "neu_toolbox_session" { print }' >> "$cookies"
-  fi
-  jq -nc '{password:env.TEST_ADMIN_PASSWORD}' | curl -4fsS -b "$cookies" -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" | jq -e '.success == true'
+  sudo -u neu-toolbox env NEU_TOOLBOX_QA_MAINTENANCE=1 "$workdir/maintenance.test" -test.run '^TestLinuxMaintenanceFixtureSession$' |
+    awk -F '\t' '$6 == "neu_toolbox_session" { print }' >> "$cookies"
+  curl -4fsS -b "$cookies" "$base/admin/status" | jq -e '.eligible == true'
 }
 
 if bash "$installer" rollback --restore-data; then
   exit 1
 fi
 health "$version"
-curl -4fsS "$base/access/status" | jq -e '.admin_in_settings == true'
 unit_checksum=$(sha256sum /etc/systemd/system/neu-toolbox.service)
 config_checksum=$(sudo sha256sum /etc/neu-toolbox.env)
 key_checksum=$(sudo sha256sum /var/lib/neu-toolbox/vault.key)
@@ -67,7 +62,7 @@ if bash "$installer" update --archive "$good_archive" --manifest "$workdir/bad-d
 fi
 test "$old_pid" = "$(systemctl show --property=MainPID --value neu-toolbox)"
 
-admin_login "$workdir/before-update"
+admin_session "$workdir/before-update"
 bash "$installer" update --archive "$good_archive" --manifest "$good_manifest"
 health "$previous_version"
 curl -4fsS -b "$workdir/before-update" "$base/admin/accounts" | jq -e '.accounts | any(.account == "20990001")'
@@ -88,12 +83,12 @@ fi
 bash "$installer" rollback --restore-data
 health "$version"
 test "$(curl -4s -b "$workdir/before-update" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
-admin_login "$workdir/after-rollback"
+admin_session "$workdir/after-rollback"
 accounts=$(curl -4fsS -b "$workdir/after-rollback" "$base/admin/accounts")
 jq -e '(.accounts | any(.account == "20990001")) and (.accounts | all(.account != "20990002"))' <<< "$accounts"
 bash "$installer" rollback --restore-data
 health "$previous_version"
-admin_login "$workdir/after-second-rollback"
+admin_session "$workdir/after-second-rollback"
 curl -4fsS -b "$workdir/after-second-rollback" "$base/admin/accounts" | jq -e '.accounts | any(.account == "20990002")'
 bash "$installer" recover
 test "$(stat -c '%a %U %G' "$maintenance")" = '700 root root'

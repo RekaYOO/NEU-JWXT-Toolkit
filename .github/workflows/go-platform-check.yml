@@ -91,11 +91,11 @@ jobs:
           invalid=$(mktemp)
           trap 'rm -f "$installer" "$cookies" "$invalid"; sudo systemctl stop neu-toolbox neu-jwxt-toolkit || true' EXIT
           jq '.assets["linux-amd64"].sha256 = ("0" * 64)' "$manifest" > "$invalid"
-          if bash "$installer" --origin "$origin" --archive "$archive" --manifest "$invalid"; then
+          if bash "$installer" --origin "$origin" --admin-account 20990001 --archive "$archive" --manifest "$invalid"; then
             exit 1
           fi
           test ! -e /opt/neu-toolbox
-          bash "$installer" --origin "$origin" --version "v$version" --archive "$archive" --manifest "$manifest"
+          bash "$installer" --origin "$origin" --admin-account 20990001 --version "v$version" --archive "$archive" --manifest "$manifest"
           go run tools/check_go_https.go /opt/neu-toolbox/toolbox
           sudo systemctl is-active --quiet neu-jwxt-toolkit
           test "$(sudo systemctl is-enabled neu-toolbox || true)" = disabled
@@ -105,15 +105,12 @@ jobs:
           test "$(stat -c '%a %U %G' /var/lib/neu-toolbox)" = '700 neu-toolbox neu-toolbox'
           test "$(curl -4s -o /dev/null -w '%{http_code}' "$base/status")" = 401
           export TEST_ACCESS_PASSWORD="$(sudo sed -n 's/^NEU_JWXT_ACCESS_PASSWORD=//p' /etc/neu-toolbox.env)"
-          export TEST_ADMIN_PASSWORD="$(sudo sed -n 's/^NEU_JWXT_ADMIN_PASSWORD=//p' /etc/neu-toolbox.env)"
-          printf 'NEU_JWXT_PUBLIC_ORIGIN=https://toolbox.example.invalid\n' | sudo tee /etc/neu-toolbox.env >/dev/null
+          sudo sed -i '/^NEU_JWXT_ACCESS_PASSWORD=/d' /etc/neu-toolbox.env
           sudo systemctl restart neu-toolbox
           curl -4fsS --retry 20 --retry-delay 1 --retry-connrefused "$base/health" | jq -e --arg version "$version" '.backend == "go" and .version == $version'
           jq -nc '{password:env.TEST_ACCESS_PASSWORD}' | curl -4fsS -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/access/login" | jq -e '.success == true'
           test "$(curl -4s -b "$cookies" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
-          jq -nc '{password:env.TEST_ADMIN_PASSWORD}' | curl -4fsS -b "$cookies" -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" | jq -e '.success == true'
-          curl -4fsS -b "$cookies" -H 'Content-Type: application/json' -d '{"account":"20990001"}' "$base/admin/accounts" >/dev/null
-          if bash "$installer" --origin "$origin" --archive "$archive" --manifest "$manifest"; then
+          if bash "$installer" --origin "$origin" --admin-account 20990001 --archive "$archive" --manifest "$manifest"; then
             exit 1
           fi
           sudo install -d -m 0700 /var/lib/neu-jwxt-toolkit/成绩
@@ -165,6 +162,9 @@ jobs:
           tar -xOzf "$archive" "NEU-JWXT-Toolkit-${version}-linux-amd64-go/install.sh" > "$installer"
           test "$(systemctl show --property=LoadState --value neu-jwxt-toolkit)" = not-found
           test "$(systemctl show --property=LoadState --value neu-toolbox)" = not-found
+          if bash "$installer" install --origin https://toolbox.example.invalid --archive "$archive" --manifest "$manifest"; then
+            exit 1
+          fi
           bash "$installer" install --origin https://toolbox.example.invalid --mode remote-single --admin-account 20990001 --archive "$archive" --manifest "$manifest"
           systemctl is-enabled --quiet neu-toolbox
           systemctl is-active --quiet neu-toolbox
@@ -175,14 +175,14 @@ jobs:
           curl -4fsS "$base/health" | jq -e --arg version "$version" '.backend == "go" and .version == $version and .deployment_mode == "remote-single"'
           test "$(curl -4s -o /dev/null -w '%{http_code}' "$base/status")" = 401
           export TEST_ACCESS_PASSWORD="$(sudo sed -n 's/^NEU_JWXT_ACCESS_PASSWORD=//p' /etc/neu-toolbox.env)"
-          export TEST_ADMIN_PASSWORD="$(sudo sed -n 's/^NEU_JWXT_ADMIN_PASSWORD=//p' /etc/neu-toolbox.env)"
+          if sudo grep -q '^NEU_JWXT_ADMIN_PASSWORD=' /etc/neu-toolbox.env; then exit 1; fi
           sudo sed -i '/^NEU_JWXT_.*_PASSWORD=/d' /etc/neu-toolbox.env
           sudo systemctl restart neu-toolbox
           curl -4fsS --retry 20 --retry-delay 1 --retry-connrefused "$base/health" | jq -e --arg version "$version" '.version == $version'
           jq -nc '{password:env.TEST_ACCESS_PASSWORD}' | curl -4fsS -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/access/login" | jq -e '.success == true'
           test "$(curl -4s -b "$cookies" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
-          curl -4fsS -b "$cookies" "$base/access/status" | jq -e '.admin_in_settings == true'
-          jq -nc '{password:env.TEST_ADMIN_PASSWORD}' | curl -4s -b "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" -o /dev/null -w '%{http_code}' | grep -qx 403
+          curl -4fsS -b "$cookies" "$base/admin/status" | jq -e '.eligible == false'
+          test "$(curl -4s -o /dev/null -w '%{http_code}' http://localhost:8000/admin)" = 404
   debian-reboot:
     needs: linux-archive
     runs-on: ubuntu-latest
@@ -266,7 +266,7 @@ jobs:
         run: |
           set -euo pipefail
           export NEU_JWXT_ACCESS_PASSWORD="$(openssl rand -hex 24)"
-          export NEU_JWXT_ADMIN_PASSWORD="$(openssl rand -hex 24)"
+          export NEU_JWXT_ADMIN_ACCOUNT=20990001
           export NEU_JWXT_PUBLIC_ORIGIN=https://toolbox.example.invalid
           compose=(docker compose -p "toolbox-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -f packaging/go/compose.yaml)
           version=$(cat VERSION)
@@ -285,11 +285,10 @@ jobs:
             base=http://localhost:8000/api
             jq -nc '{password:env.NEU_JWXT_ACCESS_PASSWORD}' | curl -4fsS -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/access/login" | jq -e '.success == true'
             test "$(curl -4s -b "$cookies" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
-            jq -nc '{password:env.NEU_JWXT_ADMIN_PASSWORD}' | curl -4fsS -b "$cookies" -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" | jq -e '.success == true'
-            curl -4fsS -b "$cookies" "$base/admin/accounts" >/dev/null
+            curl -4fsS -b "$cookies" "$base/admin/status" | jq -e '.eligible == false'
             rm -f "$cookies"
             if [ "$pass" = 1 ]; then
-              NEU_JWXT_ACCESS_PASSWORD= NEU_JWXT_ADMIN_PASSWORD= "${compose[@]}" up -d --force-recreate
+              NEU_JWXT_ACCESS_PASSWORD= "${compose[@]}" up -d --force-recreate
               test "$("${compose[@]}" ps -q toolbox)" != "$container"
             fi
           done

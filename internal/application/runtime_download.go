@@ -284,7 +284,7 @@ func (api *API) persistUpdateJobLocked() error {
 }
 
 func (api *API) mayManageUpdates(request *http.Request) bool {
-	return api.accounts.mode == "local-single" || api.siteAuthenticated(request, "admin")
+	return api.accounts.mode == "local-single" || api.isDefaultAdministrator(request)
 }
 
 func (api *API) runtimeDownload(response http.ResponseWriter, request *http.Request) {

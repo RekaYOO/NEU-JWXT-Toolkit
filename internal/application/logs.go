@@ -35,7 +35,7 @@ func (api *API) logs(response http.ResponseWriter, request *http.Request) {
 }
 
 func (api *API) serveLogs(response http.ResponseWriter, request *http.Request, writeFile func(context.Context, store.DiagnosticQuery, io.Writer) error) {
-	query := store.DiagnosticQuery{All: api.siteAuthenticated(request, "admin") || api.accounts.mode == "local-single"}
+	query := store.DiagnosticQuery{All: api.isDefaultAdministrator(request) || api.accounts.mode == "local-single"}
 	var generation int64
 	if !query.All {
 		session, ok := api.requireSession(response, request)
@@ -106,7 +106,7 @@ func (api *API) serveLogs(response http.ResponseWriter, request *http.Request, w
 			api.documentError(response, err)
 			return
 		}
-		if api.gatewayRequired && !api.siteAuthenticated(request, "access") {
+		if api.gatewayRequired && !api.siteAuthenticated(request) {
 			writeJSON(response, 401, map[string]string{"detail": "需要重新验证网站访问密码", "error_code": "ACCESS_REQUIRED"})
 			return
 		}

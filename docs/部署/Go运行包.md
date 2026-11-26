@@ -10,7 +10,7 @@
 | Linux 原版 | 保留旧 `neu-jwxt-toolkit` 服务、更新监听、目录和反代配置，按下文的并行试运行步骤切换。旧服务的安装脚本和自动更新只用于旧 Python 包。 |
 | Android 原版 | 覆盖安装需要相同包名和签名，版本码不得降低。正式包、调试包及本地资料迁移需要分别核验，换包前先保留原版。 |
 
-导入前核对支持的资料和未迁移项。远程服务首次启动需要初始化网站访问密码和管理员密码。学校会话需通过新版登录重新建立，共享邮件、追踪和恢复设置需要显式指定归属。回退切换后，两边新增的本地资料不会自动合并。见[旧版资料导入](旧版资料导入.md)。
+导入前核对支持的资料和未迁移项。远程服务首次启动需要初始化网站访问密码并指定默认管理员学号。学校会话需通过新版登录重新建立，共享邮件、追踪和恢复设置需要显式指定归属。回退切换后，两边新增的本地资料不会自动合并。见[旧版资料导入](旧版资料导入.md)。
 
 ### Windows 更新与回退
 
@@ -31,7 +31,7 @@
 | 使用场景 | 模式 | 首次使用 |
 | --- | --- | --- |
 | 个人电脑 | `local-single` | 双击 `启动工具箱.exe`，在本机浏览器登录。 |
-| 一人通过网络访问 | `remote-single` | 在新数据目录初始化网站密码和管理员密码，配置自己的学号为默认管理员。 |
+| 一人通过网络访问 | `remote-single` | 在新数据目录初始化网站访问密码，配置自己的学号为默认管理员。 |
 | 多人通过网络访问 | `remote-multi` | 使用随包 Linux 服务的默认模式，配置默认管理员学号，然后在系统设置中管理准入。每位用户用自己的学校账号登录。 |
 
 远程部署的监听地址、数据目录、密码环境变量和反向代理配置见下方 Linux 服务与 HTTPS 章节。
@@ -54,23 +54,23 @@
 
 ### 从 GitHub 一键安装
 
-在 Linux amd64 的 systemd 主机上准备 Bash、`curl`、Python 3.11+ 和 `sudo`。安装时按提示输入公开 HTTPS 地址。安装入口从项目 [GitHub Releases](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases) 首次发布 `install.sh` 附件起生效。
+在 Linux amd64 的 systemd 主机上准备 Bash、`curl`、Python 3.11+ 和 `sudo`。安装时按提示输入公开 HTTPS 地址和默认管理员学号。安装入口见 [GitHub Releases](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases)。
 
 ```bash
 curl -fL --retry 3 --proto '=https' -o install.sh https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest/download/install.sh && bash ./install.sh
 ```
 
-脚本读取该仓库最新正式 Release 的 Go 清单，再从清单对应标签下载 Linux 安装包。核验大小与 SHA-256 后安装 systemd 服务，检查版本和匿名访问保护。默认监听 `127.0.0.1:8000`。检测到旧 Python 服务时默认使用 `127.0.0.1:18000` 试运行，保留旧服务和原有反代，验证后按迁移步骤切换。可以用 `bash ./install.sh --help` 查看参数。无人值守安装传入 `--origin`，可配合 `--admin-account <学号>`、`--port`、`--mode remote-single` 和 `--version v<版本号>`。离线安装传入 `--archive <归档> --manifest <同版本官方清单>`。
+脚本读取该仓库最新正式 Release 的 Go 清单，再从清单对应标签下载 Linux 安装包。核验大小与 SHA-256 后安装 systemd 服务，检查版本和匿名访问保护。默认监听 `127.0.0.1:8000`。检测到旧 Python 服务时默认使用 `127.0.0.1:18000` 试运行，保留旧服务和原有反代，验证后按迁移步骤切换。可以用 `bash ./install.sh --help` 查看参数。无人值守安装必须传入 `--origin` 和 `--admin-account <学号>`，另可指定 `--port`、`--mode remote-single` 和 `--version v<版本号>`。离线安装传入 `--archive <归档> --manifest <同版本官方清单>`。
 
-初始网站密码和管理员密码保存在仅 root 可读的 `/etc/neu-toolbox.env`。按下文配置 HTTPS 反向代理，并验证站点及管理员登录。安装程序遇到已有的 Go 安装或数据目录会退出。若首次启动失败，查看 `journalctl -u neu-toolbox`，修正配置后可使用 `systemctl start neu-toolbox` 复验，再按需启用开机启动。
+初始网站访问密码保存在仅 root 可读的 `/etc/neu-toolbox.env`。按下文配置 HTTPS 反向代理，并验证网站访问和默认管理员账号。安装程序遇到已有的 Go 安装或数据目录会退出。若首次启动失败，查看 `journalctl -u neu-toolbox`，修正配置后可使用 `systemctl start neu-toolbox` 复验，再按需启用开机启动。
 
 ### 指定默认管理员学号
 
-在 `/etc/neu-toolbox.env` 添加 `NEU_JWXT_ADMIN_ACCOUNT=你的学号`，然后执行 `sudo systemctl restart neu-toolbox`。用该学号登录教务，进入「系统设置 → 站点管理」，输入安装时配置的管理员密码。
+在 `/etc/neu-toolbox.env` 添加 `NEU_JWXT_ADMIN_ACCOUNT=你的学号`，然后执行 `sudo systemctl restart neu-toolbox`。用该学号登录教务，即可直接进入「系统设置 → 站点管理」。
 
-全新安装可传 `--admin-account <数字学号>`。启动时会把指定学号加入准入名单。单用户模式有一个名额，已有实例应指定当前已准入账号。若指定学号曾被停用，请先恢复准入。修改管理员学号沿用原管理员密码及已有准入名单。
+全新安装可传 `--admin-account <数字学号>` 或按提示填写。启动时会把指定学号加入准入名单。单用户模式有一个名额，已有实例应指定当前已准入账号。若指定学号曾被停用，请先用仍启用的管理员恢复准入，再修改配置。
 
-旧版 Go 服务升级时，如果没有设置该变量，服务会选定准入名单中创建最早且仍启用的学号，并保存选择。原管理员密码继续有效。名单为空时可通过 `/admin` 加入第一个学号，再重启服务完成默认选择。
+旧版 Go 服务升级时，如果没有设置该变量，服务会选定准入名单中创建最早且仍启用的学号，并保存选择。名单为空时请在环境文件中指定管理员学号并重启。旧的 `NEU_JWXT_ADMIN_PASSWORD` 已停用，服务端升级保留原数据和配置文件。
 
 ### 已有 Go 服务一键升级与回退
 
@@ -107,18 +107,18 @@ Linux 原生包可在 Linux amd64 主机运行 `python3 tools/check_go_release.p
 ```text
 NEU_JWXT_PUBLIC_ORIGIN=https://你的工具箱域名
 NEU_JWXT_ACCESS_PASSWORD=首次初始化的网站访问密码
-NEU_JWXT_ADMIN_PASSWORD=首次初始化的管理员密码
+NEU_JWXT_ADMIN_ACCOUNT=默认管理员学号
 ```
 
 两种密码支持 8–256 字符，建议至少 12 字符。首次启动会持久化密码哈希，后续修改环境变量不会静默重置已有密码。
-修改需使用 `--reset-site-password access` 或 `--reset-site-password admin`，传入对应新密码环境变量。
+修改网站访问密码时，设置新 `NEU_JWXT_ACCESS_PASSWORD` 并运行 `--reset-site-password access`。
 运行 `systemctl daemon-reload` 和 `systemctl enable --now neu-toolbox`，使用
 `journalctl -u neu-toolbox` 查看服务状态。远程单用户将服务参数改为 `--mode remote-single`；
 一个已初始化的数据目录不能通过参数切换部署模式。
 
 在主机本地用 `systemctl is-active neu-toolbox` 确认服务已启动，然后用 `curl -fsS http://127.0.0.1:8000/api/health` 核对版本及 `backend: go`。未登录时访问 `/api/status` 应返回 HTTP 401。健康检查通过不等于网站密码、反向代理或学校登录已通过验收，还需通过公开 HTTPS 地址完成登录流程。
 
-首次确认网站访问密码和管理员密码均可登录后，可从 `/etc/neu-toolbox.env` 移除 `NEU_JWXT_ACCESS_PASSWORD` 和 `NEU_JWXT_ADMIN_PASSWORD` 两行。保留环境文件、`NEU_JWXT_PUBLIC_ORIGIN` 和原数据目录，不要删除 `vault.key`。运行 `systemctl restart neu-toolbox`，重复健康检查，并用未登录请求确认 `/api/status` 仍返回 401。最后在新的浏览器隐私窗口通过 HTTPS 用原密码登录，分别验证站点访问和管理员权限。若重启后提示需要初始化密码，先核对服务是否仍指向原数据目录，不要用一个新目录替代原库。
+首次确认网站访问和默认管理员账号均可登录后，可从 `/etc/neu-toolbox.env` 移除 `NEU_JWXT_ACCESS_PASSWORD`。保留环境文件、`NEU_JWXT_PUBLIC_ORIGIN`、管理员学号、原数据目录和 `vault.key`。运行 `systemctl restart neu-toolbox`，重复健康检查，并用未登录请求确认 `/api/status` 仍返回 401。最后在新的浏览器隐私窗口通过 HTTPS 验证网站访问密码和管理员学号的权限。若重启后提示需要初始化密码，先核对服务是否仍指向原数据目录。
 
 ### Linux 原版并行试运行与切换
 
@@ -148,7 +148,7 @@ NEU_JWXT_ADMIN_PASSWORD=首次初始化的管理员密码
 `--trusted-proxies` 明确指定代理地址网段，不应信任任意来源。
 远程模式先登录网站访问密码，再登录学校账号；多用户模式由管理员准入账号。
 包 10 之后的开发版首次打开未记录部署模式的数据目录时，若其中已有多个账号，两种单用户模式均拒绝初始化。请保留原目录并使用远程多用户模式；不要通过删除账号来切换部署方式。
-包 9 之后的开发版在启用站点访问密码时，管理页提供“退出站点”，同时撤销当前浏览器的站点访问和管理会话；再次输入站点密码不恢复管理权限。仅退出管理不结束普通站点访问。这两个入口不代替学校账号退出。
+使用工具箱的账号退出入口结束教务会话，同时撤销该会话的管理权限。
 
 ## Docker
 

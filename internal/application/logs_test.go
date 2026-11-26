@@ -72,17 +72,12 @@ func TestLogDownloadRevokedAdminCannotFallbackToUser(t *testing.T) {
 		}
 	}
 	user := loginCookie(t, handler, "student-a")
-	const password = "synthetic-password"
-	if err := api.database.SetSitePassword(ctx, "admin", password, false); err != nil {
+	if err := api.ConfigureDefaultAdministrator(ctx, "20990001"); err != nil {
 		t.Fatal(err)
 	}
-	token, err := api.database.CreateSiteSession(ctx, "admin", password, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
+	admin := loginCookie(t, handler, "20990001")
 	request := httptest.NewRequest("GET", "http://localhost/api/logs/download/system/"+time.Now().UTC().Format("2006-01-02"), nil)
-	request.AddCookie(user)
-	request.AddCookie(&http.Cookie{Name: siteCookie("admin"), Value: token})
+	request.AddCookie(admin)
 	response := httptest.NewRecorder()
 	router := http.NewServeMux()
 	generated := false
@@ -93,7 +88,7 @@ func TestLogDownloadRevokedAdminCannotFallbackToUser(t *testing.T) {
 				return err
 			}
 			generated = strings.Contains(content.String(), "private-student-a") && strings.Contains(content.String(), "private-student-b")
-			return api.database.RevokeSiteSession(ctx, "admin", token)
+			return api.database.RevokeSession(ctx, admin.Value)
 		})
 	})
 	api.Boundary(router).ServeHTTP(response, request)

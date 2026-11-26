@@ -8,8 +8,8 @@ import (
 )
 
 func (api *API) requireAdmin(response http.ResponseWriter, request *http.Request) bool {
-	if !api.siteAuthenticated(request, "admin") {
-		writeJSON(response, 401, map[string]string{"detail": "请先验证管理员身份", "error_code": "ADMIN_REQUIRED"})
+	if !api.isDefaultAdministrator(request) {
+		writeJSON(response, 401, map[string]string{"detail": "请使用默认管理员学号登录", "error_code": "ADMIN_REQUIRED"})
 		return false
 	}
 	return true

@@ -16,16 +16,14 @@ const errorText = reason => reason?.response?.data?.detail || reason?.message ||
 const activeStates = ['downloading', 'verifying', 'staged', 'requested', 'installing'];
 const serverUpgradeGuide = 'https://github.com/RekaYOO/NEU-JWXT-Toolkit/blob/main/docs/部署/Go运行包.md#已有-go-服务一键升级与回退';
 const serverUpgradeHint = '标准 Linux 服务可在服务器终端运行部署说明中的一键升级命令。脚本会下载并校验更新包，网页下载为可选步骤。';
-const serverDownloadHint = managementInSettings => managementInSettings
-  ? '要下载服务端更新，请在「系统设置 → 站点管理」解锁管理权限，再返回检查更新。'
-  : '当前登录可检查服务端版本。下载服务端更新需要站点管理员权限。';
+const serverDownloadHint = '下载服务端更新需要使用默认管理员学号登录。';
 const formatTime = value => {
   if (!value) return '';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false });
 };
 
-export default function VersionUpdateCard({ managementInSettings = false } = {}) {
+export default function VersionUpdateCard() {
   const shellInfo = nativeShellInfo();
   const isClient = shellInfo?.kind === 'client';
   const isLocal = shellInfo?.kind === 'local';
@@ -181,7 +179,7 @@ export default function VersionUpdateCard({ managementInSettings = false } = {})
          ? '此服务端的自动更新器未运行。点击后只会下载更新包，需要在服务器解压并执行 sudo ./install.sh --upgrade。'
          : serverSnapshot?.capability === 'linux-auto'
          ? '确认后开始升级，安装结果和失败原因会显示在上方。'
-         : serverSnapshot ? serverDownloadHint(managementInSettings) : '检查更新后可查看当前连接支持的更新操作。'}</Text>
+         : serverSnapshot ? serverDownloadHint : '检查更新后可查看当前连接支持的更新操作。'}</Text>
      </section>;
   };
 
@@ -236,7 +234,7 @@ export default function VersionUpdateCard({ managementInSettings = false } = {})
         : capability === 'linux-manual'
         ? '自动更新器未运行，下载完成后需在服务器解压并执行 sudo ./install.sh --upgrade。'
         : snapshot?.profile === 'server' && capability === 'none' && available
-        ? serverDownloadHint(managementInSettings)
+        ? serverDownloadHint
         : '更新仅在点击后开始，任务进度和结果显示在上方。'}</Text>
     </div>
   </Card>;

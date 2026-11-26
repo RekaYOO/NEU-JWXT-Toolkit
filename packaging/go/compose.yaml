@@ -8,7 +8,7 @@ services:
       NEU_JWXT_MODE: remote-multi
       NEU_JWXT_PUBLIC_ORIGIN: ${NEU_JWXT_PUBLIC_ORIGIN:?Set the external HTTPS origin}
       NEU_JWXT_ACCESS_PASSWORD: ${NEU_JWXT_ACCESS_PASSWORD:-}
-      NEU_JWXT_ADMIN_PASSWORD: ${NEU_JWXT_ADMIN_PASSWORD:-}
+      NEU_JWXT_ADMIN_ACCOUNT: ${NEU_JWXT_ADMIN_ACCOUNT:-}
     ports:
       - "127.0.0.1:8000:8000"
     volumes:

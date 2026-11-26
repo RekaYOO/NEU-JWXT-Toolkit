@@ -9,7 +9,6 @@ import {
 import LoginPage from './pages/LoginPage';
 import MainLayout from './layouts/MainLayout';
 import AccessLoginPage from './pages/AccessLoginPage';
-const AdminPage = React.lazy(() => import('./pages/AdminPage'));
 import ScoresPage from './pages/ScoresPage';
 import AuthRecoveryPage from './pages/AuthRecoveryPage';
 import { nativeShellInfo } from './services/nativeBridge';
@@ -221,7 +220,6 @@ function AppContent({
       <Layout className="app-layout">
         <Content className="app-content">
           <Routes>
-            {accessState.admin_in_settings && <Route path="/admin" element={<Navigate to="/system-settings?tab=admin" replace />} />}
             <Route
               path="/login"
               element={
@@ -278,7 +276,7 @@ function AppContent({
               <Route path="course-selection/:batchCode/*" element={featureAvailable('course-selection', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="course-selection-workspace" /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="course-outlines" element={featureAvailable('course-outlines', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="course-outlines" /> : <Navigate to={offlineDefaultPath} />} />
               <Route path="logs" element={<Navigate to="/system-settings?tab=logs" replace />} />
-              <Route path="system-settings" element={featureAvailable('system-settings', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="system-settings" componentProps={{ adminIdentity: accessState.admin_in_settings && isLoggedIn && !offlineMode ? String(userInfo || '') : '', onSiteThemeSaved }} /> : <Navigate to={offlineDefaultPath} />} />
+              <Route path="system-settings" element={featureAvailable('system-settings', { offlineMode, offlineCapabilities }) ? <ReliableRoute routeId="system-settings" componentProps={{ adminIdentity: accessState.required && isLoggedIn && !offlineMode ? String(userInfo || '') : '', onSiteThemeSaved }} /> : <Navigate to={offlineDefaultPath} />} />
               <Route
                 path="export"
                 element={featureAvailable('export', { offlineMode, offlineCapabilities })
@@ -375,7 +373,6 @@ function App() {
   const loadApplicationState = async () => {
     const access = await getAccessStatus();
     setAccessState(access);
-    if (/^\/admin\/?$/.test(window.location.pathname) && !access.admin_in_settings) return access;
     let bootstrap = null;
     let health = null;
     if (!access.required || access.authenticated) {
@@ -837,16 +834,6 @@ function App() {
             }
           }}
         />
-      </PublicTheme>
-    );
-  }
-
-  if (/^\/admin\/?$/.test(window.location.pathname) && !accessState.admin_in_settings) {
-    return (
-      <PublicTheme publicTheme={accessState.site_default || 'blue'}>
-        <React.Suspense fallback={<div className="loading" role="status">正在加载管理页面</div>}>
-          <AdminPage siteAccessRequired={accessState.required} onThemeSaved={siteDefault => setAccessState(previous => ({ ...previous, site_default: siteDefault }))} />
-        </React.Suspense>
       </PublicTheme>
     );
   }

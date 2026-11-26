@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/store"
 )
@@ -137,16 +136,15 @@ func TestAppearanceTemplatesValidationAndAccountIsolation(t *testing.T) {
 }
 
 func TestSiteAppearanceRequiresAdminAndKeepsPersonalPreference(t *testing.T) {
-	api, handler := testApplication(t, "local-single")
+	api, handler := testApplication(t, "remote-multi")
 	ctx := context.Background()
-	if err := api.database.SetSitePassword(ctx, "admin", "synthetic-password", false); err != nil {
+	if err := api.ConfigureDefaultAdministrator(ctx, "20990001"); err != nil {
 		t.Fatal(err)
 	}
-	token, err := api.database.CreateSiteSession(ctx, "admin", "synthetic-password", time.Hour)
-	if err != nil {
+	if err := api.database.AdmitAccount(ctx, "student", false); err != nil {
 		t.Fatal(err)
 	}
-	admin := &http.Cookie{Name: siteCookie("admin"), Value: token}
+	admin := loginCookie(t, handler, "20990001")
 	response := apiRequest(handler, "GET", "/api/admin/appearance", "", admin)
 	if response.Code != 200 {
 		t.Fatal(response.Code, response.Body.String())
