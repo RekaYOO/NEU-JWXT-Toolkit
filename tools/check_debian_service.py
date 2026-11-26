@@ -109,7 +109,7 @@ def main():
             fixture_command = 'TOOLBOX_TEST_REBOOT_DIR=/root/selection-fixture /root/selection.test -test.run=^TestSelectionTaskUnknownSubmissionSurvivesRestartAndRoundEnd$ -test.v'
             if args.selection_test:
                 commands[-1:-1] = ['install -m 0700 /mnt/bundle/selection.test /root/selection.test',
-                                    'install -o neu-toolbox -m 0500 /mnt/bundle/selection.test /tmp/toolbox-session.test',
+                                    'install -m 0555 /mnt/bundle/selection.test /usr/local/bin/toolbox-session.test',
                                     'TOOLBOX_TEST_REBOOT_PHASE=prepare ' + fixture_command]
             Path(directory, 'verify.sh').write_bytes(('\n'.join(commands) + '\n').encode())
             reboot_check = r'''set -eu
@@ -138,7 +138,8 @@ test "$(curl -4s -o /dev/null -w '%{http_code}' http://localhost:8000/admin)" = 
 echo TOOLBOX_REBOOT_OK
 '''
             if args.selection_test:
-                reboot_check = reboot_check.replace('echo TOOLBOX_REBOOT_OK', r'''runuser -u neu-toolbox -- env NEU_TOOLBOX_QA_MAINTENANCE=1 /tmp/toolbox-session.test -test.run '^TestLinuxMaintenanceFixtureSession$' | awk -F '\t' '$6 == "neu_toolbox_session" { print }' >> "$jar"
+                reboot_check = reboot_check.replace('echo TOOLBOX_REBOOT_OK', r'''session_output=$(runuser -u neu-toolbox -- env NEU_TOOLBOX_QA_MAINTENANCE=1 /usr/local/bin/toolbox-session.test -test.run '^TestLinuxMaintenanceFixtureSession$')
+printf '%s\n' "$session_output" | awk -F '\t' '$6 == "neu_toolbox_session" { print; found = 1 } END { if (!found) exit 1 }' >> "$jar"
 curl -4fsS -b "$jar" "$base/admin/accounts" | grep -q '"default_administrator":"20990001"'
 ''' + 'TOOLBOX_TEST_REBOOT_PHASE=recover ' + fixture_command + '\necho TOOLBOX_REBOOT_OK')
             Path(directory, 'reboot.sh').write_bytes(reboot_check.encode())
