@@ -4,6 +4,7 @@
     android:layout_height="match_parent">
     <WebView
         android:id="@+id/webview"
+        android:importantForAutofill="yes"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
     <ProgressBar

@@ -8,6 +8,8 @@
 .admin-header-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .admin-content { display: grid; gap: 20px; padding-top: 32px; padding-bottom: 48px; }
 .admin-content-locked { max-width: 480px; padding-top: clamp(24px, 9vh, 88px); }
+.admin-page-embedded { min-height: 0; }
+.admin-page-embedded .admin-content { width: 100%; padding: 0; margin-inline: 0; }
 .admin-page h1, .admin-page h2, .admin-page p { margin: 0; }
 .admin-page h1 { font-size: clamp(24px, 4vw, 32px); line-height: 1.25; }
 .admin-page h2 { font-size: 19px; line-height: 1.4; }

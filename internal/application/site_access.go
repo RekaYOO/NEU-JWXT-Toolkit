@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/campus"
 	"github.com/RekaYOO/NEU-JWXT-Toolkit/internal/store"
 )
 
@@ -45,8 +46,58 @@ func (api *API) ConfigureRemoteAccess(ctx context.Context, accessPassword, admin
 }
 
 func (api *API) siteAuthenticated(request *http.Request, purpose string) bool {
+	binding := ""
+	if purpose == "admin" && api.adminAccount != "" {
+		if !api.isDefaultAdministrator(request) {
+			return false
+		}
+		binding = api.adminSessionBinding(request)
+	}
 	cookie, err := request.Cookie(siteCookie(purpose))
-	return err == nil && api.database.SiteSession(request.Context(), purpose, cookie.Value)
+	return err == nil && api.database.SiteSession(request.Context(), purpose, cookie.Value, binding)
+}
+
+func (api *API) ConfigureDefaultAdministrator(ctx context.Context, account string) error {
+	if api.accounts.mode == "local-single" {
+		return nil
+	}
+	if account == "" {
+		selected, err := api.database.DefaultAdministrator(ctx)
+		if err != nil {
+			return err
+		}
+		api.adminAccount = selected
+		return nil
+	}
+	account, err := campus.NormalizeAccount(account)
+	if err != nil {
+		return errors.New("NEU_JWXT_ADMIN_ACCOUNT must be a valid school account")
+	}
+	if err := api.database.AdmitAccount(ctx, account, api.accounts.mode == "remote-single"); err != nil {
+		return fmt.Errorf("cannot grant admission to the configured administrator: %w", err)
+	}
+	if _, err := api.database.Generation(ctx, account); err != nil {
+		return fmt.Errorf("the configured administrator must have enabled admission: %w", err)
+	}
+	api.adminAccount = account
+	return nil
+}
+
+func (api *API) isDefaultAdministrator(request *http.Request) bool {
+	if api.adminAccount == "" {
+		return false
+	}
+	session, err := api.session(request)
+	return err == nil && session.Account == api.adminAccount
+}
+
+func (api *API) adminSessionBinding(request *http.Request) string {
+	if api.adminAccount != "" {
+		if cookie, err := request.Cookie(sessionCookie); err == nil {
+			return cookie.Value
+		}
+	}
+	return ""
 }
 
 func (api *API) registerSiteAccess(router *http.ServeMux) {
@@ -71,7 +122,7 @@ func (api *API) accessStatus(response http.ResponseWriter, request *http.Request
 	if err != nil {
 		theme = "blue"
 	}
-	writeJSON(response, 200, map[string]any{"required": api.gatewayRequired, "configured": configured, "authenticated": !api.gatewayRequired || api.siteAuthenticated(request, "access"), "profile": api.runtimeInfo()["profile"], "site_default": theme})
+	writeJSON(response, 200, map[string]any{"required": api.gatewayRequired, "configured": configured, "authenticated": !api.gatewayRequired || api.siteAuthenticated(request, "access"), "profile": api.runtimeInfo()["profile"], "site_default": theme, "admin_in_settings": api.adminAccount != ""})
 }
 
 func (api *API) adminStatus(response http.ResponseWriter, request *http.Request) {
@@ -80,12 +131,16 @@ func (api *API) adminStatus(response http.ResponseWriter, request *http.Request)
 		writeJSON(response, 503, map[string]string{"detail": "无法读取管理员配置"})
 		return
 	}
-	writeJSON(response, 200, map[string]any{"configured": configured, "authenticated": api.siteAuthenticated(request, "admin"), "deployment_mode": api.accounts.mode})
+	writeJSON(response, 200, map[string]any{"configured": configured, "authenticated": api.siteAuthenticated(request, "admin"), "deployment_mode": api.accounts.mode, "eligible": api.isDefaultAdministrator(request)})
 }
 
 func (api *API) siteLogin(response http.ResponseWriter, request *http.Request, purpose string) {
 	if purpose == "access" && !api.gatewayRequired {
 		writeJSON(response, 200, map[string]bool{"success": true})
+		return
+	}
+	if purpose == "admin" && api.adminAccount != "" && !api.isDefaultAdministrator(request) {
+		writeJSON(response, 403, map[string]string{"detail": "请先使用指定的管理员学号登录"})
 		return
 	}
 	var input struct {
@@ -130,10 +185,12 @@ func (api *API) siteLogin(response http.ResponseWriter, request *http.Request, p
 		return
 	}
 	lifetime := 7 * 24 * time.Hour
+	binding := ""
 	if purpose == "admin" {
 		lifetime = 8 * time.Hour
+		binding = api.adminSessionBinding(request)
 	}
-	token, err := api.database.CreateSiteSession(request.Context(), purpose, input.Password, lifetime)
+	token, err := api.database.CreateSiteSession(request.Context(), purpose, input.Password, lifetime, binding)
 	if err != nil {
 		if errors.Is(err, store.ErrAccess) {
 			writeJSON(response, 401, map[string]string{"detail": "密码验证失败"})
@@ -160,9 +217,9 @@ func (api *API) siteLogout(response http.ResponseWriter, request *http.Request, 
 	var err error
 	if purpose == "access" {
 		purposes = []string{"admin", "access"}
-		err = api.database.RevokeBrowserSiteSessions(request.Context(), token("access"), token("admin"))
+		err = api.database.RevokeBrowserSiteSessions(request.Context(), token("access"), token("admin"), api.adminSessionBinding(request))
 	} else {
-		err = api.database.RevokeSiteSession(request.Context(), purpose, token(purpose))
+		err = api.database.RevokeSiteSession(request.Context(), purpose, token(purpose), api.adminSessionBinding(request))
 	}
 	if err != nil {
 		writeJSON(response, 503, map[string]string{"detail": "无法撤销访问会话，请重试"})

@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Button, Card, Checkbox, Col, Form, Input, InputNumber, Modal, Row, Select, Space, Spin, Switch, Tabs, Typography, message } from 'antd';
 import { FileTextOutlined, MailOutlined, SaveOutlined, SettingOutlined } from '@ant-design/icons';
 import LogsPage from './LogsPage';
 import {
   getAuthRecoverySettings,
+  getAdminStatus,
   getSystemCacheSettings,
   getSystemMailSettings,
   testSystemMail,
@@ -19,6 +20,7 @@ import VersionUpdateCard from '../components/VersionUpdateCard';
 import AndroidCompanionSettings from '../components/AndroidCompanionSettings';
 import SystemMessagesPanel from '../components/SystemMessagesPanel';
 import AppearanceSettings from '../theme/AppearanceSettings';
+import AdminPage from './AdminPage';
 import './SystemSettingsPage.css';
 
 const { Title, Text } = Typography;
@@ -139,14 +141,29 @@ const NativeServerSettings = () => shellInfo?.kind === 'client' ? (
   </Card>
 ) : null;
 
-export default function SystemSettingsPage() {
+export default function SystemSettingsPage({ adminIdentity = '', onSiteThemeSaved } = {}) {
   const [params, setParams] = useSearchParams();
-  const activeKey = ['logs', 'appearance', 'messages'].includes(params.get('tab')) ? params.get('tab') : 'config';
+  const [adminCheck, setAdminCheck] = useState(null);
+  const [adminRevision, setAdminRevision] = useState(0);
+  const resetVersions = useCallback(() => setAdminRevision(value => value + 1), []);
+  useEffect(() => {
+    if (!adminIdentity) return undefined;
+    let current = true;
+    getAdminStatus().then(response => {
+      if (current) setAdminCheck({ identity: adminIdentity, eligible: response.eligible === true });
+    }).catch(() => {
+      if (current) setAdminCheck({ identity: adminIdentity, eligible: false });
+    });
+    return () => { current = false; };
+  }, [adminIdentity]);
+  const adminAvailable = !!adminIdentity && adminCheck?.identity === adminIdentity && adminCheck.eligible;
+  const requestedTab = params.get('tab');
+  const activeKey = ['logs', 'appearance', 'messages'].includes(requestedTab) || (requestedTab === 'admin' && adminAvailable) ? requestedTab : 'config';
   const mobileLocal = shellInfo?.kind === 'local';
   const tabs = [{
     key: 'config', label: <span><SettingOutlined /> 配置项</span>,
     children: <div className="system-settings-sections">
-      <VersionUpdateCard />
+      <VersionUpdateCard key={`${adminIdentity}:${adminRevision}`} managementInSettings={adminAvailable} />
       <NativeServerSettings />
       <AndroidCompanionSettings />
       <CacheSettings />
@@ -163,6 +180,9 @@ export default function SystemSettingsPage() {
   }, {
     key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded />,
   }];
+  if (adminAvailable) tabs.push({
+    key: 'admin', label: '站点管理', children: <AdminPage key={adminIdentity} embedded onThemeSaved={onSiteThemeSaved} onPermissionChanged={resetVersions} />,
+  });
   return <main className="system-settings-page">
     <div className="system-settings-heading"><SettingOutlined /><div>
       <Title level={2}>系统设置</Title><Text type="secondary">统一管理外观、日志、缓存和系统通知配置</Text>

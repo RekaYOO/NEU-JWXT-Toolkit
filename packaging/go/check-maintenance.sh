@@ -9,6 +9,8 @@ bundle="NEU-JWXT-Toolkit-${version}-linux-amd64-go"
 base=http://localhost:18000/api
 maintenance=/opt/.neu-toolbox-upgrades
 workdir=$(mktemp -d)
+chmod 0711 "$workdir"
+go test -c -o "$workdir/maintenance.test" ./internal/application
 
 make_bundle() {
   local new_version=$1
@@ -36,6 +38,12 @@ health() {
 admin_login() {
   local cookies=$1
   jq -nc '{password:env.TEST_ACCESS_PASSWORD}' | curl -4fsS -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/access/login" | jq -e '.success == true'
+  local eligibility
+  eligibility=$(curl -4fsS -b "$cookies" "$base/access/status" | jq -r '.admin_in_settings')
+  if [[ $eligibility == true ]]; then
+    sudo -u neu-toolbox env NEU_TOOLBOX_QA_MAINTENANCE=1 "$workdir/maintenance.test" -test.run '^TestLinuxMaintenanceFixtureSession$' |
+      awk -F '\t' '$6 == "neu_toolbox_session" { print }' >> "$cookies"
+  fi
   jq -nc '{password:env.TEST_ADMIN_PASSWORD}' | curl -4fsS -b "$cookies" -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" | jq -e '.success == true'
 }
 
@@ -43,6 +51,7 @@ if bash "$installer" rollback --restore-data; then
   exit 1
 fi
 health "$version"
+curl -4fsS "$base/access/status" | jq -e '.admin_in_settings == true'
 unit_checksum=$(sha256sum /etc/systemd/system/neu-toolbox.service)
 config_checksum=$(sudo sha256sum /etc/neu-toolbox.env)
 key_checksum=$(sudo sha256sum /var/lib/neu-toolbox/vault.key)

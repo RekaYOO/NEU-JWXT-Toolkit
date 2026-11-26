@@ -130,6 +130,8 @@ describe('LoginPage session recovery boundary', () => {
 
     expect(username?.getAttribute('autocomplete')).toBe('section-neu-account username');
     expect(password?.getAttribute('autocomplete')).toBe('section-neu-account current-password');
+    expect(username?.name).toBe('username');
+    expect(password?.name).toBe('password');
 
     await act(async () => root.unmount());
     container.remove();

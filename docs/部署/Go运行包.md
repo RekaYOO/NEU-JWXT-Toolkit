@@ -31,8 +31,8 @@
 | 使用场景 | 模式 | 首次使用 |
 | --- | --- | --- |
 | 个人电脑 | `local-single` | 双击 `启动工具箱.exe`，在本机浏览器登录。 |
-| 一人通过网络访问 | `remote-single` | 在新数据目录初始化网站密码和管理员密码，通过 HTTPS 访问 `/admin`，添加自己的学号。 |
-| 多人通过网络访问 | `remote-multi` | 使用随包 Linux 服务的默认模式，通过 HTTPS 访问 `/admin`，添加允许登录的学号。每位用户从站点首页用自己的学校账号登录。 |
+| 一人通过网络访问 | `remote-single` | 在新数据目录初始化网站密码和管理员密码，配置自己的学号为默认管理员。 |
+| 多人通过网络访问 | `remote-multi` | 使用随包 Linux 服务的默认模式，配置默认管理员学号，然后在系统设置中管理准入。每位用户用自己的学校账号登录。 |
 
 远程部署的监听地址、数据目录、密码环境变量和反向代理配置见下方 Linux 服务与 HTTPS 章节。
 
@@ -60,9 +60,17 @@
 curl -fL --retry 3 --proto '=https' -o install.sh https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest/download/install.sh && bash ./install.sh
 ```
 
-脚本读取该仓库最新正式 Release 的 Go 清单，再从清单对应标签下载 Linux 安装包。核验大小与 SHA-256 后安装 systemd 服务，检查版本和匿名访问保护。默认监听 `127.0.0.1:8000`。检测到旧 Python 服务时默认使用 `127.0.0.1:18000` 试运行，保留旧服务和原有反代，验证后按迁移步骤切换。可以用 `bash ./install.sh --help` 查看参数。无人值守安装传入 `--origin`，可配合 `--port`、`--mode remote-single` 和 `--version v<版本号>`。离线安装传入 `--archive <归档> --manifest <同版本官方清单>`。
+脚本读取该仓库最新正式 Release 的 Go 清单，再从清单对应标签下载 Linux 安装包。核验大小与 SHA-256 后安装 systemd 服务，检查版本和匿名访问保护。默认监听 `127.0.0.1:8000`。检测到旧 Python 服务时默认使用 `127.0.0.1:18000` 试运行，保留旧服务和原有反代，验证后按迁移步骤切换。可以用 `bash ./install.sh --help` 查看参数。无人值守安装传入 `--origin`，可配合 `--admin-account <学号>`、`--port`、`--mode remote-single` 和 `--version v<版本号>`。离线安装传入 `--archive <归档> --manifest <同版本官方清单>`。
 
 初始网站密码和管理员密码保存在仅 root 可读的 `/etc/neu-toolbox.env`。按下文配置 HTTPS 反向代理，并验证站点及管理员登录。安装程序遇到已有的 Go 安装或数据目录会退出。若首次启动失败，查看 `journalctl -u neu-toolbox`，修正配置后可使用 `systemctl start neu-toolbox` 复验，再按需启用开机启动。
+
+### 指定默认管理员学号
+
+在 `/etc/neu-toolbox.env` 添加 `NEU_JWXT_ADMIN_ACCOUNT=你的学号`，然后执行 `sudo systemctl restart neu-toolbox`。用该学号登录教务，进入「系统设置 → 站点管理」，输入安装时配置的管理员密码。
+
+全新安装可传 `--admin-account <数字学号>`。启动时会把指定学号加入准入名单。单用户模式有一个名额，已有实例应指定当前已准入账号。若指定学号曾被停用，请先恢复准入。修改管理员学号沿用原管理员密码及已有准入名单。
+
+旧版 Go 服务升级时，如果没有设置该变量，服务会选定准入名单中创建最早且仍启用的学号，并保存选择。原管理员密码继续有效。名单为空时可通过 `/admin` 加入第一个学号，再重启服务完成默认选择。
 
 ### 已有 Go 服务一键升级与回退
 

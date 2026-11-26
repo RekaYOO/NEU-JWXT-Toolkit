@@ -192,6 +192,9 @@ func run() (result error) {
 	if err := api.ConfigureRemoteAccess(context.Background(), os.Getenv("NEU_JWXT_ACCESS_PASSWORD"), os.Getenv("NEU_JWXT_ADMIN_PASSWORD")); err != nil {
 		return err
 	}
+	if err := api.ConfigureDefaultAdministrator(context.Background(), os.Getenv("NEU_JWXT_ADMIN_ACCOUNT")); err != nil {
+		return err
+	}
 	if *initialize {
 		return nil
 	}

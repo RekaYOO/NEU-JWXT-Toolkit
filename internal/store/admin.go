@@ -14,6 +14,20 @@ type AccountInfo struct {
 	Created    string `json:"created_at"`
 }
 
+func (instance *Store) DefaultAdministrator(ctx context.Context) (string, error) {
+	_, err := instance.database.ExecContext(ctx, `INSERT INTO site_settings(setting_key, value)
+	 SELECT 'default-administrator', CAST(id AS BLOB) FROM accounts WHERE enabled=1
+	 ORDER BY created_at, id LIMIT 1 ON CONFLICT(setting_key) DO NOTHING`)
+	if err != nil {
+		return "", err
+	}
+	value, err := instance.SiteSetting(ctx, "default-administrator")
+	if err == ErrMissing {
+		return "", nil
+	}
+	return string(value), err
+}
+
 func (instance *Store) Accounts(ctx context.Context) ([]AccountInfo, error) {
 	rows, err := instance.database.QueryContext(ctx, `SELECT id,enabled,generation,created_at FROM accounts ORDER BY created_at,id`)
 	if err != nil {

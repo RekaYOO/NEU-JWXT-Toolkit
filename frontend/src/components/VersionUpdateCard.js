@@ -14,13 +14,18 @@ const stateText = state => ({
 }[state] || '尚未检查');
 const errorText = reason => reason?.response?.data?.detail || reason?.message || '版本检查失败';
 const activeStates = ['downloading', 'verifying', 'staged', 'requested', 'installing'];
+const serverUpgradeGuide = 'https://github.com/RekaYOO/NEU-JWXT-Toolkit/blob/main/docs/部署/Go运行包.md#已有-go-服务一键升级与回退';
+const serverUpgradeHint = '标准 Linux 服务可在服务器终端运行部署说明中的一键升级命令。脚本会下载并校验更新包，网页下载为可选步骤。';
+const serverDownloadHint = managementInSettings => managementInSettings
+  ? '要下载服务端更新，请在「系统设置 → 站点管理」解锁管理权限，再返回检查更新。'
+  : '当前登录可检查服务端版本。下载服务端更新需要站点管理员权限。';
 const formatTime = value => {
   if (!value) return '';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false });
 };
 
-export default function VersionUpdateCard() {
+export default function VersionUpdateCard({ managementInSettings = false } = {}) {
   const shellInfo = nativeShellInfo();
   const isClient = shellInfo?.kind === 'client';
   const isLocal = shellInfo?.kind === 'local';
@@ -168,14 +173,15 @@ export default function VersionUpdateCard() {
       <div className="version-update-actions">
         {available && serverSnapshot?.capability !== 'none' && <Button type="primary" icon={<CloudDownloadOutlined />} loading={serverDownloading} disabled={busy || serverJob?.state === 'completed'} onClick={downloadServer}>{serverSnapshot.capability === 'linux-auto' ? '下载并升级服务端' : '下载服务端更新'}</Button>}
         <Button icon={<LinkOutlined />} href={serverSnapshot?.release_url || 'https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest'} target="_blank" rel="noreferrer">查看服务端 Release</Button>
+        {serverSnapshot?.capability === 'go-manual' && <Button href={serverUpgradeGuide} target="_blank" rel="noreferrer">查看部署说明</Button>}
       </div>
        <Text type="secondary" className="version-update-hint">{serverSnapshot?.capability === 'go-manual'
-         ? '更新包会在服务端下载并校验。下载完成后，由管理员在服务器上按运行包说明执行升级。'
+         ? serverUpgradeHint
          : serverSnapshot?.capability === 'linux-manual'
          ? '此服务端的自动更新器未运行。点击后只会下载更新包，需要在服务器解压并执行 sudo ./install.sh --upgrade。'
          : serverSnapshot?.capability === 'linux-auto'
          ? '确认后开始升级，安装结果和失败原因会显示在上方。'
-         : serverSnapshot ? '当前连接仅提供版本检查。Go 多用户部署需登录站点管理后才能下载更新包。' : '检查更新后可查看当前连接支持的更新操作。'}</Text>
+         : serverSnapshot ? serverDownloadHint(managementInSettings) : '检查更新后可查看当前连接支持的更新操作。'}</Text>
      </section>;
   };
 
@@ -203,6 +209,7 @@ export default function VersionUpdateCard() {
   const capability = snapshot?.capability || (nativeApp ? 'android-install' : 'none');
   const status = job ? stateText(job.state) : '';
   const busy = activeStates.includes(job?.state) || downloading || serverDownloading;
+  const goServer = snapshot?.profile === 'server' && capability === 'go-manual';
   const releaseUrl = snapshot?.release_url || 'https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest';
   return <Card title="应用版本" className="system-settings-card" extra={<Button icon={<ReloadOutlined />} loading={checking} onClick={() => check(true)}>检查更新</Button>}>
     <div className="version-update-single">
@@ -222,12 +229,15 @@ export default function VersionUpdateCard() {
         })}>安装更新</Button>}
         {available && capability !== 'none' && <Button type="primary" icon={<CloudDownloadOutlined />} loading={downloading || serverDownloading} disabled={busy || job?.state === 'completed'} onClick={() => { if (nativeApp) return downloadApp(); return capability === 'linux-auto' ? downloadServer() : startServerDownload(); }}>{capability === 'linux-auto' ? '下载并升级' : capability === 'android-install' ? '下载并安装' : '下载更新'}</Button>}
         <Button icon={<LinkOutlined />} href={releaseUrl} target="_blank" rel="noreferrer">查看 Release</Button>
+        {goServer && <Button href={serverUpgradeGuide} target="_blank" rel="noreferrer">查看部署说明</Button>}
       </div>
-      <Text type="secondary" className="version-update-hint">{capability === 'go-manual'
+      <Text type="secondary" className="version-update-hint">{goServer ? serverUpgradeHint : capability === 'go-manual'
         ? '更新包下载并校验后，请先备份、停止程序，再替换程序目录并保留原数据目录。'
         : capability === 'linux-manual'
         ? '自动更新器未运行，下载完成后需在服务器解压并执行 sudo ./install.sh --upgrade。'
-        : '更新只在你手动点击后执行，不会自动下载；任务进度和结果显示在上方。'}</Text>
+        : snapshot?.profile === 'server' && capability === 'none' && available
+        ? serverDownloadHint(managementInSettings)
+        : '更新仅在点击后开始，任务进度和结果显示在上方。'}</Text>
     </div>
   </Card>;
 }

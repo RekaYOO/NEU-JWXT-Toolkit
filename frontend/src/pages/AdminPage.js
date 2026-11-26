@@ -5,6 +5,7 @@ import {
   ReloadOutlined, SafetyCertificateOutlined, SkinOutlined, TeamOutlined,
 } from '@ant-design/icons';
 import { addAdminAccount, changeAdminAccount, getAdminAccounts, getAdminStatus, loginAdmin, logoutAdmin, logoutAccessGateway } from '../services/api';
+import { commitCredentialAutofill } from '../services/nativeBridge';
 import './AdminPage.css';
 import SiteAppearanceSettings from '../theme/SiteAppearanceSettings';
 
@@ -19,9 +20,10 @@ const accountFilters = [
   { label: '全部', value: 'all' }, { label: '已准入', value: 'enabled' }, { label: '未准入', value: 'disabled' },
 ];
 
-export default function AdminPage({ siteAccessRequired = false, onThemeSaved }) {
+export default function AdminPage({ siteAccessRequired = false, embedded = false, onThemeSaved, onPermissionChanged }) {
   const [status, setStatus] = useState(null);
   const [accounts, setAccounts] = useState([]);
+  const [defaultAdministrator, setDefaultAdministrator] = useState('');
   const [accountsReady, setAccountsReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -38,6 +40,7 @@ export default function AdminPage({ siteAccessRequired = false, onThemeSaved }) 
 
   const showError = useCallback(failure => {
     if (failure.response?.status === 401) {
+      onPermissionChanged?.();
       setStatus(previous => ({ ...previous, authenticated: false }));
       setAccounts([]);
       setAccountsReady(false);
@@ -47,7 +50,7 @@ export default function AdminPage({ siteAccessRequired = false, onThemeSaved }) 
       setFilter('all');
     }
     setError(failure.message || '操作失败，请重试');
-  }, []);
+  }, [onPermissionChanged]);
 
   const refresh = useCallback(async () => {
     if (reading.current) return;
@@ -58,7 +61,9 @@ export default function AdminPage({ siteAccessRequired = false, onThemeSaved }) 
       const next = await getAdminStatus();
       setStatus(next);
       if (next.authenticated) {
-        setAccounts((await getAdminAccounts()).accounts || []);
+        const result = await getAdminAccounts();
+        setAccounts(result.accounts || []);
+        setDefaultAdministrator(result.default_administrator || '');
         setAccountsReady(true);
       } else {
         setAccounts([]);
@@ -139,12 +144,13 @@ export default function AdminPage({ siteAccessRequired = false, onThemeSaved }) 
               <TeamOutlined aria-hidden="true" />
               <strong>{account.account}</strong>
               <Tag color={account.enabled ? 'success' : 'default'}>{account.enabled ? '准入已启用' : '准入已停用'}</Tag>
+              {account.account === defaultAdministrator && <Tag>默认管理员</Tag>}
             </div>
             <div className="admin-actions">
-              {(account.enabled ? ['stop', 'disable'] : ['enable']).map(action => (
+              {(account.enabled ? (account.account === defaultAdministrator ? ['stop'] : ['stop', 'disable']) : ['enable']).map(action => (
                 <Button key={action} danger={action === 'disable'} disabled={updating || action === 'enable' && full} onClick={() => { setError(''); setPending({ account: account.account, action }); }}>{actions[action][0]}</Button>
               ))}
-              {account.enabled && <Dropdown trigger={['click']} disabled={updating} menu={{
+              {account.enabled && account.account !== defaultAdministrator && <Dropdown trigger={['click']} disabled={updating} menu={{
                 items: [{ key: 'remove', label: actions.remove[0], danger: true }],
                 onClick: () => { setError(''); setPending({ account: account.account, action: 'remove' }); },
               }}><Button aria-label={`${account.account}的更多操作`} icon={<MoreOutlined />} /></Dropdown>}
@@ -155,37 +161,42 @@ export default function AdminPage({ siteAccessRequired = false, onThemeSaved }) 
     </div>
   );
 
+  const logout = () => run(async () => {
+    await logoutAdmin();
+    onPermissionChanged?.();
+    setStatus(previous => ({ ...previous, authenticated: false }));
+    setAccounts([]);
+    setAccountsReady(false);
+    setPending(null);
+    setQuery('');
+    setFilter('all');
+    setTab('accounts');
+    accountForm.resetFields();
+    setNotice('已退出管理');
+  });
+  const Shell = embedded ? 'section' : 'main';
+  if (embedded && status?.eligible === false) return <Alert type="info" showIcon message="请重新使用指定的管理员学号登录" />;
+
   return (
-    <main className="admin-page">
-      <header className="admin-header">
+    <Shell className={embedded ? 'admin-page admin-page-embedded' : 'admin-page'}>
+      {!embedded && <header className="admin-header">
         <div className="admin-header-inner">
           <div className="admin-brand"><span className="admin-brand-mark"><SafetyCertificateOutlined aria-hidden="true" /></span><span>NEU 教务工具箱<small>站点管理</small></span></div>
           <div className="admin-header-actions">
           <Button type="text" icon={<ArrowLeftOutlined />} href="/">返回工具箱</Button>
-          {status?.authenticated && <Button aria-label="退出管理" type="text" icon={<LogoutOutlined />} disabled={updating} onClick={() => run(async () => {
-            await logoutAdmin();
-            setStatus(previous => ({ ...previous, authenticated: false }));
-            setAccounts([]);
-            setAccountsReady(false);
-            setPending(null);
-            setQuery('');
-            setFilter('all');
-            setTab('accounts');
-            accountForm.resetFields();
-            setNotice('已退出管理');
-          })}>退出管理</Button>}
+          {status?.authenticated && <Button aria-label="退出管理" type="text" icon={<LogoutOutlined />} disabled={updating} onClick={logout}>退出管理</Button>}
           {siteAccessRequired && <Button type="text" disabled={updating} onClick={() => run(async () => {
             await logoutAccessGateway();
             window.location.replace('/');
           })}>退出站点</Button>}
           </div>
         </div>
-      </header>
+      </header>}
       <div className={`admin-content${status?.authenticated ? '' : ' admin-content-locked'}`}>
       {!status?.authenticated && <section className="admin-panel admin-auth" aria-labelledby="admin-login-heading">
         <div className="admin-auth-icon"><LockOutlined aria-hidden="true" /></div>
-        <h1 id="admin-login-heading">管理员登录</h1>
-        <p>使用管理员密码进入站点管理。</p>
+        {embedded ? <h2 id="admin-login-heading">解锁站点管理</h2> : <h1 id="admin-login-heading">管理员登录</h1>}
+        <p>{embedded ? '输入管理员密码，管理账号准入和站点默认主题。' : '使用管理员密码进入站点管理。'}</p>
         {error && <Alert type="error" showIcon message={error} />}
         {notice && <Alert type="success" showIcon message={notice} />}
         {loading && !status ? <div className="admin-loading" role="status"><Spin /><span>正在读取管理状态</span></div> : !status ? (
@@ -193,20 +204,25 @@ export default function AdminPage({ siteAccessRequired = false, onThemeSaved }) 
         ) : !status.configured ? (
           <Alert type="info" showIcon message="尚未初始化管理员密码" description="请由服务器维护者在启动配置中初始化管理员密码，再刷新此页面。" />
         ) : (
-          <Form form={passwordForm} name="toolkit-admin" className="admin-login" layout="vertical" onFinish={({ adminPassword }) => run(async () => {
-            try { await loginAdmin(adminPassword); } finally { passwordForm.resetFields(); }
+          <Form form={passwordForm} name="toolkit-admin" autoComplete="on" className="admin-login" layout="vertical" onFinish={({ adminPassword }) => run(async () => {
+            try {
+              await loginAdmin(adminPassword);
+              await commitCredentialAutofill();
+            } finally { passwordForm.resetFields(); }
+            onPermissionChanged?.();
             await refresh();
           })}>
             <Form.Item label="管理员密码" name="adminPassword" rules={[{ required: true, message: '请输入管理员密码' }]}>
-              <Input.Password autoComplete="section-toolkit-admin current-password" disabled={updating} prefix={<LockOutlined />} />
+              <Input.Password name="toolkit_admin_password" autoComplete="section-toolkit-admin current-password" disabled={updating} prefix={<LockOutlined />} />
             </Form.Item>
             <Button type="primary" htmlType="submit" loading={busy} block>进入管理</Button>
           </Form>
         )}
       </section>}
       {status?.authenticated && <div className="admin-intro">
-        <div><h1>站点管理</h1><p>管理账号准入、后台运行与站点外观。</p></div>
+        {!embedded && <div><h1>站点管理</h1><p>管理账号准入、后台运行与站点外观。</p></div>}
         <Tag icon={<SafetyCertificateOutlined />} color="default">{single ? '远程单用户' : '远程多用户'}</Tag>
+        {embedded && <Button aria-label="退出管理" icon={<LogoutOutlined />} disabled={updating} onClick={logout}>退出管理</Button>}
       </div>}
       {status?.authenticated && <>
         {error && <Alert type="error" showIcon message={error} />}
@@ -226,6 +242,6 @@ export default function AdminPage({ siteAccessRequired = false, onThemeSaved }) 
         <p>{pending && actions[pending.action][1]}</p>
         {error && <Alert type="error" showIcon message={error} />}
       </Modal>
-    </main>
+    </Shell>
   );
 }

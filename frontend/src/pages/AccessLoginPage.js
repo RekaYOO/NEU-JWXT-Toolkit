@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Alert, Button, Card, Form, Input, Typography } from 'antd';
 import { LockOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { loginAccessGateway } from '../services/api';
+import { commitCredentialAutofill } from '../services/nativeBridge';
 import NativeServerSettingsButton from '../components/NativeServerSettingsButton';
 import './AccessLoginPage.css';
 
@@ -16,6 +17,7 @@ const AccessLoginPage = ({ configured, onSuccess }) => {
     setError('');
     try {
       await loginAccessGateway(accessPassword);
+      await commitCredentialAutofill();
       await onSuccess();
     } catch (requestError) {
       setError(requestError.response?.data?.detail || '验证失败，请稍后重试');
@@ -58,6 +60,7 @@ const AccessLoginPage = ({ configured, onSuccess }) => {
               rules={[{ required: true, message: '请输入访问密码' }]}
             >
               <Input.Password
+                name="toolkit_access_password"
                 autoFocus
                 autoComplete="section-toolkit-access current-password"
                 prefix={<LockOutlined />}

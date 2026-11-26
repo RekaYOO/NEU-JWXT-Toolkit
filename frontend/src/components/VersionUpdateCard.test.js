@@ -120,7 +120,7 @@ describe('VersionUpdateCard', () => {
     await act(async () => container.querySelector('button').click());
     const panel = container.querySelector('[aria-label="连接的服务端更新"]');
     expect(panel.textContent).toContain('有新版本');
-    expect(panel.textContent).toContain('登录站点管理后才能下载更新包');
+    expect(panel.textContent).toContain('下载服务端更新需要站点管理员权限');
     expect(panel.querySelector('button')).toBeNull();
   });
 

@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import SystemSettingsPage from './SystemSettingsPage';
 import {
   getAuthRecoverySettings, updateAuthRecoverySettings,
-  getSystemCacheSettings, getSystemMailSettings, updateSystemCacheSettings,
+  getAdminStatus, getAdminAccounts, getSystemCacheSettings, getSystemMailSettings, updateSystemCacheSettings,
 } from '../services/api';
 
 jest.mock('./LogsPage', () => () => null);
@@ -14,6 +14,8 @@ jest.mock('../resources/BrowserTimetableStore', () => ({
 }));
 jest.mock('../services/api', () => ({
   getAuthRecoverySettings: jest.fn(),
+  getAdminStatus: jest.fn(),
+  getAdminAccounts: jest.fn(),
   updateAuthRecoverySettings: jest.fn(),
   getSystemCacheSettings: jest.fn().mockResolvedValue({ cache: {} }),
   getSystemMailSettings: jest.fn().mockResolvedValue({}),
@@ -100,5 +102,22 @@ describe('recovery link lifetime settings', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
     });
     expect(updateSystemCacheSettings).toHaveBeenCalledWith({ resources: cache });
+  });
+
+  test('shows management only after the server verifies the configured school account', async () => {
+    getAuthRecoverySettings.mockResolvedValue({});
+    const page = identity => <MemoryRouter initialEntries={['/system-settings?tab=admin']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <SystemSettingsPage adminIdentity={identity} />
+    </MemoryRouter>;
+    getAdminStatus.mockResolvedValue({ eligible: false, configured: true, authenticated: false });
+    await act(async () => root.render(page('ordinary')));
+    expect(container.textContent).not.toContain('站点管理');
+    expect(getAdminAccounts).not.toHaveBeenCalled();
+    getAdminStatus.mockResolvedValue({ eligible: true, configured: true, authenticated: false });
+    await act(async () => root.render(page('owner')));
+    expect(container.textContent).toContain('解锁站点管理');
+    expect(getAdminAccounts).not.toHaveBeenCalled();
+    await act(async () => root.render(page('')));
+    expect(container.textContent).not.toContain('站点管理');
   });
 });

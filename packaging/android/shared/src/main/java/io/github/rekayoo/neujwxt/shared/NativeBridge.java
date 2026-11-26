@@ -84,6 +84,22 @@ public final class NativeBridge {
     }
 
     @JavascriptInterface
+    public void commitCredentialAutofill(int requestId) {
+        activity.runOnUiThread(() -> {
+            if (activity.isFinishing() || activity.isDestroyed()) return;
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    android.view.autofill.AutofillManager manager = activity.getSystemService(android.view.autofill.AutofillManager.class);
+                    if (manager != null && manager.isEnabled()) manager.commit();
+                }
+            } catch (RuntimeException ignored) {
+            } finally {
+                webView.evaluateJavascript("window.__neuAutofillCommitted?.(" + requestId + ")", null);
+            }
+        });
+    }
+
+    @JavascriptInterface
     public void openCompanionSettings() {
         activity.runOnUiThread(() -> {
             if (!activity.isFinishing() && !activity.isDestroyed()) {

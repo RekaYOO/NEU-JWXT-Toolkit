@@ -91,7 +91,14 @@ func writeSitePassword(ctx context.Context, transaction *sql.Tx, purpose, passwo
 	return nil
 }
 
-func (instance *Store) CreateSiteSession(ctx context.Context, purpose, password string, lifetime time.Duration) (string, error) {
+func siteSessionHash(token string, binding []string) string {
+	if len(binding) != 0 && binding[0] != "" {
+		return tokenHash(token + ":" + binding[0])
+	}
+	return tokenHash(token)
+}
+
+func (instance *Store) CreateSiteSession(ctx context.Context, purpose, password string, lifetime time.Duration, binding ...string) (string, error) {
 	if !validSitePurpose(purpose) || utf8.RuneCountInString(password) > 256 || lifetime <= 0 || lifetime > 7*24*time.Hour {
 		return "", ErrAccess
 	}
@@ -116,7 +123,7 @@ func (instance *Store) CreateSiteSession(ctx context.Context, purpose, password 
 		return "", err
 	}
 	result, err := instance.database.ExecContext(ctx, `INSERT INTO site_auth_sessions(token_hash,purpose,credential,expires_at)
-	 SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM site_settings WHERE setting_key=? AND value=?)`, tokenHash(token), purpose, payload, time.Now().Add(lifetime).Unix(), "credential-"+purpose, payload)
+	 SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM site_settings WHERE setting_key=? AND value=?)`, siteSessionHash(token, binding), purpose, payload, time.Now().Add(lifetime).Unix(), "credential-"+purpose, payload)
 	if err != nil {
 		return "", err
 	}
@@ -126,26 +133,26 @@ func (instance *Store) CreateSiteSession(ctx context.Context, purpose, password 
 	return token, nil
 }
 
-func (instance *Store) SiteSession(ctx context.Context, purpose, token string) bool {
+func (instance *Store) SiteSession(ctx context.Context, purpose, token string, binding ...string) bool {
 	if !validSitePurpose(purpose) || len(token) != 43 {
 		return false
 	}
 	var count int
 	err := instance.database.QueryRowContext(ctx, `SELECT count(*) FROM site_auth_sessions s JOIN site_settings c ON c.setting_key=? AND c.value=s.credential
-	 WHERE s.token_hash=? AND s.purpose=? AND s.expires_at>?`, "credential-"+purpose, tokenHash(token), purpose, time.Now().Unix()).Scan(&count)
+	 WHERE s.token_hash=? AND s.purpose=? AND s.expires_at>?`, "credential-"+purpose, siteSessionHash(token, binding), purpose, time.Now().Unix()).Scan(&count)
 	return err == nil && count == 1
 }
 
-func (instance *Store) RevokeSiteSession(ctx context.Context, purpose, token string) error {
+func (instance *Store) RevokeSiteSession(ctx context.Context, purpose, token string, binding ...string) error {
 	if !validSitePurpose(purpose) {
 		return ErrAccess
 	}
-	_, err := instance.database.ExecContext(ctx, `DELETE FROM site_auth_sessions WHERE purpose=? AND token_hash=?`, purpose, tokenHash(token))
+	_, err := instance.database.ExecContext(ctx, `DELETE FROM site_auth_sessions WHERE purpose=? AND token_hash=?`, purpose, siteSessionHash(token, binding))
 	return err
 }
 
-func (instance *Store) RevokeBrowserSiteSessions(ctx context.Context, access, admin string) error {
+func (instance *Store) RevokeBrowserSiteSessions(ctx context.Context, access, admin string, binding ...string) error {
 	_, err := instance.database.ExecContext(ctx, `DELETE FROM site_auth_sessions WHERE
-		(purpose='access' AND token_hash=?) OR (purpose='admin' AND token_hash=?)`, tokenHash(access), tokenHash(admin))
+		(purpose='access' AND token_hash=?) OR (purpose='admin' AND token_hash=?)`, tokenHash(access), siteSessionHash(admin, binding))
 	return err
 }

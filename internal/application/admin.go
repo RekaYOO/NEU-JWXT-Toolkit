@@ -43,7 +43,7 @@ func (api *API) adminAccounts(response http.ResponseWriter, request *http.Reques
 		api.documentError(response, err)
 		return
 	}
-	writeJSON(response, 200, map[string]any{"accounts": accounts, "deployment_mode": api.accounts.mode})
+	writeJSON(response, 200, map[string]any{"accounts": accounts, "deployment_mode": api.accounts.mode, "default_administrator": api.adminAccount})
 }
 
 func (api *API) adminAccountAction(response http.ResponseWriter, request *http.Request) {
@@ -55,7 +55,12 @@ func (api *API) adminAccountAction(response http.ResponseWriter, request *http.R
 		writeJSON(response, 422, map[string]string{"detail": "学号无效"})
 		return
 	}
-	switch request.PathValue("action") {
+	action := request.PathValue("action")
+	if account == api.adminAccount && (action == "disable" || action == "remove") {
+		writeJSON(response, 409, map[string]string{"detail": "默认管理员的准入由服务器配置管理"})
+		return
+	}
+	switch action {
 	case "stop":
 		err = api.accounts.Stop(request.Context(), account, false)
 	case "disable", "remove":

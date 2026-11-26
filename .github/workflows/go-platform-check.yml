@@ -165,10 +165,11 @@ jobs:
           tar -xOzf "$archive" "NEU-JWXT-Toolkit-${version}-linux-amd64-go/install.sh" > "$installer"
           test "$(systemctl show --property=LoadState --value neu-jwxt-toolkit)" = not-found
           test "$(systemctl show --property=LoadState --value neu-toolbox)" = not-found
-          bash "$installer" install --origin https://toolbox.example.invalid --mode remote-single --archive "$archive" --manifest "$manifest"
+          bash "$installer" install --origin https://toolbox.example.invalid --mode remote-single --admin-account 20990001 --archive "$archive" --manifest "$manifest"
           systemctl is-enabled --quiet neu-toolbox
           systemctl is-active --quiet neu-toolbox
           test "$(stat -c '%a %U %G' /etc/neu-toolbox.env)" = '600 root root'
+          sudo grep -qx 'NEU_JWXT_ADMIN_ACCOUNT=20990001' /etc/neu-toolbox.env
           test "$(stat -c '%a %U %G' /var/lib/neu-toolbox)" = '700 neu-toolbox neu-toolbox'
           base=http://localhost:8000/api
           curl -4fsS "$base/health" | jq -e --arg version "$version" '.backend == "go" and .version == $version and .deployment_mode == "remote-single"'
@@ -180,8 +181,8 @@ jobs:
           curl -4fsS --retry 20 --retry-delay 1 --retry-connrefused "$base/health" | jq -e --arg version "$version" '.version == $version'
           jq -nc '{password:env.TEST_ACCESS_PASSWORD}' | curl -4fsS -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/access/login" | jq -e '.success == true'
           test "$(curl -4s -b "$cookies" -o /dev/null -w '%{http_code}' "$base/admin/accounts")" = 401
-          jq -nc '{password:env.TEST_ADMIN_PASSWORD}' | curl -4fsS -b "$cookies" -c "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" | jq -e '.success == true'
-          curl -4fsS -b "$cookies" "$base/admin/accounts" | jq -e '.accounts == [] and .deployment_mode == "remote-single"'
+          curl -4fsS -b "$cookies" "$base/access/status" | jq -e '.admin_in_settings == true'
+          jq -nc '{password:env.TEST_ADMIN_PASSWORD}' | curl -4s -b "$cookies" -H 'Content-Type: application/json' -d @- "$base/admin/login" -o /dev/null -w '%{http_code}' | grep -qx 403
   debian-reboot:
     needs: linux-archive
     runs-on: ubuntu-latest

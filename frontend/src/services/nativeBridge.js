@@ -2,6 +2,8 @@ import { AxiosError, CanceledError } from 'axios';
 
 const pending = new Map();
 const pendingUpdates = new Map();
+const pendingAutofill = new Map();
+let autofillRequestId = 0;
 
 const bridge = () => (typeof window !== 'undefined' ? window.NeuNative : null);
 
@@ -15,6 +17,22 @@ export const nativeShellInfo = () => {
 };
 
 export const isNativeShell = () => Boolean(bridge()?.request);
+
+export const commitCredentialAutofill = () => {
+  const native = bridge();
+  if (typeof native?.commitCredentialAutofill !== 'function') return Promise.resolve();
+  return new Promise(resolve => {
+    const requestId = ++autofillRequestId;
+    const finish = () => {
+      clearTimeout(timeout);
+      pendingAutofill.delete(requestId);
+      resolve();
+    };
+    const timeout = setTimeout(finish, 500);
+    pendingAutofill.set(requestId, finish);
+    try { native.commitCredentialAutofill(requestId); } catch (_error) { finish(); }
+  });
+};
 
 export const openNativeCompanionSettings = () => bridge()?.openCompanionSettings?.();
 
@@ -88,6 +106,7 @@ const responseData = (payload, responseType) => {
 };
 
 if (typeof window !== 'undefined') {
+  window.__neuAutofillCommitted = requestId => pendingAutofill.get(requestId)?.();
   window.__neuNativeDeliver = (requestId, rawPayload) => Promise.resolve().then(() => {
     const callbacks = pending.get(requestId);
     if (!callbacks) return;

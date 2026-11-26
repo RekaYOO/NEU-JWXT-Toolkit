@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +105,128 @@ func TestRemoteGatewayFailsClosedAndSeparatesAdministrator(t *testing.T) {
 	}
 	if response := requestWithSiteCookies(handler, "GET", "/api/status", "", access); response.Code != 401 {
 		t.Fatal("logged-out gateway token accepted", response)
+	}
+}
+
+func TestDefaultAdministratorRequiresBoundSchoolSession(t *testing.T) {
+	api, handler, access, legacyAdmin := setupSiteAdmin(t, "remote-multi")
+	ctx := context.Background()
+	if err := api.ConfigureDefaultAdministrator(ctx, "20990001"); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.database.AdmitAccount(ctx, "20990002", false); err != nil {
+		t.Fatal(err)
+	}
+	schoolCookie := func(account string) *http.Cookie {
+		token, err := api.database.CreateSession(ctx, account, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &http.Cookie{Name: sessionCookie, Value: token}
+	}
+	owner, other := schoolCookie("20990001"), schoolCookie("20990002")
+	if response := requestWithSiteCookies(handler, "GET", "/api/access/status", ""); !strings.Contains(response.Body.String(), `"admin_in_settings":true`) || strings.Contains(response.Body.String(), "20990001") {
+		t.Fatal(response)
+	}
+	for _, school := range []*http.Cookie{nil, other} {
+		if response := requestWithSiteCookies(handler, "GET", "/api/admin/status", "", access, school); !strings.Contains(response.Body.String(), `"eligible":false`) {
+			t.Fatal(response)
+		}
+		if response := requestWithSiteCookies(handler, "POST", "/api/admin/login", `{"password":"test-admin-password"}`, access, school); response.Code != 403 {
+			t.Fatal(response)
+		}
+	}
+	if response := requestWithSiteCookies(handler, "GET", "/api/admin/status", "", access, owner, legacyAdmin); !strings.Contains(response.Body.String(), `"eligible":true`) || !strings.Contains(response.Body.String(), `"authenticated":false`) {
+		t.Fatal(response)
+	}
+	login := requestWithSiteCookies(handler, "POST", "/api/admin/login", `{"password":"test-admin-password"}`, access, owner)
+	if login.Code != 200 {
+		t.Fatal(login)
+	}
+	admin := responseCookie(t, login.Result(), siteCookie("admin"))
+	for _, path := range []string{"/api/admin/accounts", "/api/admin/appearance"} {
+		if response := requestWithSiteCookies(handler, "GET", path, "", access, owner, admin); response.Code != 200 {
+			t.Fatal(response)
+		}
+		for _, school := range []*http.Cookie{nil, other, schoolCookie("20990001")} {
+			if response := requestWithSiteCookies(handler, "GET", path, "", access, school, admin); response.Code != 401 {
+				t.Fatal(response)
+			}
+		}
+	}
+	if response := requestWithSiteCookies(handler, "POST", "/api/runtime/update/download", "", access, other, admin); response.Code != 403 {
+		t.Fatal(response)
+	}
+	if response := requestWithSiteCookies(handler, "POST", "/api/admin/accounts/20990001/disable", "", access, owner, admin); response.Code != 409 {
+		t.Fatal(response)
+	}
+	if response := requestWithSiteCookies(handler, "POST", "/api/admin/logout", "", access, owner, admin); response.Code != 200 {
+		t.Fatal(response)
+	}
+	if response := requestWithSiteCookies(handler, "GET", "/api/admin/accounts", "", access, owner, admin); response.Code != 401 {
+		t.Fatal(response)
+	}
+	if _, err := api.database.Session(ctx, owner.Value); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDefaultAdministratorPreservesRemoteSingleAdmission(t *testing.T) {
+	api, _ := testApplication(t, "remote-single")
+	ctx := context.Background()
+	if err := api.database.AdmitAccount(ctx, "20990002", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.ConfigureDefaultAdministrator(ctx, "20990001"); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("expected occupied single-user slot, got %v", err)
+	}
+	if err := api.ConfigureDefaultAdministrator(ctx, "20990002"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDefaultAdministratorMigrationKeepsFirstEnabledAccount(t *testing.T) {
+	api, _ := testApplication(t, "remote-multi")
+	ctx := context.Background()
+	if err := api.ConfigureDefaultAdministrator(ctx, ""); err != nil || api.adminAccount != "" {
+		t.Fatalf("empty site selected an administrator: %q, %v", api.adminAccount, err)
+	}
+	for _, account := range []string{"20990003", "20990002", "20990001"} {
+		if err := api.database.AdmitAccount(ctx, account, false); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := api.database.SetAdmission(ctx, "20990003", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.ConfigureDefaultAdministrator(ctx, ""); err != nil || api.adminAccount != "20990002" {
+		t.Fatalf("migration selected %q: %v", api.adminAccount, err)
+	}
+	if err := api.database.SetAdmission(ctx, "20990003", true, false); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewInactiveAPI(api.database, api.accounts, "fixture")
+	if err := restarted.ConfigureDefaultAdministrator(ctx, ""); err != nil || restarted.adminAccount != "20990002" {
+		t.Fatalf("restart changed administrator to %q: %v", restarted.adminAccount, err)
+	}
+}
+
+func TestLinuxMaintenanceFixtureSession(t *testing.T) {
+	if os.Getenv("NEU_TOOLBOX_QA_MAINTENANCE") != "1" {
+		t.Skip("used by the synthetic Linux maintenance test")
+	}
+	database, err := store.Open("/var/lib/neu-toolbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	token, err := database.CreateSession(context.Background(), "20990001", time.Minute*30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stdout.WriteString("localhost\tFALSE\t/\tFALSE\t0\t" + sessionCookie + "\t" + token + "\n"); err != nil {
+		t.Fatal(err)
 	}
 }
 

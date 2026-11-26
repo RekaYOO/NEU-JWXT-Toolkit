@@ -13,6 +13,7 @@ import './LoginPage.css';
 import { isManualLogoutActive } from '../utils/authSessionPolicy';
 import WebVPNAuthModal from '../components/WebVPNAuthModal';
 import NativeServerSettingsButton from '../components/NativeServerSettingsButton';
+import { commitCredentialAutofill } from '../services/nativeBridge';
 
 const directFallbackCodes = new Set(['DIRECT_ACCESS_FAILED', 'WEBVPN_REQUIRED']);
 
@@ -213,11 +214,12 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       if (signal.aborted) return;
       if (handleCampusNetworkBlock(result)) return;
       if (result.status === 'sms_required' && result.flow_id) {
-        showSMSChallenge(result);
+        showSMSChallenge({ ...result, passwordLogin: true });
       } else if (!result.success) {
         message.error(getWebVPNErrorMessage(result, 'WebVPN 登录失败'));
       } else if (result.status === 'authenticated') {
-        onLoginSuccess(result.username || values.username);
+        await commitCredentialAutofill();
+        if (!signal.aborted) onLoginSuccess(result.username || values.username);
       }
     } catch (error) {
       if (signal.aborted) return;
@@ -311,6 +313,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
         }
         return;
       }
+      if (smsFlow.passwordLogin) await commitCredentialAutofill();
       setSmsFlow(null);
       onLoginSuccess(result.username || form.getFieldValue('username'));
     } catch (error) {
@@ -371,7 +374,8 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
       });
       if (signal.aborted) return;
       if (result.success) {
-        onLoginSuccess(result.username);
+        await commitCredentialAutofill();
+        if (!signal.aborted) onLoginSuccess(result.username);
       } else if (directFallbackCodes.has(result.error_code)) {
         setNetworkMode('webvpn');
         setSwitchingToWebVPN(true);
@@ -489,6 +493,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
                   rules={[{ required: true, message: '请输入学号' }]}
                 >
                   <Input
+                    name="username"
                     prefix={<UserOutlined />}
                     placeholder="学号"
                     size="large"
@@ -504,6 +509,7 @@ const LoginPage = ({ onLoginSuccess, onOfflineSuccess }) => {
                   rules={[{ required: true, message: '请输入密码' }]}
                 >
                   <Input.Password
+                    name="password"
                     prefix={<LockOutlined />}
                     placeholder="密码"
                     size="large"

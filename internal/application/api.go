@@ -52,6 +52,7 @@ type API struct {
 	recoveryMutex       sync.Mutex
 	recoveries          map[string]*authRecoveryState
 	gatewayRequired     bool
+	adminAccount        string
 	siteLoginWindows    map[string]loginWindow
 	siteAuthSlots       chan struct{}
 	trustedProxies      []netip.Prefix

@@ -27,6 +27,8 @@ const { chromium } = require(require.resolve('playwright', { paths: [path.resolv
       const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block', reducedMotion: 'reduce' });
       let access = false;
       let admin = false;
+      let adminInSettings = false;
+      let schoolAccount = '';
       let enabled = true;
       const writes = [];
       const unexpected = [];
@@ -37,13 +39,23 @@ const { chromium } = require(require.resolve('playwright', { paths: [path.resolv
         if (url.origin !== origin) return route.abort();
         if (!url.pathname.startsWith('/api/')) return route.continue();
         let data = {};
-        if (url.pathname === '/api/access/status') data = { required: true, configured: true, authenticated: access };
+        if (url.pathname === '/api/access/status') data = { required: true, configured: true, authenticated: access, admin_in_settings: adminInSettings };
         else if (url.pathname === '/api/access/login') { access = true; data = { success: true }; }
-        else if (url.pathname === '/api/admin/status') data = { configured: true, authenticated: admin, deployment_mode: 'remote-multi' };
+        else if (url.pathname === '/api/client/bootstrap' && adminInSettings) data = { runtime: { profile: 'server' }, auth: { is_logged_in: true, current_user: schoolAccount } };
+        else if (url.pathname === '/api/admin/status') data = { configured: true, authenticated: admin, eligible: adminInSettings && schoolAccount === '20990001', deployment_mode: 'remote-multi' };
         else if (url.pathname === '/api/admin/login') { admin = true; data = { success: true }; }
         else if (url.pathname === '/api/admin/logout') { admin = false; data = { success: true }; }
         else if (url.pathname === '/api/admin/appearance' && route.request().method() === 'GET' && admin) data = { site_default: 'sakura' };
-        else if (url.pathname === '/api/admin/accounts') data = { accounts: [{ account: '20990001', enabled }] };
+        else if (url.pathname === '/api/admin/accounts') {
+          data = adminInSettings
+            ? { default_administrator: '20990001', accounts: [{ account: '20990001', enabled: true }, { account: '20990002', enabled: true }] }
+            : { accounts: [{ account: '20990001', enabled }] };
+        }
+        else if (adminInSettings && ['/api/system-settings/cache', '/api/system-settings/mail', '/api/system-settings/auth-recovery', '/api/status', '/api/appearance', '/api/avatar', '/api/cache/settings', '/api/runtime', '/api/health'].includes(url.pathname)) data = {};
+        else if (adminInSettings && url.pathname === '/api/client/updates') data = { updates: [] };
+        else if (adminInSettings && url.pathname === '/api/cache/events') data = { events: [] };
+        else if (adminInSettings && url.pathname === '/api/auth/pending') data = { pending_auth: null };
+        else if (adminInSettings && ['/api/user/avatar/cache', '/api/cache/refresh/avatar'].includes(url.pathname)) data = {};
         else if (/^\/api\/admin\/accounts\/20990001\/(stop|disable|remove|enable)$/.test(url.pathname)) {
           assert.equal(route.request().method(), 'POST');
           writes.push(url.pathname.split('/').pop());
@@ -77,11 +89,30 @@ const { chromium } = require(require.resolve('playwright', { paths: [path.resolv
       await page.getByRole('button', { name: '退出管理', exact: true }).click();
       await page.getByLabel('管理员密码').waitFor();
       assert.equal(await page.getByText('20990001', { exact: true }).count(), 0);
+      adminInSettings = true;
+      schoolAccount = '20990001';
+      await page.goto(`${origin}/admin`);
+      await page.waitForURL('**/system-settings?tab=admin');
+      await page.getByRole('heading', { name: '解锁站点管理' }).waitFor();
+      await page.getByLabel('管理员密码').fill('synthetic-admin-password');
+      await page.getByRole('button', { name: '进入管理' }).click();
+      await page.getByRole('heading', { name: '准入名单' }).waitFor();
+      const ownerRow = page.getByRole('listitem').filter({ hasText: '20990001' });
+      await ownerRow.getByText('默认管理员', { exact: true }).waitFor();
+      assert.equal(await ownerRow.getByRole('button', { name: '停用账号', exact: true }).count(), 0);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+      await page.screenshot({ path: path.join(screenshots, `admin-settings-${width}.png`), fullPage: true });
+      await page.getByRole('button', { name: '退出管理', exact: true }).click();
+      await page.getByRole('heading', { name: '解锁站点管理' }).waitFor();
+      schoolAccount = '20990002';
+      await page.goto(`${origin}/system-settings?tab=admin`);
+      await page.getByText('应用版本', { exact: true }).waitFor();
+      assert.equal(await page.getByRole('tab', { name: '站点管理' }).count(), 0);
       assert.deepEqual(unexpected, []);
       assert.deepEqual(errors, []);
       await page.close();
     }
-    console.log(`PASS admin gateway, confirmation, disable/restore, logout, six viewports; screenshots: ${screenshots}`);
+    console.log(`PASS legacy administration and account-bound settings across six viewports; screenshots: ${screenshots}`);
   } finally {
     await browser?.close();
     await new Promise(resolve => server.close(resolve));
