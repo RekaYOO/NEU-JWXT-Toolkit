@@ -110,7 +110,7 @@ NEU_JWXT_ACCESS_PASSWORD=首次初始化的网站访问密码
 NEU_JWXT_ADMIN_ACCOUNT=默认管理员学号
 ```
 
-两种密码支持 8–256 字符，建议至少 12 字符。首次启动会持久化密码哈希，后续修改环境变量不会静默重置已有密码。
+网站访问密码支持 8–256 字符，建议至少 12 字符。首次启动会持久化密码哈希，后续修改环境变量不会静默重置已有密码。
 修改网站访问密码时，设置新 `NEU_JWXT_ACCESS_PASSWORD` 并运行 `--reset-site-password access`。
 运行 `systemctl daemon-reload` 和 `systemctl enable --now neu-toolbox`，使用
 `journalctl -u neu-toolbox` 查看服务状态。远程单用户将服务参数改为 `--mode remote-single`；

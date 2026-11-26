@@ -7,7 +7,7 @@
 
 面向东北大学学生的第三方教务工具箱。查成绩和专业排名、规划剩余学分、查大纲和考核方式、排课选课、打包下载活动证明，都可以在一个地方完成。
 
-[下载与安装](#下载与安装) · [功能演示](#功能演示) · [使用手册](docs/README.md) · [旧版资料导入](docs/部署/旧版资料导入.md)
+[下载与安装](#下载与安装) · [Linux 安装与更新](#linux-服务端) · [功能演示](#功能演示) · [使用手册](docs/README.md)
 
 ## 功能演示
 
@@ -49,23 +49,83 @@
 | 使用场景 | 下载与启动 |
 | --- | --- |
 | Windows x64 | 解压 `*-windows-amd64-go.zip`，双击 `启动工具箱.exe`。在系统设置检查更新。 |
-| Linux x64 服务端 | 使用下方安装命令。支持 HTTPS 反向代理、按账号准入、升级和回退。 |
+| Linux x64 服务端 | 在服务器终端运行 [Linux 安装或更新命令](#linux-服务端)。 |
 | Android 本地版 | 安装 `*-android-local-arm64.apk`。内置本地服务，数据保留在手机上。 |
 | Android 远程客户端 | 安装 `*-android-client-arm64.apk`，填写自己的 HTTPS 服务地址。 |
 
 两个 APK 支持 Android 7.0 及以上的 `arm64-v8a` 设备。下载、更新与通知权限见[Android 安装](docs/部署/Android安装.md)。
 
-### Linux 一键维护
+### Linux 服务端
 
-适用于有 systemd 的 x64 主机，需 Bash、`curl`、Python 3.11+ 和 `sudo`。准备 HTTPS 域名与反向代理。
+用 SSH 登录 Linux 服务器后执行下列命令。脚本适用于使用 systemd 的 x64 主机，需要 Bash、`curl`、Python 3.11+ 和 `sudo`（root 可直接运行）。新站点还需一个指向服务器的域名，以及负责 HTTPS 的 Caddy、Nginx 或面板反向代理。
+
+| 服务器上的情况 | 该怎么做 |
+| --- | --- |
+| 从未安装过工具箱 | [首次安装](#首次安装) |
+| 已用一键脚本安装 Go 版（`neu-toolbox.service`） | [更新已有 Go 版](#更新已有-go-版) |
+| 仍在运行 Python 旧版（`neu-jwxt-toolkit.service`） | 保留旧服务，用独立 HTTPS 地址试运行 Go 版，再导入资料和切换域名。见[旧版并行迁移](docs/部署/Go运行包.md#linux-原版并行试运行与切换)。 |
+
+如果不确定装的是哪一版，可运行 `systemctl list-unit-files neu-toolbox.service neu-jwxt-toolkit.service` 查看。
+
+#### 首次安装
+
+**1. 下载并运行安装脚本。** 脚本会下载最新正式版的 Go 运行包、校验文件并启动服务。
 
 ```bash
-curl -fL --retry 3 --proto '=https' -o install.sh https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest/download/install.sh && bash ./install.sh install
+curl -fL --retry 3 --proto '=https' -o neu-toolbox-install.sh https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest/download/install.sh &&
+  bash ./neu-toolbox-install.sh install
 ```
 
-首次安装按提示填写公开 HTTPS 地址和默认管理员学号。该账号登录后，在「系统设置 → 站点管理」维护准入名单。
+按提示填两项。公开 HTTPS 地址填写将来在浏览器里打开的地址，如 `https://toolbox.example.com`，只填站点地址。管理员学号填写自己的数字学号，该账号会自动加入准入名单。
 
-已有服务时，使用同一个脚本执行 `bash ./install.sh update`。也可用 `status` 查看服务状态、`recover` 恢复中断的维护、`rollback --restore-data` 切回上一个检查点。Windows 更新、Linux 安装参数、备份与旧资料迁移见[安装与维护](docs/部署/Go运行包.md)。
+**2. 配置域名的 HTTPS 转发。** 将站点转发到脚本末尾打印的地址。全新安装默认是 `127.0.0.1:8000`，检测到 Python 旧服务时默认用 `127.0.0.1:18000`。如果已用 Nginx 或面板管理站点，在现有配置中添加工具箱站点即可。
+
+使用 Caddy 时，把这段加入 `/etc/caddy/Caddyfile`，并替换示例域名和端口。
+
+```caddyfile
+toolbox.example.com {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+```
+
+**3. 取初始访问密码并登录。** 在服务器终端执行下列命令，把输出用在浏览器的「访问密码」页面。随后使用自己的学号登录教务。管理员可在「系统设置 → 站点管理」添加其他用户。
+
+```bash
+sudo sed -n 's/^NEU_JWXT_ACCESS_PASSWORD=//p' /etc/neu-toolbox.env
+```
+
+#### 更新已有 Go 版
+
+在服务器上运行下列命令。每次下载最新脚本，`update` 会保留数据、端口、域名和账号配置，切换时会短暂停机。升级前请准备一份可恢复的备份。见[备份与恢复](docs/部署/Go备份与恢复.md)。
+
+```bash
+curl -fL --retry 3 --proto '=https' -o neu-toolbox-install.sh https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest/download/install.sh &&
+  bash ./neu-toolbox-install.sh update
+```
+
+升级完成后查看版本与服务状态，再用原 HTTPS 地址登录确认。手工修改过服务单元或数据目录的实例按[自定义服务升级](docs/部署/Go运行包.md#手工安装与自定义服务升级)操作。
+
+```bash
+bash ./neu-toolbox-install.sh status
+```
+
+#### 脚本命令速查
+
+在保存 `neu-toolbox-install.sh` 的目录执行。脚本也可从 [GitHub Releases](https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest) 重新下载，发行附件名是 `install.sh`。
+
+| 命令 | 用途 |
+| --- | --- |
+| `bash ./neu-toolbox-install.sh --help` | 查看全部命令。用 `install --help` 或 `update --help` 查看对应参数。 |
+| `bash ./neu-toolbox-install.sh status` | 查看当前版本、服务状态和最近的升级检查点。 |
+| `bash ./neu-toolbox-install.sh recover` | 恢复中断的升级或回退，也可重新启动并验证服务。 |
+| `bash ./neu-toolbox-install.sh rollback --restore-data` | 恢复到上一检查点的程序和数据，并另存回退前的数据。会话需重新登录，后台任务需按需重启。 |
+| `sudo journalctl -u neu-toolbox -n 60 --no-pager` | 启动失败或打不开站点时，查看近期服务日志。 |
+
+无人值守安装可传 `install --origin https://toolbox.example.com --admin-account 20990001`，请替换为自己的域名和学号。只供自己使用可额外传 `--mode remote-single`。指定版本、离线安装和回退细节见 [Go 运行包](docs/部署/Go运行包.md#linux-服务)。
 
 ## 登录与使用
 
