@@ -149,6 +149,7 @@ def smoke_remote(executable, temporary, options, mode):
     with sqlite3.connect(temporary / mode / 'toolbox.db') as database:
         if database.execute("SELECT count(*) FROM site_settings WHERE setting_key IN ('credential-access','credential-admin')").fetchone()[0]:
             raise ValueError('Failed initialization persisted partial site credentials')
+    school_token = secrets.token_urlsafe(32)
     for iteration in range(2):
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
@@ -189,11 +190,18 @@ def smoke_remote(executable, temporary, options, mode):
                 access_cookie = session_cookie(headers, 'neu_jwxt_access', 7 * 24 * 3600)
                 if call('/api/admin/accounts', cookies=access_cookie, expected=401)[0].get('error_code') != 'ADMIN_REQUIRED':
                     raise ValueError('Access cookie grants administrative access')
-                _, headers = call('/api/admin/login', {'password': admin}, access_cookie)
+                state, _ = call('/api/access/status', cookies=access_cookie)
+                if state.get('admin_in_settings') is not (iteration == 1):
+                    raise ValueError('Unexpected default administrator selection')
+                login_cookies = access_cookie
+                if iteration == 1:
+                    call('/api/admin/login', {'password': admin}, access_cookie, expected=403)
+                    login_cookies += '; neu_toolbox_session=' + school_token
+                _, headers = call('/api/admin/login', {'password': admin}, login_cookies)
                 admin_cookie = session_cookie(headers, 'neu_toolbox_admin', 8 * 3600)
                 if call('/api/admin/accounts', cookies=admin_cookie, expected=401)[0].get('error_code') != 'ACCESS_REQUIRED':
                     raise ValueError('Administrator cookie unexpectedly granted site access')
-                cookies = access_cookie + '; ' + admin_cookie
+                cookies = login_cookies + '; ' + admin_cookie
                 if iteration == 0:
                     call('/api/admin/accounts', {'account': '20990001'}, cookies)
                     if mode == 'remote-single':
@@ -209,12 +217,18 @@ def smoke_remote(executable, temporary, options, mode):
                 statuses = {row['account']: row['enabled'] for row in listing['accounts']}
                 if listing['deployment_mode'] != mode or statuses != {'20990001': False, '20990002': True}:
                     raise ValueError('Admission state mismatch')
+                if iteration == 1 and listing.get('default_administrator') != '20990002':
+                    raise ValueError('The first enabled school account was not granted administration')
                 call('/api/admin/logout', cookies=cookies, method='POST')
                 call('/api/admin/accounts', cookies=cookies, expected=401)
             finally:
                 process.terminate()
                 process.wait(timeout=15)
         if iteration == 0:
+            with sqlite3.connect(temporary / mode / 'toolbox.db') as database:
+                database.execute('''INSERT INTO sessions(token_hash, account_id, generation, expires_at)
+                    SELECT ?, id, generation, ? FROM accounts WHERE id='20990002' AND enabled=1''',
+                    (hashlib.sha256(school_token.encode()).hexdigest(), int(time.time()) + 600))
             for incompatible in ('local-single', 'remote-single' if mode == 'remote-multi' else 'remote-multi'):
                 attempt = subprocess.run([str(executable), '--init-only', '--mode', incompatible],
                                          cwd=temporary, env=environment, capture_output=True, timeout=30, **options)
