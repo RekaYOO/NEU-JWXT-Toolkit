@@ -92,6 +92,7 @@ class CourseSelectionAutomationService:
         self.plan_provider = plan_provider
         self._lock = threading.RLock()
         self._wake = threading.Event()
+        self.background_allowed: Callable[[], bool] = lambda: True
         # Catalog archiving is deliberately isolated from the task scheduler.
         # A complete round may contain thousands of classes; it must not block
         # the one-second/30-second automation loop or make a live task appear
@@ -1957,7 +1958,7 @@ class CourseSelectionAutomationService:
                     and task.get("status") in {"running", "waiting"}
                 ]
             for task in due:
-                if self._stop.is_set():
+                if self._stop.is_set() or not self.background_allowed():
                     break
                 self._tick(task)
             # Keep this loop exclusively for user-started tasks.  Catalog

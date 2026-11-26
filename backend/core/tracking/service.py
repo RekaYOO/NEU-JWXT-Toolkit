@@ -75,6 +75,7 @@ class GradeTrackingService:
         self.score_refresher = score_refresher
         self.score_detail_lookup = score_detail_lookup
         self.gpa_summary_provider = gpa_summary_provider
+        self.background_allowed: Callable[[], bool] = lambda: True
         self._lock = threading.RLock()
         self._check_lock = threading.Lock()
         self._revision_lock = threading.RLock()
@@ -325,7 +326,7 @@ class GradeTrackingService:
     def _scheduler(self) -> None:
         while not self._stop.is_set():
             try:
-                if self._should_run():
+                if self.background_allowed() and self._should_run():
                     self._run_check(manual=False)
             except Exception as error:
                 self.logger.exception("[成绩追踪] 调度失败")
@@ -702,6 +703,10 @@ class GradeTrackingService:
                 self.mail_service.queue_notification(
                     "grade_tracking", *notification,
                     priority=bool(activation_id),
+                    **({"template_metadata": {"notification_summary": self._mobile_summary(
+                        additions, changes, removals, overall_gpa_changed,
+                        initial=bool(activation_id) or not previous,
+                    )}} if self._notification_label == "通知" else {}),
                 )
                 self._state["last_notified_revision"] = revision
             self._state["last_revision_reason"] = reason
@@ -831,6 +836,32 @@ class GradeTrackingService:
             sections.append(f"<h3 style='margin:18px 0 8px'>{heading}</h3><table style='width:100%;border-collapse:collapse;min-width:420px'><thead><tr style='background:#f7f9fc;text-align:left'><th style='padding:10px 12px'>课程名称</th><th style='padding:10px 12px'>绩点</th><th style='padding:10px 12px'>学分</th></tr></thead><tbody>{rows}</tbody></table>")
         summary = f"<b>原总 GPA：</b>{html.escape(str(previous.get('overall_gpa', '未知')))}<br><b>新总 GPA：</b>{html.escape(str(current.get('overall_gpa', '未知')))}<br><b>总 GPA 是否变化：</b>{'是' if overall_gpa_changed else '否'}"
         return self._email_shell('检测到成绩变化', summary, ''.join(sections), f"检查时间：{current['updated_at']}")
+
+    @staticmethod
+    def _mobile_summary(additions, changes, removals, overall_gpa_changed, *, initial=False) -> str:
+        if initial:
+            return "成绩追踪已完成初始同步。"
+
+        def clean(value, limit):
+            text = " ".join(str(value if value is not None else "").split())
+            return text[:limit] + ("…" if len(text) > limit else "")
+
+        def name(item):
+            return clean(item.get("name") or item.get("code") or "课程", 35)
+
+        lines = [f"{name(item)} 新出成绩 {clean(item.get('score'), 24)}" for item in additions]
+        for item in changes:
+            before, after = item["before"], item["after"]
+            if before.get("score") != after.get("score"):
+                lines.append(f"{name(after)} {clean(before.get('score'), 24)} → {clean(after.get('score'), 24)}")
+            elif before.get("gpa") != after.get("gpa"):
+                lines.append(f"{name(after)} 绩点 {clean(before.get('gpa'), 10)} → {clean(after.get('gpa'), 10)}")
+        lines.extend(f"{name(item)} 成绩记录已移除" for item in removals)
+        if overall_gpa_changed:
+            lines.append("总绩点有变化")
+        if len(lines) > 3:
+            return "\n".join([*lines[:3], f"另有 {len(lines) - 3} 项成绩变化"])
+        return "\n".join(lines)
 
     def _change_email(
         self,

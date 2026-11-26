@@ -1,0 +1,14 @@
+<resources>
+    <string name="widget_timetable_title">今日课表</string>
+    <string name="widget_next_title">下次课</string>
+    <string name="widget_sync_prompt">打开同步课表</string>
+    <string name="widget_next_label">下次课（1 行 × 2 列）</string>
+    <string name="widget_square_label">今日课表（2 行 × 2 列）</string>
+    <string name="widget_wide_label">今日课表（2 行 × 4 列）</string>
+    <string name="widget_tall_label">今日课表（4 行 × 2 列）</string>
+    <color name="widget_surface">#F3F7FF</color>
+    <color name="widget_primary">#102445</color>
+    <color name="widget_secondary">#395585</color>
+    <color name="widget_accent">#174FA8</color>
+    <color name="widget_time_background">#E1ECFF</color>
+</resources>

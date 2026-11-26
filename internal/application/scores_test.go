@@ -153,3 +153,73 @@ func TestScoresPolicyAndCachedReportHTTP(t *testing.T) {
 		t.Fatal("report accessible without identity")
 	}
 }
+
+func TestMobileGradeRevisionOnlyReflectsGrades(t *testing.T) {
+	api, handler := testApplication(t, "local-single")
+	const path = "/api/mobile/grade-revision"
+	if response := apiRequest(handler, "GET", path, "", nil); response.Code != 401 {
+		t.Fatalf("grade revision without login: %d", response.Code)
+	}
+	cookie := loginCookie(t, handler, "20990001")
+	ctx := context.Background()
+	session, err := api.database.Session(ctx, cookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func() string {
+		t.Helper()
+		response := apiRequest(handler, "GET", path, "", cookie)
+		var data map[string]string
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &data) != nil || len(data) != 1 || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("unexpected grade revision: %d %s", response.Code, response.Body.String())
+		}
+		return data["revision"]
+	}
+	if read() != "" {
+		t.Fatal("missing cache should not have a grade revision")
+	}
+	commit := func(revision string, fixture academic.Scores) {
+		t.Helper()
+		payload, err := json.Marshal(fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := api.database.CommitCache(ctx, session, store.CacheEntry{Resource: "scores", Variant: "default", Payload: payload, Revision: revision, SchemaVersion: 1}, "test", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixtures := academic.Scores{Scores: []academic.Score{{Code: "DEMO", Term: "2026-1", Score: "80", GPA: 3}, {Code: "UNPOSTED", Term: "2026-1"}}}
+	commit("first", fixtures)
+	baseline := read()
+	if !strings.HasPrefix(baseline, "v1:") {
+		t.Fatalf("missing grade fingerprint: %q", baseline)
+	}
+	rank := 6
+	fixtures.OfficialMajorRank = &rank
+	fixtures.Scores[0].Name = "课程展示名称改动"
+	fixtures.Scores[0].DetailRef = "test-reference"
+	fixtures.Scores[0], fixtures.Scores[1] = fixtures.Scores[1], fixtures.Scores[0]
+	commit("presentation-only", fixtures)
+	if read() != baseline {
+		t.Fatal("rank, detail and display changes must not notify")
+	}
+	if response := apiRequest(handler, "GET", path+"?details=true", "", nil); response.Code != 401 {
+		t.Fatal("grade details accessible without login")
+	}
+	response := apiRequest(handler, "GET", path+"?details=true", "", cookie)
+	var detailed struct {
+		Revision string        `json:"revision"`
+		Grades   []mobileGrade `json:"grades"`
+	}
+	if response.Code != 200 || response.Header().Get("Cache-Control") != "no-store" || json.Unmarshal(response.Body.Bytes(), &detailed) != nil || detailed.Revision != baseline || len(detailed.Grades) != 1 {
+		t.Fatalf("unexpected opt-in grade details: %d %s", response.Code, response.Body.String())
+	}
+	if grade := detailed.Grades[0]; len(grade.Key) != 64 || grade.Name != "课程展示名称改动" || grade.Score != "80" || grade.GPA != 3 {
+		t.Fatalf("wrong grade details: %+v", grade)
+	}
+	fixtures.Scores[0].Score = "92"
+	commit("new-grade", fixtures)
+	if read() == baseline {
+		t.Fatal("a new grade must change the mobile revision")
+	}
+}

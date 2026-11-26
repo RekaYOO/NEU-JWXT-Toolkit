@@ -25,7 +25,7 @@ final class PermissionGuardTransport implements ApiTransport {
 
     @Override
     public void request(String id, NativeRequest request, Callback callback) {
-        if (enablesBackgroundTask(request) && !notificationsGranted()) {
+        if (enablesBackgroundTask(request) && !notificationsGranted(context)) {
             if (Build.VERSION.SDK_INT >= 33 && context instanceof android.app.Activity) {
                 android.app.Activity activity = (android.app.Activity) context;
                 activity.runOnUiThread(() -> androidx.core.app.ActivityCompat.requestPermissions(
@@ -102,7 +102,7 @@ final class PermissionGuardTransport implements ApiTransport {
         }
     }
 
-    private boolean notificationsGranted() {
+    static boolean notificationsGranted(Context context) {
         return NotificationManagerCompat.from(context).areNotificationsEnabled()
             && (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(
             context, Manifest.permission.POST_NOTIFICATIONS

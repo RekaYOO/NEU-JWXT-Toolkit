@@ -1,5 +1,8 @@
 package io.github.rekayoo.neujwxt.local;
 
+import io.github.rekayoo.neujwxt.shared.Companion;
+import io.github.rekayoo.neujwxt.shared.NotificationSummary;
+
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -35,6 +38,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import androidx.core.content.ContextCompat;
 
@@ -65,7 +69,7 @@ public final class LocalBackendService extends Service {
     private volatile boolean ready;
 
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
-    private final OkHttpClient http = new OkHttpClient.Builder()
+    static final OkHttpClient HTTP = new OkHttpClient.Builder()
         .proxy(java.net.Proxy.NO_PROXY)
         .connectTimeout(5, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
         .followRedirects(false).retryOnConnectionFailure(false).build();
@@ -92,7 +96,7 @@ public final class LocalBackendService extends Service {
             MUTATIONS.incrementAndGet();
             MUTATION_EPOCH.incrementAndGet();
             Runnable guarded = () -> {
-                if (endpoint == null) {
+                if (endpoint == null || !backgroundExecutionAllowed()) {
                     finishMutation();
                     failure.accept(new IOException("本地服务尚未就绪"));
                 } else action.run();
@@ -130,21 +134,37 @@ public final class LocalBackendService extends Service {
         return current != null && !current.destroyed;
     }
 
+    static boolean canResumeBackground(Context context) {
+        return PermissionGuardTransport.notificationsGranted(context)
+            && context.getSharedPreferences("mobile_runtime", Context.MODE_PRIVATE).getBoolean("background_required", false);
+    }
+
+    static boolean backgroundExecutionAllowed() {
+        LocalBackendService current = instance;
+        return current != null && current.foreground && !current.destroyed && PermissionGuardTransport.notificationsGranted(current);
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
         instance = this;
         startupFailure = null;
-        createChannels();
-        promote("正在启动本地服务");
-        worker.execute(this::startPython);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        promote("自动任务正在本机运行");
         List<Runnable> callbacks = new ArrayList<>(FOREGROUND_CALLBACKS);
         FOREGROUND_CALLBACKS.clear();
+        if (!PermissionGuardTransport.notificationsGranted(this) || (callbacks.isEmpty() && !canResumeBackground(this))) {
+            for (Runnable callback : callbacks) callback.run();
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+        if (!foreground) {
+            createChannels();
+            promote("自动任务正在本机运行");
+            worker.execute(this::startPython);
+        }
         for (Runnable callback : callbacks) whenReady(callback);
         return START_STICKY;
     }
@@ -157,30 +177,10 @@ public final class LocalBackendService extends Service {
 
     private void startPython() {
         try {
-            synchronized (PYTHON_LOCK) {
-                if (destroyed) return;
-                if (token == null) {
-                    byte[] random = new byte[48];
-                    new SecureRandom().nextBytes(random);
-                    token = Base64.encodeToString(random, Base64.NO_WRAP | Base64.URL_SAFE);
-                }
-                if (!Python.isStarted()) Python.start(new AndroidPlatform(getApplicationContext()));
-                Python python = Python.getInstance();
-                File data = new File(getFilesDir(), "data");
-                File resources = new File(getFilesDir(), "runtime-resources");
-                if (!data.exists() && !data.mkdirs()) throw new IOException("无法创建数据目录");
-                if (!resources.exists() && !resources.mkdirs()) throw new IOException("无法创建资源目录");
-                PackageInfo packageInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
-                PyObject module = python.getModule("launchers.mobile");
-                int port = module.callAttr(
-                    "start", data.getAbsolutePath(), resources.getAbsolutePath(), token,
-                    packageInfo.versionName
-                ).toInt();
-                startupEndpoint = "http://127.0.0.1:" + port + "/";
-                waitUntilHealthy();
-                endpoint = startupEndpoint;
-                ready = true;
-            }
+            if (destroyed) return;
+            ensureRuntime(getApplicationContext());
+            if (destroyed) return;
+            ready = true;
             notifyReady();
             if (!destroyed) worker.scheduleWithFixedDelay(this::pollBackend, 0, 5, TimeUnit.SECONDS);
         } catch (Exception exception) {
@@ -197,14 +197,46 @@ public final class LocalBackendService extends Service {
         }
     }
 
-    private void waitUntilHealthy() throws Exception {
+    static void ensureRuntime(Context context) throws Exception {
+        synchronized (PYTHON_LOCK) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+            if (endpoint != null) {
+                try (Response health = healthCheck(endpoint)) {
+                    if (health.isSuccessful()) return;
+                } catch (IOException ignored) { }
+            }
+            if (token == null) {
+                byte[] random = new byte[48];
+                new SecureRandom().nextBytes(random);
+                token = Base64.encodeToString(random, Base64.NO_WRAP | Base64.URL_SAFE);
+            }
+            if (!Python.isStarted()) Python.start(new AndroidPlatform(context));
+            File data = new File(context.getFilesDir(), "data");
+            File resources = new File(context.getFilesDir(), "runtime-resources");
+            if (!data.exists() && !data.mkdirs()) throw new IOException("无法创建数据目录");
+            if (!resources.exists() && !resources.mkdirs()) throw new IOException("无法创建资源目录");
+            PackageInfo packageInfo = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+            PyObject module = Python.getInstance().getModule("launchers.mobile");
+            BooleanSupplier backgroundPermission = LocalBackendService::backgroundExecutionAllowed;
+            int port = module.callAttr("start", data.getAbsolutePath(), resources.getAbsolutePath(), token, packageInfo.versionName,
+                backgroundPermission).toInt();
+            startupEndpoint = "http://127.0.0.1:" + port + "/";
+            waitUntilHealthy();
+            endpoint = startupEndpoint;
+        }
+    }
+
+    private static Response healthCheck(String address) throws IOException {
+        return HTTP.newBuilder().callTimeout(1, TimeUnit.SECONDS).build().newCall(new Request.Builder()
+            .url(address + "api/health").header("X-NEU-Mobile-Token", token).build()).execute();
+    }
+
+    private static void waitUntilHealthy() throws Exception {
         Exception last = null;
         long deadline = android.os.SystemClock.elapsedRealtime() + 30_000;
-        OkHttpClient healthClient = http.newBuilder().callTimeout(1, TimeUnit.SECONDS).build();
         while (android.os.SystemClock.elapsedRealtime() < deadline) {
-            if (destroyed) throw new IOException("Local service was stopped during startup");
-            try (Response response = healthClient.newCall(new Request.Builder()
-                .url(startupEndpoint + "api/health").header("X-NEU-Mobile-Token", token).build()).execute()) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+            try (Response response = healthCheck(startupEndpoint)) {
                 if (response.isSuccessful()) return;
             } catch (Exception exception) {
                 last = exception;
@@ -227,6 +259,12 @@ public final class LocalBackendService extends Service {
     }
 
     private void pollBackend() {
+        if (!PermissionGuardTransport.notificationsGranted(this)) {
+            foreground = false;
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            stopSelf();
+            return;
+        }
         if (endpoint == null) return;
         try {
             deliverNotifications();
@@ -272,24 +310,40 @@ public final class LocalBackendService extends Service {
             this, value.optString("id").hashCode(), intent,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
+        int notificationIcon = source.equals("grade_tracking") ? io.github.rekayoo.neujwxt.shared.R.drawable.ic_companion_grades
+            : android.R.drawable.stat_notify_more;
         Notification publicVersion = new NotificationCompat.Builder(this, channel)
-            .setSmallIcon(android.R.drawable.stat_notify_more)
+            .setSmallIcon(notificationIcon)
             .setContentTitle("NEU 工具箱有新消息")
             .setContentText("解锁后查看详情")
             .build();
-        Notification notification = new NotificationCompat.Builder(this, channel)
-            .setSmallIcon(android.R.drawable.stat_notify_more)
-            .setContentTitle(value.optString("title", "NEU 工具箱"))
-            .setContentText(value.optString("body"))
-            .setStyle(new NotificationCompat.BigTextStyle().bigText(value.optString("body")))
-            .setContentIntent(pending)
-            .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(publicVersion)
-            .build();
-        getSystemService(NotificationManager.class).notify(value.optString("id").hashCode(), notification);
+        Companion.withPrivacyLock(() -> {
+            boolean hide = Companion.hideDetails(this);
+            boolean grade = source.equals("grade_tracking");
+            JSONObject metadata = value.optJSONObject("template_metadata");
+            String details = grade && !route.equals("/login") ? gradeSummary(metadata) : value.optString("body");
+            String title = hide ? (grade ? "成绩追踪" : "工具箱任务通知") : value.optString("title", "NEU 工具箱");
+            String fallback = grade && !route.equals("/login") ? "点击应用查看成绩追踪详情" : "打开应用查看详情";
+            String body = NotificationSummary.body(hide, fallback, details);
+            Notification notification = new NotificationCompat.Builder(this, channel)
+                .setSmallIcon(notificationIcon)
+                .setColor(getColor(io.github.rekayoo.neujwxt.shared.R.color.widget_accent))
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+                .setContentIntent(pending)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPublicVersion(publicVersion)
+                .build();
+            getSystemService(NotificationManager.class).notify(Companion.LOCAL_NOTICE, value.optString("id").hashCode(), notification);
+        });
         return true;
+    }
+
+    private static String gradeSummary(JSONObject metadata) {
+        return metadata == null ? "" : metadata.optString("notification_summary");
     }
 
     private void updateBackgroundState() throws Exception {
@@ -319,7 +373,7 @@ public final class LocalBackendService extends Service {
             .header("X-NEU-Mobile-Token", token);
         if (body == null) builder.method(method, null);
         else builder.method(method, RequestBody.create(body, MediaType.get("application/json")));
-        return http.newCall(builder.build()).execute();
+        return HTTP.newCall(builder.build()).execute();
     }
 
     private void promote(String text) {

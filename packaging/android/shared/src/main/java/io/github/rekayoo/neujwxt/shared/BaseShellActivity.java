@@ -220,6 +220,18 @@ public abstract class BaseShellActivity extends AppCompatActivity {
         if (initialized) loadRoute(intent);
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Companion.schedule(this, true);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @androidx.annotation.NonNull String[] permissions, @androidx.annotation.NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        Companion.schedule(this, true);
+    }
+
     private static String lastPathSegment(Uri uri) {
         String segment = uri.getLastPathSegment();
         return segment == null ? "" : segment.toLowerCase(Locale.ROOT);

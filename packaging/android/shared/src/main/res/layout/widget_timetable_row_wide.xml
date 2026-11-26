@@ -1,0 +1,11 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:layout_marginTop="3dp" android:minHeight="23dp" android:orientation="horizontal" android:gravity="center_vertical">
+    <TextView android:id="@id/widget_course_time" android:layout_width="39dp" android:layout_height="wrap_content"
+        android:layout_marginEnd="8dp" android:gravity="center" android:paddingTop="3dp" android:paddingBottom="3dp" android:maxLines="1"
+        android:includeFontPadding="false" android:textSize="11sp" android:textStyle="bold"
+        android:textColor="@color/widget_accent" android:background="@drawable/widget_timetable_time" />
+    <TextView android:id="@id/widget_course_title" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+        android:maxLines="1" android:ellipsize="end" android:includeFontPadding="false"
+        android:textColor="@color/widget_primary" android:textSize="12sp" />
+</LinearLayout>

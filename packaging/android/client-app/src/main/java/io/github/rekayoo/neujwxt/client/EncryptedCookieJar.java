@@ -17,6 +17,7 @@ final class EncryptedCookieJar implements CookieJar {
     private static final String KEY = "cookies";
     private final SharedPreferences preferences;
     private String origin;
+    private boolean readOnly;
 
     EncryptedCookieJar(SharedPreferences preferences) {
         this.preferences = preferences;
@@ -30,13 +31,18 @@ final class EncryptedCookieJar implements CookieJar {
         origin = next;
     }
 
+    synchronized void readOnlyOrigin(HttpUrl url) {
+        origin = originOf(url);
+        readOnly = true;
+    }
+
     private static String originOf(HttpUrl url) {
         return url.scheme() + "://" + url.host() + ":" + url.port();
     }
 
     @Override
     public synchronized void saveFromResponse(HttpUrl url, List<Cookie> incoming) {
-        if (!originOf(url).equals(origin)) return;
+        if (readOnly || !originOf(url).equals(origin)) return;
         List<Cookie> current = read(url);
         for (Cookie candidate : incoming) {
             current.removeIf(existing -> existing.name().equals(candidate.name())
@@ -56,7 +62,7 @@ final class EncryptedCookieJar implements CookieJar {
 
     @Override
     public synchronized List<Cookie> loadForRequest(HttpUrl url) {
-        if (!originOf(url).equals(origin)) return Collections.emptyList();
+        if (!originOf(url).equals(origin) || !origin.equals(preferences.getString("origin", ""))) return Collections.emptyList();
         List<Cookie> all = read(url);
         List<Cookie> matching = new ArrayList<>();
         for (Cookie cookie : all) if (cookie.matches(url)) matching.add(cookie);

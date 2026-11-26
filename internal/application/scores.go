@@ -2,8 +2,10 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -46,6 +48,7 @@ func (api *API) registerAcademicResources() {
 
 func (api *API) registerScores(router *http.ServeMux) {
 	router.HandleFunc("GET /api/scores/cache", api.cachedScores)
+	router.HandleFunc("GET /api/mobile/grade-revision", api.mobileGradeRevision)
 	router.HandleFunc("GET /api/scores", api.onlineScores)
 	router.HandleFunc("POST /api/scores/refresh", func(response http.ResponseWriter, request *http.Request) {
 		api.refreshAndWait(response, request, "scores")
@@ -54,6 +57,60 @@ func (api *API) registerScores(router *http.ServeMux) {
 	router.HandleFunc("GET /api/gpa-policy", api.getGPAPolicy)
 	router.HandleFunc("PUT /api/gpa-policy", api.saveGPAPolicy)
 	api.registerScoreDetails(router)
+}
+
+func (api *API) mobileGradeRevision(response http.ResponseWriter, request *http.Request) {
+	session, ok := api.requireSession(response, request)
+	if !ok {
+		return
+	}
+	entry, err := api.database.ReadCache(request.Context(), session, "scores", "default")
+	if errors.Is(err, store.ErrMissing) || err == nil && entry.Stale(scoresTTL) {
+		writeJSON(response, 200, map[string]string{"revision": ""})
+		return
+	}
+	if err != nil {
+		api.resourceError(response, err)
+		return
+	}
+	var scores academic.Scores
+	if err := json.Unmarshal(entry.Payload, &scores); err != nil {
+		api.resourceError(response, err)
+		return
+	}
+	grades := academic.Scores{Scores: make([]academic.Score, 0, len(scores.Scores))}
+	includeDetails := request.URL.Query().Get("details") == "true" && len(scores.Scores) <= 1500
+	details := make([]mobileGrade, 0)
+	for _, score := range scores.Scores {
+		if score.Score != "" {
+			grades.Scores = append(grades.Scores, academic.Score{Code: score.Code, Term: score.Term, ExamType: score.ExamType, Score: score.Score, GPA: score.GPA})
+			if includeDetails {
+				key, _ := json.Marshal([3]string{score.Code, score.Term, score.ExamType})
+				name := strings.TrimSpace(score.Name)
+				if name == "" {
+					name = score.Code
+				}
+				details = append(details, mobileGrade{fmt.Sprintf("%x", sha256.Sum256(key)), name, score.Score, score.GPA})
+			}
+		}
+	}
+	snapshot, err := academic.NewGradeTrackingSnapshot(grades, time.Now())
+	if err != nil {
+		api.resourceError(response, err)
+		return
+	}
+	result := map[string]any{"revision": snapshot.Revision}
+	if includeDetails {
+		result["grades"] = details
+	}
+	writeJSON(response, 200, result)
+}
+
+type mobileGrade struct {
+	Key   string  `json:"key"`
+	Name  string  `json:"name"`
+	Score string  `json:"score"`
+	GPA   float64 `json:"gpa"`
 }
 
 func (api *API) scorePayload(ctx context.Context, session store.Session, entry store.CacheEntry) (map[string]any, error) {

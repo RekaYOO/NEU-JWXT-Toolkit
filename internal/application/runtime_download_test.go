@@ -115,12 +115,34 @@ func TestInterruptedDownloadCleanupPreservesArchive(t *testing.T) {
 }
 
 func TestRemoteDownloadRequiresAdmin(t *testing.T) {
-	_, handler := testApplication(t, "remote-multi")
+	api, handler, access, admin := setupSiteAdmin(t, "remote-multi")
+	api.ConfigureUpdateDirectory(t.TempDir())
+	api.releaseChecker.checked = time.Now()
+	api.releaseChecker.job = &runtimeUpdateJob{ID: "fixture", State: "downloaded"}
 	for _, route := range []struct{ method, path string }{{"POST", "/api/runtime/update/download"}, {"GET", "/api/runtime/update/fixture"}} {
-		response := apiRequest(handler, route.method, route.path, "", nil)
-		if response.Code != 403 && response.Code != 401 {
+		response := requestWithSiteCookies(handler, route.method, route.path, "", access)
+		if response.Code != 403 {
 			t.Fatal(response.Code, response.Body.String())
 		}
+	}
+	for _, check := range []struct {
+		cookie     *http.Cookie
+		capability string
+	}{{nil, "none"}, {admin, "go-manual"}} {
+		response := requestWithSiteCookies(handler, "GET", "/api/runtime/update", "", access, check.cookie)
+		var snapshot struct {
+			Capability string            `json:"capability"`
+			Job        *runtimeUpdateJob `json:"job"`
+		}
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &snapshot) != nil || snapshot.Capability != check.capability || (snapshot.Job != nil) != (check.cookie != nil) {
+			t.Fatal(response.Code, response.Body.String())
+		}
+	}
+	if response := requestWithSiteCookies(handler, "GET", "/api/runtime/update/fixture", "", access, admin); response.Code != 200 {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if response := requestWithSiteCookies(handler, "POST", "/api/runtime/update/fixture/install", "", access, admin); response.Code != 404 {
+		t.Fatal(response.Code, response.Body.String())
 	}
 }
 

@@ -170,10 +170,12 @@ export default function VersionUpdateCard() {
         <Button icon={<LinkOutlined />} href={serverSnapshot?.release_url || 'https://github.com/RekaYOO/NEU-JWXT-Toolkit/releases/latest'} target="_blank" rel="noreferrer">查看服务端 Release</Button>
       </div>
        <Text type="secondary" className="version-update-hint">{serverSnapshot?.capability === 'go-manual'
-         ? '更新包会在服务端下载并校验。完成后请先备份、停止服务，再按运行包说明替换程序目录并保留数据目录。'
+         ? '更新包会在服务端下载并校验。下载完成后，由管理员在服务器上按运行包说明执行升级。'
          : serverSnapshot?.capability === 'linux-manual'
          ? '此服务端的自动更新器未运行。点击后只会下载更新包，需要在服务器解压并执行 sudo ./install.sh --upgrade。'
-         : '服务端升级只在你确认后开始；安装结果和失败原因会显示在上方。'}</Text>
+         : serverSnapshot?.capability === 'linux-auto'
+         ? '确认后开始升级，安装结果和失败原因会显示在上方。'
+         : serverSnapshot ? '当前连接仅提供版本检查。Go 多用户部署需登录站点管理后才能下载更新包。' : '检查更新后可查看当前连接支持的更新操作。'}</Text>
      </section>;
   };
 

@@ -16,6 +16,8 @@ import { clearBrowserAvatarCache, clearBrowserTimetableCache } from '../resource
 import { useResourceIdentity } from '../resources/ResourceStore';
 import { nativeShellInfo, openNativeServerSettings } from '../services/nativeBridge';
 import VersionUpdateCard from '../components/VersionUpdateCard';
+import AndroidCompanionSettings from '../components/AndroidCompanionSettings';
+import SystemMessagesPanel from '../components/SystemMessagesPanel';
 import AppearanceSettings from '../theme/AppearanceSettings';
 import './SystemSettingsPage.css';
 
@@ -139,7 +141,32 @@ const NativeServerSettings = () => shellInfo?.kind === 'client' ? (
 
 export default function SystemSettingsPage() {
   const [params, setParams] = useSearchParams();
-  const activeKey = ['logs', 'appearance'].includes(params.get('tab')) ? params.get('tab') : 'config';
+  const activeKey = ['logs', 'appearance', 'messages'].includes(params.get('tab')) ? params.get('tab') : 'config';
   const mobileLocal = shellInfo?.kind === 'local';
-  return <main className="system-settings-page"><div className="system-settings-heading"><SettingOutlined /><div><Title level={2}>系统设置</Title><Text type="secondary">统一管理外观、日志、缓存和系统通知配置</Text></div></div><Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={[{ key: 'config', label: <span><SettingOutlined /> 配置项</span>, children: <div className="system-settings-sections"><VersionUpdateCard /><NativeServerSettings /><CacheSettings /><BrowserTimetableCacheCard />{!mobileLocal && <><Card title="系统邮件" className="system-settings-card"><SystemMailForm /></Card><Card title="远程登录恢复" className="system-settings-card"><AuthRecoverySettings /></Card></>}</div> }, { key: 'appearance', label: '外观与主题', children: <AppearanceSettings active={activeKey === 'appearance'} /> }, { key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded /> }]} /></main>;
+  const tabs = [{
+    key: 'config', label: <span><SettingOutlined /> 配置项</span>,
+    children: <div className="system-settings-sections">
+      <VersionUpdateCard />
+      <NativeServerSettings />
+      <AndroidCompanionSettings />
+      <CacheSettings />
+      <BrowserTimetableCacheCard />
+      {!mobileLocal && <>
+        <Card title="系统邮件" className="system-settings-card"><SystemMailForm /></Card>
+        <Card title="远程登录恢复" className="system-settings-card"><AuthRecoverySettings /></Card>
+      </>}
+    </div>,
+  }, {
+    key: 'appearance', label: '外观与主题', children: <AppearanceSettings active={activeKey === 'appearance'} />,
+  }, {
+    key: 'messages', label: '教务消息', children: activeKey === 'messages' ? <SystemMessagesPanel /> : null,
+  }, {
+    key: 'logs', label: <span><FileTextOutlined /> 系统日志</span>, children: <LogsPage embedded />,
+  }];
+  return <main className="system-settings-page">
+    <div className="system-settings-heading"><SettingOutlined /><div>
+      <Title level={2}>系统设置</Title><Text type="secondary">统一管理外观、日志、缓存和系统通知配置</Text>
+    </div></div>
+    <Tabs activeKey={activeKey} onChange={key => setParams(key === 'config' ? {} : { tab: key })} items={tabs} />
+  </main>;
 }

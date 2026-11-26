@@ -118,9 +118,7 @@ public class LocalLaunchTest {
                         new android.content.Intent(activity, LocalBackendService.class)));
                     Thread.sleep(500);
                     scenario.recreate();
-                    CountDownLatch restarted = new CountDownLatch(1);
-                    scenario.onActivity(activity -> LocalBackendService.whenReady(restarted::countDown));
-                    assertTrue("Service recreation never became ready", restarted.await(60, TimeUnit.SECONDS));
+                    assertFalse("Opening the local app started background execution", LocalBackendService.isRunning());
                     assertEquals(originalToken, LocalBackendService.sessionToken());
                     assertEquals(originalEndpoint, LocalBackendService.endpoint());
                     http.connectionPool().evictAll();
@@ -249,12 +247,15 @@ public class LocalLaunchTest {
                 .callAttr("get_system_mail_service");
             assertTrue(notifications.callAttr("queue_notification", "auth_recovery",
                 "Integration login required", "Synthetic notification only", "android-integration-login").toBoolean());
-            scenario.onActivity(activity -> androidx.core.content.ContextCompat.startForegroundService(
-                activity, new android.content.Intent(activity, LocalBackendService.class)));
+            scenario.onActivity(activity -> LocalBackendService.withForeground(activity, () -> {
+                activity.getSharedPreferences("mobile_runtime", android.content.Context.MODE_PRIVATE).edit()
+                    .putBoolean("background_required", true).apply();
+                LocalBackendService.finishMutation();
+            }, error -> fail(error.getMessage())));
             android.app.Notification delivered = null;
             for (int attempt = 0; attempt < 100; attempt++) {
                 for (android.service.notification.StatusBarNotification item : manager.getActiveNotifications()) {
-                    if ("Integration login required".contentEquals(
+                    if ("工具箱任务通知".contentEquals(
                         item.getNotification().extras.getCharSequence(android.app.Notification.EXTRA_TITLE, ""))) {
                         delivered = item.getNotification();
                     }
@@ -263,6 +264,7 @@ public class LocalLaunchTest {
                 Thread.sleep(200);
             }
             assertNotNull("Durable outbox was never displayed", delivered);
+            assertEquals("打开应用查看详情", delivered.extras.getCharSequence(android.app.Notification.EXTRA_TEXT).toString());
             assertEquals(0, notifications.callAttr("pending_count").toInt());
             assertNotNull("Lock screen summary is missing", delivered.publicVersion);
             assertEquals("NEU 工具箱有新消息",

@@ -10,9 +10,7 @@ public final class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         if (!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) return;
-        boolean required = context.getSharedPreferences("mobile_runtime", Context.MODE_PRIVATE)
-            .getBoolean("background_required", false);
-        if (required) {
+        if (LocalBackendService.canResumeBackground(context)) {
             try {
                 ContextCompat.startForegroundService(context, new Intent(context, LocalBackendService.class));
             } catch (RuntimeException blockedBySystem) {

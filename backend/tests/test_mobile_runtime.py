@@ -214,11 +214,20 @@ def test_mobile_launcher_reuses_process_identity_and_protects_real_socket(tmp_pa
 
     script = r"""
 import json, sys, time, urllib.request, urllib.error
+from types import SimpleNamespace
 from launchers.mobile import start, stop
 token = "launcher-test-" + "x" * 48
 root = sys.argv[1]
-port = start(root + "/data", root + "/resources", token, "1.0.0-test")
+authorized = False
+port = start(root + "/data", root + "/resources", token, "1.0.0-test", SimpleNamespace(getAsBoolean=lambda: authorized))
 try:
+    from backend.app.dependencies import get_grade_tracker, get_course_selection_automation_service
+    services = (get_grade_tracker(), get_course_selection_automation_service())
+    assert all(not service.background_allowed() for service in services)
+    authorized = True
+    assert all(service.background_allowed() for service in services)
+    authorized = False
+    assert all(not service.background_allowed() for service in services)
     assert start(root + "/data", root + "/resources", token, "1.0.0-test") == port
     try:
         start(root + "/data", root + "/resources", "y" * 48, "1.0.0-test")

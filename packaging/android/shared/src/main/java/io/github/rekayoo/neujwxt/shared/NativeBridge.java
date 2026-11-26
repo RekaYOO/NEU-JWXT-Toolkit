@@ -31,6 +31,7 @@ public final class NativeBridge {
             android.content.pm.PackageInfo info = activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0);
             value.put("application_id", activity.getPackageName())
                 .put("version", info.versionName)
+                .put("desktop_companion", true)
                 .put("version_code", android.os.Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode)
                 .put("update_supported", activity.getPackageName().equals("io.github.rekayoo.neujwxt.client")
                     || activity.getPackageName().equals("io.github.rekayoo.neujwxt.local"));
@@ -45,16 +46,50 @@ public final class NativeBridge {
         String id = UUID.randomUUID().toString();
         try {
             NativeRequest request = NativeRequest.parse(rawRequest);
-            transport.get().request(id, request, payload -> deliver(id, payload));
+            long epoch = Companion.prefs(activity).getLong("epoch", 0);
+            transport.get().request(id, request, payload -> {
+                int status = payload.optInt("status");
+                if (status >= 200 && status < 300) observeCompanion(request, payload, epoch);
+                deliver(id, payload);
+            });
         } catch (Exception exception) {
             deliver(id, error("原生请求参数无效", "ERR_INVALID_REQUEST"));
         }
         return id;
     }
 
+    private void observeCompanion(NativeRequest request, JSONObject payload, long epoch) {
+        synchronized (Companion.STATE) {
+            if (epoch != Companion.prefs(activity).getLong("epoch", 0)) return;
+            if (request.path.equals("/api/logout") && request.method.equals("POST")) {
+                Companion.clearSession(activity);
+            } else if (request.path.equals("/api/status") || request.path.equals("/api/client/bootstrap")) {
+                try {
+                    JSONObject data = new JSONObject(payload.optString("body"));
+                    if (request.path.equals("/api/client/bootstrap")) data = data.optJSONObject("auth");
+                    if (data != null && data.optBoolean("is_logged_in") && !data.isNull("current_user")) {
+                        String account = data.optString("current_user").trim();
+                        if (!account.isEmpty()) Companion.onAuthenticated(activity, account);
+                    }
+                } catch (org.json.JSONException ignored) { }
+            } else if (request.path.startsWith("/api/timetable/personal?")) {
+                Companion.schedule(activity, true);
+            }
+        }
+    }
+
     @JavascriptInterface
     public void cancel(String id) {
         transport.get().cancel(id);
+    }
+
+    @JavascriptInterface
+    public void openCompanionSettings() {
+        activity.runOnUiThread(() -> {
+            if (!activity.isFinishing() && !activity.isDestroyed()) {
+                Companion.showSettings(activity, "client".equals(shellInfo.get().optString("kind")));
+            }
+        });
     }
 
     @JavascriptInterface

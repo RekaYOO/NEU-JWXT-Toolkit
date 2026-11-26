@@ -16,7 +16,7 @@ _identity: tuple[str, str, str, str] | None = None
 _socket: socket.socket | None = None
 
 
-def start(data_dir: str, resource_root: str, session_token: str, version: str) -> int:
+def start(data_dir: str, resource_root: str, session_token: str, version: str, background_permission=None) -> int:
     """Start one loopback server and return its selected port."""
     global _port, _server, _thread, _identity, _socket
     with _lock:
@@ -40,10 +40,14 @@ def start(data_dir: str, resource_root: str, session_token: str, version: str) -
         })
 
         from backend.app.main import app, runtime_config
+        from backend.app.dependencies import get_course_selection_automation_service, get_grade_tracker
         import uvicorn
 
         if not runtime_config.mobile_mode or runtime_config.mobile_session_token != session_token:
             raise RuntimeError("Mobile runtime was imported with an incompatible configuration")
+        if background_permission is not None:
+            get_grade_tracker().background_allowed = background_permission.getAsBoolean
+            get_course_selection_automation_service().background_allowed = background_permission.getAsBoolean
         _socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         _socket.bind(("127.0.0.1", 0))
         _port = int(_socket.getsockname()[1])

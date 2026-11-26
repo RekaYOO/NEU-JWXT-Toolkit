@@ -4,8 +4,6 @@ import android.content.Intent;
 import android.provider.Settings;
 import android.net.Uri;
 
-import androidx.core.content.ContextCompat;
-
 import org.json.JSONObject;
 
 import java.util.Collections;
@@ -26,7 +24,6 @@ import androidx.webkit.WebViewAssetLoader;
 
 public final class MainActivity extends BaseShellActivity {
     private File webRuntime;
-    private Runnable readyCallback;
     private final DeferredTransport backendTransport = new DeferredTransport();
     private final ExecutorService preparation = Executors.newSingleThreadExecutor();
 
@@ -55,26 +52,34 @@ public final class MainActivity extends BaseShellActivity {
     }
 
     private void startBackend() {
-        Intent service = new Intent(this, LocalBackendService.class);
-        try {
-            ContextCompat.startForegroundService(this, service);
-        } catch (RuntimeException exception) {
-            backendTransport.fail("系统暂不允许启动本地服务，请重新打开应用");
-            return;
-        }
-        readyCallback = () -> {
-            if (isDestroyed() || isFinishing()) return;
-            if (LocalBackendService.endpoint() == null) {
-                backendTransport.fail("本地服务启动失败，请重新打开应用");
-            } else {
-                try {
-                    backendTransport.ready(createBackendTransport());
-                } catch (RuntimeException exception) {
-                    backendTransport.fail("本地请求通道初始化失败，请重新打开应用");
-                }
+        android.content.Context application = getApplicationContext();
+        preparation.execute(() -> {
+            try {
+                LocalBackendService.ensureRuntime(application);
+                runOnUiThread(() -> {
+                    if (isDestroyed() || isFinishing()) return;
+                    try {
+                        backendTransport.ready(createBackendTransport());
+                    } catch (RuntimeException exception) {
+                        backendTransport.fail("本地请求通道初始化失败，请重新打开应用");
+                    }
+                });
+            } catch (Exception exception) {
+                runOnUiThread(() -> backendTransport.fail("本地服务启动失败，请重新打开应用"));
             }
-        };
-        LocalBackendService.whenReady(readyCallback);
+        });
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (LocalBackendService.canResumeBackground(this) && !LocalBackendService.isRunning()) {
+            try {
+                androidx.core.content.ContextCompat.startForegroundService(this, new Intent(this, LocalBackendService.class));
+            } catch (RuntimeException blockedBySystem) {
+                BootRecoveryNotification.show(this);
+            }
+        }
     }
 
     @Override
@@ -122,7 +127,6 @@ public final class MainActivity extends BaseShellActivity {
     @Override
     protected void onDestroy() {
         preparation.shutdown();
-        LocalBackendService.removeReadyCallback(readyCallback);
         backendTransport.close();
         super.onDestroy();
     }

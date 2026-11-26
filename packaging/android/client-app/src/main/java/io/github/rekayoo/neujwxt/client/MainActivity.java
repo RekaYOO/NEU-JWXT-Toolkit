@@ -17,6 +17,7 @@ import java.util.Collections;
 
 import io.github.rekayoo.neujwxt.shared.ApiTransport;
 import io.github.rekayoo.neujwxt.shared.BaseShellActivity;
+import io.github.rekayoo.neujwxt.shared.Companion;
 import io.github.rekayoo.neujwxt.shared.OkHttpTransport;
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -37,12 +38,7 @@ public final class MainActivity extends BaseShellActivity {
     protected void prepareShell(Runnable ready) {
         try {
             config = new ServerConfigStore(this);
-            MasterKey key = new MasterKey.Builder(this).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build();
-            secretPreferences = EncryptedSharedPreferences.create(
-                this, "client_cookies", key,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            );
+            secretPreferences = cookiePreferences(this);
             cookies = new EncryptedCookieJar(secretPreferences);
             if (!config.getServerUrl().trim().isEmpty()) {
                 cookies.setOrigin(ServerConfigStore.validate(config.getServerUrl()));
@@ -56,6 +52,13 @@ public final class MainActivity extends BaseShellActivity {
         readyCallback = ready;
         if (config.getServerUrl().trim().isEmpty()) showServerDialog(false);
         else ready.run();
+    }
+
+    static SharedPreferences cookiePreferences(android.content.Context context) throws Exception {
+        MasterKey key = new MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build();
+        return EncryptedSharedPreferences.create(context, "client_cookies", key,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM);
     }
 
     @Override
@@ -105,6 +108,7 @@ public final class MainActivity extends BaseShellActivity {
                 probe(candidate, () -> {
                     boolean firstConfiguration = config.getServerUrl().trim().isEmpty();
                     String normalized = ServerConfigStore.validate(candidate).toString();
+                    if (!normalized.equals(config.getServerUrl())) Companion.clearSession(this);
                     resetCookies(ServerConfigStore.validate(normalized), false);
                     config.setServerUrl(normalized);
                     dialog.dismiss();
@@ -113,6 +117,7 @@ public final class MainActivity extends BaseShellActivity {
                 }, false);
             });
             if (cancelable) dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+                Companion.clearSession(this);
                 resetCookies(ServerConfigStore.validate(config.getServerUrl()), true);
                 dialog.dismiss();
                 android.webkit.CookieManager.getInstance().removeAllCookies(null);

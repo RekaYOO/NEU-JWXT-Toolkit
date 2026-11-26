@@ -16,6 +16,8 @@ export const nativeShellInfo = () => {
 
 export const isNativeShell = () => Boolean(bridge()?.request);
 
+export const openNativeCompanionSettings = () => bridge()?.openCompanionSettings?.();
+
 const isApiPath = value => {
   if (!value.startsWith('/api/') || /[\\#\x00-\x20]/.test(value)) return false;
   const path = value.split('?')[0].toLowerCase();

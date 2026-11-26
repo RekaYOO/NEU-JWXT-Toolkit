@@ -112,6 +112,18 @@ describe('VersionUpdateCard', () => {
     await act(async () => resolveApp({ available: false }));
   });
 
+  test('client shows the new server version without an update action for ordinary users', async () => {
+    nativeShellInfo.mockReturnValue({ kind: 'client', version: '1.0.0' });
+    checkNativeAppUpdate.mockResolvedValue({ available: false });
+    getRuntimeUpdate.mockResolvedValue({ current_version: '2.2.4', latest_version: '3.0.0', update_available: true, capability: 'none' });
+    await act(async () => root.render(<VersionUpdateCard />));
+    await act(async () => container.querySelector('button').click());
+    const panel = container.querySelector('[aria-label="连接的服务端更新"]');
+    expect(panel.textContent).toContain('有新版本');
+    expect(panel.textContent).toContain('登录站点管理后才能下载更新包');
+    expect(panel.querySelector('button')).toBeNull();
+  });
+
   test('client shows the server failure history and permits another manual attempt', async () => {
     nativeShellInfo.mockReturnValue({ kind: 'client', version: '1.0.0' });
     checkNativeAppUpdate.mockResolvedValue({ available: false });
